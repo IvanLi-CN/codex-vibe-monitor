@@ -74,6 +74,135 @@ async fn startup_persistent_prep_skips_mutations_for_dry_run_commands() {
 }
 
 #[tokio::test]
+async fn startup_persistent_prep_defers_when_persisted_migration_hold_survives_restart() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("startup-prep-migration-hold").await;
+    let persisted_store = crate::maintenance_store::ownership_test_store().await;
+    persisted_store
+        .set_migration_hold(crate::maintenance_store::MigrationHoldState::for_module(
+            "migration-startup-prep",
+            crate::storage::core::StorageModule::TrafficArchive,
+            Some("archive:startup-prep".to_string()),
+        ))
+        .await
+        .expect("persist startup prep migration hold");
+
+    let restarted_store =
+        crate::maintenance_store::MaintenanceStore::from_pool(persisted_store.pool.clone());
+    drop(persisted_store);
+
+    let summary = run_startup_persistent_prep_inner_with_store(
+        Some(&restarted_store),
+        &pool,
+        &config,
+        &CliArgs::default(),
+        true,
+    )
+    .await
+    .expect("run startup prep after restart");
+
+    assert!(summary.deferred);
+    assert_eq!(summary.stale_archive_temp_files_removed, 0);
+    assert_eq!(summary.refreshed_manifest_batches, 0);
+    assert_eq!(summary.refreshed_manifest_account_rows, 0);
+    assert_eq!(summary.missing_manifest_files, 0);
+    assert_eq!(summary.backfilled_archive_expiries, 0);
+    assert!(!summary.bootstrapped_hourly_rollups);
+    assert_eq!(summary.pending_manifest_batches, 0);
+    assert_eq!(summary.pending_historical_rollup_archive_batches, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn startup_persistent_prep_defers_when_hold_is_acquired_between_children() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("startup-prep-mid-pass-migration-hold").await;
+    let occurred_at = shanghai_local_days_ago(90, 10, 15, 0);
+    let month_key = occurred_at[..7].to_string();
+    let archive_path = temp_dir.join("missing-startup-prep-archive.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("missing-startup-prep-sha")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .bind(&occurred_at)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert startup prep interleaving batch");
+
+    let persisted_store = crate::maintenance_store::ownership_test_store().await;
+    let hooks = crate::maintenance::install_startup_persistent_prep_interleaving_hooks();
+    let prep_pool = pool.clone();
+    let prep_config = config.clone();
+    let prep_store_pool = persisted_store.pool.clone();
+    let prep = tokio::spawn(async move {
+        let prep_store = crate::maintenance_store::MaintenanceStore::from_pool(prep_store_pool);
+        run_startup_persistent_prep_inner_with_store(
+            Some(&prep_store),
+            &prep_pool,
+            &prep_config,
+            &CliArgs::default(),
+            false,
+        )
+        .await
+    });
+
+    hooks.manifest_finished.notified().await;
+    let hold_generation = persisted_store
+        .set_migration_hold(crate::maintenance_store::MigrationHoldState::for_module(
+            "migration-startup-prep-mid-pass",
+            crate::storage::core::StorageModule::TrafficArchive,
+            Some("archive:startup-prep-mid-pass".to_string()),
+        ))
+        .await
+        .expect("persist mid-pass startup prep hold");
+    hooks.continue_after_manifest.notify_one();
+
+    let summary = prep
+        .await
+        .expect("join startup prep interleaving task")
+        .expect("run startup prep with a mid-pass hold");
+    crate::maintenance::clear_startup_persistent_prep_interleaving_hooks();
+
+    assert!(summary.deferred);
+    assert_eq!(summary.backfilled_archive_expiries, 0);
+    let archive_expires_at: Option<String> =
+        sqlx::query_scalar("SELECT archive_expires_at FROM archive_batches WHERE file_path=?")
+            .bind(archive_path.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("load deferred startup prep archive batch");
+    assert!(archive_expires_at.is_none());
+
+    persisted_store
+        .clear_migration_hold("migration-startup-prep-mid-pass", hold_generation)
+        .await
+        .expect("clear mid-pass startup prep hold");
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn startup_persistent_prep_keeps_manifest_backlog_pending_after_a_bounded_pass() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("startup-prep-bounded-manifest-backlog").await;

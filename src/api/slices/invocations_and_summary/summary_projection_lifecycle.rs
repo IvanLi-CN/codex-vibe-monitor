@@ -133,11 +133,17 @@ pub(crate) async fn hydrate_summary_snapshots_with_deadline(
 }
 
 pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     if state.subscription_hub.summary_projection().await.is_none() {
         // A cold retry has no exact historical coverage proof to reuse. Keep the first
         // publication on the Bootstrap deadline instead of downgrading it to the shorter
         // Rolling deadline used only after an immutable projection exists.
         hydrate_summary_snapshots(state).await?;
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(());
+        }
     } else if let Some(fallback_fence) = state
         .subscription_hub
         .summary_bootstrap_fallback_fence()
@@ -149,12 +155,18 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
             // bounded cold-start budget. Keep the local unavailable range in place until a
             // durable source fence changes; do not re-enter boundary/archive hydration.
             let _ = renew_summary_projection_freshness_if_generation_matches(state).await?;
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(());
+            }
         } else if fallback_fence.coverage_sources_match(current_fence) {
             // New terminals do not repair the historical authority which made Bootstrap
             // fall back. Reconcile only their bounded tail, preserving the published gap;
             // otherwise every active request stream can reopen the 30-second cold builder.
             refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::RollingDelta)
                 .await?;
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(());
+            }
         } else {
             state
                 .subscription_hub
@@ -163,6 +175,9 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
             // A changed manifest or coverage proof is a new historical admission identity.
             // Give Bootstrap one chance to replace the fallback before the supervisor catches up.
             hydrate_summary_snapshots(state).await?;
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(());
+            }
         }
     } else if !renew_summary_projection_freshness_if_generation_matches(state).await? {
         // Coverage revisions are reconciled by the historical supervisor and published through
@@ -170,9 +185,15 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
         // fresh without entering the archive-sized RollingDelta builder.
         let live_tail_renewed =
             renew_summary_projection_freshness_if_live_tail_matches(state).await?;
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(());
+        }
         if !live_tail_renewed {
             refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::RollingDelta)
                 .await?;
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(());
+            }
         }
     }
     // Historical coverage is owned exclusively by the independent supervisor. Snapshot cadence
@@ -229,6 +250,13 @@ pub(crate) fn summary_coverage_recovery_requires_second_v2_turn(
         || result.hit_budget
         || result.materialized_archive_batches > 0
         || result.unavailable_archive_batches > 0
+}
+
+fn summary_coverage_recovery_migration_hold_turn() -> SummaryCoverageRecoveryTurn {
+    SummaryCoverageRecoveryTurn {
+        next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+        reservation: None,
+    }
 }
 
 #[cfg(test)]
@@ -417,6 +445,9 @@ impl SummaryCoverageRecoverySupervisor {
         publish_overlay: bool,
         runtime: &mut CompactedSourceRecoveryRuntime,
     ) -> Result<SummaryCoverageRecoveryTurn> {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary_coverage_recovery_migration_hold_turn());
+        }
         // Admission deliberately precedes every checkpoint, manifest, and archive operation.
         // Pressure is scheduler-only: a denied pass neither reads nor writes recovery progress.
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
@@ -466,9 +497,15 @@ impl SummaryCoverageRecoverySupervisor {
                 });
             }
         };
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary_coverage_recovery_migration_hold_turn());
+        }
         record_recovery(RecoveryDiagnostic::StatisticsHistoricalCoverage);
         if let Some(turn) = run_compacted_source_recovery_turn_with_runtime(state, runtime).await? {
             return Ok(turn);
+        }
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary_coverage_recovery_migration_hold_turn());
         }
         let started_at = Instant::now();
         // Required 30-day authority takes priority over all-time aggregation. Each V2 turn is
@@ -482,6 +519,9 @@ impl SummaryCoverageRecoverySupervisor {
             SUMMARY_HISTORICAL_COVERAGE_BACKFILL_BUDGET,
         )
         .await?;
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary_coverage_recovery_migration_hold_turn());
+        }
         crate::record_managed_task_discovered_work(
             &["summary_coverage_recovery"],
             i64::try_from(priority_backfill.candidate_count).unwrap_or(i64::MAX),
@@ -507,6 +547,9 @@ impl SummaryCoverageRecoverySupervisor {
         let priority_backfill_pending = priority_backfill.recent_candidate_count > 0;
         let recent_overlay_needed = !priority_backfill_pending
             && summary_projection_recent_coverage_needs_overlay(state).await;
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary_coverage_recovery_migration_hold_turn());
+        }
         // A final proof is durable before it is published. During startup, batch immutable
         // overlay swaps so a long recovery does not repeatedly clone the resident Projection.
         // The final no-pending turn below always publishes, preserving exact-or-unavailable.
@@ -514,6 +557,9 @@ impl SummaryCoverageRecoverySupervisor {
             && (recent_overlay_needed
                 || (priority_backfill.pending_obligation_count == 0 && priority_backfill_pending))
         {
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(summary_coverage_recovery_migration_hold_turn());
+            }
             let publication_started_at = Instant::now();
             // Full reduction is reserved for the final no-pending pass. While the broad
             // historical queue is still draining, newly verified pages must extend the existing
@@ -563,6 +609,9 @@ impl SummaryCoverageRecoverySupervisor {
                 reservation: Some(pressure_gate.reserve_priority_background()),
             });
         }
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary_coverage_recovery_migration_hold_turn());
+        }
         // A completed global checkpoint is independently exact. Do not make its first
         // publication wait for the account-scope manifest/rollup pass below: large account
         // rosters can legitimately take more than the bounded finalization turn while the
@@ -573,6 +622,9 @@ impl SummaryCoverageRecoverySupervisor {
             && global_checkpoint.global_ready()
             && summary_all_time_checkpoint_publication_required(state, global_checkpoint).await?
         {
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(summary_coverage_recovery_migration_hold_turn());
+            }
             let publication_started_at = Instant::now();
             match tokio::time::timeout(
                 SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
@@ -607,6 +659,9 @@ impl SummaryCoverageRecoverySupervisor {
         }
         #[cfg(test)]
         note_summary_coverage_checkpoint_advance();
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary_coverage_recovery_migration_hold_turn());
+        }
         let checkpoint = tokio::time::timeout(
             SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
             advance_summary_all_time_projection_checkpoint(state),
@@ -621,6 +676,9 @@ impl SummaryCoverageRecoverySupervisor {
         if (checkpoint.global_ready() || checkpoint.account_ready())
             && summary_all_time_checkpoint_publication_required(state, &checkpoint).await?
         {
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(summary_coverage_recovery_migration_hold_turn());
+            }
             let global_ready = checkpoint.global_ready();
             let account_ready = checkpoint.account_ready();
             #[cfg(test)]
@@ -652,6 +710,9 @@ impl SummaryCoverageRecoverySupervisor {
         let needs_second_v2_turn =
             summary_coverage_recovery_requires_second_v2_turn(&priority_backfill);
         let backfill = if needs_second_v2_turn {
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(summary_coverage_recovery_migration_hold_turn());
+            }
             #[cfg(test)]
             note_summary_coverage_v2_window();
             backfill_summary_archive_snapshots_v2_window(
@@ -666,6 +727,9 @@ impl SummaryCoverageRecoverySupervisor {
             );
             priority_backfill
         };
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary_coverage_recovery_migration_hold_turn());
+        }
         if needs_second_v2_turn {
             crate::record_managed_task_discovered_work(
                 &["summary_coverage_recovery"],
@@ -699,10 +763,19 @@ impl SummaryCoverageRecoverySupervisor {
                 if started_at.elapsed() >= SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE {
                     break;
                 }
+                if crate::maintenance::migration_hold_signal_reached() {
+                    return Ok(summary_coverage_recovery_migration_hold_turn());
+                }
                 let checkpoint = advance_summary_all_time_projection_checkpoint(state).await?;
+                if crate::maintenance::migration_hold_signal_reached() {
+                    return Ok(summary_coverage_recovery_migration_hold_turn());
+                }
                 if (checkpoint.global_ready() || checkpoint.account_ready())
                     && summary_all_time_checkpoint_publication_required(state, &checkpoint).await?
                 {
+                    if crate::maintenance::migration_hold_signal_reached() {
+                        return Ok(summary_coverage_recovery_migration_hold_turn());
+                    }
                     #[cfg(test)]
                     pause_summary_projection_test_interleave(
                         &state.pool,
@@ -720,6 +793,9 @@ impl SummaryCoverageRecoverySupervisor {
         // live admission after every historical page and keeps the 4-second RollingDelta budget
         // reserved for actual terminal tail changes.
         if backfill.pending_obligation_count == 0 {
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(summary_coverage_recovery_migration_hold_turn());
+            }
             let publication_started_at = Instant::now();
             match publish_summary_coverage_overlay(state, false).await {
                 Ok(true) => info!(
@@ -774,6 +850,15 @@ async fn summary_projection_recent_coverage_needs_overlay(state: &AppState) -> b
     overlay.recent_proof_identities != recent_proof_identities
 }
 
+async fn wait_for_summary_legacy_task_migration_hold(task_key: &'static str) {
+    loop {
+        if crate::maintenance_store::migration_task_is_held(task_key).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Runs the durable historical supervisor independently from rolling Projection maintenance.
 /// It retains priority only while the startup's finite durable obligation set is being recovered;
 /// afterwards periodic turns are best-effort and cannot delay current/rolling refresh.
@@ -799,34 +884,68 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
                 "processing",
             );
-            let initial_result = crate::with_managed_task_observation(
-                observation.clone(),
-                async {
-                    tokio::select! {
-                        biased;
-                        _ = state.shutdown.cancelled() => None,
-                        result = SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
-                            state.as_ref(),
-                            startup_priority,
-                            &mut recovery_runtime,
-                        ) => Some(result),
+            let migration_hold_flag = Arc::new(AtomicBool::new(false));
+            let migration_hold_flag_for_initial = Arc::clone(&migration_hold_flag);
+            let initial_future = crate::maintenance::with_migration_hold_signal(
+                Arc::clone(&migration_hold_flag),
+                crate::maintenance::with_managed_task_key(
+                    "summary_coverage_recovery",
+                    SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
+                        state.as_ref(),
+                        startup_priority,
+                        &mut recovery_runtime,
+                    ),
+                ),
+            );
+            tokio::pin!(initial_future);
+            let initial_result = crate::with_managed_task_observation(observation.clone(), async {
+                let migration_hold_watcher =
+                    wait_for_summary_legacy_task_migration_hold("summary_coverage_recovery");
+                tokio::select! {
+                    biased;
+                    _ = state.shutdown.cancelled() => None,
+                    result = &mut initial_future => Some(result),
+                    _ = migration_hold_watcher => {
+                        migration_hold_flag_for_initial.store(true, Ordering::Release);
+                        Some((&mut initial_future).await)
                     }
-                },
-            )
+                }
+            })
             .await;
             let Some(initial_result) = initial_result else {
                 return;
             };
-            observation.finish_with_status(if initial_result.is_ok() {
-                "success"
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held("summary_coverage_recovery")
+                    .await;
+            if migration_hold_active {
+                if let Some(store) = crate::maintenance_store::global()
+                    && let Err(error) = store
+                        .mark_task_migration_held("summary_coverage_recovery")
+                        .await
+                {
+                    warn!(
+                        error = %error,
+                        "summary historical coverage migration-held progress could not be published"
+                    );
+                }
+                observation.finish_with_status_and_reason(
+                    "skipped",
+                    Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+                );
+                SummaryCoverageRecoveryNextTurn::Deferred
             } else {
-                "skipped"
-            });
-            match initial_result {
-                Ok(next_turn) => next_turn,
-                Err(error) => {
-                    warn!(error = ?error, "initial summary historical coverage recovery deferred");
-                    SummaryCoverageRecoveryNextTurn::Idle
+                observation.finish_with_status(if initial_result.is_ok() {
+                    "success"
+                } else {
+                    "skipped"
+                });
+                match initial_result {
+                    Ok(next_turn) => next_turn,
+                    Err(error) => {
+                        warn!(error = ?error, "initial summary historical coverage recovery deferred");
+                        SummaryCoverageRecoveryNextTurn::Idle
+                    }
                 }
             }
         };
@@ -866,21 +985,60 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
                 "processing",
             );
-            let result = crate::with_managed_task_observation(observation.clone(), async {
-                tokio::select! {
-                    biased;
-                    _ = state.shutdown.cancelled() => None,
-                    result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation_runtime(
-                        state.as_ref(),
-                        None,
-                        &mut recovery_runtime,
-                    ) => Some(result),
-                }
-            })
-            .await;
+            let migration_hold_flag = Arc::new(AtomicBool::new(false));
+            let result = {
+                let migration_hold_flag_for_turn = Arc::clone(&migration_hold_flag);
+                let turn_future = crate::maintenance::with_migration_hold_signal(
+                    Arc::clone(&migration_hold_flag),
+                    crate::maintenance::with_managed_task_key(
+                        "summary_coverage_recovery",
+                        SummaryCoverageRecoverySupervisor::run_with_priority_reservation_runtime(
+                            state.as_ref(),
+                            None,
+                            &mut recovery_runtime,
+                        ),
+                    ),
+                );
+                tokio::pin!(turn_future);
+                crate::with_managed_task_observation(observation.clone(), async {
+                    let migration_hold_watcher =
+                        wait_for_summary_legacy_task_migration_hold("summary_coverage_recovery");
+                    tokio::select! {
+                        biased;
+                        _ = state.shutdown.cancelled() => None,
+                        result = &mut turn_future => Some(result),
+                        _ = migration_hold_watcher => {
+                            migration_hold_flag_for_turn.store(true, Ordering::Release);
+                            Some((&mut turn_future).await)
+                        }
+                    }
+                })
+                .await
+            };
             let Some(result) = result else {
                 return;
             };
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held("summary_coverage_recovery")
+                    .await;
+            if migration_hold_active {
+                if let Some(store) = crate::maintenance_store::global()
+                    && let Err(error) = store
+                        .mark_task_migration_held("summary_coverage_recovery")
+                        .await
+                {
+                    warn!(
+                        error = %error,
+                        "summary historical coverage migration-held progress could not be published"
+                    );
+                }
+                observation.finish_with_status_and_reason(
+                    "skipped",
+                    Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+                );
+                next_turn = SummaryCoverageRecoveryNextTurn::Deferred;
+                continue;
+            }
             observation.finish_with_status(if result.is_ok() { "success" } else { "skipped" });
             let scheduled_next_turn = match result {
                 Ok(next_turn) => next_turn,
@@ -4716,6 +4874,9 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     state: &AppState,
     mode: SummaryProjectionBuildMode,
 ) -> Result<()> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     if matches!(mode, SummaryProjectionBuildMode::AllTime) {
         return SummaryCoverageRecoverySupervisor::run(state).await;
     }
@@ -5021,6 +5182,9 @@ async fn refresh_summary_snapshots_with_deadline(
     deadline: Option<Duration>,
     coalesce_if_in_flight: bool,
 ) -> Result<()> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     let Ok(_refresh_guard) = state.subscription_hub.try_lock_summary_projection_refresh() else {
         if coalesce_if_in_flight {
             debug!("summary projection refresh already in flight; coalescing trigger");
@@ -5101,6 +5265,9 @@ async fn refresh_summary_snapshots_with_deadline(
         durable_terminal_sequence_watermark,
     );
     let build_result = await_summary_projection_build(state, mode, deadline, build).await;
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     let (projection, used_bootstrap_fallback) = match build_result {
         Ok(projection) => (projection, false),
         Err(error)
@@ -5111,16 +5278,20 @@ async fn refresh_summary_snapshots_with_deadline(
                 error = ?error,
                 "summary Bootstrap admission did not finish; publishing bounded fallback"
             );
-            (
-                build_summary_projection(
-                    state,
-                    SummaryProjectionBuildMode::BootstrapFallback,
-                    fallback_previous_all_time,
-                    durable_terminal_sequence_watermark,
-                )
-                .await?,
-                true,
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(());
+            }
+            let fallback_projection = build_summary_projection(
+                state,
+                SummaryProjectionBuildMode::BootstrapFallback,
+                fallback_previous_all_time,
+                durable_terminal_sequence_watermark,
             )
+            .await?;
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(());
+            }
+            (fallback_projection, true)
         }
         Err(error) => return Err(error),
     };
@@ -5172,6 +5343,9 @@ async fn refresh_summary_snapshots_with_deadline(
             elapsed_ms = build_started_at.elapsed().as_millis() as u64,
             "summary Bootstrap fallback published without a durable write transaction"
         );
+        return Ok(());
+    }
+    if crate::maintenance::migration_hold_signal_reached() {
         return Ok(());
     }
     // Serialize the final fence read and immutable hub swap against coverage trigger commits.

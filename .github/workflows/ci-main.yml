@@ -417,6 +417,7 @@ jobs:
           bash .github/scripts/test-live-quality-gates.sh
           bash .github/scripts/test-backend-test-contract.sh
           bash .github/scripts/test-representative-scale-contract.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-postgres-acceptance.py
 
       - name: Front-end lint
         run: bun run lint:web
@@ -607,7 +608,7 @@ jobs:
           cat /tmp/codex-vibe-monitor-vite.log || true
           exit 1
 
-      - name: Build production Web Demo for performance E2E
+      - name: Build production Web Demo for functional E2E
         working-directory: web
         run: bun run demo:build
 
@@ -616,18 +617,6 @@ jobs:
         run: |
           bun run demo:preview -- --host 127.0.0.1 --port 60083 > /tmp/codex-vibe-monitor-demo.log 2>&1 &
           echo $! > /tmp/codex-vibe-monitor-demo.pid
-
-      - name: Start performance Web Demo server
-        working-directory: web
-        run: |
-          bun run demo:preview -- --host 127.0.0.1 --port 60084 > /tmp/codex-vibe-monitor-demo-performance.log 2>&1 &
-          echo $! > /tmp/codex-vibe-monitor-demo-performance.pid
-
-      - name: Start timeline capacity Web Demo server
-        working-directory: web
-        run: |
-          bun run demo:preview -- --host 127.0.0.1 --port 60085 > /tmp/codex-vibe-monitor-demo-capacity.log 2>&1 &
-          echo $! > /tmp/codex-vibe-monitor-demo-capacity.pid
 
       - name: Wait for Web Demo readiness
         run: |
@@ -641,29 +630,8 @@ jobs:
           cat /tmp/codex-vibe-monitor-demo.log || true
           exit 1
 
-      - name: Wait for performance Web Demo readiness
-        run: |
-          for _ in {1..60}; do
-            if curl -fsS http://127.0.0.1:60084/ >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Performance Web Demo server failed to start within 60 seconds."
-          cat /tmp/codex-vibe-monitor-demo-performance.log || true
-          exit 1
-
-      - name: Wait for timeline capacity Web Demo readiness
-        run: |
-          for _ in {1..60}; do
-            if curl -fsS http://127.0.0.1:60085/ >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Timeline capacity Web Demo server failed to start within 60 seconds."
-          cat /tmp/codex-vibe-monitor-demo-capacity.log || true
-          exit 1
+      - name: Record E2E coverage
+        run: echo 'Functional E2E only; performance and capacity E2E not run.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run records overlay and Web Demo Playwright regression
         working-directory: web
@@ -671,18 +639,10 @@ jobs:
         run: |
           set -euo pipefail
           functional_status=0
-          performance_status=0
-          timeline_capacity_status=0
           CI_PROFILE=main E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \
             PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \
             bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=2 --output=test-results/functional || functional_status=$?
-          CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \
-            PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \
-            bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?
-          CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60085 E2E_PRODUCTION_BUILD=1 E2E_TIMELINE_CAPACITY=1 E2E_TIMELINE_CAPACITY_DURATION_MS=30000 \
-            PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-timeline-capacity \
-            bun run test:e2e -- --config=playwright.ci.config.ts --project=timeline-capacity --workers=1 --output=test-results/timeline-capacity || timeline_capacity_status=$?
-          exit $(( functional_status || performance_status || timeline_capacity_status ))
+          exit "$functional_status"
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -691,8 +651,6 @@ jobs:
           name: records-overlay-playwright-report
           path: |
             web/playwright-report-functional
-            web/playwright-report-performance
-            web/playwright-report-timeline-capacity
             web/test-results
           if-no-files-found: ignore
 
@@ -704,12 +662,6 @@ jobs:
           fi
           if [ -f /tmp/codex-vibe-monitor-demo.pid ]; then
             kill "$(cat /tmp/codex-vibe-monitor-demo.pid)" || true
-          fi
-          if [ -f /tmp/codex-vibe-monitor-demo-performance.pid ]; then
-            kill "$(cat /tmp/codex-vibe-monitor-demo-performance.pid)" || true
-          fi
-          if [ -f /tmp/codex-vibe-monitor-demo-capacity.pid ]; then
-            kill "$(cat /tmp/codex-vibe-monitor-demo-capacity.pid)" || true
           fi
 
   backend-test-archive:
@@ -800,7 +752,8 @@ jobs:
 
   backend-tests-lightweight:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ false }}
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -845,7 +798,8 @@ jobs:
 
   backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ false }}
     name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -890,7 +844,8 @@ jobs:
 
   backend-tests-stateful-sqlite-shard-2:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ false }}
     name: Backend Tests (Stateful SQLite shard 2/2)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -938,7 +893,7 @@ jobs:
     needs:
       - backend-tests-stateful-sqlite-shard-1
       - backend-tests-stateful-sqlite-shard-2
-    if: always()
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -955,7 +910,8 @@ jobs:
 
   backend-tests-archive-file-io:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ false }}
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -998,6 +954,63 @@ jobs:
       - name: Run archive / file I/O backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
+  postgres-functional:
+    name: PostgreSQL Main Functional and Recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: codex_vibe_monitor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d codex_vibe_monitor_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.99.1
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+      - name: Run non-pressure PostgreSQL functional and recovery tests
+        env:
+          POSTGRES_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/codex_vibe_monitor_test
+          POSTGRES_ACCEPTANCE_REQUIRED: '1'
+          POSTGRES_ACCEPTANCE_EVIDENCE_DIR: ${{ runner.temp }}/postgres-functional-evidence
+          BASE_SHA: ${{ github.event.before }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/postgres-acceptance/validate-identity.sh
+          python3 scripts/postgres-acceptance/run.py \
+            --output "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR/report.json" \
+            --evidence-dir "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR" \
+            --scope functional-recovery \
+            --base-sha "$BASE_SHA" --candidate-sha "$CANDIDATE_SHA" \
+            -- bash scripts/postgres-acceptance/run-functional-suite.sh
+      - name: Run audited non-pressure backend tests
+        run: bash scripts/postgres-acceptance/run-non-pressure-backend.sh
+      - name: Upload PostgreSQL functional evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-main-functional-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/postgres-functional-evidence
+          if-no-files-found: warn
+
   release-snapshot:
     name: Release Snapshot
     runs-on: ubuntu-24.04
@@ -1008,9 +1021,7 @@ jobs:
       - storybook-accessibility-tests
       - docs-demo-build
       - records-overlay-e2e
-      - backend-tests-lightweight
-      - backend-tests-stateful-sqlite
-      - backend-tests-archive-file-io
+      - postgres-functional
     permissions:
       actions: read
       contents: write

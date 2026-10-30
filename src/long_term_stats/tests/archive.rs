@@ -1518,17 +1518,261 @@ async fn account_kind_change_invalidates_affected_projection_dates() {
         .expect("classification update");
 
     let active_dates = sqlx::query_scalar::<_, String>(
-            "SELECT bucket_date FROM long_term_projection_dirty_buckets WHERE bucket_date LIKE '2026-07-%' ORDER BY bucket_date",
+            "SELECT bucket_date FROM pool_upstream_account_long_term_projection_outbox WHERE bucket_date LIKE '2026-07-%' ORDER BY bucket_date",
         )
         .fetch_all(&pool)
         .await
         .expect("affected dates");
     assert_eq!(active_dates, vec!["2026-07-25", "2026-07-26"]);
     let archived_dates = sqlx::query_scalar::<_, String>(
-            "SELECT bucket_date FROM long_term_projection_dirty_buckets WHERE bucket_date LIKE '2026-06-%' ORDER BY bucket_date",
+            "SELECT bucket_date FROM pool_upstream_account_long_term_projection_outbox WHERE bucket_date LIKE '2026-06-%' ORDER BY bucket_date",
         )
         .fetch_all(&pool)
         .await
         .expect("archived dates");
     assert_eq!(archived_dates, vec!["2026-06-01", "2026-06-02"]);
+    let dirty_bucket_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM long_term_projection_dirty_buckets")
+            .fetch_one(&pool)
+            .await
+            .expect("analytics dirty bucket count");
+    assert_eq!(dirty_bucket_count, 0);
+
+    let outbox_contract = sqlx::query_as::<_, (String, String, i64, String, i64, Option<String>)>(
+        "SELECT repair_reason, source_identity, source_generation, state, attempt_count, acknowledged_at
+         FROM pool_upstream_account_long_term_projection_outbox
+         WHERE bucket_date = '2026-07-25'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("outbox contract");
+    assert_eq!(outbox_contract.0, "account_classification_changed");
+    assert!(
+        outbox_contract
+            .1
+            .starts_with("pool_upstream_accounts:42:kind:")
+    );
+    assert!(outbox_contract.2 > 0);
+    assert_eq!(outbox_contract.3, "pending");
+    assert_eq!(outbox_contract.4, 0);
+    assert!(outbox_contract.5.is_none());
+
+    let zero_generation_insert = sqlx::query(
+        "INSERT INTO pool_upstream_account_long_term_projection_outbox
+            (idempotency_key, account_id, bucket_date, repair_reason, source_identity, source_generation)
+         VALUES ('zero-generation-test', 42, '2026-01-01', 'test', 'test', 0)",
+    )
+    .execute(&pool)
+    .await;
+    assert!(zero_generation_insert.is_err());
+
+    let retry_generation = outbox_contract.2;
+    let retry_key: String = sqlx::query_scalar(
+        "SELECT idempotency_key
+         FROM pool_upstream_account_long_term_projection_outbox
+         WHERE bucket_date = '2026-07-25'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("outbox retry key");
+    let retry_rows = sqlx::query(
+        "UPDATE pool_upstream_account_long_term_projection_outbox
+            SET attempt_count = attempt_count + 1,
+                next_retry_at = datetime('now', '+1 minute'),
+                last_error = 'test retry',
+                updated_at = datetime('now')
+          WHERE idempotency_key = ?1
+            AND state = 'pending'
+            AND source_generation = ?2",
+    )
+    .bind(&retry_key)
+    .bind(retry_generation)
+    .execute(&pool)
+    .await
+    .expect("retry outbox item");
+    assert_eq!(retry_rows.rows_affected(), 1);
+    let retried = sqlx::query_as::<_, (i64, i64, String)>(
+        "SELECT source_generation, attempt_count, state
+         FROM pool_upstream_account_long_term_projection_outbox
+         WHERE idempotency_key = ?1",
+    )
+    .bind(&retry_key)
+    .fetch_one(&pool)
+    .await
+    .expect("read retried outbox item");
+    assert_eq!(retried.0, retry_generation);
+    assert_eq!(retried.1, 1);
+    assert_eq!(retried.2, "pending");
+
+    let acknowledged_rows = sqlx::query(
+        "UPDATE pool_upstream_account_long_term_projection_outbox
+            SET state = 'acknowledged',
+                acknowledged_at = datetime('now'),
+                acknowledged_generation = ?2,
+                updated_at = datetime('now')
+          WHERE idempotency_key = ?1
+            AND state = 'pending'
+            AND source_generation <= ?2",
+    )
+    .bind(&retry_key)
+    .bind(retry_generation)
+    .execute(&pool)
+    .await
+    .expect("acknowledge outbox item");
+    assert_eq!(acknowledged_rows.rows_affected(), 1);
+    let acknowledged = sqlx::query_as::<_, (i64, String, i64)>(
+        "SELECT source_generation, state, acknowledged_generation
+         FROM pool_upstream_account_long_term_projection_outbox
+         WHERE idempotency_key = ?1",
+    )
+    .bind(&retry_key)
+    .fetch_one(&pool)
+    .await
+    .expect("read acknowledged outbox item");
+    assert_eq!(acknowledged.0, retry_generation);
+    assert_eq!(acknowledged.1, "acknowledged");
+    assert_eq!(acknowledged.2, retry_generation);
+
+    sqlx::query("DELETE FROM pool_upstream_accounts WHERE id = 42")
+        .execute(&pool)
+        .await
+        .expect("account delete");
+    let delete_event_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_long_term_projection_outbox
+         WHERE source_identity LIKE 'pool_upstream_accounts:42:delete:%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("delete outbox event");
+    assert_eq!(delete_event_count, 4);
+}
+
+#[tokio::test]
+async fn account_projection_bridge_uses_probed_production_columns() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    create_long_term_test_invocations(&pool).await;
+    sqlx::query(
+        "CREATE TABLE pool_upstream_accounts (
+            id INTEGER PRIMARY KEY,
+            kind TEXT,
+            runtime_routing_generation INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("production account schema");
+    sqlx::query(
+        "CREATE TABLE pool_upstream_request_attempts (
+            id INTEGER PRIMARY KEY,
+            invoke_id TEXT,
+            occurred_at TEXT,
+            upstream_account_id INTEGER
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("attempt schema");
+    sqlx::query(
+        "CREATE TABLE archive_batches (
+            id INTEGER PRIMARY KEY,
+            dataset TEXT NOT NULL,
+            month_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            coverage_start_at TEXT,
+            coverage_end_at TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("archive schema");
+    ensure_long_term_projection_schema(&pool)
+        .await
+        .expect("projection schema");
+    ensure_long_term_projection_account_trigger(&pool)
+        .await
+        .expect("account bridge");
+
+    let trigger_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master
+         WHERE type = 'trigger' AND name = 'long_term_projection_account_kind_update'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("production trigger SQL");
+    assert!(trigger_sql.contains("NEW.updated_at"));
+    assert!(trigger_sql.contains("NEW.runtime_routing_generation"));
+
+    sqlx::query(
+        "INSERT INTO pool_upstream_accounts
+            (id, kind, runtime_routing_generation, updated_at)
+         VALUES (7, 'oauth_codex', 4, '2026-10-27T01:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("account");
+    sqlx::query(
+        "INSERT INTO codex_invocations
+            (id, invoke_id, occurred_at, status, total_tokens, payload)
+         VALUES (7, 'production-bridge', '2026-10-27T01:00:00Z', 'success', 1, '{\"upstreamAccountId\":7}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("invocation");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts
+            SET kind = 'api_key', updated_at = '2026-10-27T01:01:00Z'
+          WHERE id = 7",
+    )
+    .execute(&pool)
+    .await
+    .expect("classification update");
+
+    let event = sqlx::query_as::<_, (String, i64, String)>(
+        "SELECT source_identity, source_generation, idempotency_key
+         FROM pool_upstream_account_long_term_projection_outbox
+         WHERE account_id = 7
+         LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("production outbox event");
+    assert!(
+        event
+            .0
+            .contains("pool_upstream_accounts:7:kind:api_key:2026-10-27T01:01:00Z")
+    );
+    assert_eq!(event.1, 4);
+    assert!(
+        event
+            .2
+            .starts_with("long-term-projection:long_term_projection_account_kind_update:7:")
+    );
+    assert!(event.2.contains(":kind:api_key:2026-10-27T01:01:00Z:"));
+}
+
+#[tokio::test]
+async fn account_projection_bridge_fails_closed_without_required_columns() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    sqlx::query("CREATE TABLE pool_upstream_accounts (id INTEGER PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .expect("minimal account schema");
+
+    let error = ensure_long_term_projection_account_trigger(&pool)
+        .await
+        .expect_err("missing kind must reject the bridge");
+    assert!(
+        error
+            .to_string()
+            .contains("pool_upstream_accounts requires id and kind columns")
+    );
 }

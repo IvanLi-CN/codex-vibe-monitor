@@ -2954,3 +2954,7 @@ export function createBulkUpstreamAccountSyncJobEventSource(jobId: string) {
     `/api/pool/upstream-accounts/bulk-sync-jobs/${encodeURIComponent(jobId)}/events`,
   );
 }
+
+export function createStorageMigrationEventSource() {
+  return createEventSource("/api/system/storage-migration/events");
+}

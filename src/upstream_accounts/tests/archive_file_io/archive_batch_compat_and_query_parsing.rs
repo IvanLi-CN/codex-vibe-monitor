@@ -15,7 +15,6 @@ use std::{
     time::Duration,
 };
 use tokio::{net::TcpListener, sync::Mutex, time::timeout};
-
 async fn wait_for_imported_oauth_validation_job_terminal(
     job: &Arc<ImportedOauthValidationJob>,
 ) -> ImportedOauthValidationTerminalEvent {
@@ -3412,6 +3411,7 @@ pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> Ap
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
+        storage: StorageConfig::default(),
         observability: ObservabilityConfig::default(),
         poll_interval: Duration::from_secs(10),
         request_timeout: Duration::from_secs(5),
@@ -4135,7 +4135,6 @@ pub(crate) async fn test_app_state_with_usage_and_oauth_base(
     )
     .await
 }
-
 async fn test_app_state_with_upstream_endpoints_and_parallelism(
     usage_base_url: &str,
     oauth_issuer: &str,
@@ -4157,13 +4156,18 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
     let pool = test_pool().await;
     Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+        storage_migration: Arc::new(StorageMigrationRuntime::default()),
+        storage_runtime: None,
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         config,
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
         proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
-        pool,
+        pool: pool.clone(),
+        traffic_authority: Arc::new(crate::storage::traffic::TrafficFactStore::sqlite(
+            pool.clone(),
+        )),
         oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,

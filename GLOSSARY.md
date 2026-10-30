@@ -2,6 +2,28 @@
 
 This context describes the Dashboard's live data surfaces and the performance contract used to improve them without changing owner-facing meaning or interaction.
 
+## Storage Migration Language
+
+**Migration Module**:
+A functional ownership boundary whose tables must retain compatible transaction and recovery semantics when their authoritative storage changes.
+_Avoid_: table batch, deployment phase.
+
+**Module Authority**:
+The single storage backend and generation permitted to serve authoritative reads and accept business writes for a migration module.
+_Avoid_: preferred database, reachable database, mirror.
+
+**Table Copy Progress**:
+The committed baseline transfer and reconciliation state of one table, independent of whether its module has changed authority.
+_Avoid_: migration completion, copied percentage as readiness.
+
+**Module Switch Gate**:
+The brief admission boundary that drains a module's old database generation before publishing its new authority.
+_Avoid_: application shutdown, network stream drain.
+
+**Migration Task Hold**:
+A temporary migration-owned restriction on competing work that composes with the operator's task policy without replacing that policy.
+_Avoid_: operator disablement, missed-run queue.
+
 ## Language
 
 **Dashboard Current State**:

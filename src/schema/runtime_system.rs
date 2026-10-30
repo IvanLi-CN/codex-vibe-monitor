@@ -421,6 +421,7 @@ pub(super) async fn ensure_runtime_system_schema(pool: &Pool<Sqlite>) -> Result<
             attempt_public_id TEXT,
             invoke_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
+            invocation_id INTEGER,
             occurred_epoch_ms INTEGER GENERATED ALWAYS AS (
                 CAST(ROUND((
                     julianday(
@@ -641,6 +642,7 @@ pub(super) async fn ensure_runtime_system_schema(pool: &Pool<Sqlite>) -> Result<
         load_sqlite_table_columns(pool, "pool_upstream_request_attempts").await?;
     for (column, ty) in [
         ("attempt_public_id", "TEXT"),
+        ("invocation_id", "INTEGER"),
         ("routing_source", "TEXT"),
         ("routing_selection_audit_json", "TEXT"),
         ("upstream_route_key", "TEXT"),

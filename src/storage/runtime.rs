@@ -1,0 +1,1780 @@
+//! Runtime wiring for module-scoped storage authority and online migration workers.
+//!
+//! The router is the lifecycle owner for shared pools and generation gates. Production writers
+//! receive stores constructed from this router; test-only SQLite constructors remain available for
+//! isolated fixtures.
+
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
+use sqlx::{Pool, Row, Sqlite};
+use tokio::{
+    sync::{Mutex, Notify},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
+
+use super::{
+    analytics::AnalyticsProjectionStore,
+    catalog::{ModuleCatalog, ModuleId},
+    config::StorageConfig,
+    core::{
+        AuthorityManifestStore, AuthorityPublication, AuthorityRecoveryContext,
+        AuthorityRecoveryRecord, BackendKind, MigrationCheckpoint, MigrationMetadataStore,
+        MigrationOutboxItem, MigrationReservation, MigrationStatus, ModuleAuthorityManifest,
+        ModuleGenerationGate, StorageModule, StoragePools,
+    },
+    migration::{
+        ChangeBatchLimits, CopyLimits, MigrationEngine, MigrationLimits, MigrationPressure,
+        MigrationSource, SourceWriteAuthority, SourceWriteFence,
+    },
+    migration_capacity::MigrationCapacitySample,
+    migration_sqlx::{PostgresMigrationTarget, SqliteMigrationSource},
+    migration_status::{
+        StorageMigrationProgress, StorageMigrationResponse, StorageMigrationRuntime,
+        StorageMigrationState, StorageMigrationWorkerError, source_identity_for,
+    },
+    traffic::TrafficFactStore,
+};
+
+const MIGRATION_ID: &str = "storage-migration";
+const INSTALLATION_ID: &str = "local";
+const SOURCE_IDENTITY: &str = "sqlite:local";
+const ANALYTICS_SOURCE_IDENTITY: &str = "sqlite:local:analytics";
+const AUTHORITY_TABLE: &str = "storage_migration_authority";
+const CHECKPOINT_TABLE: &str = "storage_migration_engine_checkpoints";
+const OUTBOX_TABLE: &str = "storage_migration_engine_outbox";
+const RESERVATION_TABLE: &str = "storage_migration_engine_reservations";
+const STATUS_TABLE: &str = "storage_migration_engine_status";
+const CAPTURE_STATE_TABLE: &str = "migration_change_log_state";
+const WORKER_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const WORKER_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Debug)]
+pub(crate) struct StorageRuntimeRouter {
+    pools: StoragePools,
+    traffic_authority: Arc<TrafficFactStore>,
+    analytics_authority: Arc<AnalyticsProjectionStore>,
+    traffic_gate: ModuleGenerationGate,
+    analytics_gate: ModuleGenerationGate,
+    worker: Arc<StorageMigrationWorker>,
+}
+
+impl StorageRuntimeRouter {
+    pub(crate) async fn initialize(
+        pool: Pool<Sqlite>,
+        config: &StorageConfig,
+        migration: Arc<StorageMigrationRuntime>,
+        shutdown: CancellationToken,
+    ) -> Result<Arc<Self>> {
+        let pools = StoragePools::from_sqlite_and_config_lazy(pool.clone(), config)?;
+        let traffic_gate = ModuleGenerationGate::new(
+            StorageModule::TrafficArchive,
+            super::core::ModuleAuthority {
+                backend: BackendKind::Sqlite,
+                generation: 1,
+            },
+        );
+        let analytics_gate = ModuleGenerationGate::new(
+            StorageModule::Analytics,
+            super::core::ModuleAuthority {
+                backend: BackendKind::Sqlite,
+                generation: 1,
+            },
+        );
+        let traffic_source_fence = SourceWriteFence::new(1);
+        let analytics_source_fence = SourceWriteFence::new(1);
+        let metadata = Arc::new(SqliteMigrationMetadataStore::new(pool.clone(), config));
+        metadata.ensure_schema().await?;
+
+        let traffic_authority = Arc::new(TrafficFactStore::with_authority_and_fence(
+            pools.clone(),
+            traffic_gate.clone(),
+            traffic_source_fence.clone(),
+        ));
+        let analytics_authority = Arc::new(AnalyticsProjectionStore::with_authority(
+            pools.clone(),
+            analytics_gate.clone(),
+            traffic_gate.clone(),
+        ));
+        let worker = Arc::new(StorageMigrationWorker::new(
+            pool,
+            config.clone(),
+            migration,
+            shutdown,
+            metadata,
+            StorageMigrationWorkerAuthorities {
+                traffic_gate: traffic_gate.clone(),
+                analytics_gate: analytics_gate.clone(),
+                traffic_source_fence,
+                analytics_source_fence,
+            },
+        ));
+        let router = Arc::new(Self {
+            pools,
+            traffic_authority,
+            analytics_authority,
+            traffic_gate,
+            analytics_gate,
+            worker,
+        });
+        router.recover_authority().await?;
+        Ok(router)
+    }
+
+    async fn recover_authority(&self) -> Result<()> {
+        self.worker.migration.validate_runtime_identity().await?;
+        let expected_target_identity = expected_postgres_target_identity(&self.worker.config);
+        let traffic_manifest = self
+            .recover_module_authority(
+                StorageModule::TrafficArchive,
+                &self.traffic_gate,
+                SOURCE_IDENTITY,
+                &expected_target_identity,
+            )
+            .await?;
+        let analytics_manifest = self
+            .recover_module_authority(
+                StorageModule::Analytics,
+                &self.analytics_gate,
+                ANALYTICS_SOURCE_IDENTITY,
+                &expected_target_identity,
+            )
+            .await?;
+
+        let status = self.worker.migration.snapshot().await;
+        match status.module.as_str() {
+            "traffic_archive" => {
+                if let Some(manifest) = traffic_manifest.as_ref()
+                    && self.traffic_gate.current_authority().await.backend == BackendKind::Postgres
+                {
+                    self.worker
+                        .migration
+                        .recover_postgres(manifest.authority.generation, manifest.source_watermark)
+                        .await?;
+                }
+            }
+            "analytics" => {
+                if let Some(manifest) = analytics_manifest.as_ref()
+                    && self.analytics_gate.current_authority().await.backend
+                        == BackendKind::Postgres
+                {
+                    self.worker
+                        .migration
+                        .recover_postgres(manifest.authority.generation, manifest.source_watermark)
+                        .await?;
+                }
+            }
+            module => bail!("unsupported active storage migration module {module}"),
+        }
+
+        let status = self.worker.migration.snapshot().await;
+        if analytics_manifest.is_some()
+            && status.module == "traffic_archive"
+            && status.state == StorageMigrationState::Postgres
+        {
+            self.worker.advance_after_traffic().await?;
+        }
+        Ok(())
+    }
+
+    async fn recover_module_authority(
+        &self,
+        module: StorageModule,
+        gate: &ModuleGenerationGate,
+        source_identity: &str,
+        expected_target_identity: &str,
+    ) -> Result<Option<ModuleAuthorityManifest>> {
+        let record = self.worker.metadata.load_authority_manifest(module).await?;
+        let status = self.worker.migration.snapshot().await;
+        match record {
+            AuthorityRecoveryRecord::Manifest(manifest) => {
+                validate_module_manifest_identity(
+                    &manifest,
+                    module,
+                    source_identity,
+                    expected_target_identity,
+                )?;
+                if status.module == module_name(module) {
+                    validate_manifest_watermark(&manifest, &status)?;
+                }
+                self.pools
+                    .require_postgres_pool()
+                    .with_context(|| format!("recover durable PostgreSQL {module:?} authority"))?;
+                self.ensure_native_source_fenced(manifest.authority.generation, source_identity)
+                    .await?;
+                let expected = recovery_context_from_record(AuthorityRecoveryRecord::Manifest(
+                    manifest.clone(),
+                ))?;
+                gate.recover_authority(self.worker.metadata.as_ref(), &expected)
+                    .await
+                    .with_context(|| format!("recover {module:?} module authority"))?;
+                Ok(Some(manifest))
+            }
+            AuthorityRecoveryRecord::NeverMigrated {
+                migration_id,
+                installation_id,
+                module: marker_module,
+                source_identity: marker_source_identity,
+                target_identity,
+                source_watermark,
+            } => {
+                if migration_id != MIGRATION_ID
+                    || installation_id != INSTALLATION_ID
+                    || marker_module != module
+                    || marker_source_identity != source_identity
+                    || target_identity != expected_target_identity
+                    || source_watermark < 0
+                {
+                    bail!("durable {module:?} authority recovery marker identity is invalid");
+                }
+                if status.module == module_name(module)
+                    && status.authority.backend
+                        == super::migration_status::StorageMigrationBackend::Postgres
+                {
+                    if module == StorageModule::TrafficArchive {
+                        bail!("PostgreSQL authority has no durable traffic manifest");
+                    }
+                    bail!("PostgreSQL {module:?} authority has no durable manifest");
+                }
+                let source_authority =
+                    load_durable_source_write_authority(&self.worker.pool, source_identity).await?;
+                let gate_authority = gate.current_authority().await;
+                if status.module == module_name(module)
+                    && status.authority.backend
+                        == super::migration_status::StorageMigrationBackend::Sqlite
+                    && status.authority.generation != gate_authority.generation
+                {
+                    bail!(
+                        "durable migration status generation {} does not match selected {module:?} SQLite generation {}",
+                        status.authority.generation,
+                        gate_authority.generation
+                    );
+                }
+                if source_authority
+                    .is_some_and(|authority| authority.generation != gate_authority.generation)
+                {
+                    if module == StorageModule::TrafficArchive {
+                        bail!(
+                            "SQLite source authority generation does not match selected generation"
+                        );
+                    }
+                    bail!(
+                        "SQLite {module:?} source authority generation does not match selected generation"
+                    );
+                }
+                if source_authority.is_some_and(|authority| authority.fenced) {
+                    if module == StorageModule::TrafficArchive {
+                        bail!(
+                            "SQLite source writes are durably fenced without a PostgreSQL authority manifest"
+                        );
+                    }
+                    bail!(
+                        "SQLite {module:?} source writes are fenced without a PostgreSQL manifest"
+                    );
+                }
+                Ok(None)
+            }
+            AuthorityRecoveryRecord::Indeterminate => {
+                if module == StorageModule::TrafficArchive {
+                    bail!("traffic authority recovery is indeterminate");
+                }
+                bail!("{module:?} authority recovery is indeterminate")
+            }
+        }
+    }
+
+    async fn ensure_native_source_fenced(
+        &self,
+        expected_generation: u64,
+        source_identity: &str,
+    ) -> Result<()> {
+        let authority = load_durable_source_write_authority(&self.worker.pool, source_identity)
+            .await?
+            .ok_or_else(|| {
+                anyhow!("SQLite source authority state is missing for {source_identity}")
+            })?;
+        if !authority.fenced || authority.generation != expected_generation {
+            bail!(
+                "PostgreSQL authority manifest requires SQLite source fence generation {}, found generation {} fenced={}",
+                expected_generation,
+                authority.generation,
+                authority.fenced
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn traffic_authority(&self) -> Arc<TrafficFactStore> {
+        Arc::clone(&self.traffic_authority)
+    }
+
+    pub(crate) fn analytics_authority(&self) -> Arc<AnalyticsProjectionStore> {
+        Arc::clone(&self.analytics_authority)
+    }
+
+    pub(crate) fn worker(&self) -> &StorageMigrationWorker {
+        self.worker.as_ref()
+    }
+
+    pub(crate) async fn start(&self) {
+        if self.worker.migration.ensure_auto_start().await.is_err() {
+            tracing::warn!("could not automatically start configured storage migration");
+            let _ = self
+                .worker
+                .migration
+                .publish_worker_error(StorageMigrationWorkerError::AutoStart)
+                .await;
+        }
+        self.worker.start().await;
+    }
+
+    pub(crate) async fn stop(&self) {
+        self.worker.stop().await;
+    }
+
+    pub(crate) fn wake(&self) {
+        self.worker.notify.notify_one();
+    }
+
+    pub(crate) fn postgres_configured(&self) -> bool {
+        self.pools.postgres_pool().is_some()
+    }
+
+    pub(crate) async fn analytics_backend(&self) -> BackendKind {
+        self.analytics_gate.current_authority().await.backend
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn current_authority(
+        &self,
+        module: StorageModule,
+    ) -> super::core::ModuleAuthority {
+        match module {
+            StorageModule::TrafficArchive => self.traffic_gate.current_authority().await,
+            StorageModule::Analytics => self.analytics_gate.current_authority().await,
+            _ => super::core::ModuleAuthority {
+                backend: BackendKind::Sqlite,
+                generation: 1,
+            },
+        }
+    }
+}
+
+async fn load_durable_source_write_authority(
+    pool: &Pool<Sqlite>,
+    source_identity: &str,
+) -> Result<Option<SourceWriteAuthority>> {
+    let exists = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{CAPTURE_STATE_TABLE}')"
+    ))
+    .fetch_one(pool)
+    .await?;
+    if exists == 0 {
+        return Ok(None);
+    }
+    sqlx::query(&format!(
+        "SELECT authority_generation, source_writes_fenced
+           FROM {CAPTURE_STATE_TABLE}
+          WHERE migration_id = ? AND source_identity = ?"
+    ))
+    .bind(MIGRATION_ID)
+    .bind(source_identity)
+    .fetch_optional(pool)
+    .await?
+    .map_or(Ok(None), |row| {
+        let authority = SourceWriteAuthority {
+            generation: u64::try_from(row.try_get::<i64, _>("authority_generation")?)
+                .context("SQLite source authority generation is invalid")?,
+            fenced: row.try_get::<i64, _>("source_writes_fenced")? != 0,
+        };
+        authority.validate()?;
+        Ok(Some(authority))
+    })
+}
+
+#[derive(Debug)]
+pub(crate) struct StorageMigrationWorker {
+    pool: Pool<Sqlite>,
+    config: StorageConfig,
+    pub(crate) migration: Arc<StorageMigrationRuntime>,
+    shutdown: CancellationToken,
+    pub(crate) metadata: Arc<SqliteMigrationMetadataStore>,
+    traffic_gate: ModuleGenerationGate,
+    analytics_gate: ModuleGenerationGate,
+    traffic_source_fence: SourceWriteFence,
+    analytics_source_fence: SourceWriteFence,
+    started: AtomicBool,
+    notify: Arc<Notify>,
+    handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+#[derive(Debug, Clone)]
+struct StorageMigrationWorkerAuthorities {
+    traffic_gate: ModuleGenerationGate,
+    analytics_gate: ModuleGenerationGate,
+    traffic_source_fence: SourceWriteFence,
+    analytics_source_fence: SourceWriteFence,
+}
+
+impl StorageMigrationWorker {
+    fn new(
+        pool: Pool<Sqlite>,
+        config: StorageConfig,
+        migration: Arc<StorageMigrationRuntime>,
+        shutdown: CancellationToken,
+        metadata: Arc<SqliteMigrationMetadataStore>,
+        authorities: StorageMigrationWorkerAuthorities,
+    ) -> Self {
+        Self {
+            pool,
+            config,
+            migration,
+            shutdown,
+            metadata,
+            traffic_gate: authorities.traffic_gate,
+            analytics_gate: authorities.analytics_gate,
+            traffic_source_fence: authorities.traffic_source_fence,
+            analytics_source_fence: authorities.analytics_source_fence,
+            started: AtomicBool::new(false),
+            notify: Arc::new(Notify::new()),
+            handle: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    async fn start(&self) {
+        if self
+            .started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.notify.notify_one();
+            return;
+        }
+        let worker = self.clone_for_task();
+        let handle = tokio::spawn(async move {
+            worker.run().await;
+        });
+        *self.handle.lock().await = Some(handle);
+    }
+
+    async fn stop(&self) {
+        self.shutdown.cancel();
+        self.notify.notify_waiters();
+        if let Some(handle) = self.handle.lock().await.take() {
+            let _ = handle.await;
+        }
+    }
+
+    fn ensure_worker_running(&self) -> Result<()> {
+        if self.shutdown.is_cancelled() {
+            bail!("storage migration worker is shutting down");
+        }
+        Ok(())
+    }
+
+    async fn enforce_capacity(
+        &self,
+        source: &SqliteMigrationSource,
+        limits: MigrationLimits,
+        allow_capture_drain: bool,
+        allow_continuity_recovery: bool,
+    ) -> Result<bool> {
+        let current = self.migration.snapshot().await;
+        if matches!(
+            current.state,
+            StorageMigrationState::Paused | StorageMigrationState::Blocked
+        ) {
+            return Ok(true);
+        }
+        let sample = match source.capacity_sample().await {
+            Ok(sample) => sample,
+            Err(_) => {
+                tracing::warn!("SQLite migration capacity observation failed");
+                MigrationCapacitySample::unavailable(limits.max_capture_bytes)
+            }
+        };
+        let pressure = limits.should_pause(MigrationPressure {
+            source_free_bytes: sample.source_free_bytes.unwrap_or_default(),
+            capture_bytes: sample.capture_bytes,
+            p1_wait_ms: 0,
+        });
+        let mut hold_reason = sample.hold_reason(limits.min_source_free_bytes);
+        debug_assert!(!pressure || hold_reason.is_some());
+        if allow_capture_drain
+            && hold_reason == Some("capacity_capture")
+            && !sample.capture_capacity_held
+        {
+            hold_reason = None;
+        }
+        if allow_continuity_recovery && hold_reason == Some("capture_continuity_lost") {
+            hold_reason = None;
+        }
+        self.migration
+            .publish_capacity_observation(sample, hold_reason)
+            .await?;
+        Ok(hold_reason.is_some())
+    }
+
+    fn clone_for_task(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            config: self.config.clone(),
+            migration: Arc::clone(&self.migration),
+            shutdown: self.shutdown.clone(),
+            metadata: Arc::clone(&self.metadata),
+            traffic_gate: self.traffic_gate.clone(),
+            analytics_gate: self.analytics_gate.clone(),
+            traffic_source_fence: self.traffic_source_fence.clone(),
+            analytics_source_fence: self.analytics_source_fence.clone(),
+            started: AtomicBool::new(true),
+            notify: Arc::clone(&self.notify),
+            handle: Arc::clone(&self.handle),
+        }
+    }
+
+    async fn run(self) {
+        loop {
+            if self.shutdown.is_cancelled() {
+                return;
+            }
+            if self.traffic_gate.requires_recovery() || self.analytics_gate.requires_recovery() {
+                return;
+            }
+            let status = self.migration.snapshot().await;
+            let should_run = matches!(
+                status.state,
+                StorageMigrationState::Preparing
+                    | StorageMigrationState::Copying
+                    | StorageMigrationState::CatchingUp
+                    | StorageMigrationState::Verifying
+                    | StorageMigrationState::Ready
+                    | StorageMigrationState::Switching
+                    | StorageMigrationState::Recovering
+            );
+            if should_run && self.run_migration(status).await.is_err() {
+                tracing::warn!("online storage migration worker iteration failed");
+                let _ = self
+                    .migration
+                    .publish_worker_error(StorageMigrationWorkerError::Iteration)
+                    .await;
+                tokio::select! {
+                    _ = self.shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(WORKER_RETRY_INTERVAL) => {},
+                }
+                continue;
+            }
+            tokio::select! {
+                _ = self.shutdown.cancelled() => return,
+                _ = self.notify.notified() => {},
+                _ = tokio::time::sleep(WORKER_POLL_INTERVAL) => {},
+            }
+        }
+    }
+
+    async fn run_migration(&self, status: StorageMigrationResponse) -> Result<()> {
+        self.migration.validate_runtime_identity().await?;
+        let module = storage_module_from_name(&status.module)?;
+        let (gate, source_identity, source_fence) = match module {
+            StorageModule::TrafficArchive => (
+                &self.traffic_gate,
+                SOURCE_IDENTITY,
+                &self.traffic_source_fence,
+            ),
+            StorageModule::Analytics => (
+                &self.analytics_gate,
+                ANALYTICS_SOURCE_IDENTITY,
+                &self.analytics_source_fence,
+            ),
+            _ => bail!("storage migration worker cannot run module {module:?}"),
+        };
+        let authority = gate.current_authority().await;
+        if authority.backend == BackendKind::Postgres {
+            let manifest = self.load_authority_manifest(module).await?;
+            let expected_target_identity = expected_postgres_target_identity(&self.config);
+            validate_active_manifest_identity(
+                &manifest,
+                &status,
+                module,
+                source_identity,
+                &expected_target_identity,
+            )?;
+            if manifest.authority != authority {
+                bail!(
+                    "PostgreSQL authority does not match the durable {module:?} manifest: gate={authority:?} manifest={:?}",
+                    manifest.authority
+                );
+            }
+            self.migration
+                .recover_postgres(authority.generation, manifest.source_watermark)
+                .await?;
+            if module == StorageModule::TrafficArchive {
+                self.advance_after_traffic().await?;
+            }
+            return Ok(());
+        }
+        if let Some(source_authority) =
+            load_durable_source_write_authority(&self.pool, source_identity).await?
+            && source_authority.generation != authority.generation
+        {
+            gate.require_recovery();
+            bail!(
+                "SQLite {module:?} source authority generation {} does not match the selected SQLite generation {}",
+                source_authority.generation,
+                authority.generation
+            );
+        }
+        let Some(postgres) = self.config.connect_postgres_lazy()? else {
+            bail!("PostgreSQL storage is not configured");
+        };
+        let catalog = ModuleCatalog::inspect_sqlite(&self.pool).await?;
+        let native_catalog = catalog
+            .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
+            .map_err(|error| anyhow!(error))?;
+        let source = Arc::new(
+            SqliteMigrationSource::from_native_catalog(
+                self.pool.clone(),
+                MIGRATION_ID,
+                source_identity,
+                "migration_change_log",
+                &native_catalog,
+                module,
+            )?
+            .with_writer_generation(status.authority.generation)?,
+        );
+        let migration_limits = MigrationLimits {
+            copy: CopyLimits {
+                max_rows: 128,
+                max_bytes: 2 * 1024 * 1024,
+                ..CopyLimits::default()
+            },
+            change_batch: ChangeBatchLimits::default(),
+            ..MigrationLimits::default()
+        };
+        let allow_continuity_recovery = status.state == StorageMigrationState::Preparing
+            && status.controls.last_action.as_deref() == Some("resume");
+        if self
+            .enforce_capacity(
+                source.as_ref(),
+                migration_limits,
+                false,
+                allow_continuity_recovery,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+        source.ensure_capture_schema().await?;
+        source.ensure_native_capture_triggers().await?;
+        if self
+            .enforce_capacity(
+                source.as_ref(),
+                migration_limits,
+                false,
+                allow_continuity_recovery,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+        let target = Arc::new(PostgresMigrationTarget::new_native(
+            postgres,
+            "storage_migration",
+            native_catalog,
+            module,
+        )?);
+        target.ensure_schema().await?;
+        let checkpoint = source.capture_checkpoint().await?;
+        if checkpoint.continuity_lost {
+            if !allow_continuity_recovery {
+                return Ok(());
+            }
+            target.reset_attempt(MIGRATION_ID).await?;
+            source.start_new_capture_generation().await?;
+        }
+        let engine = MigrationEngine::new(
+            source.clone(),
+            target.clone(),
+            Arc::clone(&self.metadata),
+            module,
+            INSTALLATION_ID,
+            status.target.identity.clone(),
+            status.authority.generation,
+            migration_limits,
+            source_fence.clone(),
+        )?
+        .with_cancellation_token(self.shutdown.clone());
+        let tables = source.module_tables(module).await?;
+        // Plans and checkpoints are durable engine state. Re-loading them is safe for every
+        // resumable phase and does not change the persisted migration phase.
+        engine.prepare(&tables).await?;
+        let resume_work = migration_resume_work(status.state)?;
+        if matches!(status.state, StorageMigrationState::Preparing) {
+            self.migration
+                .publish_progress(StorageMigrationProgress {
+                    phase: StorageMigrationState::Copying,
+                    ..StorageMigrationProgress::default()
+                })
+                .await?;
+        }
+        if matches!(resume_work, MigrationResumeWork::CopyAndCatchUp) {
+            for table in &tables {
+                loop {
+                    self.ensure_worker_running()?;
+                    let current = self.migration.snapshot().await;
+                    if matches!(current.state, StorageMigrationState::Paused) {
+                        return Ok(());
+                    }
+                    if self
+                        .enforce_capacity(source.as_ref(), migration_limits, false, false)
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                    let progress = engine.copy_next(table).await?;
+                    self.migration
+                        .publish_progress(StorageMigrationProgress {
+                            phase: StorageMigrationState::Copying,
+                            committed_rows: Some(progress.copied_rows),
+                            committed_bytes: Some(progress.copied_bytes),
+                            scan_cursor: progress.cursor,
+                            captured_through: Some(progress.applied_through),
+                            applied_through: Some(progress.applied_through),
+                            pending_keys: Some(progress.pending_changes as u64),
+                            ..StorageMigrationProgress::default()
+                        })
+                        .await?;
+                    if progress.complete {
+                        break;
+                    }
+                }
+            }
+        }
+        let watermark = if matches!(
+            resume_work,
+            MigrationResumeWork::CopyAndCatchUp | MigrationResumeWork::CatchUp
+        ) {
+            self.migration
+                .publish_progress(StorageMigrationProgress {
+                    phase: StorageMigrationState::CatchingUp,
+                    ..StorageMigrationProgress::default()
+                })
+                .await?;
+            if self
+                .enforce_capacity(source.as_ref(), migration_limits, true, false)
+                .await?
+            {
+                return Ok(());
+            }
+            if matches!(resume_work, MigrationResumeWork::CopyAndCatchUp) {
+                let baseline_through = source.capture_watermark().await?;
+                engine.mark_baseline_complete(baseline_through).await?;
+            }
+            let watermark = source.capture_watermark().await?;
+            for table in &tables {
+                if self
+                    .enforce_capacity(source.as_ref(), migration_limits, true, false)
+                    .await?
+                {
+                    return Ok(());
+                }
+                engine.catch_up(table).await?;
+            }
+            engine.release_capture_through(watermark).await?;
+            if self
+                .enforce_capacity(source.as_ref(), migration_limits, false, false)
+                .await?
+            {
+                return Ok(());
+            }
+            self.migration
+                .publish_progress(StorageMigrationProgress {
+                    phase: StorageMigrationState::Verifying,
+                    captured_through: Some(watermark),
+                    applied_through: Some(watermark),
+                    ..StorageMigrationProgress::default()
+                })
+                .await?;
+            for table in &tables {
+                engine.verify_table_coverage_at(table, watermark).await?;
+            }
+            self.migration
+                .publish_progress(StorageMigrationProgress {
+                    phase: StorageMigrationState::Ready,
+                    captured_through: Some(watermark),
+                    applied_through: Some(watermark),
+                    converged: Some(true),
+                    ..StorageMigrationProgress::default()
+                })
+                .await?;
+            watermark
+        } else {
+            if self
+                .enforce_capacity(source.as_ref(), migration_limits, false, false)
+                .await?
+            {
+                return Ok(());
+            }
+            source.capture_watermark().await?
+        };
+        if self
+            .enforce_capacity(source.as_ref(), migration_limits, false, false)
+            .await?
+        {
+            return Ok(());
+        }
+        let expected = AuthorityRecoveryContext {
+            migration_id: MIGRATION_ID.to_string(),
+            installation_id: INSTALLATION_ID.to_string(),
+            module,
+            source_identity: source_identity.to_string(),
+            target_identity: status.target.identity,
+            source_watermark: watermark,
+        };
+        self.migration
+            .publish_progress_durable(StorageMigrationProgress {
+                phase: StorageMigrationState::Switching,
+                captured_through: Some(watermark),
+                applied_through: Some(watermark),
+                ..StorageMigrationProgress::default()
+            })
+            .await?;
+        let final_watermark = engine
+            .switch_authority(gate, expected, self.config.migration_switch_budget)
+            .await?;
+        self.migration
+            .publish_progress_durable(StorageMigrationProgress {
+                phase: StorageMigrationState::Switching,
+                captured_through: Some(final_watermark),
+                applied_through: Some(final_watermark),
+                ..StorageMigrationProgress::default()
+            })
+            .await?;
+        let manifest = self.load_authority_manifest(module).await?;
+        let authority = gate.current_authority().await;
+        let status = self.migration.snapshot().await;
+        let expected_target_identity = expected_postgres_target_identity(&self.config);
+        validate_active_manifest_identity(
+            &manifest,
+            &status,
+            module,
+            source_identity,
+            &expected_target_identity,
+        )?;
+        if manifest.authority != authority {
+            bail!(
+                "PostgreSQL authority does not match the durable {module:?} manifest: gate={authority:?} manifest={:?}",
+                manifest.authority
+            );
+        }
+        self.migration
+            .publish_postgres_authority(authority.generation, manifest.source_watermark)
+            .await?;
+        if module == StorageModule::TrafficArchive {
+            self.advance_after_traffic().await?;
+        }
+        Ok(())
+    }
+
+    async fn load_authority_manifest(
+        &self,
+        module: StorageModule,
+    ) -> Result<ModuleAuthorityManifest> {
+        match self.metadata.load_authority_manifest(module).await? {
+            AuthorityRecoveryRecord::Manifest(manifest) => Ok(manifest),
+            AuthorityRecoveryRecord::NeverMigrated { .. } => {
+                bail!("PostgreSQL authority has no durable {module:?} manifest")
+            }
+            AuthorityRecoveryRecord::Indeterminate => {
+                bail!("{module:?} authority recovery is indeterminate")
+            }
+        }
+    }
+
+    async fn advance_after_traffic(&self) -> Result<()> {
+        let status = self.migration.snapshot().await;
+        if status.module != "traffic_archive" || status.state != StorageMigrationState::Postgres {
+            return Ok(());
+        }
+        let record = self
+            .metadata
+            .load_authority_manifest(StorageModule::Analytics)
+            .await?;
+        match record {
+            AuthorityRecoveryRecord::Manifest(manifest) => {
+                validate_module_manifest_identity(
+                    &manifest,
+                    StorageModule::Analytics,
+                    ANALYTICS_SOURCE_IDENTITY,
+                    &expected_postgres_target_identity(&self.config),
+                )?;
+                let authority = self.analytics_gate.current_authority().await;
+                if authority.backend != BackendKind::Postgres {
+                    bail!(
+                        "analytics authority manifest exists while the analytics gate selects SQLite"
+                    );
+                }
+                self.migration
+                    .activate_module_for_recovery(StorageModule::Analytics)
+                    .await?;
+                self.migration
+                    .recover_postgres(authority.generation, manifest.source_watermark)
+                    .await?;
+            }
+            AuthorityRecoveryRecord::NeverMigrated { .. } => {
+                self.migration
+                    .activate_module(StorageModule::Analytics)
+                    .await?;
+                self.migration.ensure_auto_start().await?;
+            }
+            AuthorityRecoveryRecord::Indeterminate => {
+                bail!("analytics authority recovery is indeterminate")
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MigrationResumeWork {
+    CopyAndCatchUp,
+    CatchUp,
+    Switch,
+}
+
+fn migration_resume_work(state: StorageMigrationState) -> Result<MigrationResumeWork> {
+    match state {
+        StorageMigrationState::Preparing | StorageMigrationState::Copying => {
+            Ok(MigrationResumeWork::CopyAndCatchUp)
+        }
+        StorageMigrationState::CatchingUp
+        | StorageMigrationState::Verifying
+        | StorageMigrationState::Recovering => Ok(MigrationResumeWork::CatchUp),
+        StorageMigrationState::Ready | StorageMigrationState::Switching => {
+            Ok(MigrationResumeWork::Switch)
+        }
+        state => bail!("storage migration cannot resume from {state:?}"),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SqliteMigrationMetadataStore {
+    pool: Pool<Sqlite>,
+    target_identity: String,
+}
+
+impl SqliteMigrationMetadataStore {
+    fn new(pool: Pool<Sqlite>, config: &StorageConfig) -> Self {
+        Self {
+            pool,
+            target_identity: config.postgres_target_identity(),
+        }
+    }
+
+    async fn ensure_schema(&self) -> Result<()> {
+        for query in [
+            format!(
+                "CREATE TABLE IF NOT EXISTS {AUTHORITY_TABLE} (
+                    module TEXT PRIMARY KEY,
+                    recovery_json TEXT,
+                    manifest_json TEXT
+                )"
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {CHECKPOINT_TABLE} (
+                    migration_id TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    PRIMARY KEY (migration_id, table_name)
+                )"
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {OUTBOX_TABLE} (
+                    outbox_id TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    applied_through INTEGER
+                )"
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {RESERVATION_TABLE} (
+                    reservation_id TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                )"
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {STATUS_TABLE} (
+                    module TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                )"
+            ),
+        ] {
+            sqlx::query(&query)
+                .execute(&self.pool)
+                .await
+                .context("ensure SQLite migration engine metadata")?;
+        }
+        Ok(())
+    }
+
+    async fn load_json<T: serde::de::DeserializeOwned>(
+        &self,
+        table: &str,
+        key_column: &str,
+        key: &str,
+        value_column: &str,
+    ) -> Result<Option<T>> {
+        let query = format!("SELECT {value_column} FROM {table} WHERE {key_column} = ?1");
+        let value = sqlx::query_scalar::<_, String>(&query)
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        value
+            .map(|value| serde_json::from_str(&value).context("decode SQLite migration metadata"))
+            .transpose()
+    }
+}
+
+#[async_trait]
+impl AuthorityManifestStore for SqliteMigrationMetadataStore {
+    async fn load_authority_manifest(
+        &self,
+        module: StorageModule,
+    ) -> Result<AuthorityRecoveryRecord> {
+        let module_name = serde_json::to_string(&module)?;
+        let row = sqlx::query(&format!(
+            "SELECT recovery_json, manifest_json FROM {AUTHORITY_TABLE} WHERE module = ?1"
+        ))
+        .bind(module_name.trim_matches('"'))
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(AuthorityRecoveryRecord::NeverMigrated {
+                migration_id: MIGRATION_ID.to_string(),
+                installation_id: INSTALLATION_ID.to_string(),
+                module,
+                source_identity: source_identity_for(module).to_string(),
+                target_identity: self.target_identity.clone(),
+                source_watermark: 0,
+            });
+        };
+        if let Some(value) = row.try_get::<Option<String>, _>("manifest_json")? {
+            return Ok(AuthorityRecoveryRecord::Manifest(serde_json::from_str(
+                &value,
+            )?));
+        }
+        if let Some(value) = row.try_get::<Option<String>, _>("recovery_json")? {
+            let context: AuthorityRecoveryContext = serde_json::from_str(&value)?;
+            return Ok(AuthorityRecoveryRecord::NeverMigrated {
+                migration_id: context.migration_id,
+                installation_id: context.installation_id,
+                module: context.module,
+                source_identity: context.source_identity,
+                target_identity: context.target_identity,
+                source_watermark: context.source_watermark,
+            });
+        }
+        Ok(AuthorityRecoveryRecord::Indeterminate)
+    }
+
+    async fn publish_authority_manifest(
+        &self,
+        manifest: &ModuleAuthorityManifest,
+        expected: &AuthorityRecoveryContext,
+    ) -> Result<AuthorityPublication> {
+        let module = serde_json::to_string(&manifest.module)?;
+        let manifest_json = serde_json::to_string(manifest)?;
+        let expected_json = serde_json::to_string(expected)?;
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(&format!(
+            "SELECT recovery_json, manifest_json FROM {AUTHORITY_TABLE}
+              WHERE module = ?1"
+        ))
+        .bind(module.trim_matches('"'))
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            return Ok(AuthorityPublication::Conflict);
+        };
+        if let Some(existing) = row.try_get::<Option<String>, _>("manifest_json")? {
+            let existing: ModuleAuthorityManifest = serde_json::from_str(&existing)?;
+            transaction.commit().await?;
+            return Ok(if existing == *manifest {
+                AuthorityPublication::Committed
+            } else {
+                AuthorityPublication::Conflict
+            });
+        }
+        let Some(existing) = row.try_get::<Option<String>, _>("recovery_json")? else {
+            return Ok(AuthorityPublication::Conflict);
+        };
+        if existing != expected_json {
+            return Ok(AuthorityPublication::Conflict);
+        }
+        sqlx::query(&format!(
+            "UPDATE {AUTHORITY_TABLE}
+                SET recovery_json = NULL, manifest_json = ?2
+              WHERE module = ?1"
+        ))
+        .bind(module.trim_matches('"'))
+        .bind(manifest_json)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(AuthorityPublication::Committed)
+    }
+}
+
+#[async_trait]
+impl MigrationMetadataStore for SqliteMigrationMetadataStore {
+    async fn set_recovery_context(&self, context: &AuthorityRecoveryContext) -> Result<()> {
+        if context.source_watermark < 0 {
+            bail!("invalid recovery watermark");
+        }
+        let module = serde_json::to_string(&context.module)?;
+        let value = serde_json::to_string(context)?;
+        let existing = sqlx::query_scalar::<_, Option<String>>(&format!(
+            "SELECT recovery_json FROM {AUTHORITY_TABLE} WHERE module = ?1"
+        ))
+        .bind(module.trim_matches('"'))
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        if let Some(existing) = existing
+            && existing != value
+        {
+            bail!("SQLite migration recovery context conflicts with durable state");
+        }
+        sqlx::query(&format!(
+            "INSERT INTO {AUTHORITY_TABLE} (module, recovery_json, manifest_json)
+             VALUES (?1, ?2, NULL)
+             ON CONFLICT(module) DO UPDATE SET recovery_json = excluded.recovery_json"
+        ))
+        .bind(module.trim_matches('"'))
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_status(&self, module: StorageModule) -> Result<Option<MigrationStatus>> {
+        self.load_json(STATUS_TABLE, "module", module_name(module), "value_json")
+            .await
+    }
+
+    async fn save_status(&self, status: &MigrationStatus) -> Result<()> {
+        status.validate()?;
+        sqlx::query(&format!(
+            "INSERT INTO {STATUS_TABLE} (module, value_json) VALUES (?1, ?2)
+             ON CONFLICT(module) DO UPDATE SET value_json = excluded.value_json"
+        ))
+        .bind(module_name(status.module))
+        .bind(serde_json::to_string(status)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_checkpoint(
+        &self,
+        migration_id: &str,
+        table_name: &str,
+    ) -> Result<Option<MigrationCheckpoint>> {
+        let query = format!(
+            "SELECT value_json FROM {CHECKPOINT_TABLE}
+              WHERE migration_id = ?1 AND table_name = ?2"
+        );
+        sqlx::query_scalar::<_, String>(&query)
+            .bind(migration_id)
+            .bind(table_name)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|value| Ok(serde_json::from_str(&value)?))
+            .transpose()
+    }
+
+    async fn save_checkpoint(&self, checkpoint: &MigrationCheckpoint) -> Result<()> {
+        checkpoint.validate()?;
+        sqlx::query(&format!(
+            "INSERT INTO {CHECKPOINT_TABLE} (migration_id, table_name, value_json)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(migration_id, table_name) DO UPDATE SET value_json = excluded.value_json"
+        ))
+        .bind(&checkpoint.migration_id)
+        .bind(&checkpoint.table_name)
+        .bind(serde_json::to_string(checkpoint)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn enqueue_outbox(&self, item: &MigrationOutboxItem) -> Result<bool> {
+        item.validate()?;
+        let result = sqlx::query(&format!(
+            "INSERT OR IGNORE INTO {OUTBOX_TABLE} (outbox_id, value_json)
+             VALUES (?1, ?2)"
+        ))
+        .bind(&item.outbox_id)
+        .bind(serde_json::to_string(item)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn acknowledge_outbox(&self, outbox_id: &str, applied_through: i64) -> Result<()> {
+        if applied_through < 0 {
+            bail!("acknowledged migration watermark must not be negative");
+        }
+        sqlx::query(&format!("DELETE FROM {OUTBOX_TABLE} WHERE outbox_id = ?1"))
+            .bind(outbox_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn reserve_capacity(&self, reservation: &MigrationReservation) -> Result<bool> {
+        reservation.validate()?;
+        let result = sqlx::query(&format!(
+            "INSERT OR IGNORE INTO {RESERVATION_TABLE} (reservation_id, value_json)
+             VALUES (?1, ?2)"
+        ))
+        .bind(&reservation.reservation_id)
+        .bind(serde_json::to_string(reservation)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn release_capacity(&self, reservation_id: &str) -> Result<()> {
+        sqlx::query(&format!(
+            "DELETE FROM {RESERVATION_TABLE} WHERE reservation_id = ?1"
+        ))
+        .bind(reservation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+fn recovery_context_from_record(
+    record: AuthorityRecoveryRecord,
+) -> Result<AuthorityRecoveryContext> {
+    match record {
+        AuthorityRecoveryRecord::NeverMigrated {
+            migration_id,
+            installation_id,
+            module,
+            source_identity,
+            target_identity,
+            source_watermark,
+        }
+        | AuthorityRecoveryRecord::Manifest(super::core::ModuleAuthorityManifest {
+            migration_id,
+            installation_id,
+            module,
+            source_identity,
+            target_identity,
+            source_watermark,
+            ..
+        }) => Ok(AuthorityRecoveryContext {
+            migration_id,
+            installation_id,
+            module,
+            source_identity,
+            target_identity,
+            source_watermark,
+        }),
+        AuthorityRecoveryRecord::Indeterminate => {
+            bail!("module authority recovery is indeterminate")
+        }
+    }
+}
+
+fn expected_postgres_target_identity(config: &StorageConfig) -> String {
+    config.postgres_target_identity()
+}
+
+fn validate_module_manifest_identity(
+    manifest: &ModuleAuthorityManifest,
+    module: StorageModule,
+    source_identity: &str,
+    expected_target_identity: &str,
+) -> Result<()> {
+    if manifest.migration_id != MIGRATION_ID
+        || manifest.installation_id != INSTALLATION_ID
+        || manifest.module != module
+        || manifest.source_identity != source_identity
+        || manifest.target_identity != expected_target_identity
+        || manifest.authority.backend != BackendKind::Postgres
+        || manifest.source_watermark < 0
+    {
+        let module_label = match module {
+            StorageModule::TrafficArchive => "traffic",
+            StorageModule::Analytics => "analytics",
+            _ => module_name(module),
+        };
+        bail!("durable {module_label} authority manifest identity does not match runtime state");
+    }
+    Ok(())
+}
+
+fn validate_active_manifest_identity(
+    manifest: &ModuleAuthorityManifest,
+    status: &StorageMigrationResponse,
+    module: StorageModule,
+    source_identity: &str,
+    expected_target_identity: &str,
+) -> Result<()> {
+    validate_module_manifest_identity(manifest, module, source_identity, expected_target_identity)?;
+    if status.migration_id.as_deref() != Some(MIGRATION_ID)
+        || status.module != module_name(module)
+        || status.source.identity != source_identity
+        || status.target.identity != expected_target_identity
+    {
+        let module_label = match module {
+            StorageModule::TrafficArchive => "traffic",
+            StorageModule::Analytics => "analytics",
+            _ => module_name(module),
+        };
+        bail!("durable {module_label} migration status identity does not match runtime state");
+    }
+    validate_manifest_watermark(manifest, status)
+}
+
+fn validate_manifest_identity(
+    manifest: &ModuleAuthorityManifest,
+    status: &StorageMigrationResponse,
+    expected_target_identity: &str,
+) -> Result<()> {
+    validate_active_manifest_identity(
+        manifest,
+        status,
+        StorageModule::TrafficArchive,
+        SOURCE_IDENTITY,
+        expected_target_identity,
+    )
+}
+
+fn validate_manifest_watermark(
+    manifest: &ModuleAuthorityManifest,
+    status: &StorageMigrationResponse,
+) -> Result<()> {
+    if status.state == StorageMigrationState::Postgres {
+        if status.progress.captured_through != Some(manifest.source_watermark)
+            || status.progress.applied_through != Some(manifest.source_watermark)
+        {
+            bail!(
+                "durable {} authority manifest watermark does not match migration status",
+                module_name(manifest.module)
+            );
+        }
+    } else if matches!(
+        status.state,
+        StorageMigrationState::Switching | StorageMigrationState::Recovering
+    ) {
+        // The manifest is committed by the authority switch before the final Switching
+        // progress write. A crash or transient SQLite failure in that interval can leave the
+        // durable status behind the committed cutover watermark. Recovery must repair that
+        // intermediate state forward instead of rejecting an already committed authority.
+        let status_watermarks = [
+            status.progress.captured_through,
+            status.progress.applied_through,
+        ];
+        if status_watermarks
+            .into_iter()
+            .flatten()
+            .any(|watermark| watermark > manifest.source_watermark)
+        {
+            bail!(
+                "durable {} authority manifest watermark regresses migration progress",
+                module_name(manifest.module)
+            );
+        }
+    } else {
+        let status_watermarks = [
+            status.progress.captured_through,
+            status.progress.applied_through,
+        ];
+        if status_watermarks
+            .into_iter()
+            .flatten()
+            .any(|watermark| watermark > manifest.source_watermark)
+        {
+            bail!(
+                "durable {} authority manifest watermark regresses migration progress",
+                module_name(manifest.module)
+            );
+        }
+    }
+    Ok(())
+}
+
+fn module_name(module: StorageModule) -> &'static str {
+    match module {
+        StorageModule::TrafficArchive => "traffic_archive",
+        StorageModule::Analytics => "analytics",
+        StorageModule::AccountRouting => "account_routing",
+        StorageModule::TaskOperations => "task_operations",
+        StorageModule::Performance => "performance",
+    }
+}
+
+fn storage_module_from_name(name: &str) -> Result<StorageModule> {
+    match name {
+        "traffic_archive" => Ok(StorageModule::TrafficArchive),
+        "analytics" => Ok(StorageModule::Analytics),
+        "account_routing" => Ok(StorageModule::AccountRouting),
+        "task_operations" => Ok(StorageModule::TaskOperations),
+        "performance" => Ok(StorageModule::Performance),
+        _ => bail!("unsupported storage migration module {name}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn runtime_router_initializes_and_stops_without_postgres() -> Result<()> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let config = StorageConfig::default();
+        let migration = Arc::new(StorageMigrationRuntime::new(&config));
+        let shutdown = CancellationToken::new();
+        let router =
+            StorageRuntimeRouter::initialize(pool, &config, migration, shutdown.clone()).await?;
+
+        let catalog = ModuleCatalog::inspect_sqlite(&router.worker.pool).await?;
+        for table in [
+            AUTHORITY_TABLE,
+            CHECKPOINT_TABLE,
+            OUTBOX_TABLE,
+            RESERVATION_TABLE,
+            STATUS_TABLE,
+        ] {
+            let owner = catalog
+                .owners()
+                .iter()
+                .find(|owner| owner.table == table)
+                .expect("runtime metadata table has an ownership classification");
+            assert_eq!(
+                owner.module,
+                super::super::catalog::ModuleId::TaskOperations
+            );
+            assert_eq!(owner.transaction_group, "task_operations");
+        }
+
+        assert_eq!(
+            router
+                .current_authority(StorageModule::TrafficArchive)
+                .await,
+            super::super::core::ModuleAuthority {
+                backend: BackendKind::Sqlite,
+                generation: 1,
+            }
+        );
+        assert!(!router.postgres_configured());
+        router.start().await;
+        router.stop().await;
+        assert!(shutdown.is_cancelled());
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_migration_phases_resume_from_their_durable_checkpoint() {
+        assert_eq!(
+            migration_resume_work(StorageMigrationState::Preparing).unwrap(),
+            MigrationResumeWork::CopyAndCatchUp
+        );
+        assert_eq!(
+            migration_resume_work(StorageMigrationState::Copying).unwrap(),
+            MigrationResumeWork::CopyAndCatchUp
+        );
+        assert_eq!(
+            migration_resume_work(StorageMigrationState::CatchingUp).unwrap(),
+            MigrationResumeWork::CatchUp
+        );
+        assert_eq!(
+            migration_resume_work(StorageMigrationState::Verifying).unwrap(),
+            MigrationResumeWork::CatchUp
+        );
+        assert_eq!(
+            migration_resume_work(StorageMigrationState::Recovering).unwrap(),
+            MigrationResumeWork::CatchUp
+        );
+        assert_eq!(
+            migration_resume_work(StorageMigrationState::Ready).unwrap(),
+            MigrationResumeWork::Switch
+        );
+        assert_eq!(
+            migration_resume_work(StorageMigrationState::Switching).unwrap(),
+            MigrationResumeWork::Switch
+        );
+        assert!(migration_resume_work(StorageMigrationState::Postgres).is_err());
+    }
+
+    #[tokio::test]
+    async fn worker_resume_does_not_reblock_capture_continuity_recovery() -> Result<()> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        crate::schema::ensure_schema(&pool).await?;
+        crate::prompt_cache_conversations::ensure_prompt_cache_conversations_schema(&pool).await?;
+        let config = StorageConfig {
+            postgres_database_url: Some(
+                "postgresql://user:pass@127.0.0.1:1/codex_vibe_monitor".to_string(),
+            ),
+            ..StorageConfig::default()
+        };
+        let migration = Arc::new(StorageMigrationRuntime::new(&config));
+        let router = StorageRuntimeRouter::initialize(
+            pool.clone(),
+            &config,
+            Arc::clone(&migration),
+            CancellationToken::new(),
+        )
+        .await?;
+        migration
+            .apply_control(
+                crate::storage::migration_status::StorageMigrationControlRequest { paused: false },
+            )
+            .await?;
+
+        let catalog = ModuleCatalog::inspect_sqlite(&pool).await?;
+        let native_catalog = catalog
+            .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
+            .map_err(|error| anyhow!(error))?;
+        let source = SqliteMigrationSource::from_native_catalog(
+            pool.clone(),
+            MIGRATION_ID,
+            SOURCE_IDENTITY,
+            "migration_change_log",
+            &native_catalog,
+            StorageModule::TrafficArchive,
+        )?;
+        source.ensure_capture_schema().await?;
+        source.mark_continuity_lost().await?;
+
+        let migration_limits = MigrationLimits {
+            copy: CopyLimits {
+                max_rows: 128,
+                max_bytes: 2 * 1024 * 1024,
+                ..CopyLimits::default()
+            },
+            change_batch: ChangeBatchLimits::default(),
+            ..MigrationLimits::default()
+        };
+        assert!(
+            router
+                .worker()
+                .enforce_capacity(&source, migration_limits, false, false)
+                .await?
+        );
+        assert_eq!(
+            migration.snapshot().await.state,
+            StorageMigrationState::Blocked
+        );
+
+        migration
+            .apply_control(
+                crate::storage::migration_status::StorageMigrationControlRequest { paused: false },
+            )
+            .await?;
+        let resumed = migration.snapshot().await;
+        assert_eq!(resumed.state, StorageMigrationState::Preparing);
+        assert_eq!(resumed.controls.last_action.as_deref(), Some("resume"));
+
+        let _ = router.worker().run_migration(resumed).await;
+        assert_eq!(
+            migration.snapshot().await.state,
+            StorageMigrationState::Preparing,
+            "worker must pass the resumed continuity-loss check before PostgreSQL setup"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manifest_identity_allows_stale_transitional_watermark_but_rejects_ahead_status()
+    -> Result<()> {
+        let config = StorageConfig {
+            postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
+            ..StorageConfig::default()
+        };
+        let target_identity = config.postgres_target_identity();
+        for phase in [
+            StorageMigrationState::Switching,
+            StorageMigrationState::Recovering,
+        ] {
+            let migration = StorageMigrationRuntime::new(&config);
+            let status = prepare_transitional_migration_status(&migration, phase, 6).await?;
+            let manifest = ModuleAuthorityManifest {
+                migration_id: MIGRATION_ID.to_string(),
+                installation_id: INSTALLATION_ID.to_string(),
+                source_identity: SOURCE_IDENTITY.to_string(),
+                module: StorageModule::TrafficArchive,
+                authority: super::super::core::ModuleAuthority {
+                    backend: BackendKind::Postgres,
+                    generation: 2,
+                },
+                source_watermark: 7,
+                target_identity: target_identity.clone(),
+            };
+
+            validate_manifest_identity(&manifest, &status, &target_identity)
+                .expect("a committed manifest may repair a stale transitional watermark");
+
+            let ahead_migration = StorageMigrationRuntime::new(&config);
+            let ahead = prepare_transitional_migration_status(&ahead_migration, phase, 8).await?;
+            let error = validate_manifest_identity(&manifest, &ahead, &target_identity)
+                .expect_err("transitional status must not be ahead of the manifest watermark");
+            assert!(error.to_string().contains("watermark"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn postgres_worker_recovery_rejects_manifest_identity_mismatch() -> Result<()> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let config = StorageConfig {
+            postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
+            ..StorageConfig::default()
+        };
+        let target_identity = config.postgres_target_identity();
+        let migration = Arc::new(StorageMigrationRuntime::new(&config));
+        let status = prepare_transitional_migration_status(
+            migration.as_ref(),
+            StorageMigrationState::Switching,
+            7,
+        )
+        .await?;
+        let metadata = Arc::new(SqliteMigrationMetadataStore::new(pool.clone(), &config));
+        metadata.ensure_schema().await?;
+        let context = AuthorityRecoveryContext {
+            migration_id: MIGRATION_ID.to_string(),
+            installation_id: INSTALLATION_ID.to_string(),
+            module: StorageModule::TrafficArchive,
+            source_identity: SOURCE_IDENTITY.to_string(),
+            target_identity: target_identity.clone(),
+            source_watermark: 7,
+        };
+        metadata.set_recovery_context(&context).await?;
+        let manifest = ModuleAuthorityManifest {
+            migration_id: context.migration_id.clone(),
+            installation_id: context.installation_id.clone(),
+            source_identity: context.source_identity.clone(),
+            module: context.module,
+            authority: super::super::core::ModuleAuthority {
+                backend: BackendKind::Postgres,
+                generation: 2,
+            },
+            source_watermark: context.source_watermark,
+            target_identity: context.target_identity.clone(),
+        };
+        assert_eq!(
+            metadata
+                .publish_authority_manifest(&manifest, &context)
+                .await?,
+            AuthorityPublication::Committed
+        );
+        let mut corrupted_manifest = manifest;
+        corrupted_manifest.source_identity = "sqlite:other".to_string();
+        sqlx::query(
+            "UPDATE storage_migration_authority
+             SET manifest_json = ?1
+             WHERE module = 'traffic_archive'",
+        )
+        .bind(serde_json::to_string(&corrupted_manifest)?)
+        .execute(&pool)
+        .await?;
+
+        let worker = StorageMigrationWorker::new(
+            pool,
+            config,
+            migration,
+            CancellationToken::new(),
+            metadata,
+            StorageMigrationWorkerAuthorities {
+                traffic_gate: ModuleGenerationGate::new(
+                    StorageModule::TrafficArchive,
+                    super::super::core::ModuleAuthority {
+                        backend: BackendKind::Postgres,
+                        generation: 2,
+                    },
+                ),
+                analytics_gate: ModuleGenerationGate::new(
+                    StorageModule::Analytics,
+                    super::super::core::ModuleAuthority {
+                        backend: BackendKind::Sqlite,
+                        generation: 1,
+                    },
+                ),
+                traffic_source_fence: SourceWriteFence::new(1),
+                analytics_source_fence: SourceWriteFence::new(1),
+            },
+        );
+        let error = worker
+            .run_migration(status)
+            .await
+            .expect_err("worker recovery must reject a manifest with a mismatched identity");
+        assert!(error.to_string().contains("identity"));
+        Ok(())
+    }
+
+    async fn prepare_transitional_migration_status(
+        migration: &StorageMigrationRuntime,
+        phase: StorageMigrationState,
+        watermark: i64,
+    ) -> Result<StorageMigrationResponse> {
+        migration
+            .apply_control(
+                crate::storage::migration_status::StorageMigrationControlRequest { paused: false },
+            )
+            .await?;
+        for phase in [
+            StorageMigrationState::Copying,
+            StorageMigrationState::CatchingUp,
+            StorageMigrationState::Verifying,
+            StorageMigrationState::Ready,
+        ] {
+            migration
+                .publish_progress(StorageMigrationProgress {
+                    phase,
+                    ..StorageMigrationProgress::default()
+                })
+                .await?;
+        }
+        let status = migration
+            .publish_progress(StorageMigrationProgress {
+                phase: StorageMigrationState::Switching,
+                captured_through: Some(watermark),
+                applied_through: Some(watermark),
+                ..StorageMigrationProgress::default()
+            })
+            .await?;
+        if phase == StorageMigrationState::Switching {
+            Ok(status)
+        } else {
+            migration
+                .publish_progress(StorageMigrationProgress {
+                    phase,
+                    captured_through: Some(watermark),
+                    applied_through: Some(watermark),
+                    ..StorageMigrationProgress::default()
+                })
+                .await
+        }
+    }
+}

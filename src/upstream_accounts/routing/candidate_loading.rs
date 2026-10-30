@@ -1298,11 +1298,43 @@ pub(crate) async fn load_transport_decode_sticky_escape_states(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
 ) -> Result<HashMap<i64, TransportDecodeStickyEscapeState>> {
-    load_transport_decode_sticky_escape_states_at(pool, account_ids, Utc::now()).await
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    load_transport_decode_sticky_escape_states_at_with_authority(
+        &traffic_authority,
+        account_ids,
+        Utc::now(),
+    )
+    .await
 }
 
 pub(crate) async fn load_transport_decode_sticky_escape_states_at(
     pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    now: DateTime<Utc>,
+) -> Result<HashMap<i64, TransportDecodeStickyEscapeState>> {
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    load_transport_decode_sticky_escape_states_at_with_authority(
+        &traffic_authority,
+        account_ids,
+        now,
+    )
+    .await
+}
+
+pub(crate) async fn load_transport_decode_sticky_escape_states_with_authority(
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, TransportDecodeStickyEscapeState>> {
+    load_transport_decode_sticky_escape_states_at_with_authority(
+        traffic_authority,
+        account_ids,
+        Utc::now(),
+    )
+    .await
+}
+
+pub(crate) async fn load_transport_decode_sticky_escape_states_at_with_authority(
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
     account_ids: &[i64],
     now: DateTime<Utc>,
 ) -> Result<HashMap<i64, TransportDecodeStickyEscapeState>> {
@@ -1317,78 +1349,17 @@ pub(crate) async fn load_transport_decode_sticky_escape_states_at(
         .copied()
         .filter(|account_id| seen_account_ids.insert(*account_id))
         .collect::<Vec<_>>();
-    let mut rows = Vec::new();
-
-    // SQLite limits compound SELECT terms; each account subquery stays capped at two rows.
-    for account_id_batch in unique_account_ids.chunks(400) {
-        let mut query = QueryBuilder::<Sqlite>::new("");
-        for (index, account_id) in account_id_batch.iter().enumerate() {
-            if index > 0 {
-                query.push(" UNION ALL ");
-            }
-            query
-                .push("SELECT ")
-                .push_bind(*account_id)
-                .push(" AS upstream_account_id, occurred_at, failure_kind FROM (")
-                .push("SELECT occurred_at, failure_kind FROM pool_upstream_request_attempts WHERE upstream_account_id = ")
-                .push_bind(*account_id)
-                .push(" AND route_mode = ")
-                .push_bind(INVOCATION_ROUTE_MODE_POOL)
-                .push(" AND endpoint = '/v1/responses' AND phase IN (")
-                .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED)
-                .push(", ")
-                .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
-                .push(") ORDER BY occurred_at DESC, id DESC LIMIT 2)");
-        }
-
-        rows.extend(
-            query
-                .build_query_as::<(i64, String, Option<String>)>()
-                .fetch_all(pool)
-                .await?,
-        );
-    }
-    let row_count = rows.len();
-    let mut latest_failures = HashMap::<i64, Vec<(String, Option<String>)>>::new();
-    for (account_id, occurred_at, failure_kind) in rows {
-        latest_failures
-            .entry(account_id)
-            .or_default()
-            .push((occurred_at, failure_kind));
-    }
-    let escaped_states = latest_failures
+    let (expiry_by_account, row_count) = traffic_authority
+        .load_transport_decode_sticky_escape_expiries(&unique_account_ids, now)
+        .await?;
+    let escaped_states = expiry_by_account
         .into_iter()
-        .filter_map(|(account_id, failures)| {
-            if failures.len() != 2
-                || !failures.iter().all(|(_, failure_kind)| {
-                    failure_kind.as_deref() == Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
-                })
-            {
-                return None;
-            }
-            let latest_failure_at = failures
-                .iter()
-                .filter_map(|(occurred_at, _)| parse_to_utc_datetime(occurred_at))
-                .max()?;
-            let oldest_failure_at = failures
-                .iter()
-                .filter_map(|(occurred_at, _)| parse_to_utc_datetime(occurred_at))
-                .min()?;
-            let window = ChronoDuration::seconds(
-                crate::upstream_accounts::routing::selection::POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS,
-            );
-            if latest_failure_at > now || oldest_failure_at < now - window {
-                return None;
-            }
-            Some((
+        .map(|(account_id, until)| {
+            (
                 account_id,
-                TransportDecodeStickyEscapeState {
-                    account_id,
-                    until: latest_failure_at + window,
-                },
-            ))
+                TransportDecodeStickyEscapeState { account_id, until },
+            )
         })
-        .filter(|(_, state)| now < state.until)
         .collect::<HashMap<_, _>>();
 
     let elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0;

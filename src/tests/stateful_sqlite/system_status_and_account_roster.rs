@@ -325,6 +325,26 @@ async fn system_storage_endpoint_reads_only_the_memory_snapshot_when_sqlite_is_c
 }
 
 #[tokio::test]
+async fn storage_migration_control_route_rejects_missing_admin_token() {
+    let mut config = test_config();
+    config.storage.migration_admin_token = Some("migration-admin-token-1234".to_string());
+    let state = test_state_from_config(config, true).await;
+
+    let response = build_app_router(state)
+        .oneshot(
+            axum::http::Request::builder()
+                .method("PATCH")
+                .uri("/api/system/storage-migration")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(r#"{"paused":false}"#))
+                .expect("build migration control request"),
+        )
+        .await
+        .expect("serve migration control request");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_cursor_advanced() {
     use std::time::Duration as StdDuration;
 
@@ -1850,12 +1870,17 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
 
     Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+        storage_migration: Arc::new(StorageMigrationRuntime::default()),
+        storage_runtime: None,
         config: config.clone(),
         sqlite_batch_writer,
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations,
         proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
-        pool,
+        pool: pool.clone(),
+        traffic_authority: Arc::new(crate::storage::traffic::TrafficFactStore::sqlite(
+            pool.clone(),
+        )),
         oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
@@ -2100,12 +2125,15 @@ pub(crate) fn clone_state_with_upstream_accounts(
 ) -> Arc<AppState> {
     Arc::new(AppState {
         system_storage: state.system_storage.clone(),
+        storage_migration: state.storage_migration.clone(),
+        storage_runtime: state.storage_runtime.clone(),
         config: state.config.clone(),
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
         pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
         proxy_runtime_invocations: state.proxy_runtime_invocations.clone(),
         proxy_runtime_attempts: state.proxy_runtime_attempts.clone(),
         pool: state.pool.clone(),
+        traffic_authority: state.traffic_authority.clone(),
         oauth_installation_seed: state.oauth_installation_seed,
         hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
         http_clients: state.http_clients.clone(),
@@ -2167,12 +2195,15 @@ fn clone_state_with_retry_delay_overrides(
 ) -> Arc<AppState> {
     Arc::new(AppState {
         system_storage: state.system_storage.clone(),
+        storage_migration: state.storage_migration.clone(),
+        storage_runtime: state.storage_runtime.clone(),
         config: state.config.clone(),
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
         pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
         proxy_runtime_invocations: state.proxy_runtime_invocations.clone(),
         proxy_runtime_attempts: state.proxy_runtime_attempts.clone(),
         pool: state.pool.clone(),
+        traffic_authority: state.traffic_authority.clone(),
         oauth_installation_seed: state.oauth_installation_seed,
         hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
         http_clients: state.http_clients.clone(),
@@ -2264,12 +2295,17 @@ pub(crate) async fn test_state_from_existing_pool(
 
     Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+        storage_migration: Arc::new(StorageMigrationRuntime::default()),
+        storage_runtime: None,
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
         proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
-        pool,
+        pool: pool.clone(),
+        traffic_authority: Arc::new(crate::storage::traffic::TrafficFactStore::sqlite(
+            pool.clone(),
+        )),
         oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,

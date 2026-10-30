@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/.github/scripts/test-migration-ci-exclusions.py"
+
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-validator-contract.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-candidate-binding.py"
 
@@ -269,9 +271,10 @@ needle = """  build:
     needs:
       - build-pr-smoke-artifacts
       - retention-migration-validation
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"""
+    # NOT RUN for PR #1212; skipped smoke-test preparation is not passing evidence.
+    if: ${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"""
 replacement = needle.replace(
-    "    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+    "    if: ${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
     "    if: ${{ always() && github.event_name == 'pull_request' }}",
     1,
 )
@@ -362,17 +365,17 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text()
-joint = " | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)"
-if text.count(joint) != 1:
-    raise SystemExit("expected one joint contention acceptance selector")
-path.write_text(text.replace(joint, "", 1))
+needle = "  backend-tests-representative-scale:\n    name: Backend Tests (Representative Scale)\n    needs: backend-test-archive\n    # Pressure tests are prohibited for migration PR #1212.\n    if: ${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}"
+if text.count(needle) != 1:
+    raise SystemExit("expected disabled representative-scale job")
+path.write_text(text.replace(needle, needle.replace("${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}", 'always()'), 1))
 PY
 if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   --repo-root "$continue_error_repo" --profile final >/dev/null 2>"$tmp_dir/missing-joint-acceptance.log"; then
-  echo "expected missing joint maintenance acceptance to fail" >&2
+  echo "expected enabled representative-scale job to fail" >&2
   exit 1
 fi
-grep -q "must replay the exact representative-scale profiles from the extracted archive" "$tmp_dir/missing-joint-acceptance.log"
+grep -q "backend-tests-representative-scale.if must stay" "$tmp_dir/missing-joint-acceptance.log"
 cp "$repo_root/.github/workflows/ci-pr.yml" "$continue_error_repo/.github/workflows/ci-pr.yml"
 
 expect_continue_on_error_rejected() {
@@ -889,7 +892,8 @@ path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
 needle = '''  backend-tests-lightweight:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1308,8 +1312,8 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "--project=performance --workers=1 --output=test-results/performance || performance_status=$?"
-replacement = "--project=performance --workers=1 --output=test-results/performance &"
+needle = "--project=demo-functional --workers=1"
+replacement = "--project=demo-functional --project=performance --workers=1"
 if needle not in text:
     raise SystemExit("failed to locate serial dashboard performance command")
 path.write_text(text.replace(needle, replacement, 1))
@@ -1507,5 +1511,37 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
 fi
 
 grep -q "REVIEW_REQUIRED_APPROVALS drifted from quality-gates.json" "$tmp_dir/metadata-policy.log"
+
+postgres_bypass_repo="$tmp_dir/postgres-bypass-repo"
+copy_repo_snapshot "$baseline_repo" "$postgres_bypass_repo"
+python3 - "$postgres_bypass_repo/.github/workflows/ci-postgresql-acceptance.yml" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "      - name: Run non-pressure PostgreSQL functional and recovery tests\n"
+assert text.count(needle) == 1
+path.write_text(text.replace(needle, needle + "        if: ${{ false }}\n", 1))
+PY
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$postgres_bypass_repo" --profile final >/dev/null 2>"$tmp_dir/postgres-bypass.log"; then
+  echo "expected disabled PostgreSQL functional test to fail contract" >&2
+  exit 1
+fi
+grep -q 'PostgreSQL functional step.if must stay unset' "$tmp_dir/postgres-bypass.log"
+cp "$baseline_repo/.github/workflows/ci-postgresql-acceptance.yml" "$postgres_bypass_repo/.github/workflows/ci-postgresql-acceptance.yml"
+python3 - "$postgres_bypass_repo/.github/workflows/ci-postgresql-acceptance.yml" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "          POSTGRES_ACCEPTANCE_REQUIRED: '1'\n"
+assert text.count(needle) == 1
+path.write_text(text.replace(needle, "", 1))
+PY
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$postgres_bypass_repo" --profile final >/dev/null 2>"$tmp_dir/postgres-missing-service.log"; then
+  echo "expected optional PostgreSQL service to fail contract" >&2
+  exit 1
+fi
+grep -q 'must require its PostgreSQL service and evidence directory' "$tmp_dir/postgres-missing-service.log"
 
 echo "test-quality-gates-contract: all checks passed"

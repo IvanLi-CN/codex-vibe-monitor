@@ -1,6 +1,8 @@
 use super::*;
 use anyhow::anyhow;
 
+use crate::storage::analytics::AnalyticsProjection;
+
 #[path = "timeseries/aggregation.rs"]
 mod aggregation;
 #[path = "timeseries/materialization.rs"]
@@ -58,6 +60,21 @@ pub(crate) async fn fetch_timeseries(
     Query(params): Query<TimeseriesQuery>,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     queries::fetch_timeseries_query(state, params).await
+}
+
+/// SSE/topic and HTTP timeseries consumers use the same authority-aware read contract. Runtime
+/// wiring supplies the shared store through AppState rather than a consumer-owned pool.
+pub(crate) async fn read_timeseries_analytics_projection(
+    projection: AnalyticsApiProjection<'_>,
+    start_epoch: i64,
+    end_epoch: i64,
+    source_scope: InvocationSourceScope,
+) -> Result<AnalyticsApiProjectionSnapshot, ApiError> {
+    projection
+        .require_projection(AnalyticsProjection::Timeseries)?
+        .read_historical_snapshot(start_epoch, end_epoch, source_scope, None)
+        .await
+        .map_err(ApiError::from)
 }
 
 #[cfg(test)]

@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "kind": "postgresql-module-migration-acceptance-fixtures",
+  "status": "pending-live-validation",
+  "source": {
+    "program_version": "4.13.11",
+    "git_tag": "v4.13.11",
+    "commit_sha": "85b46550da5fb04b8a4c39d310a9b04c80824047",
+    "supported_range": "exact-tag-only",
+    "older_binary_policy": "fail-closed-against-migrated-authority"
+  },
+  "source_fixture": {
+    "archive_batches": [
+      {
+        "alias": "segment",
+        "dataset": "codex_invocations",
+        "month_key": "2024-01",
+        "day_key": "2024-01-31",
+        "source_row_ids": [3, 5, 7],
+        "part_key": "part-0000000000000003-0000000000000007-1ebc014f4941b874",
+        "file_path_suffix": "part-0000000000000003-0000000000000007-1ebc014f4941b874.sqlite.gz",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "row_count": 2,
+        "status": "completed",
+        "layout": "segment_v1",
+        "codec": "gzip",
+        "writer_version": "segment_v1",
+        "cleanup_state": "active",
+        "summary_source_kind": "unknown"
+      },
+      {
+        "alias": "monthly",
+        "dataset": "codex_invocations",
+        "month_key": "2024-01",
+        "day_key": null,
+        "source_row_ids": [],
+        "part_key": null,
+        "file_path_suffix": "2024-01.sqlite.gz",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "row_count": 3,
+        "status": "completed",
+        "layout": "legacy_month",
+        "codec": "gzip",
+        "writer_version": "legacy_month_v1",
+        "cleanup_state": "active",
+        "summary_source_kind": "authoritative"
+      }
+    ]
+  },
+  "candidate_lineage": {
+    "parent_branch": "th/postgresql-migration-design",
+    "base_sha": "0ad4c64964e7fabcd05188a75538c5709ec1e5dc",
+    "candidate_sha": "recorded-by-acceptance-runner",
+    "candidate_sha_policy": "record-the-tested-commit-in-every-report"
+  },
+  "postgres_service": {
+    "ci_image": "postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4",
+    "database_name": "codex_vibe_monitor_test",
+    "credentials_policy": "inject-through-environment-only-and-never-record",
+    "required_environment": "POSTGRES_TEST_DATABASE_URL"
+  },
+  "runner_contract": {
+    "entrypoint": "scripts/postgres-acceptance/run.py",
+    "required_mode_environment": "POSTGRES_ACCEPTANCE_REQUIRED=1",
+    "blocked_exit_code": 78,
+    "missing_service_result": "blocked/not-run",
+    "command_failure_result": "failed",
+    "zero_exit_result": "passed"
+  },
+  "evidence": [
+    {
+      "id": "real-postgres-copy-catchup",
+      "scope": "source fixture, bounded copy, concurrent change replay, coverage proof",
+      "status": "not-run"
+    },
+    {
+      "id": "real-postgres-transaction-routing",
+      "scope": "authority generation, transaction lease, native target transaction",
+      "status": "not-run"
+    },
+    {
+      "id": "real-postgres-archive-raw-atomicity",
+      "scope": "archive ownership, Raw links, release and prune recovery",
+      "status": "not-run"
+    },
+    {
+      "id": "crash-restart-fault-matrix",
+      "scope": "target commit, source acknowledgement, fence, authority and journal ambiguity",
+      "status": "not-run",
+      "note": "The functional suite records process-kill.json for application-process SIGKILL after real PostgreSQL target replay/checkpoint commit and before local acknowledgement. Deterministic tests exercise source acknowledgement after committed release, source fence, authority, router and journal boundaries plus normal timeout/recovery. Filesystem/WAL crash durability beyond the committed PostgreSQL transaction and backup/restore remain open until separately evidenced."
+    },
+    {
+      "id": "deterministic-fault-boundaries",
+      "scope": "target/source acknowledgement, source fence, authority/router publication, journal acknowledgement, timeout/recovery and application-process termination with a real PostgreSQL target",
+      "status": "not-run"
+    },
+    {
+      "id": "system-headroom",
+      "scope": "production PostgreSQL target capacity, WAL backlog and data-volume headroom require independent pre-deployment verification",
+      "status": "not-run"
+    },
+    {
+      "id": "backup-restore-deployment",
+      "scope": "source, PostgreSQL, authority manifest and archive/Raw restore drill",
+      "status": "not-run"
+    }
+  ],
+  "recording_policy": [
+    "Keep raw command output and the structured report together as one candidate-bound artifact.",
+    "Redact database credentials and raw business payloads from reports and logs.",
+    "Do not claim passed when the service is absent, unreachable or the command is not executed.",
+    "Do not treat this fixture record as evidence until a report records the tested candidate SHA."
+  ]
+}

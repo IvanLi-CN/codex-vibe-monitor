@@ -980,7 +980,16 @@ pub(crate) async fn run_retention_owner_task(
     task_key: &str,
     dry_run: bool,
     shutdown: &CancellationToken,
+    storage_migration: Option<&StorageMigrationRuntime>,
 ) -> Result<RetentionOwnerRunSummary> {
+    if let Some(storage_migration) = storage_migration
+        && let Some(reason) = storage_migration.migration_hold_reason(task_key).await
+    {
+        let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
+        summary.completion = "deferred";
+        summary.wait_reason = Some(reason.to_string());
+        return Ok(summary);
+    }
     let started_at = Instant::now();
     let result = RETENTION_MAINTENANCE_ACTIVE
         .scope(
@@ -1336,6 +1345,19 @@ async fn prune_system_task_runs_inner(
     }
 
     for candidates in candidates.chunks(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS) {
+        if crate::maintenance::migration_hold_boundary_reached().await {
+            retention_record_defer(
+                "system_task_run_retention",
+                crate::maintenance_store::MIGRATION_HOLD_REASON,
+            );
+            if propagate_pressure {
+                return Err(system_task_run_retention_partial_error(
+                    pruned,
+                    anyhow!("{}", crate::maintenance_store::MIGRATION_HOLD_REASON),
+                ));
+            }
+            break;
+        }
         let Some(admission) = acquire_retention_write_admission("system_task_run_retention").await
         else {
             // Admission can be denied before a SQL call observes the pressure error. A

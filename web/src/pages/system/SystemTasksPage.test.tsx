@@ -107,6 +107,7 @@ describe("SystemTasksPage", () => {
           requestedAt: "2026-10-01T00:00:01.000Z",
           waitingMs: 5_000,
           position: 1,
+          waitReason: "migration_hold",
         },
       ],
       queuedRunsAvailable: true,
@@ -260,7 +261,9 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("请求时间");
     expect(host?.textContent).toContain("等待开始");
     expect(host?.textContent).toContain("08:00:01");
-    expect(within(host as HTMLElement).getAllByText("第 1 位 · 手动")).toHaveLength(1);
+    expect(
+      within(host as HTMLElement).getAllByText("等待原因：migration_hold · 第 1 位 · 手动"),
+    ).toHaveLength(1);
     expect(host?.textContent).toContain("raw_compression");
     expect(host?.textContent).not.toContain("查看运行计量");
   });

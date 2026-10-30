@@ -129,6 +129,11 @@ pub(crate) fn selected_owned_maintenance(cli: &CliArgs) -> Result<Option<(&'stat
     })
 }
 
+pub(crate) fn configure_offline_maintenance_business_pool_options() -> SqlitePoolOptions {
+    crate::runtime::configure_primary_sqlite_pool_options(SqlitePoolOptions::new())
+        .max_connections(3)
+}
+
 pub(crate) async fn run_owned_maintenance_cli(
     config: &AppConfig,
     task_key: &str,
@@ -181,20 +186,31 @@ pub(crate) async fn run_owned_maintenance_cli(
                     Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
                 )?,
             )?;
-            let pool = SqlitePoolOptions::new()
-                .max_connections(3)
+            let pool = configure_offline_maintenance_business_pool_options()
                 .connect_with(options)
                 .await?;
             let mut maintenance_pool = None;
             let mut task_lease = None;
             let outcome = async {
-                ensure_schema(&pool).await?;
-                initialize_invocation_identity_cleanup_state(&pool).await?;
-                let store = crate::maintenance_store::open_owned(config, &mut runtime_lock).await?;
+                ensure_schema(&pool)
+                    .await
+                    .context("offline maintenance CLI business schema")?;
+                initialize_invocation_identity_cleanup_state(&pool, dry_run)
+                    .await
+                    .context("offline maintenance CLI identity cleanup state")?;
+                let store = crate::maintenance_store::open_owned(config, &mut runtime_lock)
+                    .await
+                    .context("offline maintenance CLI maintenance store")?;
                 runtime_lock.refresh_inode_pair_lock()?;
                 maintenance_pool = Some(store.pool.clone());
-                store.migrate_legacy_state(&pool).await?;
-                store.apply_initial_task_defaults().await?;
+                store
+                    .migrate_legacy_state(&pool)
+                    .await
+                    .context("offline maintenance CLI legacy state migration")?;
+                store
+                    .apply_initial_task_defaults()
+                    .await
+                    .context("offline maintenance CLI task defaults")?;
                 // Only this selected owner is recovered; no other automatic maintenance is started.
                 sqlx::query("UPDATE managed_task_runs SET status='failed',finished_at=?,error_detail='offline runtime recovery' WHERE task_key=? AND status IN ('running','requested')")
                     .bind(format_utc_iso_millis(Utc::now())).bind(task_key).execute(&store.pool).await?;
@@ -234,6 +250,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                             OwnedMaintenanceContext {
                                 pool: &pool,
                                 config,
+                                storage_migration: None,
                                 cache: &cache,
                                 circuit: Arc::new(RawCaptureCircuitBreaker::new(
                                     config.resolved_proxy_raw_dir(),

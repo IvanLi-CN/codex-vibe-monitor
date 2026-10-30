@@ -17,6 +17,7 @@ pub(crate) use super::*;
 mod archive_backfill_test_support;
 mod archive_copy_summary_and_manifest;
 mod archive_http_and_shutdown;
+mod archive_postgres_adapter;
 mod archive_publication;
 mod archive_replay_recovery;
 mod archive_replay_safety;

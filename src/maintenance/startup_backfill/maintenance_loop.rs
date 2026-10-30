@@ -364,6 +364,18 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     observation_parent_task_key: Option<&'static str>,
     managed_run_id: Option<i64>,
 ) -> StartupBackfillMaintenancePass {
+    if state
+        .storage_migration
+        .migration_hold_reason("startup_backfill")
+        .await
+        .is_some()
+    {
+        return StartupBackfillMaintenancePass {
+            deferred: true,
+            detail: Some("startup backfill deferred by migration_hold".to_string()),
+            ..StartupBackfillMaintenancePass::default()
+        };
+    }
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
@@ -599,6 +611,14 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
     state: &Arc<AppState>,
     prep_cli: &CliArgs,
 ) -> bool {
+    if state
+        .storage_migration
+        .migration_hold_reason("startup_hourly_rollup_bootstrap")
+        .await
+        .is_some()
+    {
+        return true;
+    }
     if !should_run_startup_persistent_prep(prep_cli) {
         return true;
     }
@@ -607,20 +627,33 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
     // Holding the global background slot here would make those nested admissions reject every
     // startup pass before they can do any work.
     let defer_generation = super::retention::retention_defer_generation();
-    match run_startup_persistent_prep_inner(&state.pool, &state.config, prep_cli, false).await {
+    let maintenance_store = crate::maintenance_store::global().map(|store| store.as_ref());
+    match run_startup_persistent_prep_inner_with_store(
+        maintenance_store,
+        &state.pool,
+        &state.config,
+        prep_cli,
+        false,
+    )
+    .await
+    {
         Ok(summary) => {
-            let deferred = super::retention::retention_defer_generation() != defer_generation;
+            let retention_deferred =
+                super::retention::retention_defer_generation() != defer_generation;
+            let retry_pending =
+                summary.deferred || retention_deferred || summary.pending_manifest_batches > 0;
             info!(
+                migration_hold_deferred = summary.deferred,
                 refreshed_manifest_batches = summary.refreshed_manifest_batches,
                 refreshed_manifest_account_rows = summary.refreshed_manifest_account_rows,
                 missing_manifest_files = summary.missing_manifest_files,
                 backfilled_archive_expiries = summary.backfilled_archive_expiries,
                 bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
                 pending_manifest_batches = summary.pending_manifest_batches,
-                deferred,
+                deferred = retention_deferred,
                 "startup background prep finished"
             );
-            !deferred && summary.pending_manifest_batches == 0
+            retry_pending
         }
         Err(err) => {
             let pressure_error = crate::db_pressure::global_db_pressure_gate()
@@ -649,6 +682,14 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
     gate: &crate::db_pressure::DbPressureGate,
 ) {
     if cancel.is_cancelled() {
+        return;
+    }
+    if state
+        .storage_migration
+        .migration_hold_reason("startup_backfill")
+        .await
+        .is_some()
+    {
         return;
     }
     let Some(_execution_lease) =

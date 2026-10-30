@@ -212,6 +212,14 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
     router
         .route("/api/system/status", get(fetch_system_status))
         .route("/api/system/storage", get(fetch_system_storage))
+        .route(
+            "/api/system/storage-migration",
+            get(fetch_storage_migration_status).patch(update_storage_migration_control),
+        )
+        .route(
+            "/api/system/storage-migration/events",
+            get(stream_storage_migration_events),
+        )
         .route("/api/system/tasks", get(list_system_task_runs))
         .route("/api/system/managed-tasks", get(list_managed_tasks))
         .route(
@@ -889,6 +897,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
     .await?;
     for (column, ty) in [
         ("attempt_public_id", "TEXT"),
+        ("invocation_id", "INTEGER"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
@@ -954,6 +963,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
             .await?;
     for (column, ty) in [
         ("attempt_public_id", "TEXT"),
+        ("invocation_id", "INTEGER"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),

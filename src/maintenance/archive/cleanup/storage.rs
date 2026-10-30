@@ -104,6 +104,9 @@ pub(crate) async fn verify_archive_storage(
         .map(|row| normalize_path_for_compare(Path::new(&row.file_path)))
         .collect::<HashSet<_>>();
     for row in &manifest_rows {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(summary);
+        }
         if !Path::new(&row.file_path).exists() {
             summary.missing_files += 1;
             warn!(
@@ -117,9 +120,15 @@ pub(crate) async fn verify_archive_storage(
     }
 
     let archive_root = resolved_archive_dir(config);
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(summary);
+    }
     let mut files = Vec::new();
     collect_archive_file_paths(&archive_root, &mut files)?;
     for file_path in files {
+        if crate::maintenance::migration_hold_signal_reached() {
+            break;
+        }
         let normalized = normalize_path_for_compare(&file_path);
         if archive_file_is_stale_temp(&file_path) {
             summary.stale_temp_files += 1;

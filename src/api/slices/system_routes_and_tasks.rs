@@ -1964,6 +1964,78 @@ pub(crate) async fn fetch_system_storage(
     Json(get_system_storage_snapshot(state.as_ref()).await)
 }
 
+pub(crate) async fn fetch_storage_migration_status(
+    State(state): State<Arc<AppState>>,
+) -> Json<StorageMigrationResponse> {
+    Json(state.storage_migration.snapshot().await)
+}
+
+pub(crate) async fn update_storage_migration_control(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<StorageMigrationControlRequest>,
+) -> Result<Json<StorageMigrationResponse>, (StatusCode, String)> {
+    authorize_control_request(&headers, &state.config.storage)?;
+    let response = state
+        .storage_migration
+        .apply_control(request)
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
+    if let Some(storage_runtime) = state.storage_runtime.as_ref() {
+        storage_runtime.wake();
+    }
+    Ok(Json(response))
+}
+
+pub(crate) async fn stream_storage_migration_events(
+    State(state): State<Arc<AppState>>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
+{
+    let runtime = state.storage_migration.clone();
+    let mut events = runtime.subscribe();
+    let initial_event = events.borrow().clone();
+    let initial_revision = initial_event.revision;
+    let initial = stream::once(async move {
+        Ok(storage_migration_sse_event(
+            initial_event.kind,
+            initial_event.revision,
+            initial_event.status,
+        ))
+    });
+    let updates = async_stream::stream! {
+        let mut last_revision = initial_revision;
+        loop {
+            if events.changed().await.is_err() {
+                break;
+            }
+            let event = events.borrow_and_update().clone();
+            if event.revision <= last_revision {
+                continue;
+            }
+            last_revision = event.revision;
+            yield Ok(storage_migration_sse_event(
+                event.kind,
+                event.revision,
+                event.status,
+            ));
+        }
+    };
+    Ok(Sse::new(initial.chain(updates))
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+fn storage_migration_sse_event(
+    kind: &'static str,
+    revision: u64,
+    status: StorageMigrationResponse,
+) -> Event {
+    Event::default()
+        .id(revision.to_string())
+        .event(kind)
+        .json_data(status)
+        .expect("storage migration status must be serializable")
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheMaterializationControlRequest {

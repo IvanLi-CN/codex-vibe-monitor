@@ -1,6 +1,7 @@
 use super::*;
 use crate::observability::contention::{StatsQuery, observe_query};
 use crate::runtime_mutation_bus::{RuntimeMutation, SequencedRuntimeMutation};
+use crate::storage::analytics::{AnalyticsProjection, TrafficStatsAggregateRequest};
 use crate::{
     EXPLICIT_BILLING_PRICE_VERSION_SUFFIX, ProxyPricingMode, REQUESTED_TIER_PRICE_VERSION_SUFFIX,
     RESPONSE_TIER_PRICE_VERSION_SUFFIX, estimate_proxy_cost_breakdown, has_billable_usage,
@@ -15,7 +16,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::Digest;
 use sqlx::{
-    FromRow, SqliteConnection,
+    FromRow, Postgres, SqliteConnection,
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
 };
 #[cfg(test)]
@@ -25,7 +26,7 @@ use std::path::Path;
 use std::str::FromStr;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use std::{fs, io};
@@ -58,6 +59,22 @@ pub(crate) use summary_observability::{
     fetch_summary, record_summary_projection_publication_metrics,
     summary_projection_pending_source_gaps,
 };
+
+/// Route-facing contract for the summary handler. The runtime supplies the shared authority at
+/// the AppState boundary; this seam keeps the handler independent of backend pools.
+pub(crate) async fn read_summary_analytics_projection(
+    projection: AnalyticsApiProjection<'_>,
+    start_epoch: i64,
+    end_epoch: i64,
+    source_scope: InvocationSourceScope,
+    live_request: Option<TrafficStatsAggregateRequest>,
+) -> Result<AnalyticsApiProjectionSnapshot, ApiError> {
+    projection
+        .require_projection(AnalyticsProjection::Summary)?
+        .read_historical_snapshot(start_epoch, end_epoch, source_scope, live_request)
+        .await
+        .map_err(ApiError::from)
+}
 
 pub(crate) use invocation_workflow_detail::{
     INVOCATION_COST_AUDIT_MISMATCH_EPSILON_USD, INVOCATION_COST_AUDIT_REASON_MODEL_MISSING,
@@ -166,9 +183,14 @@ pub(crate) use invocation_query::{
     InvocationResponseBodyResponse, InvocationSortBy, InvocationSortOrder,
     InvocationSuggestionBucket, InvocationSuggestionItem, InvocationSuggestionsResponse,
     InvocationSummaryAggRow, InvocationSummaryResponse, InvocationTokenSummary, SnapshotConstraint,
-    append_invocation_order_clause, apply_invocation_records_filters,
-    build_invocation_select_query, build_resolved_invocation_list_request, escape_sql_like,
+    append_invocation_order_clause, append_invocation_order_clause_postgres,
+    apply_invocation_records_filters, apply_invocation_records_filters_postgres,
+    build_invocation_list_request, build_invocation_select_query,
+    build_invocation_select_query_postgres, build_resolved_invocation_list_request,
+    build_resolved_invocation_list_request_postgres, escape_sql_like,
     invocation_display_status_sql, invocation_model_sql_expr, normalize_query_text,
+    postgres_payload_text, postgres_payload_text_any, postgres_payload_text_for,
+    postgres_resolved_failure_class_sql, postgres_resolved_failure_class_sql_for,
     resolve_invocation_snapshot_id, resolve_invocation_snapshot_id_on_connection,
 };
 
@@ -180,7 +202,84 @@ pub(crate) use invocation_timing::{
     invocation_live_phase_sql_with_timing_sql,
     invocation_live_phase_sql_with_timing_sql_at_snapshot, invocation_timing_sql_for_source,
     latest_pool_attempt_phase_sql, latest_pool_attempt_phase_sql_at_snapshot,
+    postgres_final_pool_invocation_timing_sql,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationReadEntryPoint {
+    List,
+    Locate,
+    Summary,
+    History,
+    NewRecords,
+    Suggestions,
+    PoolAttempts,
+    WorkflowDetail,
+    RecordDetail,
+    ResponseBody,
+    AttemptResponseBody,
+    RequestBody,
+}
+
+/// Every invocation business read consults this single authority router before selecting a
+/// backend. Control-plane metadata may continue to use `state.pool`; traffic and archive facts
+/// must use the backend returned here.
+pub(crate) fn route_invocation_read_backend(
+    _entrypoint: InvocationReadEntryPoint,
+    authority: crate::storage::core::BackendKind,
+) -> crate::storage::core::BackendKind {
+    authority
+}
+
+pub(crate) async fn invocation_read_backend_for(
+    state: &AppState,
+    entrypoint: InvocationReadEntryPoint,
+) -> crate::storage::core::BackendKind {
+    route_invocation_read_backend(
+        entrypoint,
+        state.traffic_authority.authority_backend().await,
+    )
+}
+
+#[cfg(test)]
+mod invocation_read_router_contract_tests {
+    use super::*;
+
+    #[test]
+    fn every_invocation_business_read_entrypoint_follows_module_authority() {
+        let entrypoints = [
+            InvocationReadEntryPoint::List,
+            InvocationReadEntryPoint::Locate,
+            InvocationReadEntryPoint::Summary,
+            InvocationReadEntryPoint::History,
+            InvocationReadEntryPoint::NewRecords,
+            InvocationReadEntryPoint::Suggestions,
+            InvocationReadEntryPoint::PoolAttempts,
+            InvocationReadEntryPoint::WorkflowDetail,
+            InvocationReadEntryPoint::RecordDetail,
+            InvocationReadEntryPoint::ResponseBody,
+            InvocationReadEntryPoint::AttemptResponseBody,
+            InvocationReadEntryPoint::RequestBody,
+        ];
+        for entrypoint in entrypoints {
+            assert_eq!(
+                route_invocation_read_backend(
+                    entrypoint,
+                    crate::storage::core::BackendKind::Postgres,
+                ),
+                crate::storage::core::BackendKind::Postgres,
+                "{entrypoint:?} must not fall back to SQLite",
+            );
+            assert_eq!(
+                route_invocation_read_backend(
+                    entrypoint,
+                    crate::storage::core::BackendKind::Sqlite,
+                ),
+                crate::storage::core::BackendKind::Sqlite,
+            );
+        }
+    }
+}
 
 pub(crate) const INVOCATION_PROXY_DISPLAY_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), '')";
 pub(crate) const INVOCATION_ENDPOINT_SQL: &str =
@@ -701,6 +800,22 @@ mod invocation_live_phase_tests {
         assert!(stream_sql.contains("final_attempt.stream_latency_ms > 0"));
         assert!(!first_token_sql.contains("status, ''))) IN ('success', 'completed'"));
         assert!(!stream_sql.contains("status, ''))) IN ('success', 'completed'"));
+    }
+
+    #[test]
+    fn postgres_final_attempt_timing_uses_postgres_retry_evidence() {
+        let first_token_sql = postgres_final_pool_invocation_timing_sql("inv", "first_token_ms");
+        let stream_sql = postgres_final_pool_invocation_timing_sql("inv", "t_upstream_stream_ms");
+
+        for sql in [first_token_sql, stream_sql] {
+            assert!(sql.contains("FROM pool_upstream_request_attempts AS final_attempt"));
+            assert!(sql.contains("final_attempt.stream_latency_ms > 0"));
+            assert!(
+                sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC")
+            );
+            assert!(!sql.contains("json_valid"));
+            assert!(!sql.contains("?1"));
+        }
     }
 
     #[test]
@@ -1289,6 +1404,32 @@ async fn query_current_runtime_db_keys_on_connection(
         .collect())
 }
 
+async fn query_current_runtime_db_keys_postgres(
+    connection: &mut sqlx::PgConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+) -> Result<HashSet<(String, String)>, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct RuntimeKeyRow {
+        invoke_id: String,
+        occurred_at: String,
+    }
+
+    let mut query = QueryBuilder::<Postgres>::new(
+        "SELECT invoke_id, occurred_at FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters_postgres(&mut query, filters, source_scope, snapshot);
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+    Ok(query
+        .build_query_as::<RuntimeKeyRow>()
+        .fetch_all(&mut *connection)
+        .await?
+        .into_iter()
+        .map(|row| (row.invoke_id, row.occurred_at))
+        .collect())
+}
+
 async fn count_stale_runtime_db_rows_before_target(
     pool: &Pool<Sqlite>,
     stale_keys: &HashSet<(String, String)>,
@@ -1338,6 +1479,59 @@ async fn count_stale_runtime_db_rows_before_target(
             .await?
             .total;
     }
+    Ok(count)
+}
+
+async fn count_stale_runtime_db_rows_before_target_postgres(
+    connection: &mut sqlx::PgConnection,
+    stale_keys: &HashSet<(String, String)>,
+    target_occurred_at: &str,
+    target_id: i64,
+    snapshot_id: i64,
+) -> Result<i64, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct CountRow {
+        total: i64,
+    }
+
+    let mut count = stale_keys
+        .iter()
+        .filter(|(_, occurred_at)| occurred_at.as_str() > target_occurred_at)
+        .count() as i64;
+    let equal_time_keys = stale_keys
+        .iter()
+        .filter(|(_, occurred_at)| occurred_at.as_str() == target_occurred_at)
+        .collect::<Vec<_>>();
+    if equal_time_keys.is_empty() {
+        return Ok(count);
+    }
+    let mut query = QueryBuilder::<Postgres>::new(
+        "SELECT COUNT(*) AS total FROM codex_invocations WHERE id <= ",
+    );
+    query
+        .push_bind(snapshot_id)
+        .push(" AND id > ")
+        .push_bind(target_id)
+        .push(" AND occurred_at = ")
+        .push_bind(target_occurred_at.to_string())
+        .push(" AND (");
+    {
+        let mut separated = query.separated(" OR ");
+        for (invoke_id, occurred_at) in equal_time_keys {
+            separated
+                .push("(invoke_id = ")
+                .push_bind(invoke_id)
+                .push(" AND occurred_at = ")
+                .push_bind(occurred_at)
+                .push(")");
+        }
+    }
+    query.push(")");
+    count += query
+        .build_query_as::<CountRow>()
+        .fetch_one(&mut *connection)
+        .await?
+        .total;
     Ok(count)
 }
 
@@ -1415,6 +1609,60 @@ async fn query_terminal_db_keys_for_runtime_records_on_connection(
         );
     }
     Ok(terminal_keys)
+}
+
+async fn query_terminal_db_keys_for_runtime_records_postgres(
+    connection: &mut sqlx::PgConnection,
+    runtime_records: &[ApiInvocation],
+    snapshot: Option<SnapshotConstraint>,
+) -> Result<HashSet<(String, String)>, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct RuntimeKeyRow {
+        invoke_id: String,
+        occurred_at: String,
+    }
+
+    let keys = runtime_records
+        .iter()
+        .map(|record| (record.invoke_id.clone(), record.occurred_at.clone()))
+        .collect::<HashSet<_>>();
+    if keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut query = QueryBuilder::<Postgres>::new(
+        "SELECT invoke_id, occurred_at FROM codex_invocations \
+         WHERE LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') AND (",
+    );
+    {
+        let mut separated = query.separated(" OR ");
+        for (invoke_id, occurred_at) in keys {
+            separated
+                .push("(invoke_id = ")
+                .push_bind(invoke_id)
+                .push(" AND occurred_at = ")
+                .push_bind(occurred_at)
+                .push(")");
+        }
+    }
+    query.push(")");
+    if let Some(snapshot_constraint) = snapshot {
+        match snapshot_constraint {
+            SnapshotConstraint::UpTo(snapshot_id) => {
+                query.push(" AND id <= ").push_bind(snapshot_id);
+            }
+            SnapshotConstraint::After(snapshot_id) => {
+                query.push(" AND id > ").push_bind(snapshot_id);
+            }
+        }
+    }
+    Ok(query
+        .build_query_as::<RuntimeKeyRow>()
+        .fetch_all(&mut *connection)
+        .await?
+        .into_iter()
+        .map(|row| (row.invoke_id, row.occurred_at))
+        .collect())
 }
 
 pub(crate) fn overlay_runtime_records_for_current_page(
@@ -1951,6 +2199,45 @@ impl InvocationSuggestionField {
         }
     }
 
+    fn postgres_sql_expr(self) -> String {
+        match self {
+            Self::Model => "model".to_string(),
+            Self::RequestModel => format!(
+                "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''))",
+                postgres_payload_text("requestModel")
+            ),
+            Self::ResponseModel => format!(
+                "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''))",
+                postgres_payload_text("responseModel")
+            ),
+            Self::Endpoint => postgres_payload_text("endpoint"),
+            Self::FailureKind => format!(
+                "COALESCE({}, failure_kind)",
+                postgres_payload_text("failureKind")
+            ),
+            Self::StickyKey => format!(
+                "COALESCE({}, {})",
+                postgres_payload_text("stickyKey"),
+                postgres_payload_text("promptCacheKey")
+            ),
+            Self::ServiceTier => postgres_payload_text_any(&["serviceTier", "service_tier"]),
+            Self::PromptCacheKey
+            | Self::RequesterIp
+            | Self::ProxyDisplayName
+            | Self::ReasoningEffort => postgres_payload_text(match self {
+                Self::PromptCacheKey => "promptCacheKey",
+                Self::RequesterIp => "requesterIp",
+                Self::ProxyDisplayName => "proxyDisplayName",
+                Self::ReasoningEffort => "reasoningEffort",
+                _ => unreachable!(),
+            }),
+            Self::UpstreamAccount => format!(
+                "NULLIF({}, '')::BIGINT",
+                postgres_payload_text("upstreamAccountId")
+            ),
+        }
+    }
+
     fn clear_field_filter(self, filters: &InvocationRecordsFilters) -> InvocationRecordsFilters {
         let mut next = filters.clone();
         match self {
@@ -2159,6 +2446,138 @@ pub(crate) async fn query_invocation_upstream_account_suggestion_bucket(
     Ok(InvocationSuggestionBucket { items, has_more })
 }
 
+pub(crate) async fn query_invocation_suggestion_bucket_postgres(
+    connection: &mut sqlx::PgConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+    sql_expr: &str,
+    match_query: Option<&str>,
+    limit: i64,
+) -> Result<InvocationSuggestionBucket> {
+    #[derive(Debug, FromRow)]
+    struct SuggestionRow {
+        value: Option<String>,
+        count: i64,
+    }
+
+    let mut query = QueryBuilder::<Postgres>::new("SELECT MIN(TRIM(COALESCE(");
+    query
+        .push(sql_expr)
+        .push(", ''))) AS value, COUNT(*) AS count FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters_postgres(&mut query, filters, source_scope, snapshot);
+    query
+        .push(" AND TRIM(COALESCE(")
+        .push(sql_expr)
+        .push(", '')) <> ''");
+    if let Some(match_query) = match_query {
+        let pattern = format!("%{}%", escape_sql_like(&match_query.to_lowercase()));
+        query
+            .push(" AND LOWER(TRIM(COALESCE(")
+            .push(sql_expr)
+            .push(", ''))) LIKE ")
+            .push_bind(pattern)
+            .push(" ESCAPE '\\'");
+    }
+    query
+        .push(" GROUP BY LOWER(TRIM(COALESCE(")
+        .push(sql_expr)
+        .push(", ''))) ORDER BY count DESC, value ASC LIMIT ")
+        .push_bind(limit.saturating_add(1));
+
+    let rows = query
+        .build_query_as::<SuggestionRow>()
+        .fetch_all(&mut *connection)
+        .await?;
+    let has_more = rows.len() as i64 > limit;
+    let items = rows
+        .into_iter()
+        .take(limit.max(0) as usize)
+        .filter_map(|row| {
+            let value = row.value?.trim().to_string();
+            (!value.is_empty()).then_some(InvocationSuggestionItem {
+                value,
+                label: None,
+                count: row.count,
+            })
+        })
+        .collect();
+    Ok(InvocationSuggestionBucket { items, has_more })
+}
+
+pub(crate) async fn query_invocation_upstream_account_suggestion_bucket_postgres(
+    connection: &mut sqlx::PgConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+    match_query: Option<&str>,
+    limit: i64,
+) -> Result<InvocationSuggestionBucket> {
+    #[derive(Debug, FromRow)]
+    struct SuggestionRow {
+        value: Option<i64>,
+        label: Option<String>,
+        count: i64,
+    }
+
+    let account_id = format!(
+        "NULLIF({}, '')::BIGINT",
+        postgres_payload_text("upstreamAccountId")
+    );
+    let account_name = postgres_payload_text("upstreamAccountName");
+    let mut query = QueryBuilder::<Postgres>::new(
+        "SELECT upstream_account_id AS value, COALESCE(MIN(NULLIF(TRIM(COALESCE(upstream_account_name, '')), '')), CAST(upstream_account_id AS TEXT)) AS label, COUNT(*) AS count FROM (SELECT ",
+    );
+    query
+        .push(&account_id)
+        .push(" AS upstream_account_id, ")
+        .push(&account_name)
+        .push(" AS upstream_account_name FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters_postgres(&mut query, filters, source_scope, snapshot);
+    query.push(") scoped WHERE upstream_account_id IS NOT NULL");
+    if let Some(match_query) = match_query {
+        let pattern = format!("%{}%", escape_sql_like(&match_query.trim().to_lowercase()));
+        query
+            .push(" AND (LOWER(TRIM(COALESCE(upstream_account_name, ''))) LIKE ")
+            .push_bind(pattern.clone())
+            .push(" ESCAPE '\\' OR CAST(upstream_account_id AS TEXT) LIKE ")
+            .push_bind(pattern)
+            .push(" ESCAPE '\\')");
+    }
+    query
+        .push(" GROUP BY upstream_account_id ORDER BY count DESC, label ASC, value ASC LIMIT ")
+        .push_bind(limit.saturating_add(1));
+
+    let rows = query
+        .build_query_as::<SuggestionRow>()
+        .fetch_all(&mut *connection)
+        .await?;
+    let has_more = rows.len() as i64 > limit;
+    let items = rows
+        .into_iter()
+        .take(limit.max(0) as usize)
+        .filter_map(|row| {
+            let value = row.value?;
+            let name = row
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            let label = match name {
+                Some(name) if name == value.to_string() => format!("#{value}"),
+                Some(name) => format!("{name} (#{value})"),
+                None => format!("#{value}"),
+            };
+            Some(InvocationSuggestionItem {
+                value: value.to_string(),
+                label: Some(label),
+                count: row.count,
+            })
+        })
+        .collect();
+    Ok(InvocationSuggestionBucket { items, has_more })
+}
+
 pub(crate) fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
     params.limit.is_some()
         && params.page.is_none()
@@ -2254,6 +2673,160 @@ async fn query_invocation_exception_summary_on_connection(
     })
 }
 
+async fn query_invocation_new_records_count_postgres(
+    connection: &mut sqlx::PgConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<i64, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct NewCountRow {
+        total: i64,
+    }
+
+    let mut query = QueryBuilder::<Postgres>::new(
+        "SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters_postgres(
+        &mut query,
+        filters,
+        source_scope,
+        Some(SnapshotConstraint::After(snapshot_id)),
+    );
+    Ok(query
+        .build_query_as::<NewCountRow>()
+        .fetch_one(&mut *connection)
+        .await?
+        .total)
+}
+
+async fn query_invocation_exception_summary_postgres(
+    connection: &mut sqlx::PgConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<InvocationExceptionSummary, ApiError> {
+    let resolved_failure = postgres_resolved_failure_class_sql();
+    let mut query = QueryBuilder::<Postgres>::new(format!(
+        "SELECT \
+         COALESCE(SUM(CASE WHEN ({resolved_failure}) NOT IN ('', 'none') THEN 1 ELSE 0 END), 0) AS failure_count, \
+         COALESCE(SUM(CASE WHEN ({resolved_failure}) = 'service_failure' THEN 1 ELSE 0 END), 0) AS service_failure_count, \
+         COALESCE(SUM(CASE WHEN ({resolved_failure}) = 'client_failure' THEN 1 ELSE 0 END), 0) AS client_failure_count, \
+         COALESCE(SUM(CASE WHEN ({resolved_failure}) = 'client_abort' THEN 1 ELSE 0 END), 0) AS client_abort_count, \
+         COALESCE(SUM(CASE WHEN ({resolved_failure}) = 'service_failure' THEN 1 ELSE 0 END), 0) AS actionable_failure_count \
+         FROM codex_invocations WHERE 1 = 1"
+    ));
+    apply_invocation_records_filters_postgres(
+        &mut query,
+        filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let row = query
+        .build_query_as::<InvocationExceptionAggRow>()
+        .fetch_one(&mut *connection)
+        .await?;
+    Ok(InvocationExceptionSummary {
+        failure_count: row.failure_count,
+        service_failure_count: row.service_failure_count,
+        client_failure_count: row.client_failure_count,
+        client_abort_count: row.client_abort_count,
+        actionable_failure_count: row.actionable_failure_count,
+    })
+}
+
+async fn query_invocation_network_summary_postgres(
+    connection: &mut sqlx::PgConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<InvocationNetworkSummary, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct NetworkRow {
+        avg_ttfb_ms: Option<f64>,
+        p95_ttfb_ms: Option<f64>,
+        avg_first_token_ms: Option<f64>,
+        p95_first_token_ms: Option<f64>,
+        avg_response_duration_ms: Option<f64>,
+        p95_response_duration_ms: Option<f64>,
+        avg_total_ms: Option<f64>,
+        p95_total_ms: Option<f64>,
+        max_total_ms: Option<f64>,
+    }
+
+    let final_first_token_sql =
+        postgres_final_pool_invocation_timing_sql("codex_invocations", "first_token_ms");
+    let final_stream_sql =
+        postgres_final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms");
+    let mut query = QueryBuilder::<Postgres>::new(format!(
+        "SELECT \
+         AVG(CASE WHEN t_upstream_ttfb_ms >= 0 THEN t_upstream_ttfb_ms END) AS avg_ttfb_ms, \
+         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t_upstream_ttfb_ms) FILTER (WHERE t_upstream_ttfb_ms >= 0) AS p95_ttfb_ms, \
+         AVG({final_first_token_sql}) AS avg_first_token_ms, \
+         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {final_first_token_sql}) FILTER (WHERE ({final_first_token_sql}) IS NOT NULL) AS p95_first_token_ms, \
+         AVG({final_stream_sql}) AS avg_response_duration_ms, \
+         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {final_stream_sql}) FILTER (WHERE ({final_stream_sql}) IS NOT NULL) AS p95_response_duration_ms, \
+         AVG(CASE WHEN t_total_ms >= 0 THEN t_total_ms END) AS avg_total_ms, \
+         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t_total_ms) FILTER (WHERE t_total_ms >= 0) AS p95_total_ms, \
+         MAX(CASE WHEN t_total_ms >= 0 THEN t_total_ms END) AS max_total_ms \
+         FROM codex_invocations WHERE 1 = 1"
+    ));
+    apply_invocation_records_filters_postgres(
+        &mut query,
+        filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let row = query
+        .build_query_as::<NetworkRow>()
+        .fetch_one(&mut *connection)
+        .await?;
+    Ok(InvocationNetworkSummary {
+        avg_ttfb_ms: row.avg_ttfb_ms,
+        p95_ttfb_ms: row.p95_ttfb_ms,
+        avg_first_token_ms: row.avg_first_token_ms,
+        p95_first_token_ms: row.p95_first_token_ms,
+        avg_response_duration_ms: row.avg_response_duration_ms,
+        p95_response_duration_ms: row.p95_response_duration_ms,
+        avg_total_ms: row.avg_total_ms,
+        p95_total_ms: row.p95_total_ms,
+        max_total_ms: row.max_total_ms,
+    })
+}
+
+async fn query_invocation_summary_totals_postgres(
+    connection: &mut sqlx::PgConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<InvocationSummaryAggRow, ApiError> {
+    let resolved_failure = postgres_resolved_failure_class_sql();
+    let status_norm = "LOWER(TRIM(COALESCE(status, '')))";
+    let mut query = QueryBuilder::<Postgres>::new(format!(
+        "SELECT \
+         COUNT(*) AS total_count, \
+         COALESCE(SUM(CASE WHEN ({resolved_failure}) = 'none' AND ({status_norm} IN ('success', 'completed', 'warning_success') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN ({resolved_failure}) IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
+         COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+         COALESCE(SUM(cost), 0.0) AS total_cost, \
+         COALESCE(SUM(GREATEST(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens, \
+         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens, \
+         COALESCE(SUM(output_tokens), 0) AS output_tokens, \
+         MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
+         FROM codex_invocations WHERE 1 = 1"
+    ));
+    apply_invocation_records_filters_postgres(
+        &mut query,
+        filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    Ok(query
+        .build_query_as::<InvocationSummaryAggRow>()
+        .fetch_one(&mut *connection)
+        .await?)
+}
+
 pub(crate) async fn list_invocations(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
@@ -2267,6 +2840,16 @@ pub(crate) async fn list_invocations_with_runtime_overlay(
     params: ListQuery,
     runtime_overlay_override: Option<Vec<ApiInvocation>>,
 ) -> Result<Json<ListResponse>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::List).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        return list_invocations_with_runtime_overlay_postgres(
+            state,
+            params,
+            runtime_overlay_override,
+        )
+        .await;
+    }
     let request = build_resolved_invocation_list_request(
         &state.pool,
         &params,
@@ -2486,6 +3069,198 @@ pub(crate) async fn list_invocations_with_runtime_overlay(
     }))
 }
 
+async fn list_invocations_with_runtime_overlay_postgres(
+    state: Arc<AppState>,
+    params: ListQuery,
+    runtime_overlay_override: Option<Vec<ApiInvocation>>,
+) -> Result<Json<ListResponse>, ApiError> {
+    let mut request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    if let Some(attempt_id) = normalize_query_text(params.attempt_id.as_deref()) {
+        let resolved_invoke_id = {
+            #[derive(Debug, FromRow)]
+            struct AttemptLookupRow {
+                invoke_id: String,
+            }
+            let mut transaction = state.traffic_authority.begin().await?;
+            let row = sqlx::query_as::<_, AttemptLookupRow>(
+                "SELECT invoke_id FROM pool_upstream_request_attempts \
+                 WHERE attempt_public_id = $1 LIMIT 1",
+            )
+            .bind(&attempt_id)
+            .fetch_optional(transaction.postgres_connection()?)
+            .await?;
+            transaction.rollback().await?;
+            row.map(|row| row.invoke_id)
+        };
+        request.filters.request_id =
+            Some(resolved_invoke_id.unwrap_or_else(|| format!("__missing_attempt__:{attempt_id}")));
+    }
+    let runtime_overlay_records = match runtime_overlay_override {
+        Some(records) => records,
+        None if should_overlay_runtime_records(&request) => {
+            runtime_overlay_snapshot(state.as_ref())
+        }
+        None => Vec::new(),
+    };
+    let source_scope = InvocationSourceScope::All;
+    let legacy = is_legacy_invocation_stream_query(&params);
+    let mut transaction = state.traffic_authority.begin().await?;
+    let snapshot_id = if legacy {
+        0
+    } else if let Some(snapshot_id) = request.snapshot_id {
+        snapshot_id
+    } else {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(id) FROM codex_invocations WHERE source IS NOT NULL",
+        )
+        .fetch_one(transaction.postgres_connection()?)
+        .await?
+        .unwrap_or(0)
+    };
+    let snapshot = (!legacy).then_some(SnapshotConstraint::UpTo(snapshot_id));
+
+    let db_terminal_keys = if runtime_overlay_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_terminal_db_keys_for_runtime_records_postgres(
+            transaction.postgres_connection()?,
+            &runtime_overlay_records,
+            snapshot,
+        )
+        .await?
+    };
+
+    #[derive(Debug, FromRow)]
+    struct CountRow {
+        total: i64,
+    }
+    let mut count_query = QueryBuilder::<Postgres>::new(
+        "SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters_postgres(
+        &mut count_query,
+        &request.filters,
+        source_scope,
+        snapshot,
+    );
+    let total = if legacy {
+        0
+    } else {
+        count_query
+            .build_query_as::<CountRow>()
+            .fetch_one(transaction.postgres_connection()?)
+            .await?
+            .total
+    };
+    let db_runtime_keys = if runtime_overlay_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_current_runtime_db_keys_postgres(
+            transaction.postgres_connection()?,
+            &request.filters,
+            source_scope,
+            snapshot,
+        )
+        .await?
+    };
+    let offset = if legacy {
+        0
+    } else {
+        (request.page - 1).saturating_mul(request.page_size)
+    };
+    let mut page_id_query =
+        QueryBuilder::<Postgres>::new("SELECT id FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters_postgres(
+        &mut page_id_query,
+        &request.filters,
+        source_scope,
+        snapshot,
+    );
+    append_invocation_order_clause_postgres(
+        &mut page_id_query,
+        request.sort_by,
+        request.sort_order,
+    );
+    let db_page_size = if runtime_overlay_records.is_empty() {
+        request.page_size
+    } else {
+        offset.saturating_add(request.page_size)
+    };
+    let db_offset = if runtime_overlay_records.is_empty() {
+        offset
+    } else {
+        0
+    };
+    page_id_query
+        .push(" LIMIT ")
+        .push_bind(db_page_size)
+        .push(" OFFSET ")
+        .push_bind(db_offset);
+    let page_ids = page_id_query
+        .build_query_as::<(i64,)>()
+        .fetch_all(transaction.postgres_connection()?)
+        .await?
+        .into_iter()
+        .map(|row| row.0)
+        .collect::<Vec<_>>();
+    let mut records = if page_ids.is_empty() {
+        Vec::new()
+    } else {
+        let mut query = build_invocation_select_query_postgres();
+        apply_invocation_records_filters_postgres(
+            &mut query,
+            &request.filters,
+            source_scope,
+            snapshot,
+        );
+        query.push(" AND id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in &page_ids {
+                separated.push_bind(*id);
+            }
+        }
+        query.push(")");
+        let mut records = query
+            .build_query_as::<ApiInvocation>()
+            .fetch_all(transaction.postgres_connection()?)
+            .await?;
+        for record in &mut records {
+            hydrate_api_invocation_blocked_binding(record);
+        }
+        let positions = page_ids
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect::<HashMap<_, _>>();
+        records.sort_by_key(|record| positions.get(&record.id).copied().unwrap_or(usize::MAX));
+        records
+    };
+    transaction.commit().await?;
+
+    let response_total = if legacy { records.len() as i64 } else { total };
+    let (mut records, response_total) = overlay_runtime_records_for_current_page(
+        &request,
+        source_scope,
+        runtime_overlay_records,
+        &db_runtime_keys,
+        &db_terminal_keys,
+        !legacy,
+        std::mem::take(&mut records),
+        response_total,
+        "invocation_records_postgres",
+    );
+    let pricing_catalog = state.pricing_catalog.read().await.clone();
+    apply_invocation_cost_audits(&mut records, &pricing_catalog);
+    Ok(Json(ListResponse {
+        snapshot_id,
+        total: response_total,
+        page: if legacy { 1 } else { request.page },
+        page_size: request.page_size,
+        records,
+    }))
+}
+
 async fn list_invocation_page_with_runtime_overlay_on_connection(
     request: &InvocationListRequest,
     source_scope: InvocationSourceScope,
@@ -2650,6 +3425,242 @@ async fn list_invocation_page_with_runtime_overlay_on_connection(
     })
 }
 
+async fn locate_invocation_page_postgres(
+    state: Arc<AppState>,
+    params: &LocateInvocationQuery,
+) -> Result<Option<LocateInvocationResponse>, ApiError> {
+    let requested_id = normalize_query_text(params.invoke_id.as_deref())
+        .or_else(|| normalize_query_text(params.request_id.as_deref()));
+    let attempt_id = normalize_query_text(params.attempt_id.as_deref());
+    if requested_id.is_none() && attempt_id.is_none() {
+        return Err(ApiError::bad_request(anyhow!(
+            "invokeId or attemptId is required"
+        )));
+    }
+    let upstream_account_id = match params.upstream_account_id {
+        Some(value) if value > 0 => Some(value),
+        Some(_) => {
+            return Err(ApiError::bad_request(anyhow!(
+                "upstreamAccountId must be positive"
+            )));
+        }
+        None => None,
+    };
+    let page_size = params
+        .page_size
+        .unwrap_or(50)
+        .clamp(1, state.config.list_limit_max as i64);
+    let source_scope = InvocationSourceScope::All;
+    let runtime_records = runtime_overlay_snapshot(state.as_ref());
+    let mut transaction = state.traffic_authority.begin().await?;
+    let (request_id, resolved_attempt_id, upstream_account_id) =
+        if let Some(attempt_public_id) = attempt_id.as_deref() {
+            let target = sqlx::query_as::<_, InvocationLocateAttemptRow>(
+                "SELECT invoke_id, upstream_account_id FROM pool_upstream_request_attempts \
+                 WHERE attempt_public_id = $1 LIMIT 1",
+            )
+            .bind(attempt_public_id)
+            .fetch_optional(transaction.postgres_connection()?)
+            .await?;
+            let Some(target) = target else {
+                transaction.rollback().await?;
+                return Ok(None);
+            };
+            if upstream_account_id.is_some() && upstream_account_id != target.upstream_account_id {
+                transaction.rollback().await?;
+                return Ok(None);
+            }
+            (
+                target.invoke_id,
+                Some(attempt_public_id.to_string()),
+                upstream_account_id.or(target.upstream_account_id),
+            )
+        } else {
+            (requested_id.unwrap_or_default(), None, upstream_account_id)
+        };
+    let snapshot_id = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(id) FROM codex_invocations WHERE source IS NOT NULL",
+    )
+    .fetch_one(transaction.postgres_connection()?)
+    .await?
+    .unwrap_or(0);
+    let base_filters = InvocationRecordsFilters {
+        upstream_account_id,
+        ..Default::default()
+    };
+    let runtime_target = runtime_records.iter().find(|record| {
+        runtime_text_equals(Some(record.invoke_id.as_str()), request_id.as_str())
+            && runtime_record_matches_filters(record, &base_filters, source_scope)
+    });
+    let mut target_query =
+        QueryBuilder::<Postgres>::new("SELECT id, occurred_at FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters_postgres(
+        &mut target_query,
+        &base_filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    target_query
+        .push(" AND invoke_id = ")
+        .push_bind(request_id.clone())
+        .push(" ORDER BY occurred_at DESC, id DESC LIMIT 1");
+    let target = target_query
+        .build_query_as::<InvocationLocateRow>()
+        .fetch_optional(transaction.postgres_connection()?)
+        .await?;
+    let Some((target_occurred_at, target_id)) = target
+        .as_ref()
+        .map(|row| (row.occurred_at.clone(), row.id))
+        .or_else(|| runtime_target.map(|record| (record.occurred_at.clone(), record.id)))
+    else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+    #[derive(Debug, FromRow)]
+    struct CountRow {
+        total: i64,
+    }
+    let mut rank_query = QueryBuilder::<Postgres>::new(
+        "SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters_postgres(
+        &mut rank_query,
+        &base_filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    rank_query
+        .push(" AND (occurred_at > ")
+        .push_bind(target_occurred_at.clone())
+        .push(" OR (occurred_at = ")
+        .push_bind(target_occurred_at.clone())
+        .push(" AND id > ")
+        .push_bind(target_id)
+        .push("))");
+    let db_rank = rank_query
+        .build_query_as::<CountRow>()
+        .fetch_one(transaction.postgres_connection()?)
+        .await?
+        .total;
+    let db_terminal_keys = if runtime_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_terminal_db_keys_for_runtime_records_postgres(
+            transaction.postgres_connection()?,
+            &runtime_records,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
+    let db_runtime_keys = if runtime_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_current_runtime_db_keys_postgres(
+            transaction.postgres_connection()?,
+            &base_filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
+    let anchor_runtime_records = runtime_records
+        .iter()
+        .filter(|record| {
+            let key = (record.invoke_id.clone(), record.occurred_at.clone());
+            db_runtime_keys.contains(&key)
+                || runtime_record_matches_filters(record, &base_filters, source_scope)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let runtime_by_key = runtime_records
+        .iter()
+        .map(|record| {
+            (
+                (record.invoke_id.clone(), record.occurred_at.clone()),
+                record,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let stale_db_runtime_keys = db_runtime_keys
+        .iter()
+        .filter(|key| {
+            runtime_by_key.get(*key).is_some_and(|record| {
+                !runtime_record_matches_filters(record, &base_filters, source_scope)
+            })
+        })
+        .cloned()
+        .collect::<HashSet<_>>();
+    let stale_db_runtime_before_target = count_stale_runtime_db_rows_before_target_postgres(
+        transaction.postgres_connection()?,
+        &stale_db_runtime_keys,
+        &target_occurred_at,
+        target_id,
+        snapshot_id,
+    )
+    .await?;
+    let runtime_new_before_target = runtime_records
+        .iter()
+        .filter(|record| {
+            let key = (record.invoke_id.clone(), record.occurred_at.clone());
+            !db_runtime_keys.contains(&key)
+                && !db_terminal_keys.contains(&key)
+                && runtime_record_matches_filters(record, &base_filters, source_scope)
+                && (record.occurred_at.as_str() > target_occurred_at.as_str()
+                    || (record.occurred_at.as_str() == target_occurred_at.as_str()
+                        && record.id > target_id))
+        })
+        .count() as i64;
+    let target_absolute_index = db_rank
+        .saturating_sub(stale_db_runtime_before_target)
+        .saturating_add(runtime_new_before_target);
+    transaction.commit().await?;
+
+    let target_page = target_absolute_index / page_size + 1;
+    for page in [
+        target_page,
+        target_page.saturating_sub(1).max(1),
+        target_page.saturating_add(1),
+    ] {
+        let Json(response) = list_invocations_with_runtime_overlay(
+            state.clone(),
+            ListQuery {
+                page: Some(page),
+                page_size: Some(page_size),
+                snapshot_id: Some(snapshot_id),
+                sort_by: Some("occurredAt".to_string()),
+                sort_order: Some("desc".to_string()),
+                upstream_account_id,
+                ..Default::default()
+            },
+            Some(anchor_runtime_records.clone()),
+        )
+        .await?;
+        if let Some(target_index) = response.records.iter().position(|record| {
+            runtime_text_equals(Some(record.invoke_id.as_str()), request_id.as_str())
+        }) {
+            let anchor_id = store_invocation_anchor_snapshot(
+                snapshot_id,
+                upstream_account_id,
+                anchor_runtime_records.clone(),
+            );
+            return Ok(Some(LocateInvocationResponse {
+                anchor_id,
+                snapshot_id: response.snapshot_id,
+                invoke_id: request_id,
+                attempt_id: resolved_attempt_id,
+                total: response.total,
+                page: response.page,
+                page_size: response.page_size,
+                records: response.records,
+                target_index,
+                target_absolute_index: (response.page - 1) * response.page_size
+                    + target_index as i64,
+            }));
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocateInvocationResponse {
@@ -2681,6 +3692,11 @@ pub(crate) async fn locate_invocation_page(
     state: Arc<AppState>,
     params: &LocateInvocationQuery,
 ) -> Result<Option<LocateInvocationResponse>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::Locate).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        return locate_invocation_page_postgres(state, params).await;
+    }
     let request_id = normalize_query_text(params.invoke_id.as_deref())
         .or_else(|| normalize_query_text(params.request_id.as_deref()));
     let attempt_id = normalize_query_text(params.attempt_id.as_deref());
@@ -2942,11 +3958,173 @@ pub(crate) async fn fetch_invocation_summary(
     fetch_invocation_summary_with_runtime_overlay(state, params, None).await
 }
 
+async fn fetch_invocation_summary_with_runtime_overlay_postgres(
+    state: Arc<AppState>,
+    params: ListQuery,
+    runtime_overlay_override: Option<Vec<ApiInvocation>>,
+) -> Result<Json<InvocationSummaryResponse>, ApiError> {
+    let runtime_records =
+        runtime_overlay_override.unwrap_or_else(|| runtime_overlay_snapshot(state.as_ref()));
+    let mut transaction = state.traffic_authority.begin().await?;
+    let request = build_resolved_invocation_list_request_postgres(
+        transaction.postgres_connection()?,
+        &params,
+        state.config.list_limit_max as i64,
+    )
+    .await?;
+    let snapshot_id = if let Some(snapshot_id) = request.snapshot_id {
+        snapshot_id
+    } else {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(id) FROM codex_invocations WHERE source IS NOT NULL",
+        )
+        .fetch_one(transaction.postgres_connection()?)
+        .await?
+        .unwrap_or(0)
+    };
+    let source_scope = InvocationSourceScope::All;
+    let totals = query_invocation_summary_totals_postgres(
+        transaction.postgres_connection()?,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+    let network = query_invocation_network_summary_postgres(
+        transaction.postgres_connection()?,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+    let exception = query_invocation_exception_summary_postgres(
+        transaction.postgres_connection()?,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+    let new_records_count = query_invocation_new_records_count_postgres(
+        transaction.postgres_connection()?,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+
+    let runtime_overlay_delta = if request.snapshot_id.is_none() {
+        let db_runtime_keys = query_current_runtime_db_keys_postgres(
+            transaction.postgres_connection()?,
+            &request.filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?;
+        let db_terminal_keys = query_terminal_db_keys_for_runtime_records_postgres(
+            transaction.postgres_connection()?,
+            &runtime_records,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?;
+        runtime_overlay_total_delta(
+            &request,
+            source_scope,
+            &runtime_records,
+            &db_runtime_keys,
+            &db_terminal_keys,
+        )
+        .0
+    } else {
+        RuntimeSummaryOverlayDelta::default()
+    };
+    transaction.commit().await?;
+
+    let total_count = (totals.total_count + runtime_overlay_delta.total_count).max(0);
+    let success_count = (totals.success_count + runtime_overlay_delta.success_count).max(0);
+    let failure_count = (totals.failure_count + runtime_overlay_delta.failure_count).max(0);
+    let total_tokens = (totals.total_tokens + runtime_overlay_delta.total_tokens).max(0);
+    let total_cost = totals.total_cost + runtime_overlay_delta.total_cost;
+    let cache_write_tokens =
+        (totals.cache_write_tokens + runtime_overlay_delta.cache_write_tokens).max(0);
+    let cache_input_tokens =
+        (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
+    let output_tokens = (totals.output_tokens + runtime_overlay_delta.output_tokens).max(0);
+    let max_tokens_per_request = match (
+        totals.max_total_tokens,
+        runtime_overlay_delta.max_total_tokens,
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    };
+    let max_total_ms = match (network.max_total_ms, runtime_overlay_delta.max_total_ms) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    };
+    let exception = InvocationExceptionSummary {
+        failure_count: (exception.failure_count + runtime_overlay_delta.failure_count).max(0),
+        service_failure_count: (exception.service_failure_count
+            + runtime_overlay_delta.service_failure_count)
+            .max(0),
+        client_failure_count: (exception.client_failure_count
+            + runtime_overlay_delta.client_failure_count)
+            .max(0),
+        client_abort_count: (exception.client_abort_count
+            + runtime_overlay_delta.client_abort_count)
+            .max(0),
+        actionable_failure_count: (exception.actionable_failure_count
+            + runtime_overlay_delta.service_failure_count)
+            .max(0),
+    };
+    let avg_tokens_per_request = if total_count <= 0 {
+        0.0
+    } else {
+        total_tokens as f64 / total_count as f64
+    };
+    Ok(Json(InvocationSummaryResponse {
+        snapshot_id,
+        new_records_count,
+        total_count,
+        success_count,
+        failure_count,
+        total_tokens,
+        total_cost,
+        token: InvocationTokenSummary {
+            request_count: total_count,
+            total_tokens,
+            avg_tokens_per_request,
+            cache_write_tokens,
+            cache_input_tokens,
+            output_tokens,
+            total_cost,
+            max_tokens_per_request,
+        },
+        network: InvocationNetworkSummary {
+            max_total_ms,
+            ..network
+        },
+        exception,
+    }))
+}
+
 pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
     state: Arc<AppState>,
     params: ListQuery,
     runtime_overlay_override: Option<Vec<ApiInvocation>>,
 ) -> Result<Json<InvocationSummaryResponse>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::Summary).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        return fetch_invocation_summary_with_runtime_overlay_postgres(
+            state,
+            params,
+            runtime_overlay_override,
+        )
+        .await;
+    }
     let request = build_resolved_invocation_list_request(
         &state.pool,
         &params,
@@ -3278,6 +4456,99 @@ pub(crate) async fn fetch_invocation_history_overview_with_runtime_overlay(
     runtime_overlay_records: Vec<ApiInvocation>,
     max_records: usize,
 ) -> Result<InvocationHistoryOverviewResponse, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::History).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        let summary = fetch_invocation_summary_with_runtime_overlay_postgres(
+            state.clone(),
+            params.clone(),
+            Some(runtime_overlay_records.clone()),
+        )
+        .await?
+        .0;
+        let chart_total = summary.total_count;
+        let mut records = Vec::new();
+        let mut page = 1_i64;
+        while records.len() < max_records {
+            let mut page_params = params.clone();
+            page_params.page = Some(page);
+            page_params.page_size = Some(
+                page_params
+                    .page_size
+                    .or(page_params.limit)
+                    .unwrap_or(50)
+                    .clamp(1, state.config.list_limit_max as i64),
+            );
+            page_params.snapshot_id = Some(summary.snapshot_id);
+            let response = list_invocations_with_runtime_overlay(
+                state.clone(),
+                page_params.clone(),
+                Some(runtime_overlay_records.clone()),
+            )
+            .await?
+            .0;
+            let received_count = response.records.len();
+            if received_count == 0 {
+                break;
+            }
+            let remaining = max_records.saturating_sub(records.len());
+            records.extend(response.records.into_iter().take(remaining));
+            if records.len() >= chart_total as usize
+                || received_count < page_params.page_size.unwrap_or(1) as usize
+            {
+                break;
+            }
+            page += 1;
+        }
+        let mut chart_range_start = records
+            .iter()
+            .map(|record| record.occurred_at.clone())
+            .min();
+        let mut chart_range_end = records
+            .iter()
+            .map(|record| record.occurred_at.clone())
+            .max();
+        if chart_total as usize > records.len() {
+            let page_size = params
+                .page_size
+                .or(params.limit)
+                .unwrap_or(50)
+                .clamp(1, state.config.list_limit_max as i64);
+            let oldest_page = (chart_total + page_size - 1) / page_size;
+            let mut oldest_params = params;
+            oldest_params.page = Some(oldest_page.max(1));
+            oldest_params.page_size = Some(page_size);
+            oldest_params.snapshot_id = Some(summary.snapshot_id);
+            let oldest_response = list_invocations_with_runtime_overlay(
+                state,
+                oldest_params,
+                Some(runtime_overlay_records),
+            )
+            .await?
+            .0;
+            for record in oldest_response.records {
+                chart_range_start = Some(
+                    chart_range_start.map_or(record.occurred_at.clone(), |current| {
+                        current.min(record.occurred_at.clone())
+                    }),
+                );
+                chart_range_end = Some(
+                    chart_range_end.map_or(record.occurred_at.clone(), |current| {
+                        current.max(record.occurred_at.clone())
+                    }),
+                );
+            }
+        }
+        let chart_is_sampled = chart_total as usize > records.len();
+        return Ok(InvocationHistoryOverviewResponse {
+            summary,
+            records,
+            chart_total,
+            chart_is_sampled,
+            chart_range_start,
+            chart_range_end,
+        });
+    }
     let request = build_resolved_invocation_list_request(
         &state.pool,
         &params,
@@ -3375,6 +4646,32 @@ pub(crate) async fn fetch_invocation_new_records_count(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<InvocationNewRecordsCountResponse>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::NewRecords).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        let mut transaction = state.traffic_authority.begin().await?;
+        let request = build_resolved_invocation_list_request_postgres(
+            transaction.postgres_connection()?,
+            &params,
+            state.config.list_limit_max as i64,
+        )
+        .await?;
+        let snapshot_id = request
+            .snapshot_id
+            .ok_or_else(|| ApiError::bad_request(anyhow!("snapshotId is required")))?;
+        let new_records_count = query_invocation_new_records_count_postgres(
+            transaction.postgres_connection()?,
+            &request.filters,
+            InvocationSourceScope::All,
+            snapshot_id,
+        )
+        .await?;
+        transaction.commit().await?;
+        return Ok(Json(InvocationNewRecordsCountResponse {
+            snapshot_id,
+            new_records_count,
+        }));
+    }
     let request = build_resolved_invocation_list_request(
         &state.pool,
         &params,
@@ -3399,11 +4696,225 @@ pub(crate) async fn fetch_invocation_new_records_count(
     }))
 }
 
+async fn fetch_invocation_suggestions_postgres(
+    connection: &mut sqlx::PgConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+    suggest_field: Option<InvocationSuggestionField>,
+    suggest_query: Option<&str>,
+) -> Result<InvocationSuggestionsResponse, ApiError> {
+    const SUGGESTION_LIMIT: i64 = 30;
+
+    if let Some(field) = suggest_field {
+        let scoped_filters = field.clear_field_filter(filters);
+        let bucket = if matches!(field, InvocationSuggestionField::UpstreamAccount) {
+            query_invocation_upstream_account_suggestion_bucket_postgres(
+                connection,
+                &scoped_filters,
+                source_scope,
+                snapshot,
+                suggest_query,
+                SUGGESTION_LIMIT,
+            )
+            .await?
+        } else {
+            let sql_expr = field.postgres_sql_expr();
+            query_invocation_suggestion_bucket_postgres(
+                connection,
+                &scoped_filters,
+                source_scope,
+                snapshot,
+                &sql_expr,
+                suggest_query,
+                SUGGESTION_LIMIT,
+            )
+            .await?
+        };
+        return Ok(suggestion_response_for_field(field, bucket));
+    }
+
+    let model_filters = InvocationSuggestionField::Model.clear_field_filter(filters);
+    let model = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &model_filters,
+        source_scope,
+        snapshot,
+        "model",
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let request_model_filters = InvocationSuggestionField::RequestModel.clear_field_filter(filters);
+    let request_model = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &request_model_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::RequestModel.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let response_model_filters =
+        InvocationSuggestionField::ResponseModel.clear_field_filter(filters);
+    let response_model = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &response_model_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::ResponseModel.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let endpoint_filters = InvocationSuggestionField::Endpoint.clear_field_filter(filters);
+    let endpoint = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &endpoint_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::Endpoint.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let failure_kind_filters = InvocationSuggestionField::FailureKind.clear_field_filter(filters);
+    let failure_kind = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &failure_kind_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::FailureKind.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let sticky_key_filters = InvocationSuggestionField::StickyKey.clear_field_filter(filters);
+    let sticky_key = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &sticky_key_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::StickyKey.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let prompt_cache_key_filters =
+        InvocationSuggestionField::PromptCacheKey.clear_field_filter(filters);
+    let prompt_cache_key = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &prompt_cache_key_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::PromptCacheKey.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let requester_ip_filters = InvocationSuggestionField::RequesterIp.clear_field_filter(filters);
+    let requester_ip = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &requester_ip_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::RequesterIp.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let proxy_display_filters =
+        InvocationSuggestionField::ProxyDisplayName.clear_field_filter(filters);
+    let proxy_display_name = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &proxy_display_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::ProxyDisplayName.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let upstream_account_filters =
+        InvocationSuggestionField::UpstreamAccount.clear_field_filter(filters);
+    let upstream_account = query_invocation_upstream_account_suggestion_bucket_postgres(
+        connection,
+        &upstream_account_filters,
+        source_scope,
+        snapshot,
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let service_tier_filters = InvocationSuggestionField::ServiceTier.clear_field_filter(filters);
+    let service_tier = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &service_tier_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::ServiceTier.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let reasoning_effort_filters =
+        InvocationSuggestionField::ReasoningEffort.clear_field_filter(filters);
+    let reasoning_effort = query_invocation_suggestion_bucket_postgres(
+        connection,
+        &reasoning_effort_filters,
+        source_scope,
+        snapshot,
+        &InvocationSuggestionField::ReasoningEffort.postgres_sql_expr(),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    Ok(InvocationSuggestionsResponse {
+        model,
+        request_model,
+        response_model,
+        endpoint,
+        failure_kind,
+        sticky_key,
+        prompt_cache_key,
+        requester_ip,
+        proxy_display_name,
+        upstream_account,
+        service_tier,
+        reasoning_effort,
+    })
+}
+
 pub(crate) async fn fetch_invocation_suggestions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<InvocationSuggestionsResponse>, ApiError> {
     const SUGGESTION_LIMIT: i64 = 30;
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::Suggestions).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        let mut transaction = state.traffic_authority.begin().await?;
+        let request = build_resolved_invocation_list_request_postgres(
+            transaction.postgres_connection()?,
+            &params,
+            state.config.list_limit_max as i64,
+        )
+        .await?;
+        let suggest_field = InvocationSuggestionField::parse(params.suggest_field.as_deref())?;
+        let suggest_query = normalize_query_text(params.suggest_query.as_deref());
+        let response = fetch_invocation_suggestions_postgres(
+            transaction.postgres_connection()?,
+            &request.filters,
+            InvocationSourceScope::All,
+            request.snapshot_id.map(SnapshotConstraint::UpTo),
+            suggest_field,
+            suggest_query.as_deref(),
+        )
+        .await?;
+        transaction.commit().await?;
+        return Ok(Json(response));
+    }
     let request = build_resolved_invocation_list_request(
         &state.pool,
         &params,
@@ -16396,17 +17907,58 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 .subscription_hub
                 .summary_delta_journal_unabsorbed_identities()
                 .await;
+            let migration_hold_flag = Arc::new(AtomicBool::new(false));
+            let migration_hold_flag_for_refresh = Arc::clone(&migration_hold_flag);
+            let mut refresh_future = Box::pin(crate::maintenance::with_migration_hold_signal(
+                Arc::clone(&migration_hold_flag),
+                crate::maintenance::with_managed_task_key(
+                    "summary_snapshot",
+                    refresh_summary_snapshots(state.as_ref()),
+                ),
+            ));
             let refresh_result = crate::with_managed_task_observation(observation.clone(), async {
+                let migration_hold_watcher = async {
+                    loop {
+                        if crate::maintenance_store::migration_task_is_held("summary_snapshot")
+                            .await
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                };
                 tokio::select! {
                     biased;
                     _ = state.shutdown.cancelled() => None,
-                    result = refresh_summary_snapshots(state.as_ref()) => Some(result),
+                    result = &mut refresh_future => Some(result),
+                    _ = migration_hold_watcher => {
+                        migration_hold_flag_for_refresh.store(true, Ordering::Release);
+                        Some((&mut refresh_future).await)
+                    }
                 }
             })
             .await;
             let Some(refresh_result) = refresh_result else {
                 return;
             };
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held("summary_snapshot").await;
+            if migration_hold_active {
+                if let Some(store) = crate::maintenance_store::global()
+                    && let Err(error) = store.mark_task_migration_held("summary_snapshot").await
+                {
+                    warn!(
+                        error = %error,
+                        "summary snapshot migration-held progress could not be published"
+                    );
+                }
+                dirty = true;
+                observation.finish_with_status_and_reason(
+                    "skipped",
+                    Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+                );
+                continue;
+            }
             let status = match refresh_result {
                 Ok(()) => {
                     let journal_after = state

@@ -146,6 +146,8 @@ pub(crate) struct RuntimeRouteEvent {
     pub(crate) capabilities: Vec<RuntimeCapabilityFact>,
     pub(crate) sticky: Option<RuntimeStickyFact>,
     pub(crate) invoke_id: Option<String>,
+    #[serde(default)]
+    pub(crate) attempt_id: Option<i64>,
     pub(crate) reason_code: Option<String>,
     pub(crate) action: Option<String>,
     #[serde(default)]
@@ -158,6 +160,39 @@ pub(crate) struct RuntimeRouteEvent {
 }
 
 impl RuntimeRouteEvent {
+    fn stable_event_id(&self) -> String {
+        let sticky_identity = self.sticky.as_ref().map(|sticky| {
+            (
+                sticky.sticky_key.as_str(),
+                sticky.model_key.as_deref(),
+                sticky.attempt_public_id.as_deref(),
+            )
+        });
+        let model_identity = self.model.as_ref().map(|model| {
+            (
+                model.after.model.as_str(),
+                model.cache_settings_fence.as_deref(),
+            )
+        });
+        let identity = (
+            self.account_id,
+            &self.control_fingerprint,
+            self.request_started_at.as_str(),
+            self.invoke_id.as_deref(),
+            self.attempt_id,
+            self.reason_code.as_deref(),
+            self.action.as_deref(),
+            self.update_latest_action,
+            self.http_status,
+            self.unsupported_model.as_deref(),
+            sticky_identity,
+            model_identity,
+        );
+        let mut hash = Sha256::new();
+        hash.update(serde_json::to_vec(&identity).unwrap_or_default());
+        format!("route-{:x}", hash.finalize())
+    }
+
     fn memory_bytes(&self) -> usize {
         serde_json::to_vec(self)
             .map_or(MAX_PENDING_BYTES + 1, |bytes| bytes.len())
@@ -415,7 +450,9 @@ impl RuntimeRouteFacts {
         if let Some(failure) = inner.failure.as_ref() {
             bail!("route journal unavailable: {failure}");
         }
-        event.event_id = nanoid::nanoid!();
+        if event.event_id.trim().is_empty() {
+            event.event_id = event.stable_event_id();
+        }
         let bytes = event.memory_bytes();
         if inner.pending.len() >= MAX_PENDING_EVENTS
             || inner.pending_bytes.saturating_add(bytes) > MAX_PENDING_BYTES
@@ -693,4 +730,59 @@ async fn materialize_route_event(
     }
     audit::materialize(conn, event, &account, model_applied).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_event(attempt_id: Option<i64>) -> RuntimeRouteEvent {
+        RuntimeRouteEvent {
+            sequence: 1,
+            event_id: String::new(),
+            account_id: 7,
+            control_fingerprint: "control-fence".to_string(),
+            request_started_at: "2026-10-26T08:00:00.000Z".to_string(),
+            observed_at: "2026-10-26T08:00:01.000Z".to_string(),
+            health_before: RuntimeAccountHealth {
+                status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                last_error_at: None,
+                last_route_failure_at: None,
+                last_route_failure_kind: None,
+                cooldown_until: None,
+                consecutive_route_failures: 0,
+                temporary_route_failure_streak_started_at: None,
+            },
+            health_after: None,
+            capabilities: Vec::new(),
+            sticky: None,
+            invoke_id: Some("invoke-7".to_string()),
+            attempt_id,
+            reason_code: Some("route_recovered".to_string()),
+            action: Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED.to_string()),
+            update_latest_action: true,
+            http_status: None,
+            unsupported_model: None,
+            model: None,
+            memory_error: None,
+        }
+    }
+
+    #[test]
+    fn stable_event_identity_ignores_replay_metadata() {
+        let first = test_event(Some(41));
+        let mut replay = first.clone();
+        replay.sequence = 99;
+        replay.observed_at = "2026-10-26T08:00:02.000Z".to_string();
+
+        assert_eq!(first.stable_event_id(), replay.stable_event_id());
+    }
+
+    #[test]
+    fn stable_event_identity_distinguishes_attempts() {
+        let first = test_event(Some(41));
+        let second = test_event(Some(42));
+
+        assert_ne!(first.stable_event_id(), second.stable_event_id());
+    }
 }

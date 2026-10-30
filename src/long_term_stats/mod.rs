@@ -1,4 +1,7 @@
 use super::*;
+use crate::storage::analytics::{
+    AnalyticsProjection, AnalyticsProjectionAdapter, AnalyticsProjectionStore,
+};
 use sha2::{Digest, Sha256};
 
 #[path = "projection_flush.rs"]
@@ -35,6 +38,29 @@ const LONG_TERM_PROJECTION_LOCK_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(3),
 ];
 pub(crate) const LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET: &str = "long_term_usage_stats";
+pub(crate) const LONG_TERM_ANALYTICS_PROJECTION: AnalyticsProjection =
+    AnalyticsProjection::LongTerm;
+
+pub(crate) fn long_term_analytics_adapter<'a>(
+    store: &'a AnalyticsProjectionStore,
+) -> AnalyticsProjectionAdapter<'a> {
+    AnalyticsProjectionAdapter::new(store, LONG_TERM_ANALYTICS_PROJECTION)
+}
+
+pub(crate) fn long_term_analytics_api_projection<'a>(
+    store: &'a AnalyticsProjectionStore,
+) -> crate::api::AnalyticsApiProjection<'a> {
+    crate::api::AnalyticsApiProjection::from_adapter(long_term_analytics_adapter(store))
+}
+
+pub(crate) async fn read_long_term_analytics_projection(
+    projection: crate::api::AnalyticsApiProjection<'_>,
+) -> anyhow::Result<crate::api::AnalyticsApiProjectionSnapshot> {
+    projection
+        .require_projection(LONG_TERM_ANALYTICS_PROJECTION)?
+        .read_state_snapshot()
+        .await
+}
 
 static LONG_TERM_REFRESH_LOCK: once_cell::sync::Lazy<Mutex<()>> =
     once_cell::sync::Lazy::new(|| Mutex::new(()));

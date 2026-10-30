@@ -1,4 +1,133 @@
 use super::*;
+use crate::storage::core::BackendKind;
+use crate::storage::traffic::TrafficFactTransaction;
+use sqlx::PgConnection;
+
+async fn load_sticky_affinity_generation_authority(
+    transaction: &mut TrafficFactTransaction,
+    sticky_key: &str,
+) -> Result<i64> {
+    match transaction.backend_kind() {
+        BackendKind::Sqlite => {
+            load_sticky_affinity_generation_executor(transaction.sqlite_connection()?, sticky_key)
+                .await
+        }
+        BackendKind::Postgres => sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM pool_sticky_route_generations WHERE sticky_key = $1 LIMIT 1",
+        )
+        .bind(sticky_key)
+        .fetch_optional(transaction.postgres_connection()?)
+        .await
+        .map(|generation| generation.unwrap_or_default())
+        .map_err(Into::into),
+    }
+}
+
+async fn load_sticky_model_generation_authority(
+    transaction: &mut TrafficFactTransaction,
+    sticky_key: &str,
+    model_key: &str,
+) -> Result<i64> {
+    match transaction.backend_kind() {
+        BackendKind::Sqlite => {
+            load_sticky_model_generation_executor(transaction.sqlite_connection()?, sticky_key, model_key)
+                .await
+        }
+        BackendKind::Postgres => {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT generation FROM pool_sticky_model_route_generations WHERE sticky_key = $1 AND model_key = $2 LIMIT 1",
+            )
+            .bind(sticky_key)
+            .bind(model_key)
+            .fetch_optional(transaction.postgres_connection()?)
+            .await
+            .map(|generation| generation.unwrap_or_default())
+            .map_err(Into::into)
+        }
+    }
+}
+
+async fn load_sticky_model_route_authority(
+    transaction: &mut TrafficFactTransaction,
+    sticky_key: &str,
+    model_key: &str,
+) -> Result<Option<PoolStickyRouteRow>> {
+    match transaction.backend_kind() {
+        BackendKind::Sqlite => {
+            load_sticky_model_route_executor(
+                transaction.sqlite_connection()?,
+                sticky_key,
+                model_key,
+            )
+            .await
+        }
+        BackendKind::Postgres => sqlx::query_as::<_, PoolStickyRouteRow>(
+            "SELECT sticky_key, account_id, created_at, updated_at, last_seen_at \
+             FROM pool_sticky_model_routes \
+             WHERE sticky_key = $1 AND model_key = $2 LIMIT 1",
+        )
+        .bind(sticky_key)
+        .bind(model_key)
+        .fetch_optional(transaction.postgres_connection()?)
+        .await
+        .map_err(Into::into),
+    }
+}
+
+async fn load_sticky_fallback_route_authority(
+    transaction: &mut TrafficFactTransaction,
+    sticky_key: &str,
+) -> Result<Option<PoolStickyRouteRow>> {
+    match transaction.backend_kind() {
+        BackendKind::Sqlite => sqlx::query_as::<_, PoolStickyRouteRow>(
+            "SELECT sticky_key, account_id, created_at, updated_at, last_seen_at \
+             FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
+        )
+        .bind(sticky_key)
+        .fetch_optional(transaction.sqlite_connection()?)
+        .await
+        .map_err(Into::into),
+        BackendKind::Postgres => sqlx::query_as::<_, PoolStickyRouteRow>(
+            "SELECT sticky_key, account_id, created_at, updated_at, last_seen_at \
+             FROM pool_sticky_routes WHERE sticky_key = $1 LIMIT 1",
+        )
+        .bind(sticky_key)
+        .fetch_optional(transaction.postgres_connection()?)
+        .await
+        .map_err(Into::into),
+    }
+}
+
+async fn load_route_account_fence_authority(
+    transaction: &mut TrafficFactTransaction,
+    account_id: i64,
+) -> Result<Option<String>> {
+    let row = match transaction.backend_kind() {
+        BackendKind::Sqlite => {
+            load_upstream_account_row_conn(transaction.sqlite_connection()?, account_id).await?
+        }
+        BackendKind::Postgres => {
+            load_upstream_account_row_postgres(transaction.postgres_connection()?, account_id)
+                .await?
+        }
+    };
+    Ok(row.as_ref().map(route_account_control_fingerprint))
+}
+
+async fn load_upstream_account_row_postgres(
+    connection: &mut PgConnection,
+    id: i64,
+) -> Result<Option<UpstreamAccountRow>> {
+    sqlx::query_as::<_, UpstreamAccountRow>(&format!(
+        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} \
+         FROM pool_upstream_accounts \
+         WHERE id = $1 AND COALESCE(deleted_at, '') = '' LIMIT 1"
+    ))
+    .bind(id)
+    .fetch_optional(connection)
+    .await
+    .map_err(Into::into)
+}
 
 pub(super) async fn load_projection(
     state: &AppState,
@@ -11,15 +140,15 @@ pub(super) async fn load_projection(
     // are harmless to apply twice; removing them after an older SQL read isn't.
     let events = runtime.map_or_else(Vec::new, |runtime| runtime.sticky_events(key, unconfirmed));
     let model_key = normalize_sticky_model_key(model);
-    let mut tx = state.pool.begin().await?;
-    let mut epoch = load_sticky_affinity_generation_executor(&mut *tx, key).await?;
+    let mut tx = state.traffic_authority.begin().await?;
+    let mut epoch = load_sticky_affinity_generation_authority(&mut tx, key).await?;
     let mut model_generation = if let Some(model) = model_key.as_deref() {
-        load_sticky_model_generation_executor(&mut *tx, key, model).await?
+        load_sticky_model_generation_authority(&mut tx, key, model).await?
     } else {
         0
     };
     let exact = if let Some(model) = model_key.as_deref() {
-        load_sticky_model_route_executor(&mut *tx, key, model).await?
+        load_sticky_model_route_authority(&mut tx, key, model).await?
     } else {
         None
     };
@@ -27,15 +156,12 @@ pub(super) async fn load_projection(
     let mut route = if is_exact {
         exact
     } else {
-        sqlx::query_as::<_, PoolStickyRouteRow>("SELECT sticky_key,account_id,created_at,updated_at,last_seen_at FROM pool_sticky_routes WHERE sticky_key=?1")
-            .bind(key).fetch_optional(&mut *tx).await?
+        load_sticky_fallback_route_authority(&mut tx, key).await?
     };
     let mut fences = HashMap::new();
     for event in &events {
         if let std::collections::hash_map::Entry::Vacant(entry) = fences.entry(event.account_id) {
-            let fence = load_upstream_account_row_conn(&mut tx, event.account_id)
-                .await?
-                .map(|row| route_account_control_fingerprint(&row));
+            let fence = load_route_account_fence_authority(&mut tx, event.account_id).await?;
             entry.insert(fence);
         }
     }

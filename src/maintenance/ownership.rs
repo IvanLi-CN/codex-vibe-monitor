@@ -1,6 +1,10 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +17,8 @@ pub(crate) struct MaintenanceExecutionOptions {
 tokio::task_local! {
     static EXECUTION_OPTIONS: MaintenanceExecutionOptions;
     static IDENTITY_CLEANUP_DEADLINE: Instant;
+    static MANAGED_TASK_KEY: String;
+    static MIGRATION_HOLD_SIGNAL: Arc<AtomicBool>;
 }
 
 pub(crate) fn maintenance_execution_options() -> MaintenanceExecutionOptions {
@@ -48,6 +54,50 @@ pub(crate) async fn with_maintenance_execution_options<F: Future>(
     future: F,
 ) -> F::Output {
     EXECUTION_OPTIONS.scope(options, future).await
+}
+
+pub(crate) async fn with_managed_task_key<F: Future>(task_key: &str, future: F) -> F::Output {
+    MANAGED_TASK_KEY.scope(task_key.to_string(), future).await
+}
+
+pub(crate) async fn with_migration_hold_signal<F: Future>(
+    signal: Arc<AtomicBool>,
+    future: F,
+) -> F::Output {
+    MIGRATION_HOLD_SIGNAL.scope(signal, future).await
+}
+
+pub(crate) fn migration_hold_signal_reached() -> bool {
+    MIGRATION_HOLD_SIGNAL
+        .try_with(|signal| signal.load(Ordering::Acquire))
+        .unwrap_or(false)
+}
+
+pub(crate) async fn migration_hold_boundary_reached() -> bool {
+    if migration_hold_signal_reached() {
+        return true;
+    }
+    let Some(task_key) = MANAGED_TASK_KEY.try_with(Clone::clone).ok() else {
+        return false;
+    };
+    let Some(store) = crate::maintenance_store::global() else {
+        tracing::warn!(
+            task = %task_key,
+            "managed task migration hold boundary check has no maintenance store"
+        );
+        return true;
+    };
+    match store.migration_task_is_held(&task_key).await {
+        Ok(active) => active,
+        Err(error) => {
+            tracing::warn!(
+                task = %task_key,
+                error = %error,
+                "managed task migration hold boundary check failed"
+            );
+            true
+        }
+    }
 }
 
 pub(crate) async fn identity_cleanup_query<T, E, F>(future: F) -> Result<T>
@@ -88,6 +138,7 @@ pub(crate) struct OwnedMaintenanceExecution {
 pub(crate) struct OwnedMaintenanceContext<'a> {
     pub(crate) pool: &'a Pool<Sqlite>,
     pub(crate) config: &'a AppConfig,
+    pub(crate) storage_migration: Option<&'a StorageMigrationRuntime>,
     pub(crate) cache: &'a Arc<Mutex<PromptCacheConversationsCacheState>>,
     pub(crate) circuit: Arc<RawCaptureCircuitBreaker>,
     pub(crate) shutdown: &'a CancellationToken,
@@ -236,6 +287,7 @@ pub(crate) async fn execute_owned_maintenance(
                 task_key,
                 options.dry_run,
                 context.shutdown,
+                context.storage_migration,
             )
             .await?;
             return Ok(retention_owner_execution(
@@ -437,7 +489,11 @@ pub(crate) async fn execute_owned_maintenance(
 
 pub(crate) async fn initialize_invocation_identity_cleanup_state(
     pool: &Pool<Sqlite>,
+    dry_run: bool,
 ) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
     sqlx::query("INSERT OR IGNORE INTO prompt_cache_conversation_orphan_cleanup_state(scope) VALUES('invocation_hour_prefixes')")
         .execute(pool).await?;
     Ok(())

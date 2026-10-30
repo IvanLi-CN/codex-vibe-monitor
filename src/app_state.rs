@@ -813,8 +813,11 @@ impl RuntimeProjectionHub {
 #[derive(Debug)]
 pub(crate) struct AppState {
     pub(crate) system_storage: Arc<SystemStorageRuntime>,
+    pub(crate) storage_migration: Arc<StorageMigrationRuntime>,
+    pub(crate) storage_runtime: Option<Arc<crate::storage::runtime::StorageRuntimeRouter>>,
     pub(crate) config: AppConfig,
     pub(crate) pool: Pool<Sqlite>,
+    pub(crate) traffic_authority: Arc<crate::storage::traffic::TrafficFactStore>,
     pub(crate) process_started_at_utc: DateTime<Utc>,
     pub(crate) observability: Arc<ObservabilityRuntime>,
     pub(crate) sqlite_batch_writer: Arc<SqliteBatchWriter>,
@@ -867,6 +870,20 @@ pub(crate) struct AppState {
     pub(crate) fallback_proxy_429_retry_delay_override: Option<Duration>,
     pub(crate) pool_no_available_wait: PoolNoAvailableWaitSettings,
     pub(crate) upstream_accounts: Arc<UpstreamAccountsRuntime>,
+}
+
+impl AppState {
+    pub(crate) fn sqlite_storage_pool(&self) -> Pool<Sqlite> {
+        self.pool.clone()
+    }
+
+    pub(crate) fn analytics_authority(
+        &self,
+    ) -> Option<Arc<crate::storage::analytics::AnalyticsProjectionStore>> {
+        self.storage_runtime
+            .as_ref()
+            .map(|runtime| runtime.analytics_authority())
+    }
 }
 
 #[derive(Debug, Clone)]

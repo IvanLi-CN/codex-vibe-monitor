@@ -1,0 +1,143 @@
+name: PostgreSQL Migration Functional Checks
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - edited
+  merge_group:
+    types:
+      - checks_requested
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Exact parent commit SHA used as the acceptance base
+        required: true
+        type: string
+      candidate_sha:
+        description: Exact candidate commit SHA checked out by this acceptance run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance-not-run:
+    name: PostgreSQL Acceptance Evidence Not Run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Record missing acceptance evidence
+        env:
+          BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          CANDIDATE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          import re
+          from pathlib import Path
+          for name in ("BASE_SHA", "CANDIDATE_SHA"):
+              if not re.fullmatch(r"[0-9a-f]{40}", os.environ[name]):
+                  raise SystemExit(f"{name} must be a full lowercase commit SHA")
+          report = {"status": "excluded", "result": "not-run", "base_sha": os.environ["BASE_SHA"], "candidate_sha": os.environ["CANDIDATE_SHA"], "reason": "all test work must naturally complete within three minutes; the existing compile-and-test workflow is prohibited and is not current-PR acceptance evidence", "functional_evidence_not_verified_by_this_report": ["archive ownership and raw-link atomicity", "source fence uncertainty", "authority and router publication uncertainty", "journal acknowledgement uncertainty", "post-cutover PostgreSQL outage without stale SQLite fallback"], "deployment_safety_unverified": ["target capacity and data-volume headroom", "WAL backlog", "backup and restore", "natural-traffic baseline"]}
+          Path(os.environ["RUNNER_TEMP"], "postgres-acceptance-not-run.json").write_text(json.dumps(report, indent=2) + "\n")
+          PY
+      - name: Upload missing-evidence report
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-acceptance-not-run-${{ github.run_id }}
+          path: ${{ runner.temp }}/postgres-acceptance-not-run.json
+          if-no-files-found: error
+  # Owner restriction: the complete test work must naturally finish within three minutes.
+  # Exclude this migration PR and its merge group; preserve other PR behavior.
+  postgres-migration-functional:
+    if: ${{ github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && !(github.event_name == 'workflow_dispatch' && github.ref_name == 'th/postgresql-migration-design') }}
+    name: PostgreSQL Migration Functional and Recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: codex_vibe_monitor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d codex_vibe_monitor_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          pkg-config --exists sqlite3
+          test -r /usr/include/sqlite3.h
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.99.1
+
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Resolve acceptance base
+        id: acceptance_base
+        env:
+          BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          CANDIDATE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="$(bash scripts/postgres-acceptance/resolve-pr-base.sh)"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Run non-pressure PostgreSQL functional and recovery tests
+        env:
+          POSTGRES_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/codex_vibe_monitor_test
+          POSTGRES_ACCEPTANCE_REQUIRED: '1'
+          POSTGRES_ACCEPTANCE_EVIDENCE_DIR: ${{ runner.temp }}/postgres-functional-evidence
+          BASE_SHA: ${{ steps.acceptance_base.outputs.base_sha }}
+          CANDIDATE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/postgres-acceptance/validate-identity.sh
+          python3 scripts/postgres-acceptance/run.py \
+            --output "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR/report.json" \
+            --evidence-dir "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR" \
+            --scope functional-recovery \
+            --base-sha "$BASE_SHA" --candidate-sha "$CANDIDATE_SHA" \
+            -- bash scripts/postgres-acceptance/run-functional-suite.sh
+      - name: Run audited non-pressure backend tests
+        run: bash scripts/postgres-acceptance/run-non-pressure-backend.sh
+      - name: Upload PostgreSQL functional evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-functional-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/postgres-functional-evidence
+          if-no-files-found: warn

@@ -77,15 +77,7 @@
               "integration_id": 15368
             },
             {
-              "context": "Backend Tests (Lightweight)",
-              "integration_id": 15368
-            },
-            {
-              "context": "Backend Tests (Stateful SQLite)",
-              "integration_id": 15368
-            },
-            {
-              "context": "Backend Tests (Archive / File I/O)",
+              "context": "PostgreSQL Migration Functional and Recovery",
               "integration_id": 15368
             },
             {

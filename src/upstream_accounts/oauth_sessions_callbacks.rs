@@ -1643,8 +1643,9 @@ pub(crate) async fn update_upstream_account_model_mappings_inner(
         .as_ref()
         .cloned()
         .expect("pool routing runtime cache should be initialized before mapping save");
-    let model_routing = build_pool_model_routing_runtime_cache_with_mapping_override(
+    let model_routing = build_pool_model_routing_runtime_cache_with_mapping_override_and_authority(
         &state.pool,
+        state.traffic_authority.as_ref(),
         Some((id, &mappings)),
     )
     .await

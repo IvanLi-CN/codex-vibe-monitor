@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Pool, Row, Sqlite, SqliteConnection};
+use sqlx::{PgConnection, Pool, Row, Sqlite, SqliteConnection};
 use std::io::Read;
 
 pub(crate) const SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES: usize = 10_000;
@@ -882,6 +882,7 @@ pub(crate) async fn compact_summary_source_change_journal(
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::{Connection, PgConnection};
 
     async fn pool() -> Pool<Sqlite> {
         let pool = SqlitePoolOptions::new()
@@ -946,6 +947,66 @@ mod tests {
             }],
         )
         .expect("descriptor")
+    }
+
+    #[tokio::test]
+    async fn optional_postgres_descriptor_journal_decodes_bigint_sum() -> Result<()> {
+        let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+            return Ok(());
+        };
+        let mut connection = PgConnection::connect(&database_url).await?;
+        for statement in [
+            r#"
+            CREATE TEMP TABLE summary_source_change_journal (
+                cursor BIGSERIAL PRIMARY KEY,
+                descriptor_version BIGINT NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_revision BIGINT NOT NULL,
+                first_row_id BIGINT NOT NULL,
+                last_row_id BIGINT NOT NULL,
+                occurred_start TEXT NOT NULL,
+                occurred_end TEXT NOT NULL,
+                descriptor_json TEXT NOT NULL,
+                descriptor_bytes BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+            r#"
+            CREATE TEMP TABLE summary_source_change_compaction_proof (
+                id BIGSERIAL PRIMARY KEY,
+                first_cursor BIGINT NOT NULL,
+                last_cursor BIGINT NOT NULL,
+                proof_kind TEXT NOT NULL,
+                proof_json TEXT NOT NULL,
+                retained_after_cursor BIGINT NOT NULL DEFAULT 0
+            )
+            "#,
+        ] {
+            sqlx::query(statement).execute(&mut connection).await?;
+        }
+        sqlx::query(
+            "INSERT INTO summary_source_change_journal
+             (descriptor_version, source_kind, source_revision, first_row_id, last_row_id,
+              occurred_start, occurred_end, descriptor_json, descriptor_bytes)
+             VALUES (1, 'terminal_batch', 1, 1, 1, '2026-08-09 12:00:00',
+                     '2026-08-09 12:00:00', '{}', $1)",
+        )
+        .bind(3_i64)
+        .execute(&mut connection)
+        .await?;
+
+        let cursor =
+            append_summary_source_change_descriptor_postgres_tx(&mut connection, &descriptor(42))
+                .await?;
+        assert!(cursor > 0);
+        let descriptor_bytes: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(descriptor_bytes), 0)::BIGINT
+             FROM summary_source_change_journal",
+        )
+        .fetch_one(&mut connection)
+        .await?;
+        assert!(descriptor_bytes > 3);
+        Ok(())
     }
 
     #[tokio::test]
@@ -1170,6 +1231,54 @@ pub(crate) async fn append_summary_source_change_descriptor_tx(
     u64::try_from(result.last_insert_rowid()).context("summary source cursor overflow")
 }
 
+pub(crate) async fn append_summary_source_change_descriptor_postgres_tx(
+    connection: &mut PgConnection,
+    descriptor: &SummarySourceChangeDescriptor,
+) -> Result<u64> {
+    if descriptor.version != SUMMARY_SOURCE_CHANGE_DESCRIPTOR_VERSION {
+        bail!(
+            "unsupported summary source descriptor version {}",
+            descriptor.version
+        );
+    }
+    if descriptor.entries.len() > SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES {
+        bail!("summary source descriptor entry budget exceeded");
+    }
+    let descriptor_json = serde_json::to_string(descriptor)?;
+    let descriptor_bytes = descriptor_json.len();
+    if descriptor_bytes > SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES {
+        bail!("summary source descriptor byte budget exceeded");
+    }
+    compact_source_change_tail_before_insert_postgres(connection, descriptor_bytes).await?;
+    let cursor = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO summary_source_change_journal \
+         (descriptor_version, source_kind, source_revision, first_row_id, last_row_id, \
+          occurred_start, occurred_end, descriptor_json, descriptor_bytes) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         RETURNING cursor",
+    )
+    .bind(descriptor.version)
+    .bind(&descriptor.source_kind)
+    .bind(i64::try_from(descriptor.source_revision).context("source revision overflow")?)
+    .bind(descriptor.first_row_id)
+    .bind(descriptor.last_row_id)
+    .bind(&descriptor.occurred_start)
+    .bind(&descriptor.occurred_end)
+    .bind(descriptor_json)
+    .bind(i64::try_from(descriptor_bytes).context("descriptor byte count overflow")?)
+    .fetch_one(&mut *connection)
+    .await
+    .context("append PostgreSQL summary source change descriptor")?;
+    tracing::debug!(
+        stage = "summary_source_change_descriptor",
+        source_kind = %descriptor.source_kind,
+        entry_count = descriptor.entries.len(),
+        descriptor_bytes,
+        "stored durable PostgreSQL Summary Source Change descriptor"
+    );
+    u64::try_from(cursor).context("summary source cursor overflow")
+}
+
 async fn compact_source_change_tail_before_insert(
     connection: &mut SqliteConnection,
     incoming_bytes: usize,
@@ -1219,6 +1328,67 @@ async fn compact_source_change_tail_before_insert(
             "INSERT INTO summary_source_change_compaction_proof \
              (first_cursor, last_cursor, proof_kind, proof_json, retained_after_cursor) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(first_cursor)
+        .bind(last_cursor)
+        .bind("bounded_source_tail_compaction")
+        .bind(proof.to_string())
+        .bind(last_cursor.saturating_add(1))
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn compact_source_change_tail_before_insert_postgres(
+    connection: &mut PgConnection,
+    incoming_bytes: usize,
+) -> Result<()> {
+    let (mut count, mut bytes) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*)::BIGINT, COALESCE(SUM(descriptor_bytes), 0)::BIGINT \
+         FROM summary_source_change_journal",
+    )
+    .fetch_one(&mut *connection)
+    .await?;
+    let mut first_cursor = None;
+    let mut last_cursor = None;
+    let mut removed = 0_i64;
+    while count >= SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES as i64
+        || bytes.saturating_add(i64::try_from(incoming_bytes).unwrap_or(i64::MAX))
+            > SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES as i64
+    {
+        let Some((cursor, descriptor_bytes)) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT cursor, descriptor_bytes FROM summary_source_change_journal \
+             ORDER BY cursor ASC LIMIT 1",
+        )
+        .fetch_optional(&mut *connection)
+        .await?
+        else {
+            break;
+        };
+        sqlx::query("DELETE FROM summary_source_change_journal WHERE cursor = $1")
+            .bind(cursor)
+            .execute(&mut *connection)
+            .await?;
+        first_cursor.get_or_insert(cursor);
+        last_cursor = Some(cursor);
+        removed += 1;
+        count = count.saturating_sub(1);
+        bytes = bytes.saturating_sub(descriptor_bytes);
+    }
+    if removed > 0 {
+        let first_cursor = first_cursor.expect("removed descriptor has first cursor");
+        let last_cursor = last_cursor.expect("removed descriptor has last cursor");
+        let proof = serde_json::json!({
+            "firstCursor": first_cursor,
+            "lastCursor": last_cursor,
+            "retainedAfterCursor": last_cursor.saturating_add(1),
+            "removedEntries": removed,
+        });
+        sqlx::query(
+            "INSERT INTO summary_source_change_compaction_proof \
+             (first_cursor, last_cursor, proof_kind, proof_json, retained_after_cursor) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(first_cursor)
         .bind(last_cursor)

@@ -232,6 +232,11 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         // pool before seeding routes or starting the real terminal writer.
         mutable.pool.close().await;
         mutable.pool = business_pool;
+        // Rebind the state-owned authority too; routing detail reads must not retain the closed
+        // in-memory fixture pool after the business pool is replaced.
+        mutable.traffic_authority = Arc::new(crate::storage::traffic::TrafficFactStore::sqlite(
+            mutable.pool.clone(),
+        ));
         mutable.config.database_path = archive_config.database_path;
         mutable.config.archive_dir = archive_config.archive_dir;
         mutable.config.proxy_raw_dir = archive_config.proxy_raw_dir;

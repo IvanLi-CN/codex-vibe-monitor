@@ -30,6 +30,31 @@ pub(crate) fn pool_attempt_recovery_gate() -> &'static tokio::sync::RwLock<()> {
     POOL_ATTEMPT_RECOVERY_GATE.get_or_init(|| tokio::sync::RwLock::new(()))
 }
 
+pub(crate) async fn configure_primary_sqlite_connection(
+    connection: &mut SqliteConnection,
+) -> sqlx::Result<()> {
+    sqlx::query("PRAGMA recursive_triggers = ON")
+        .execute(connection)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) fn configure_primary_sqlite_pool_options(
+    options: SqlitePoolOptions,
+) -> SqlitePoolOptions {
+    options.after_connect(|connection, _metadata| {
+        Box::pin(configure_primary_sqlite_connection(connection))
+    })
+}
+
+pub(crate) async fn connect_primary_sqlite_connection(
+    options: &SqliteConnectOptions,
+) -> sqlx::Result<SqliteConnection> {
+    let mut connection = SqliteConnection::connect_with(options).await?;
+    configure_primary_sqlite_connection(&mut connection).await?;
+    Ok(connection)
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StartupRecoveryFence {
     pub(crate) invocation_max_id: i64,
@@ -43,10 +68,46 @@ impl StartupRecoveryFence {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct StartupRecoveryCompletion {
+    completed: Arc<AtomicBool>,
+    changed: Arc<tokio::sync::Notify>,
+}
+
+impl StartupRecoveryCompletion {
+    fn new() -> Self {
+        Self {
+            completed: Arc::new(AtomicBool::new(false)),
+            changed: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn complete(&self) {
+        self.completed.store(true, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) async fn wait(&self, shutdown: &CancellationToken) -> bool {
+        loop {
+            if self.completed.load(Ordering::Acquire) {
+                return true;
+            }
+            let notified = self.changed.notified();
+            if self.completed.load(Ordering::Acquire) {
+                return true;
+            }
+            tokio::select! {
+                _ = shutdown.cancelled() => return false,
+                _ = notified => {}
+            }
+        }
+    }
+}
+
 async fn capture_startup_recovery_fence(
     options: &SqliteConnectOptions,
 ) -> Result<StartupRecoveryFence> {
-    let mut connection = SqliteConnection::connect_with(options).await?;
+    let mut connection = connect_primary_sqlite_connection(options).await?;
     let mut transaction = connection.begin().await?;
     let invocation_max_id =
         sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
@@ -389,11 +450,11 @@ async fn publish_startup_recovery_batch(state: &AppState, batch: &StartupRecover
 
 async fn run_startup_recovery(
     state: Arc<AppState>,
-    fence: StartupRecoveryFence,
+    mut fence: StartupRecoveryFence,
     readiness_at: Instant,
     recovery_connect_options: Arc<SqliteConnectOptions>,
 ) {
-    let Some(active_guard) = wait_for_startup_recovery_guard(&state.shutdown).await else {
+    let Some(_active_guard) = wait_for_startup_recovery_guard(&state.shutdown).await else {
         warn!("startup recovery coordinator stopped while waiting for the recovery path");
         return;
     };
@@ -412,14 +473,10 @@ async fn run_startup_recovery(
     let _ = state.sqlite_batch_writer.start_terminal_journal_recovery();
     if !fence.captured {
         warn!(
-            "startup recovery fence was unavailable before HTTP readiness; deferring database row recovery to the next start"
+            "startup recovery fence was unavailable before HTTP readiness; retrying in the background"
         );
         observe_startup_recovery_state(&state, "invocations", 0, Duration::ZERO, "unavailable");
         observe_startup_recovery_state(&state, "pool_attempts", 0, Duration::ZERO, "unavailable");
-        // Only terminal-journal dispatch remains in this path. Release the database recovery
-        // owner so the independent runtime orphan sweep can continue while fenced row recovery
-        // is deferred to the next start.
-        drop(active_guard);
     }
 
     loop {
@@ -438,10 +495,17 @@ async fn run_startup_recovery(
                 Duration::from_millis(journal.oldest_pending_age_ms),
                 "unavailable",
             );
-            warn!(
-                "startup recovery stopped because terminal journal recovery is unavailable; durable obligations remain for the next start"
-            );
-            return;
+            warn!("startup recovery is waiting for the terminal journal before continuing");
+            if !wait_for_startup_recovery_retry(
+                &state.shutdown,
+                STARTUP_RECOVERY_RETRY_DELAYS[retry_index],
+            )
+            .await
+            {
+                return;
+            }
+            retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
+            continue;
         }
         if !fence.captured {
             observe_startup_recovery_state(
@@ -458,10 +522,12 @@ async fn run_startup_recovery(
                 },
             );
             if journal.pending_materialization_records == 0 {
-                info!(
-                    "startup recovery deferred fenced database rows because the pre-readiness fence was unavailable"
-                );
-                return;
+                fence =
+                    capture_startup_recovery_fence_bounded(recovery_connect_options.as_ref()).await;
+                if fence.captured {
+                    retry_index = 0;
+                    continue;
+                }
             }
             if retry_index > 0
                 && !wait_for_startup_recovery_retry(
@@ -479,7 +545,7 @@ async fn run_startup_recovery(
             continue;
         }
         if connection.is_none() {
-            match SqliteConnection::connect_with(recovery_connect_options.as_ref()).await {
+            match connect_primary_sqlite_connection(recovery_connect_options.as_ref()).await {
                 Ok(new_connection) => connection = Some(new_connection),
                 Err(error) => {
                     observe_startup_recovery_retry(&state, "connection", "connect_failed");
@@ -751,6 +817,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -759,15 +826,18 @@ fn publish_http_readiness_and_spawn_recovery(
     startup_started_at: Instant,
     fence: StartupRecoveryFence,
     recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
-) -> JoinHandle<()> {
-    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+) -> (JoinHandle<()>, StartupRecoveryCompletion) {
+    let completion = StartupRecoveryCompletion::new();
+    let handle = publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         Some(fence),
         recovery_connect_options,
-    )
+        Some(completion.clone()),
+    );
+    (handle, completion)
 }
 
 #[cfg(test)]
@@ -780,6 +850,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         state,
         startup_started_at,
         summary_deadline,
+        None,
         None,
         None,
         None,
@@ -804,15 +875,18 @@ pub(crate) fn publish_http_readiness_and_spawn_recovery_for_test(
     startup_started_at: Instant,
     fence: StartupRecoveryFence,
     recovery_connect_options: SqliteConnectOptions,
-) -> JoinHandle<()> {
-    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+) -> (JoinHandle<()>, StartupRecoveryCompletion) {
+    let completion = StartupRecoveryCompletion::new();
+    let handle = publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         Some(fence),
         Some(Arc::new(recovery_connect_options)),
-    )
+        Some(completion.clone()),
+    );
+    (handle, completion)
 }
 
 #[cfg(test)]
@@ -828,6 +902,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         Some(summary_start_delay),
         None,
         None,
+        None,
     )
 }
 
@@ -838,6 +913,7 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     summary_start_delay: Option<Duration>,
     startup_recovery_fence: Option<StartupRecoveryFence>,
     startup_recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
+    startup_recovery_completion: Option<StartupRecoveryCompletion>,
 ) -> JoinHandle<()> {
     state.startup_ready.store(true, Ordering::Release);
     let readiness_at = Instant::now();
@@ -847,19 +923,33 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     );
 
     crate::observability::contention::spawn_performance(state.observability.clone(), async move {
-        let recovery_handle = startup_recovery_fence
-            .zip(startup_recovery_connect_options)
-            .map(|(fence, recovery_connect_options)| {
-                crate::observability::contention::spawn_performance(
+        let recovery_handle = match startup_recovery_fence.zip(startup_recovery_connect_options) {
+            Some((fence, recovery_connect_options)) => {
+                let completion = startup_recovery_completion.clone();
+                let recovery_state = state.clone();
+                Some(crate::observability::contention::spawn_performance(
                     state.observability.clone(),
-                    run_startup_recovery(
-                        state.clone(),
-                        fence,
-                        readiness_at,
-                        recovery_connect_options,
-                    ),
-                )
-            });
+                    async move {
+                        run_startup_recovery(
+                            recovery_state,
+                            fence,
+                            readiness_at,
+                            recovery_connect_options,
+                        )
+                        .await;
+                        if let Some(completion) = completion {
+                            completion.complete();
+                        }
+                    },
+                ))
+            }
+            None => {
+                if let Some(completion) = startup_recovery_completion {
+                    completion.complete();
+                }
+                None
+            }
+        };
         let post_readiness_warmups_handle = crate::observability::contention::spawn_performance(
             state.observability.clone(),
             run_post_readiness_runtime_warmups(state.clone()),
@@ -1069,7 +1159,7 @@ pub(crate) async fn run() -> Result<()> {
     )?;
     let connect_opts = runtime_lock.sqlite_connect_options(&config.database_path, connect_opts)?;
     let db_connect_started_at = Instant::now();
-    let pool = SqlitePoolOptions::new()
+    let pool = configure_primary_sqlite_pool_options(SqlitePoolOptions::new())
         .max_connections(5)
         .connect_with(connect_opts)
         .await
@@ -1081,8 +1171,45 @@ pub(crate) async fn run() -> Result<()> {
 
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
-        initialize_invocation_identity_cleanup_state(&pool).await?;
-        let _maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
+        let storage_migration = Arc::new(
+            StorageMigrationRuntime::load(&config.storage, pool.clone())
+                .await
+                .context("failed to recover durable storage migration state")?,
+        );
+        let shutdown = CancellationToken::new();
+        let storage_runtime =
+            crate::storage::runtime::StorageRuntimeRouter::initialize(
+                pool.clone(),
+                &config.storage,
+                storage_migration.clone(),
+                shutdown.child_token(),
+            )
+            .await
+            .context("failed to initialize storage runtime router")?;
+        let analytics_authority = storage_runtime.analytics_authority();
+        if storage_runtime.analytics_backend().await == crate::storage::core::BackendKind::Sqlite {
+            analytics_authority
+                .ensure_projection_checkpoint_schema()
+                .await
+                .context("failed to initialize SQLite analytics projection checkpoints")?;
+        }
+        let traffic_authority = storage_runtime.traffic_authority();
+        match crate::sqlite_batch_writer::replay_account_selected_touch_outbox(
+            &pool,
+            traffic_authority.as_ref(),
+        )
+        .await
+        {
+            Ok(replayed) if replayed > 0 => {
+                info!(replayed, "replayed account-selection observations at startup");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(error = %error, "account-selection observation outbox replay deferred");
+            }
+        }
+        initialize_invocation_identity_cleanup_state(&pool, false).await?;
+        let maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {
                 maintenance_pool = Some(store.pool.clone());
                 if let Err(error) = store.migrate_legacy_state(&pool).await {
@@ -1129,9 +1256,21 @@ pub(crate) async fn run() -> Result<()> {
             }
         };
         log_startup_phase("schema", schema_started_at);
-        if should_run_blocking_startup_persistent_prep(&cli) {
-            let prep_summary = run_startup_persistent_prep(&pool, &config, &cli).await?;
+        let startup_prep_held = storage_migration
+            .migration_hold_reason("startup_hourly_rollup_bootstrap")
+            .await
+            .is_some();
+        if should_run_blocking_startup_persistent_prep(&cli) && !startup_prep_held {
+            let prep_summary = run_startup_persistent_prep_inner_with_store(
+                maintenance_store.as_deref(),
+                &pool,
+                &config,
+                &cli,
+                true,
+            )
+            .await?;
             info!(
+                migration_hold_deferred = prep_summary.deferred,
                 stale_archive_temp_files_removed = prep_summary.stale_archive_temp_files_removed,
                 refreshed_manifest_batches = prep_summary.refreshed_manifest_batches,
                 refreshed_manifest_account_rows = prep_summary.refreshed_manifest_account_rows,
@@ -1150,6 +1289,10 @@ pub(crate) async fn run() -> Result<()> {
                     "legacy archive batches still need historical rollup materialization"
                 );
             }
+        } else if startup_prep_held {
+            info!(
+                "startup persistent prep deferred because storage migration holds competing tasks"
+            );
         }
         if let Some(command) = &cli.command {
             run_cli_command(&pool, &config, command).await?;
@@ -1185,7 +1328,6 @@ pub(crate) async fn run() -> Result<()> {
         let (tx, _rx) = broadcast::channel(128);
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
-        let shutdown = CancellationToken::new();
         let process_started_at_utc = Utc::now();
         observability
             .initialize_traces(config.observability.traces.clone())
@@ -1221,8 +1363,10 @@ pub(crate) async fn run() -> Result<()> {
         let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
         let long_term_projection_runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
         let memory_diagnostics = Arc::new(MemoryDiagnosticsRuntime::new());
-        let sqlite_batch_writer = SqliteBatchWriter::spawn(
+        let traffic_authority = storage_runtime.traffic_authority();
+        let sqlite_batch_writer = SqliteBatchWriter::spawn_with_traffic_authority(
             pool.clone(),
+            traffic_authority.clone(),
             shutdown.clone(),
             prompt_cache_conversation_cache.clone(),
             pricing_catalog.clone(),
@@ -1241,8 +1385,11 @@ pub(crate) async fn run() -> Result<()> {
 
         let state = Arc::new(AppState {
             system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+            storage_migration,
+            storage_runtime: Some(storage_runtime.clone()),
             config: config.clone(),
             pool: pool.clone(),
+            traffic_authority: traffic_authority.clone(),
             process_started_at_utc,
             observability,
             sqlite_batch_writer,
@@ -1759,12 +1906,32 @@ where
         .await;
     }
 
-    startup_hot_read_hydration_handle = Some(publish_http_readiness_and_spawn_recovery(
-        state.clone(),
-        startup_started_at,
-        startup_recovery_fence,
-        startup_recovery_connect_options,
-    ));
+    let (startup_recovery_handle, startup_recovery_completion) =
+        publish_http_readiness_and_spawn_recovery(
+            state.clone(),
+            startup_started_at,
+            startup_recovery_fence,
+            startup_recovery_connect_options,
+        );
+    startup_hot_read_hydration_handle = Some(startup_recovery_handle);
+    if !startup_recovery_completion.wait(&cancel).await {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            upstream_accounts_handle,
+            forward_proxy_handle,
+            pool_orphan_recovery_handle,
+            retention_handle,
+            startup_backfill_handle,
+            startup_hot_read_hydration_handle,
+        )
+        .await;
+    }
+    if let Some(storage_runtime) = state.storage_runtime.as_ref() {
+        storage_runtime.start().await;
+    }
     // The periodic sweep is a runtime recovery path, not part of the fenced startup batch. It
     // remains available after a fence capture failure, while the shared owner gate prevents it
     // from overlapping the startup coordinator when that coordinator is still active.
@@ -1973,9 +2140,21 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         continue;
                     };
                     let mut blocked_task_keys = blocked_task_keys.into_iter().collect::<Vec<_>>();
+                    let held_task_keys = match store.migration_held_managed_task_keys().await {
+                        Ok(held_task_keys) => held_task_keys,
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                "managed task dispatcher could not load migration hold state"
+                            );
+                            continue;
+                        }
+                    };
+                    blocked_task_keys.extend(held_task_keys);
                     blocked_task_keys.extend(
                         crate::maintenance_store::active_task_execution_task_keys(),
                     );
+                    blocked_task_keys.extend(state.storage_migration.held_task_keys().await);
                     blocked_task_keys.sort();
                     blocked_task_keys.dedup();
                     if blocked_task_keys.iter().any(|task_key| {
@@ -2017,6 +2196,71 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     let Some((run_id, task_key, requested_at, trigger_kind)) = claim else {
                         continue;
                     };
+                    let migration_hold_context = match store.migration_task_hold_context(&task_key).await {
+                        Ok(context) => context,
+                        Err(error) => {
+                            warn!(
+                                task = %task_key,
+                                error = %error,
+                                "managed task admission could not verify migration hold"
+                            );
+                            if let Err(requeue_error) = store.requeue_claimed_run(run_id).await {
+                                warn!(
+                                    run_id,
+                                    task = %task_key,
+                                    error = %requeue_error,
+                                    "managed task admission error could not return the requested run to the queue"
+                                );
+                            }
+                            continue;
+                        }
+                    };
+                    if let Some(migration_hold_context) = migration_hold_context {
+                        let requeued = match store
+                            .requeue_claimed_run_for_migration_hold(
+                                run_id,
+                                migration_hold_context.hold_generation,
+                                migration_hold_context.checkpoint.as_deref(),
+                            )
+                            .await
+                        {
+                            Ok(requeued) => requeued,
+                            Err(error) => {
+                                warn!(
+                                    run_id,
+                                    task = %task_key,
+                                    error = %error,
+                                    "migration-held managed task could not return to the queue"
+                                );
+                                false
+                            }
+                        };
+                        if !requeued
+                            && let Err(error) = store.requeue_claimed_run(run_id).await
+                        {
+                            warn!(
+                                run_id,
+                                task = %task_key,
+                                error = %error,
+                                "migration-held managed task could not return the claimed run to the queue"
+                            );
+                        }
+                        if let Err(error) = store
+                            .mark_task_migration_held_at_generation(
+                                &task_key,
+                                migration_hold_context.hold_generation,
+                            )
+                            .await
+                        {
+                            warn!(
+                                task = %task_key,
+                                error = %error,
+                                "migration-held managed task progress could not be published"
+                            );
+                        }
+                        crate::task_timeline::notify_runtime_changed();
+                        continue;
+                    }
                     crate::task_timeline::notify_runtime_changed();
                     let Some(execution_lease) =
                         crate::maintenance_store::try_acquire_task_execution(&task_key)
@@ -2111,6 +2355,7 @@ fn managed_task_requires_heavy_file_operation(task_key: &str) -> bool {
             | "raw_compression"
             | "archive_upstream_activity_manifest"
             | "materialize_historical_rollups"
+            | "startup_persistent_prep"
             | "startup_backfill"
             | "startup_backfill.pool_attempt_public_id_archives"
             | "startup_backfill.upstream_activity_archives"
@@ -2291,6 +2536,7 @@ async fn run_managed_task_worker_guarded(
                 ),
                 completion: Some("failed".to_string()),
                 core_completion: None,
+                migration_hold_generation: None,
                 details: managed_task_owner_v2_failure_details(
                     &fallback_task_key,
                     &fallback_trigger_kind,
@@ -2323,8 +2569,76 @@ async fn run_managed_task_worker(
         .cloned()
         .expect("maintenance store available while managed task worker runs");
     let execution_started_at = Instant::now();
-    let result =
-        run_managed_task_once_with_observation(&state, &task_key, run_id, &observation).await;
+    let migration_hold_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut migration_hold_generation = None;
+    let task_key_for_future = task_key.clone();
+    let mut task_future = Box::pin(crate::maintenance::with_migration_hold_signal(
+        Arc::clone(&migration_hold_flag),
+        crate::maintenance::with_managed_task_key(
+            &task_key_for_future,
+            run_managed_task_once_with_observation(
+                &state,
+                &task_key_for_future,
+                run_id,
+                &observation,
+            ),
+        ),
+    ));
+    let result = tokio::select! {
+        biased;
+        result = &mut task_future => result,
+        _ = wait_for_managed_task_migration_hold(&store, &task_key) => {
+            migration_hold_flag.store(true, std::sync::atomic::Ordering::Release);
+            (&mut task_future).await
+        }
+    };
+    let result = match result {
+        Ok(mut execution) => {
+            let migration_hold_observed =
+                migration_hold_flag.load(std::sync::atomic::Ordering::Acquire);
+            let (migration_hold_context, migration_hold_check_failed) =
+                match store.migration_task_hold_context(&task_key).await {
+                    Ok(context) => (context, false),
+                    Err(error) => {
+                        warn!(
+                            task = %task_key,
+                            error = %error,
+                            "managed task completion could not verify migration hold"
+                        );
+                        (None, true)
+                    }
+                };
+            if let Some(migration_hold_context) = migration_hold_context {
+                migration_hold_generation = Some(migration_hold_context.hold_generation);
+                apply_migration_hold_to_execution(
+                    &mut execution,
+                    migration_hold_context.checkpoint,
+                );
+                if let Err(error) = store
+                    .mark_task_migration_held_at_generation(
+                        &task_key,
+                        migration_hold_context.hold_generation,
+                    )
+                    .await
+                {
+                    warn!(
+                        task = %task_key,
+                        error = %error,
+                        "migration-held task progress could not be published after batch"
+                    );
+                }
+            } else if migration_hold_check_failed {
+                apply_migration_hold_to_execution(&mut execution, None);
+            } else if migration_hold_observed {
+                debug!(
+                    task = %task_key,
+                    "managed task hold was released before completion; retaining normal completion"
+                );
+            }
+            Ok(execution)
+        }
+        Err(error) => Err(error),
+    };
     let (status, summary, detail, completion, core_completion, details) = match result {
         Ok(execution) => {
             let status = match execution.completion.as_deref() {
@@ -2409,6 +2723,7 @@ async fn run_managed_task_worker(
         detail,
         completion,
         core_completion,
+        migration_hold_generation,
         details,
     };
     let progress_total = finish
@@ -2484,7 +2799,25 @@ async fn run_managed_task_worker(
             } else {
                 "complete"
             });
-    if let Err(error) = store
+    if progress_wait_reason == Some(crate::maintenance_store::MIGRATION_HOLD_REASON)
+        && let Some(hold_generation) = finish.migration_hold_generation
+    {
+        if let Err(error) = store
+            .mark_task_migration_held_at_generation(&finish.task_key, hold_generation)
+            .await
+        {
+            warn!(
+                task = %finish.task_key,
+                error = %error,
+                "migration-held managed task final progress snapshot could not be published"
+            );
+        }
+    } else if progress_wait_reason == Some(crate::maintenance_store::MIGRATION_HOLD_REASON) {
+        debug!(
+            task = %finish.task_key,
+            "skipping migration-held final progress snapshot without a current hold generation"
+        );
+    } else if let Err(error) = store
         .publish_progress(
             &finish.task_key,
             progress_total,
@@ -2504,6 +2837,38 @@ async fn run_managed_task_worker(
     finish
 }
 
+async fn wait_for_managed_task_migration_hold(
+    store: &crate::maintenance_store::MaintenanceStore,
+    task_key: &str,
+) {
+    loop {
+        let held = match store.migration_task_is_held(task_key).await {
+            Ok(held) => held,
+            Err(error) => {
+                warn!(
+                    task = %task_key,
+                    error = %error,
+                    "managed task migration hold watcher failed"
+                );
+                true
+            }
+        };
+        if held {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_legacy_task_migration_hold(task_key: &'static str) {
+    loop {
+        if crate::maintenance_store::migration_task_is_held(task_key).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 struct ManagedTaskFinish {
     run_id: i64,
     task_key: String,
@@ -2514,6 +2879,7 @@ struct ManagedTaskFinish {
     detail: Option<String>,
     completion: Option<String>,
     core_completion: Option<String>,
+    migration_hold_generation: Option<u64>,
     details: Option<Value>,
 }
 
@@ -2686,13 +3052,77 @@ impl ManagedTaskExecution {
     }
 }
 
+fn apply_migration_hold_to_execution(
+    execution: &mut ManagedTaskExecution,
+    checkpoint: Option<String>,
+) {
+    execution.summary = if execution.summary.is_empty() {
+        "任务已完成当前有界批次，因 migration_hold 延后".to_string()
+    } else {
+        format!(
+            "{}；当前批次完成后因 migration_hold 延后",
+            execution.summary
+        )
+    };
+    execution.detail = Some("等待迁移释放后从任务 checkpoint 继续".to_string());
+    execution.completion = Some("deferred".to_string());
+    execution.core_completion = None;
+    let details = execution.details.get_or_insert_with(|| json!({}));
+    if !details.is_object() {
+        *details = json!({});
+    }
+    details["waitReason"] = json!(crate::maintenance_store::MIGRATION_HOLD_REASON);
+    details["migrationCheckpoint"] = checkpoint.map(Value::String).unwrap_or(Value::Null);
+    details["scheduleRetryAfterSecs"] = json!(crate::maintenance_store::MIGRATION_HOLD_RETRY_SECS);
+    details["scheduleRetryReason"] = json!(crate::maintenance_store::MIGRATION_HOLD_REASON);
+}
+
+fn migration_hold_execution(checkpoint: Option<String>) -> ManagedTaskExecution {
+    let mut execution = ManagedTaskExecution::simple(String::new());
+    apply_migration_hold_to_execution(&mut execution, checkpoint);
+    execution
+}
+
 async fn run_managed_task_once_with_observation(
     state: &Arc<AppState>,
     task_key: &str,
     run_id: i64,
     observation: &crate::TaskExecutionObservation,
 ) -> Result<ManagedTaskExecution> {
+    if let Some(reason) = state
+        .storage_migration
+        .migration_hold_reason(task_key)
+        .await
+    {
+        return Ok(ManagedTaskExecution {
+            summary: format!("{task_key} 已因迁移准入暂停"),
+            detail: Some("migration hold remains durable until migration resumes".to_string()),
+            completion: Some("deferred".to_string()),
+            core_completion: None,
+            details: Some(json!({"waitReason": reason})),
+        });
+    }
     let store = crate::maintenance_store::global().context("maintenance store unavailable")?;
+    let migration_hold_active = match store.migration_task_is_held(task_key).await {
+        Ok(active) => active,
+        Err(error) => {
+            warn!(
+                task = task_key,
+                error = %error,
+                "managed task execution could not verify migration hold"
+            );
+            true
+        }
+    };
+    if migration_hold_active {
+        return Ok(migration_hold_execution(
+            store
+                .migration_task_hold_checkpoint(task_key)
+                .await
+                .ok()
+                .flatten(),
+        ));
+    }
     let (trigger, details): (String, Option<String>) =
         sqlx::query_as("SELECT trigger_kind,details FROM managed_task_runs WHERE id=?")
             .bind(run_id)
@@ -2848,6 +3278,7 @@ async fn run_managed_task_once_with_scoped_observation(
             OwnedMaintenanceContext {
                 pool: &state.pool,
                 config: &state.config,
+                storage_migration: Some(state.storage_migration.as_ref()),
                 cache: &state.prompt_cache_conversation_cache,
                 circuit: state.raw_capture_circuit.clone(),
                 shutdown: &state.shutdown,
@@ -3163,6 +3594,7 @@ async fn run_managed_task_once(
                 task_key,
                 false,
                 &state.shutdown,
+                Some(state.storage_migration.as_ref()),
             )
             .await?;
             Ok(format!(
@@ -3248,6 +3680,9 @@ async fn run_managed_task_once(
         "raw_payload_metrics_inventory" => {
             let reset =
                 resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await?;
+            if crate::maintenance::migration_hold_boundary_reached().await {
+                return Ok("原始载荷指标盘点已在 reset 批次后因 migration_hold 延后".to_string());
+            }
             refresh_system_raw_payload_metrics_inventory(state.as_ref()).await?;
             Ok(if reset {
                 "原始载荷指标盘点已推进".to_string()
@@ -3388,6 +3823,9 @@ pub(crate) async fn drain_runtime_after_shutdown(
     startup_backfill_handle: Option<JoinHandle<()>>,
     startup_hot_read_hydration_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
+    if let Some(storage_runtime) = state.storage_runtime.as_ref() {
+        storage_runtime.stop().await;
+    }
     if let Some(server_handle) = server_handle {
         info!("http server graceful drain started");
         if let Err(err) = server_handle.await {
@@ -3542,6 +3980,18 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS);
         let mut p2_preemption_retry = initial_p2_preemption_retry;
         loop {
+            if state
+                .storage_migration
+                .migration_hold_reason("startup_hourly_rollup_bootstrap")
+                .await
+                .is_some()
+            {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            }
             if crate::maintenance_store::legacy_worker_should_skip(
                 "startup_hourly_rollup_bootstrap",
             )
@@ -3725,20 +4175,35 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 ));
 
             let hourly_rollups_started_at = Instant::now();
+            let migration_hold_flag = Arc::new(AtomicBool::new(false));
             let hourly_rollups = crate::with_managed_task_observation(
                 task_run
                     .observation
                     .clone()
                     .expect("hourly rollup observation is initialized before work"),
                 async {
+                    let mut hourly_rollups_future =
+                        Box::pin(crate::maintenance::with_migration_hold_signal(
+                            Arc::clone(&migration_hold_flag),
+                            crate::maintenance::with_managed_task_key(
+                                "startup_hourly_rollup_bootstrap",
+                                bootstrap_hourly_rollups_for_runtime_startup_with_work(
+                                    &state.pool,
+                                    Some(state.config.invocation_max_days),
+                                ),
+                            ),
+                        ));
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => None,
                         _ = coordinator.wait_for_p2_preemption() => None,
-                        result = bootstrap_hourly_rollups_for_runtime_startup_with_work(
-                            &state.pool,
-                            Some(state.config.invocation_max_days),
-                        ) => Some(result),
+                        result = &mut hourly_rollups_future => Some(result),
+                        _ = wait_for_legacy_task_migration_hold(
+                            "startup_hourly_rollup_bootstrap",
+                        ) => {
+                            migration_hold_flag.store(true, Ordering::Release);
+                            Some((&mut hourly_rollups_future).await)
+                        }
                     }
                 },
             )
@@ -3772,6 +4237,23 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     _ = tokio::time::sleep(retry_after) => continue,
                 }
             };
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held(
+                    "startup_hourly_rollup_bootstrap",
+                )
+                .await;
+            if migration_hold_active {
+                drop(write_permit);
+                drop(pressure_permit);
+                drop(rollup_guard);
+                finish_runtime_startup_hourly_rollup_migration_hold(
+                    state.as_ref(),
+                    &cancel,
+                    &task_run,
+                )
+                .await;
+                return;
+            }
             if let Err(err) = hourly_rollups.as_ref() {
                 drop(write_permit);
                 drop(pressure_permit);
@@ -3845,6 +4327,17 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     return;
                 }
             };
+            if crate::maintenance_store::migration_task_is_held("startup_hourly_rollup_bootstrap")
+                .await
+            {
+                finish_runtime_startup_hourly_rollup_migration_hold(
+                    state.as_ref(),
+                    &cancel,
+                    &task_run,
+                )
+                .await;
+                return;
+            }
             if usage_breakdown_repair_pending {
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state.as_ref(),
@@ -3957,13 +4450,45 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             );
 
             let summary_rollups_started_at = Instant::now();
-            let summary_rollups = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => None,
-                _ = coordinator.wait_for_p2_preemption() => None,
-                result = ensure_invocation_summary_rollups_ready_best_effort(&state.pool) => Some(result),
+            let summary_rollups = {
+                let mut summary_rollups_future =
+                    Box::pin(crate::maintenance::with_migration_hold_signal(
+                        Arc::clone(&migration_hold_flag),
+                        crate::maintenance::with_managed_task_key(
+                            "startup_hourly_rollup_bootstrap",
+                            ensure_invocation_summary_rollups_ready_best_effort(&state.pool),
+                        ),
+                    ));
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => None,
+                    _ = coordinator.wait_for_p2_preemption() => None,
+                    result = &mut summary_rollups_future => Some(result),
+                    _ = wait_for_legacy_task_migration_hold(
+                        "startup_hourly_rollup_bootstrap",
+                    ) => {
+                        migration_hold_flag.store(true, Ordering::Release);
+                        Some((&mut summary_rollups_future).await)
+                    }
+                }
             };
             drop(rollup_guard);
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held(
+                    "startup_hourly_rollup_bootstrap",
+                )
+                .await;
+            if migration_hold_active {
+                drop(write_permit);
+                drop(pressure_permit);
+                finish_runtime_startup_hourly_rollup_migration_hold(
+                    state.as_ref(),
+                    &cancel,
+                    &task_run,
+                )
+                .await;
+                return;
+            }
             let Some(summary_rollups) = summary_rollups else {
                 drop(write_permit);
                 drop(pressure_permit);
@@ -4172,6 +4697,32 @@ pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
     }
 }
 
+async fn finish_runtime_startup_hourly_rollup_migration_hold(
+    state: &AppState,
+    cancel: &CancellationToken,
+    task_run: &SystemTaskRunHandle,
+) {
+    if let Some(store) = crate::maintenance_store::global()
+        && let Err(error) = store
+            .mark_task_migration_held("startup_hourly_rollup_bootstrap")
+            .await
+    {
+        warn!(
+            error = %error,
+            "startup hourly rollup migration-held progress could not be published"
+        );
+    }
+    finish_runtime_startup_hourly_rollup_bootstrap_task(
+        state,
+        cancel,
+        Some(task_run),
+        SystemTaskStatus::Skipped,
+        "background startup hourly rollup bootstrap deferred by migration hold",
+        Some(crate::maintenance_store::MIGRATION_HOLD_REASON.to_string()),
+    )
+    .await;
+}
+
 pub(crate) fn spawn_forward_proxy_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
@@ -4338,7 +4889,16 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                             .await;
                         }
                     }
-                    if let Err(err) = flush_dashboard_network_socket_minute_rollups(
+                    if crate::maintenance_store::migration_task_is_held(
+                        "forward_proxy_subscription_refresh.rollups",
+                    )
+                    .await
+                    {
+                        debug!(
+                            wait_reason = crate::maintenance_store::MIGRATION_HOLD_REASON,
+                            "forward proxy dashboard rollups deferred by migration hold"
+                        );
+                    } else if let Err(err) = flush_dashboard_network_socket_minute_rollups(
                         &state.pool,
                         state.dashboard_network_speed_cache.as_ref(),
                         Utc::now(),
