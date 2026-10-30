@@ -4292,8 +4292,12 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
         let partial_minute_bucket_epochs =
             collect_account_window_partial_minute_bucket_epochs(&plans)?;
         let partial_hour_bucket_epochs = collect_account_window_partial_bucket_epochs(&plans)?;
-        let missing_full_hour_bucket_epochs =
-            collect_account_window_missing_full_hour_bucket_epochs(&plans, &covered_hourly_keys);
+        let missing_full_hour_bucket_keys =
+            collect_account_window_missing_full_hour_bucket_keys(&plans, &covered_hourly_keys);
+        let missing_full_hour_bucket_epochs = missing_full_hour_bucket_keys
+            .iter()
+            .map(|(_, bucket_epoch)| *bucket_epoch)
+            .collect::<HashSet<_>>();
 
         let archived_partial_minute_bucket_epochs = partial_minute_bucket_epochs
             .iter()
@@ -4310,10 +4314,14 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                     .unwrap_or(false)
             })
             .collect::<HashSet<_>>();
-        let archived_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+        let archived_missing_full_hour_bucket_keys = missing_full_hour_bucket_keys
             .iter()
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
+            .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
+            .collect::<HashSet<_>>();
+        let archived_missing_full_hour_bucket_epochs = archived_missing_full_hour_bucket_keys
+            .iter()
+            .map(|(_, bucket_epoch)| *bucket_epoch)
             .collect::<HashSet<_>>();
         let archived_exact_hour_bucket_epochs = archived_partial_hour_bucket_epochs
             .iter()
@@ -4343,7 +4351,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                     archived_rows,
                     &archived_partial_minute_bucket_epochs,
                     &archived_partial_hour_bucket_epochs,
-                    &archived_missing_full_hour_bucket_epochs,
+                    &archived_missing_full_hour_bucket_keys,
                     &covered_hourly_keys,
                 )?;
                 for (account_id, summary) in fold_account_window_usage_rows(archived_rows, &plans) {
@@ -4368,10 +4376,14 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                     .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch),
             )
             .collect::<HashSet<_>>();
-        let live_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+        let live_missing_full_hour_bucket_keys = missing_full_hour_bucket_keys
             .iter()
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+            .filter(|(_, bucket_epoch)| *bucket_epoch >= retention_cutoff_epoch)
+            .collect::<HashSet<_>>();
+        let live_missing_full_hour_bucket_epochs = live_missing_full_hour_bucket_keys
+            .iter()
+            .map(|(_, bucket_epoch)| *bucket_epoch)
             .collect::<HashSet<_>>();
         let live_exact_fallback_bucket_epochs = live_partial_hour_bucket_epochs
             .iter()
@@ -4400,7 +4412,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                 live_rows,
                 &live_partial_minute_bucket_epochs,
                 &live_partial_hour_bucket_epochs,
-                &live_missing_full_hour_bucket_epochs,
+                &live_missing_full_hour_bucket_keys,
                 &covered_hourly_keys,
             )?;
             for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {

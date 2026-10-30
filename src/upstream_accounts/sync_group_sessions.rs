@@ -255,11 +255,11 @@ fn deduplicate_account_window_usage_rows(
 mod bounded_scan_tests {
     use super::*;
 
-    fn usage_row(id: i64, occurred_at: &str) -> AccountWindowUsageRow {
+    fn usage_row(id: i64, account_id: i64, occurred_at: &str) -> AccountWindowUsageRow {
         AccountWindowUsageRow {
             id,
             occurred_at: occurred_at.to_string(),
-            upstream_account_id: 7,
+            upstream_account_id: account_id,
             input_tokens: Some(1),
             output_tokens: Some(2),
             cache_input_tokens: Some(3),
@@ -271,15 +271,31 @@ mod bounded_scan_tests {
     #[test]
     fn overlapping_bucket_rows_deduplicate_by_invocation_id() {
         let rows = deduplicate_account_window_usage_rows(vec![
-            usage_row(2, "2026-10-30 11:00:30"),
-            usage_row(1, "2026-10-30 11:00:15"),
-            usage_row(1, "2026-10-30 11:00:15"),
+            usage_row(2, 7, "2026-10-30 11:00:30"),
+            usage_row(1, 7, "2026-10-30 11:00:15"),
+            usage_row(1, 7, "2026-10-30 11:00:15"),
         ]);
 
         assert_eq!(
             rows.iter().map(|row| row.id).collect::<Vec<_>>(),
             vec![1, 2]
         );
+    }
+
+    #[test]
+    fn missing_hour_fallback_keeps_account_scope() {
+        let occurred_at = "2026-10-30 11:00:15";
+        let bucket_epoch = invocation_bucket_start_epoch(occurred_at).expect("hour bucket");
+        let rows = filter_account_window_usage_rows_for_exact_fallback(
+            vec![usage_row(1, 7, occurred_at), usage_row(2, 8, occurred_at)],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::from([(7, bucket_epoch)]),
+            &HashSet::from([(8, bucket_epoch)]),
+        )
+        .expect("filter exact fallback rows");
+
+        assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![1]);
     }
 }
 
@@ -609,11 +625,11 @@ pub(crate) fn collect_account_window_full_minute_bounds(
     Some((minimum_start_epoch?, maximum_end_epoch?))
 }
 
-pub(crate) fn collect_account_window_missing_full_hour_bucket_epochs(
+pub(crate) fn collect_account_window_missing_full_hour_bucket_keys(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
     covered_hourly_keys: &HashSet<(i64, i64)>,
-) -> HashSet<i64> {
-    let mut missing_bucket_epochs = HashSet::new();
+) -> HashSet<(i64, i64)> {
+    let mut missing_bucket_keys = HashSet::new();
 
     for (account_id, plan) in plans {
         for range in [plan.primary.as_ref(), plan.secondary.as_ref()]
@@ -628,14 +644,14 @@ pub(crate) fn collect_account_window_missing_full_hour_bucket_epochs(
             let mut bucket_epoch = start_epoch;
             while bucket_epoch < end_epoch {
                 if !covered_hourly_keys.contains(&(*account_id, bucket_epoch)) {
-                    missing_bucket_epochs.insert(bucket_epoch);
+                    missing_bucket_keys.insert((*account_id, bucket_epoch));
                 }
                 bucket_epoch = bucket_epoch.saturating_add(3_600);
             }
         }
     }
 
-    missing_bucket_epochs
+    missing_bucket_keys
 }
 
 pub(crate) fn fold_account_window_usage_rows(
@@ -747,7 +763,7 @@ pub(crate) fn filter_account_window_usage_rows_for_exact_fallback(
     rows: Vec<AccountWindowUsageRow>,
     partial_minute_bucket_epochs: &HashSet<i64>,
     partial_bucket_epochs: &HashSet<i64>,
-    missing_full_hour_bucket_epochs: &HashSet<i64>,
+    missing_full_hour_bucket_keys: &HashSet<(i64, i64)>,
     covered_hourly_keys: &HashSet<(i64, i64)>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if rows.is_empty() {
@@ -763,7 +779,7 @@ pub(crate) fn filter_account_window_usage_rows_for_exact_fallback(
         } else if partial_bucket_epochs.contains(&bucket_epoch) {
             !covered_hourly_keys.contains(&(row.upstream_account_id, bucket_epoch))
         } else {
-            missing_full_hour_bucket_epochs.contains(&bucket_epoch)
+            missing_full_hour_bucket_keys.contains(&(row.upstream_account_id, bucket_epoch))
         };
         if include {
             filtered_rows.push(row);
