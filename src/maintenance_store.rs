@@ -5124,6 +5124,37 @@ impl MaintenanceStore {
             )
             .await?;
         }
+        let owner_progress_without_wait = owner_v2
+            && owner_processed_count.is_some_and(|value| value > 0)
+            && !matches!(completion, Some("failed") | None)
+            && details
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .is_some_and(|owner_details| {
+                    !owner_details
+                        .get("dryRun")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+                        && owner_details
+                            .get("waitReason")
+                            .and_then(serde_json::Value::as_str)
+                            .map_or(true, str::is_empty)
+                });
+        if owner_progress_without_wait {
+            // A successful owner batch proves that the prior pressure/backoff gate is stale.
+            // Clear it before the next catch-up admission, otherwise a still-future retry gate
+            // can suppress the schedule just written above and create a long idle hole.
+            sqlx::query(
+                "DELETE FROM maintenance_owner_retry_state
+                 WHERE task_key=?
+                   AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
+            )
+            .bind(task_key.as_deref().expect("owner progress has a task key"))
+            .bind(task_key.as_deref().expect("owner progress has a task key"))
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        }
         let owner_run_is_complete_without_more_work = owner_v2
             && matches!(
                 task_key.as_deref(),

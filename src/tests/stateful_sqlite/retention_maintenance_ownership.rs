@@ -611,6 +611,92 @@ async fn successful_owner_run_clears_prior_retry_state() {
 }
 
 #[tokio::test]
+async fn successful_automatic_owner_progress_clears_stale_retry_state_before_next_catchup() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let task_key = "retention_archive";
+    let failed_run = store
+        .begin_run(task_key, "2026-10-01T00:00:00.000Z", "schedule", None)
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation_and_retry(
+            failed_run,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("pressure gate"),
+            None,
+            Some("failed"),
+            None,
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "result": "failed",
+                "globalBacklogTotal": 100,
+                "committed": 0,
+                "selectedScope": {"committed": 0, "hasMore": true},
+                "waitReason": "sqlite_pressure"
+            })),
+            30,
+            "sqlite_pressure",
+        )
+        .await
+        .unwrap();
+
+    let retry_reason: Option<String> =
+        sqlx::query_scalar("SELECT reason FROM maintenance_owner_retry_state WHERE task_key=?")
+            .bind(task_key)
+            .fetch_optional(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(retry_reason.as_deref(), Some("sqlite_pressure"));
+
+    let successful_run = store
+        .begin_run(task_key, "2026-10-01T00:01:00.000Z", "catchup", None)
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation(
+            successful_run,
+            "success",
+            "2026-10-01T00:01:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "result": "complete",
+                "globalBacklogTotal": 100,
+                "committed": 1,
+                "processedCount": 1,
+                "selectedScope": {"committed": 1, "hasMore": true},
+                "waitReason": null,
+                "dryRun": false
+            })),
+        )
+        .await
+        .unwrap();
+
+    let state: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT tasks.next_catchup_at,tasks.catchup_reason,retry.reason
+         FROM managed_tasks tasks
+         LEFT JOIN maintenance_owner_retry_state retry ON retry.task_key=tasks.task_key
+         WHERE tasks.task_key=?",
+    )
+    .bind(task_key)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert!(state.0.is_some());
+    assert_eq!(state.1.as_deref(), Some("backlog_remaining"));
+    assert_eq!(state.2, None);
+}
+
+#[tokio::test]
 async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();
