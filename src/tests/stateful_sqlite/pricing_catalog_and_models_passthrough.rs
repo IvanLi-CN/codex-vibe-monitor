@@ -522,6 +522,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
     let state = Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
+        pg_analytics: Arc::new(PgAnalyticsRuntime::disabled()),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),

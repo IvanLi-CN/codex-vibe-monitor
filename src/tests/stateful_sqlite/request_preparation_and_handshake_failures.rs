@@ -118,6 +118,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
     let state = Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
+        pg_analytics: Arc::new(PgAnalyticsRuntime::disabled()),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
@@ -229,6 +230,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
     let state = Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
+        pg_analytics: Arc::new(PgAnalyticsRuntime::disabled()),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
