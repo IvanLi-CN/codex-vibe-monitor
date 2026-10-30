@@ -1101,13 +1101,12 @@ pub(crate) fn freeze_and_finalize_retention_owner_observation(
     execution_duration_ms
 }
 
-// Keep the selected tail inside the same managed run long enough to cross the
-// database-pressure cooldown. These are backoff steps, not an attempt limit:
-// production retention has no fixed total work duration, so a selected tail
-// remains in this task until it completes, is cancelled, or reaches a
-// non-retryable failure.
+// Keep the selected tail inside the same managed run long enough to cross several
+// database-pressure cooldowns. The selected rows remain in the source table when
+// this bounded window expires, so the next owner run can retry them without loss.
 const RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS: [u64; 7] =
     [250, 1_000, 3_000, 7_500, 15_000, 30_000, 60_000];
+const RETENTION_OWNER_INTERNAL_RETRY_BUDGET: Duration = RETENTION_PRESSURE_RETRY_BUDGET;
 
 fn retention_owner_internal_retry_delay(retry_index: usize) -> Duration {
     Duration::from_millis(
@@ -1164,6 +1163,7 @@ pub(crate) async fn run_retention_owner_task(
                                         let mut initial_global_total = None;
                                         let mut initial_source_max_id = None;
                                         let mut retry_index = 0usize;
+                                        let retry_started_at = Instant::now();
                                         let result = loop {
                                             if let Err(error) = progress_store
                                                 .update_progress_wait_state(task_key, None, None)
@@ -1193,6 +1193,8 @@ pub(crate) async fn run_retention_owner_task(
                                                 matches!(summary.completion, "deferred" | "partial")
                                                     && summary.fatal_error.is_none()
                                                     && summary.has_more != Some(false)
+                                                    && retry_started_at.elapsed()
+                                                        < RETENTION_OWNER_INTERNAL_RETRY_BUDGET
                                                     && retention_owner_internal_retryable_reason(
                                                         summary.wait_reason.as_deref(),
                                                     )
@@ -1207,8 +1209,16 @@ pub(crate) async fn run_retention_owner_task(
                                             // remaining capacity.
                                             batch_plan::retain_committed_batch_prefixes_for_retry();
                                             retention_clear_run_defer_reason();
-                                            let delay =
-                                                retention_owner_internal_retry_delay(retry_index);
+                                            let remaining_retry_budget =
+                                                RETENTION_OWNER_INTERNAL_RETRY_BUDGET
+                                                    .saturating_sub(retry_started_at.elapsed());
+                                            if remaining_retry_budget.is_zero() {
+                                                break result;
+                                            }
+                                            let delay = retention_owner_internal_retry_delay(
+                                                retry_index,
+                                            )
+                                            .min(remaining_retry_budget);
                                             retry_index = retry_index.saturating_add(1);
                                             let wait_reason = result
                                                 .as_ref()
@@ -2746,7 +2756,7 @@ mod owner_fact_tests {
     }
 
     #[test]
-    fn owner_internal_pressure_backoff_has_no_attempt_ceiling() {
+    fn owner_internal_pressure_backoff_is_bounded_by_the_shared_retry_budget() {
         assert_eq!(
             retention_owner_internal_retry_delay(0),
             Duration::from_millis(250)
@@ -2758,6 +2768,14 @@ mod owner_fact_tests {
         assert_eq!(
             retention_owner_internal_retry_delay(usize::MAX),
             Duration::from_secs(60)
+        );
+        assert_eq!(
+            RETENTION_OWNER_INTERNAL_RETRY_BUDGET,
+            RETENTION_PRESSURE_RETRY_BUDGET
+        );
+        assert_eq!(
+            RETENTION_OWNER_INTERNAL_RETRY_BUDGET,
+            Duration::from_secs(45)
         );
     }
 
