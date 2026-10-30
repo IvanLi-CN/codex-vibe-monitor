@@ -1,6 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use chrono::Timelike;
+use futures_util::TryStreamExt;
 use serde::{Serialize, Serializer};
 use sqlx::FromRow;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -579,12 +580,11 @@ where
     }
     query.push(" ORDER BY occurred_at ASC, id ASC, prompt_cache_key ASC");
 
-    let rows = query
-        .build_query_as::<ParallelWorkExactInvocationRow>()
-        .fetch_all(pool)
-        .await?;
     let mut bucket_keys: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
-    for row in rows {
+    let mut rows = query
+        .build_query_as::<ParallelWorkExactInvocationRow>()
+        .fetch(pool);
+    while let Some(row) = rows.try_next().await? {
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
         };

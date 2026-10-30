@@ -4284,16 +4284,16 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
         let live_rollup_cursor =
             load_hourly_rollup_live_progress(&state.pool, HOURLY_ROLLUP_DATASET_INVOCATIONS)
                 .await?;
-        let partial_minute_bucket_epochs =
+        let partial_minute_bucket_keys =
             collect_account_window_partial_minute_bucket_epochs(&plans)?;
         let partial_hour_bucket_epochs = collect_account_window_partial_bucket_epochs(&plans)?;
         let missing_full_hour_bucket_epochs =
             collect_account_window_missing_full_hour_bucket_epochs(&plans, &covered_hourly_keys);
 
-        let archived_partial_minute_bucket_epochs = partial_minute_bucket_epochs
+        let archived_partial_minute_bucket_keys = partial_minute_bucket_keys
             .iter()
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
+            .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
             .collect::<HashSet<_>>();
         let archived_partial_hour_bucket_epochs = partial_hour_bucket_epochs
             .iter()
@@ -4305,15 +4305,15 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                     .unwrap_or(false)
             })
             .collect::<HashSet<_>>();
-        let archived_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+        let archived_missing_full_hour_bucket_keys = missing_full_hour_bucket_epochs
             .iter()
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
+            .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
             .collect::<HashSet<_>>();
         if query_start < retention_cutoff
-            && (!archived_partial_minute_bucket_epochs.is_empty()
+            && (!archived_partial_minute_bucket_keys.is_empty()
                 || !archived_partial_hour_bucket_epochs.is_empty()
-                || !archived_missing_full_hour_bucket_epochs.is_empty())
+                || !archived_missing_full_hour_bucket_keys.is_empty())
         {
             let archive_end = query_end.min(retention_cutoff - ChronoDuration::seconds(1));
             if query_start <= archive_end {
@@ -4329,9 +4329,9 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                 .await?;
                 let archived_rows = filter_account_window_usage_rows_for_exact_fallback(
                     archived_rows,
-                    &archived_partial_minute_bucket_epochs,
+                    &archived_partial_minute_bucket_keys,
                     &archived_partial_hour_bucket_epochs,
-                    &archived_missing_full_hour_bucket_epochs,
+                    &archived_missing_full_hour_bucket_keys,
                     &covered_hourly_keys,
                 )?;
                 for (account_id, summary) in fold_account_window_usage_rows(archived_rows, &plans) {
@@ -4340,49 +4340,59 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
             }
         }
 
-        let live_partial_minute_bucket_epochs = partial_minute_bucket_epochs
+        let live_partial_minute_bucket_keys = partial_minute_bucket_keys
             .iter()
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+            .filter(|(_, bucket_epoch)| *bucket_epoch >= retention_cutoff_epoch)
             .collect::<HashSet<_>>();
         let live_partial_hour_bucket_epochs = partial_hour_bucket_epochs
             .iter()
             .copied()
             .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+            .collect::<HashSet<_>>();
+        let live_missing_full_hour_bucket_keys = missing_full_hour_bucket_epochs
+            .iter()
+            .copied()
+            .filter(|(_, bucket_epoch)| *bucket_epoch >= retention_cutoff_epoch)
+            .collect::<HashSet<_>>();
+        let mut live_exact_fallback_bucket_ranges = live_partial_hour_bucket_epochs
+            .iter()
+            .copied()
+            .map(|bucket_epoch| (bucket_epoch, 3_600))
             .chain(
-                missing_full_hour_bucket_epochs
+                live_partial_minute_bucket_keys
                     .iter()
-                    .copied()
-                    .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch),
+                    .map(|(_, bucket_epoch)| (*bucket_epoch, 60)),
             )
-            .collect::<HashSet<_>>();
-        let live_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
-            .iter()
-            .copied()
-            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
-            .collect::<HashSet<_>>();
-        let live_exact_fallback_bucket_epochs = live_partial_hour_bucket_epochs
-            .iter()
-            .copied()
-            .chain(live_partial_minute_bucket_epochs.iter().copied())
-            .chain(live_missing_full_hour_bucket_epochs.iter().copied())
-            .collect::<HashSet<_>>();
-        if !live_exact_fallback_bucket_epochs.is_empty() {
-            let live_rows = load_window_actual_usage_rows_from_pool(
+            .chain(
+                live_missing_full_hour_bucket_keys
+                    .iter()
+                    .map(|(_, bucket_epoch)| (*bucket_epoch, 3_600)),
+            )
+            .collect::<Vec<_>>();
+        live_exact_fallback_bucket_ranges.sort_unstable();
+        live_exact_fallback_bucket_ranges.dedup();
+
+        let live_snapshot_id =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                .fetch_one(&state.pool)
+                .await?;
+        if !live_exact_fallback_bucket_ranges.is_empty() {
+            let live_rows = load_window_actual_usage_rows_for_bucket_ranges_from_pool(
                 &state.pool,
                 &account_ids,
-                &query_start_at,
-                &format_naive(query_end.with_timezone(&Shanghai).naive_local()),
+                &live_exact_fallback_bucket_ranges,
                 None,
-                None,
-                (live_rollup_cursor > 0).then_some(live_rollup_cursor),
+                (live_rollup_cursor > 0)
+                    .then_some(live_rollup_cursor)
+                    .or(Some(live_snapshot_id)),
             )
             .await?;
             let live_rows = filter_account_window_usage_rows_for_exact_fallback(
                 live_rows,
-                &live_partial_minute_bucket_epochs,
+                &live_partial_minute_bucket_keys,
                 &live_partial_hour_bucket_epochs,
-                &live_missing_full_hour_bucket_epochs,
+                &live_missing_full_hour_bucket_keys,
                 &covered_hourly_keys,
             )?;
             for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
@@ -4399,7 +4409,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                 &query_end_at,
                 None,
                 Some(live_rollup_cursor),
-                None,
+                Some(live_snapshot_id),
             )
             .await?;
             for (account_id, summary) in fold_account_window_usage_rows(live_tail_rows, &plans) {
