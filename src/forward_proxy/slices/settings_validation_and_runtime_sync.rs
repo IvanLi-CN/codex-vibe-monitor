@@ -4,9 +4,13 @@ pub(crate) const FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX: &str =
     "partial forward proxy subscription refresh:";
 
 #[cfg(test)]
+type ForwardProxySubscriptionRefreshLockAttemptHook =
+    std::sync::Mutex<Option<(usize, oneshot::Sender<()>)>>;
+
+#[cfg(test)]
 fn forward_proxy_subscription_refresh_lock_attempt_hook()
--> &'static std::sync::Mutex<Option<(usize, oneshot::Sender<()>)>> {
-    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<(usize, oneshot::Sender<()>)>>> =
+-> &'static ForwardProxySubscriptionRefreshLockAttemptHook {
+    static HOOK: std::sync::OnceLock<ForwardProxySubscriptionRefreshLockAttemptHook> =
         std::sync::OnceLock::new();
     HOOK.get_or_init(|| std::sync::Mutex::new(None))
 }
