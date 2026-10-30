@@ -14,6 +14,12 @@
 Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 ```
 
+## Optional PostgreSQL Analytics
+
+The PostgreSQL 18 analytics backend is an explicit, separately provisioned foundation. SQLite remains the default and existing state source. The application never bootstraps the PostgreSQL schema on startup; a PostgreSQL selection only verifies the pre-provisioned schema and a read-only transaction. It does not move business writes or switch production analytics reads in this batch.
+
+Keep PostgreSQL on a private network, use a dedicated least-privilege application role, and budget data, indexes, WAL, future change capture, and backups independently before any bootstrap. Follow the [PostgreSQL 18 analytics operations runbook](runbooks/pg18-analytics.md) for the owner-authorized capacity gate, configuration example, backup/restore rehearsal, and rollout/rollback ordering. Do not run its commands without a separate owner-approved change window.
+
 ## Security Boundary For Settings Writes
 
 `PUT /api/settings/proxy`、`PUT /api/settings/forward-proxy` 与 `PUT /api/settings/pricing` 会修改全局运行配置，属于状态变更接口。
