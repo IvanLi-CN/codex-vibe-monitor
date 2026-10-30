@@ -145,7 +145,7 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
 pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
-    bucket_epochs: &HashSet<i64>,
+    bucket_epochs: &[i64],
     bucket_seconds: i64,
     min_id_exclusive: Option<i64>,
     max_id_inclusive: Option<i64>,
@@ -154,8 +154,6 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
         return Ok(Vec::new());
     }
 
-    let mut sorted_bucket_epochs = bucket_epochs.iter().copied().collect::<Vec<_>>();
-    sorted_bucket_epochs.sort_unstable();
     let upstream_account_id_sql = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
@@ -191,7 +189,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
     }
 
     query.push(" (");
-    for (index, bucket_epoch) in sorted_bucket_epochs.iter().enumerate() {
+    for (index, bucket_epoch) in bucket_epochs.iter().enumerate() {
         if index > 0 {
             query.push(" OR ");
         }
@@ -235,6 +233,8 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
         .map_err(Into::into)
 }
 
+const ACCOUNT_WINDOW_USAGE_BUCKET_QUERY_CHUNK_SIZE: usize = 64;
+
 fn deduplicate_account_window_usage_rows(
     rows: Vec<AccountWindowUsageRow>,
 ) -> Vec<AccountWindowUsageRow> {
@@ -251,6 +251,38 @@ fn deduplicate_account_window_usage_rows(
     rows
 }
 
+#[cfg(test)]
+mod bounded_scan_tests {
+    use super::*;
+
+    fn usage_row(id: i64, occurred_at: &str) -> AccountWindowUsageRow {
+        AccountWindowUsageRow {
+            id,
+            occurred_at: occurred_at.to_string(),
+            upstream_account_id: 7,
+            input_tokens: Some(1),
+            output_tokens: Some(2),
+            cache_input_tokens: Some(3),
+            total_tokens: Some(6),
+            cost: Some(0.06),
+        }
+    }
+
+    #[test]
+    fn overlapping_bucket_rows_deduplicate_by_invocation_id() {
+        let rows = deduplicate_account_window_usage_rows(vec![
+            usage_row(2, "2026-10-30 11:00:30"),
+            usage_row(1, "2026-10-30 11:00:15"),
+            usage_row(1, "2026-10-30 11:00:15"),
+        ]);
+
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+}
+
 pub(crate) async fn load_window_actual_usage_rows_for_bucket_sets_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -260,31 +292,27 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_sets_from_pool(
     max_id_inclusive: Option<i64>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     let mut rows = Vec::new();
-    if !minute_bucket_epochs.is_empty() {
-        rows.extend(
-            load_window_actual_usage_rows_for_bucket_epochs_from_pool(
-                pool,
-                account_ids,
-                minute_bucket_epochs,
-                60,
-                min_id_exclusive,
-                max_id_inclusive,
-            )
-            .await?,
-        );
-    }
-    if !hour_bucket_epochs.is_empty() {
-        rows.extend(
-            load_window_actual_usage_rows_for_bucket_epochs_from_pool(
-                pool,
-                account_ids,
-                hour_bucket_epochs,
-                3_600,
-                min_id_exclusive,
-                max_id_inclusive,
-            )
-            .await?,
-        );
+    for (bucket_epochs, bucket_seconds) in [
+        (minute_bucket_epochs, 60_i64),
+        (hour_bucket_epochs, 3_600_i64),
+    ] {
+        let mut sorted_bucket_epochs = bucket_epochs.iter().copied().collect::<Vec<_>>();
+        sorted_bucket_epochs.sort_unstable();
+        for bucket_chunk in
+            sorted_bucket_epochs.chunks(ACCOUNT_WINDOW_USAGE_BUCKET_QUERY_CHUNK_SIZE)
+        {
+            rows.extend(
+                load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+                    pool,
+                    account_ids,
+                    bucket_chunk,
+                    bucket_seconds,
+                    min_id_exclusive,
+                    max_id_inclusive,
+                )
+                .await?,
+            );
+        }
     }
     Ok(deduplicate_account_window_usage_rows(rows))
 }
