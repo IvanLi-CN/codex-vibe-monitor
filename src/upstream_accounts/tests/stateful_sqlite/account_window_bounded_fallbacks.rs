@@ -48,7 +48,6 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
         &state.pool,
         covered_account_id,
         &occurred_at,
-        1,
         1200,
         600,
         200,
@@ -109,15 +108,10 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
     assert_eq!(covered_item["secondaryActualUsage"]["totalTokens"], 2000);
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Usage fixture builders mirror persisted hourly fields."
-)]
 async fn insert_account_window_usage_hourly_row(
     pool: &SqlitePool,
     account_id: i64,
     occurred_at: &str,
-    request_count: i64,
     input_tokens: i64,
     output_tokens: i64,
     cache_input_tokens: i64,
@@ -137,7 +131,7 @@ async fn insert_account_window_usage_hourly_row(
     )
     .bind(bucket_start_epoch)
     .bind(account_id)
-    .bind(request_count)
+    .bind(1_i64)
     .bind(total_tokens)
     .bind(total_cost)
     .bind(input_tokens)
