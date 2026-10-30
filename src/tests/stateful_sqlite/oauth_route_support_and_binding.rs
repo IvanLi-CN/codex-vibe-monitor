@@ -75,473 +75,637 @@ async fn oauth_streaming_passthrough_backfills_body_prefix_from_replay_status() 
     );
 }
 
-#[tokio::test]
-async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
-    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
-        .lock()
+#[test]
+fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
+    run_oauth_future_with_large_stack(async move {
+        let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+            .lock()
+            .await;
+
+        let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+        oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("{upstream_base}/backend-api/codex"))
+                .expect("valid oauth base url"),
+        )
         .await;
 
-    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
-    oauth_bridge::set_test_oauth_codex_upstream_base_url(
-        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
-    )
-    .await;
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let _primary_id =
+            insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
+        let secondary_id =
+            insert_test_pool_oauth_account(&state, "Secondary OAuth", "oauth-secondary").await;
+        record_pool_route_success(
+            &state.pool,
+            secondary_id,
+            Utc::now(),
+            Some("sticky-oauth-body"),
+            None,
+        )
+        .await
+        .expect("seed oauth sticky route");
 
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let _primary_id =
-        insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
-    let secondary_id =
-        insert_test_pool_oauth_account(&state, "Secondary OAuth", "oauth-secondary").await;
-    record_pool_route_success(
-        &state.pool,
-        secondary_id,
-        Utc::now(),
-        Some("sticky-oauth-body"),
-        None,
-    )
-    .await
-    .expect("seed oauth sticky route");
+        let request_body = serde_json::to_vec(&json!({
+            "messages": [{
+                "role": "user",
+                "content": "hello",
+            }],
+            "stickyKey": "sticky-oauth-body",
+        }))
+        .expect("serialize oauth sticky body");
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(4);
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(Bytes::from(request_body))).await;
+        });
 
-    let request_body = serde_json::to_vec(&json!({
-        "messages": [{
-            "role": "user",
-            "content": "hello",
-        }],
-        "stickyKey": "sticky-oauth-body",
-    }))
-    .expect("serialize oauth sticky body");
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(4);
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from(request_body))).await;
-    });
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        )
+        .await;
 
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: Value = serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("read oauth sticky response"),
-    )
-    .expect("decode oauth sticky response");
-    assert_eq!(
-        payload["authorization"].as_str(),
-        Some("Bearer oauth-secondary")
-    );
-    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
-        r#"
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read oauth sticky response"),
+        )
+        .expect("decode oauth sticky response");
+        assert_eq!(
+            payload["authorization"].as_str(),
+            Some("Bearer oauth-secondary")
+        );
+        let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
+            r#"
         SELECT id, last_selected_at
         FROM pool_upstream_accounts
         WHERE display_name IN ('Primary OAuth', 'Secondary OAuth')
         ORDER BY id
         "#,
-    )
-    .fetch_all(&state.pool)
-    .await
-    .expect("load oauth account selection timestamps");
-    assert_eq!(selected_at.len(), 2);
-    assert_eq!(selected_at[0].1, None);
-    assert!(
-        selected_at[1].1.is_some(),
-        "sticky-selected oauth account should be marked"
-    );
+        )
+        .fetch_all(&state.pool)
+        .await
+        .expect("load oauth account selection timestamps");
+        assert_eq!(selected_at.len(), 2);
+        assert_eq!(selected_at[0].1, None);
+        assert!(
+            selected_at[1].1.is_some(),
+            "sticky-selected oauth account should be marked"
+        );
 
-    upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+        upstream_handle.abort();
+        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+    });
 }
 
-#[tokio::test]
-async fn pool_route_oauth_standalone_search_is_forwarded_and_recorded() {
-    #[derive(Debug, sqlx::FromRow)]
-    struct InvocationRow {
-        status: Option<String>,
-        input_tokens: Option<i64>,
-        output_tokens: Option<i64>,
-        total_tokens: Option<i64>,
-        payload: Option<String>,
-    }
+#[test]
+fn pool_route_oauth_live_candidate_prefers_account_proxy_and_honors_conversation_override() {
+    run_oauth_future_with_large_stack(async move {
+        let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+            .lock()
+            .await;
 
-    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
-        .lock()
+        let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+        oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("{upstream_base}/backend-api/codex"))
+                .expect("valid oauth base url"),
+        )
         .await;
-    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
-    oauth_bridge::set_test_oauth_codex_upstream_base_url(
-        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
-    )
-    .await;
+        let (account_proxy_url, account_proxy_connects, account_proxy_handle) =
+            spawn_test_http_connect_proxy(&upstream_base).await;
+        let (group_proxy_url, group_proxy_connects, group_proxy_handle) =
+            spawn_test_http_connect_proxy(&upstream_base).await;
+        let account_proxy_key =
+            normalize_single_proxy_key(&account_proxy_url).expect("normalize account proxy key");
+        let group_proxy_key =
+            normalize_single_proxy_key(&group_proxy_url).expect("normalize group proxy key");
 
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let account_id =
-        insert_test_pool_oauth_account(&state, "Standalone Search OAuth", "oauth-search").await;
-    let request_body = br#"{"model":"gpt-5.4","query":"hello","results":[]}"#;
-
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri(
-            "/v1/alpha/search?cursor=next"
-                .parse()
-                .expect("valid standalone search uri"),
-        ),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(request_body.to_vec()),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let forwarded: Value = serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        apply_forward_proxy_settings_without_bootstrap(
+            &state,
+            ForwardProxySettings {
+                proxy_urls: vec![account_proxy_url, group_proxy_url],
+                ..ForwardProxySettings::default()
+            },
+        )
+        .await;
+        let account_id = insert_test_pool_oauth_account(&state, "Bound OAuth", "oauth-bound").await;
+        sqlx::query("UPDATE pool_upstream_accounts SET bound_proxy_keys_json = ?1 WHERE id = ?2")
+            .bind(
+                serde_json::to_string(&vec![account_proxy_key]).expect("encode account proxy key"),
+            )
+            .bind(account_id)
+            .execute(&state.pool)
             .await
-            .expect("read oauth standalone search response"),
-    )
-    .expect("decode oauth standalone search response");
-    assert_eq!(forwarded["path"], "/backend-api/codex/alpha/search");
-    assert_eq!(forwarded["query"], "cursor=next");
-    assert_eq!(
-        forwarded["body"],
-        String::from_utf8_lossy(request_body).as_ref()
-    );
+            .expect("bind account proxy key");
+        sqlx::query(
+            "UPDATE pool_upstream_account_group_notes SET bound_proxy_keys_json = ?1 WHERE group_name = ?2",
+        )
+        .bind(serde_json::to_string(&vec![group_proxy_key.clone()]).expect("encode group proxy key"))
+        .bind(test_required_group_name())
+        .execute(&state.pool)
+        .await
+        .expect("bind group proxy key");
 
-    wait_for_codex_invocations(&state.pool, 1).await;
-    let invocation = sqlx::query_as::<_, InvocationRow>(
-        r#"
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(br#"{"model":"gpt-5.4","input":"account route"}"#.to_vec()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read account proxy response"),
+        )
+        .expect("decode account proxy response");
+        assert_eq!(
+            payload["authorization"].as_str(),
+            Some("Bearer oauth-bound")
+        );
+        assert_eq!(account_proxy_connects.load(Ordering::SeqCst), 1);
+        assert_eq!(group_proxy_connects.load(Ordering::SeqCst), 0);
+
+        let conversation_key = "oauth-conversation-proxy-override";
+        let binding: UpdatePromptCacheConversationBindingRequest = serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+            "forwardProxyKey": group_proxy_key,
+        }))
+        .expect("deserialize conversation proxy binding");
+        let Json(_) = patch_prompt_cache_conversation_binding(
+            State(state.clone()),
+            AxumPath(conversation_key.to_string()),
+            Json(binding),
+        )
+        .await
+        .expect("save conversation proxy binding");
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(
+                serde_json::to_vec(&json!({
+                    "model": "gpt-5.4",
+                    "input": "conversation route",
+                    "stickyKey": conversation_key,
+                    "promptCacheKey": conversation_key,
+                }))
+                .expect("serialize conversation route body"),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read conversation proxy response"),
+        )
+        .expect("decode conversation proxy response");
+        assert_eq!(
+            payload["authorization"].as_str(),
+            Some("Bearer oauth-bound")
+        );
+        assert_eq!(account_proxy_connects.load(Ordering::SeqCst), 1);
+        assert_eq!(group_proxy_connects.load(Ordering::SeqCst), 1);
+
+        upstream_handle.abort();
+        account_proxy_handle.abort();
+        group_proxy_handle.abort();
+        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+    });
+}
+
+#[test]
+fn pool_route_oauth_standalone_search_is_forwarded_and_recorded() {
+    run_oauth_future_with_large_stack(async move {
+        #[derive(Debug, sqlx::FromRow)]
+        struct InvocationRow {
+            status: Option<String>,
+            input_tokens: Option<i64>,
+            output_tokens: Option<i64>,
+            total_tokens: Option<i64>,
+            payload: Option<String>,
+        }
+
+        let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+            .lock()
+            .await;
+        let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+        oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("{upstream_base}/backend-api/codex"))
+                .expect("valid oauth base url"),
+        )
+        .await;
+
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let account_id =
+            insert_test_pool_oauth_account(&state, "Standalone Search OAuth", "oauth-search").await;
+        let request_body = br#"{"model":"gpt-5.4","query":"hello","results":[]}"#;
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri(
+                "/v1/alpha/search?cursor=next"
+                    .parse()
+                    .expect("valid standalone search uri"),
+            ),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body.to_vec()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let forwarded: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read oauth standalone search response"),
+        )
+        .expect("decode oauth standalone search response");
+        assert_eq!(forwarded["path"], "/backend-api/codex/alpha/search");
+        assert_eq!(forwarded["query"], "cursor=next");
+        assert_eq!(
+            forwarded["body"],
+            String::from_utf8_lossy(request_body).as_ref()
+        );
+
+        wait_for_codex_invocations(&state.pool, 1).await;
+        let invocation = sqlx::query_as::<_, InvocationRow>(
+            r#"
         SELECT status, input_tokens, output_tokens, total_tokens, payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
         "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load oauth standalone search invocation");
-    assert_eq!(invocation.status.as_deref(), Some("success"));
-    assert!(invocation.input_tokens.is_none());
-    assert!(invocation.output_tokens.is_none());
-    assert!(invocation.total_tokens.is_none());
-    let payload: Value = serde_json::from_str(
-        invocation
-            .payload
-            .as_deref()
-            .expect("oauth standalone search payload should be present"),
-    )
-    .expect("decode oauth standalone search payload");
-    assert_eq!(payload["endpoint"], "/v1/alpha/search");
-    assert_eq!(payload["upstreamAccountId"], account_id);
-    assert_ne!(payload["failureKind"], "oauth_unsupported_route");
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load oauth standalone search invocation");
+        assert_eq!(invocation.status.as_deref(), Some("success"));
+        assert!(invocation.input_tokens.is_none());
+        assert!(invocation.output_tokens.is_none());
+        assert!(invocation.total_tokens.is_none());
+        let payload: Value = serde_json::from_str(
+            invocation
+                .payload
+                .as_deref()
+                .expect("oauth standalone search payload should be present"),
+        )
+        .expect("decode oauth standalone search payload");
+        assert_eq!(payload["endpoint"], "/v1/alpha/search");
+        assert_eq!(payload["upstreamAccountId"], account_id);
+        assert_ne!(payload["failureKind"], "oauth_unsupported_route");
 
-    upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+        upstream_handle.abort();
+        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+    });
 }
 
-#[tokio::test]
-async fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
-    #[derive(sqlx::FromRow)]
-    struct PersistedRow {
-        payload: Option<String>,
-    }
+#[test]
+fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
+    run_oauth_future_with_large_stack(async move {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            payload: Option<String>,
+        }
 
-    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
-        .lock()
+        let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+            .lock()
+            .await;
+
+        let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+        oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("{upstream_base}/backend-api/codex"))
+                .expect("valid oauth base url"),
+        )
         .await;
 
-    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
-    oauth_bridge::set_test_oauth_codex_upstream_base_url(
-        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
-    )
-    .await;
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let account_id =
+            insert_test_pool_oauth_account(&state, "Compact OAuth", "oauth-compact").await;
 
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let account_id = insert_test_pool_oauth_account(&state, "Compact OAuth", "oauth-compact").await;
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-openai-prompt-cache-key"),
+                    HeaderValue::from_static("prompt-cache-oauth-compact"),
+                ),
+                (
+                    HeaderName::from_static("x-client-trace-id"),
+                    HeaderValue::from_static("trace-oauth-compact"),
+                ),
+                (
+                    HeaderName::from_static("session_id"),
+                    HeaderValue::from_static("session-oauth-compact"),
+                ),
+                (
+                    HeaderName::from_static("traceparent"),
+                    HeaderValue::from_static(
+                        "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+                    ),
+                ),
+                (
+                    HeaderName::from_static("x-client-request-id"),
+                    HeaderValue::from_static("client-request-oauth-compact"),
+                ),
+                (
+                    HeaderName::from_static("x-codex-turn-metadata"),
+                    HeaderValue::from_static("{\"compact\":true}"),
+                ),
+                (
+                    HeaderName::from_static("originator"),
+                    HeaderValue::from_static("Codex Desktop"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(
+                serde_json::to_vec(&json!({
+                    "model": "gpt-5.4",
+                    "input": [{"role": "user", "content": "compact me"}]
+                }))
+                .expect("serialize oauth compact body"),
+            ),
+        )
+        .await;
 
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-openai-prompt-cache-key"),
-                HeaderValue::from_static("prompt-cache-oauth-compact"),
-            ),
-            (
-                HeaderName::from_static("x-client-trace-id"),
-                HeaderValue::from_static("trace-oauth-compact"),
-            ),
-            (
-                HeaderName::from_static("session_id"),
-                HeaderValue::from_static("session-oauth-compact"),
-            ),
-            (
-                HeaderName::from_static("traceparent"),
-                HeaderValue::from_static("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"),
-            ),
-            (
-                HeaderName::from_static("x-client-request-id"),
-                HeaderValue::from_static("client-request-oauth-compact"),
-            ),
-            (
-                HeaderName::from_static("x-codex-turn-metadata"),
-                HeaderValue::from_static("{\"compact\":true}"),
-            ),
-            (
-                HeaderName::from_static("originator"),
-                HeaderValue::from_static("Codex Desktop"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(
-            serde_json::to_vec(&json!({
-                "model": "gpt-5.4",
-                "input": [{"role": "user", "content": "compact me"}]
-            }))
-            .expect("serialize oauth compact body"),
-        ),
-    )
-    .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read oauth compact response"),
+        )
+        .expect("decode oauth compact response");
+        assert_eq!(
+            payload["path"].as_str(),
+            Some("/backend-api/codex/responses/compact")
+        );
+        assert_eq!(
+            payload["xOpenAiPromptCacheKeyHeader"].as_str(),
+            Some("prompt-cache-oauth-compact")
+        );
+        assert_eq!(
+            payload["clientTraceId"].as_str(),
+            Some("trace-oauth-compact")
+        );
+        assert_eq!(
+            payload["sessionIdHeader"].as_str(),
+            Some("session-oauth-compact")
+        );
+        assert_eq!(
+            payload["traceparentHeader"].as_str(),
+            Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+        );
+        assert_eq!(
+            payload["xClientRequestIdHeader"].as_str(),
+            Some("client-request-oauth-compact")
+        );
+        assert_eq!(
+            payload["xCodexTurnMetadataHeader"].as_str(),
+            Some("{\"compact\":true}")
+        );
+        assert_eq!(payload["originatorHeader"].as_str(), Some("Codex Desktop"));
+        assert!(
+            payload["forwardedHeaderNames"]
+                .as_array()
+                .expect("forwarded header names")
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|name| name == "session_id")
+        );
+        assert!(
+            payload["forwardedHeaderNames"]
+                .as_array()
+                .expect("forwarded header names")
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|name| name == "x-client-request-id")
+        );
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: Value = serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("read oauth compact response"),
-    )
-    .expect("decode oauth compact response");
-    assert_eq!(
-        payload["path"].as_str(),
-        Some("/backend-api/codex/responses/compact")
-    );
-    assert_eq!(
-        payload["xOpenAiPromptCacheKeyHeader"].as_str(),
-        Some("prompt-cache-oauth-compact")
-    );
-    assert_eq!(
-        payload["clientTraceId"].as_str(),
-        Some("trace-oauth-compact")
-    );
-    assert_eq!(
-        payload["sessionIdHeader"].as_str(),
-        Some("session-oauth-compact")
-    );
-    assert_eq!(
-        payload["traceparentHeader"].as_str(),
-        Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
-    );
-    assert_eq!(
-        payload["xClientRequestIdHeader"].as_str(),
-        Some("client-request-oauth-compact")
-    );
-    assert_eq!(
-        payload["xCodexTurnMetadataHeader"].as_str(),
-        Some("{\"compact\":true}")
-    );
-    assert_eq!(payload["originatorHeader"].as_str(), Some("Codex Desktop"));
-    assert!(
-        payload["forwardedHeaderNames"]
-            .as_array()
-            .expect("forwarded header names")
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|name| name == "session_id")
-    );
-    assert!(
-        payload["forwardedHeaderNames"]
-            .as_array()
-            .expect("forwarded header names")
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|name| name == "x-client-request-id")
-    );
-
-    wait_for_codex_invocations(&state.pool, 1).await;
-    let row = sqlx::query_as::<_, PersistedRow>(
-        r#"
+        wait_for_codex_invocations(&state.pool, 1).await;
+        let row = sqlx::query_as::<_, PersistedRow>(
+            r#"
         SELECT payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
         "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load persisted invocation payload");
-    let payload_json: Value = serde_json::from_str(
-        row.payload
-            .as_deref()
-            .expect("payload should be persisted for oauth compact"),
-    )
-    .expect("decode persisted invocation payload");
-    assert_eq!(payload_json["upstreamAccountId"].as_i64(), Some(account_id));
-    assert_eq!(
-        payload_json["endpoint"].as_str(),
-        Some("/v1/responses/compact")
-    );
-    assert_eq!(payload_json["oauthFingerprintVersion"].as_str(), Some("v1"));
-    assert_eq!(payload_json["oauthPromptCacheHeaderForwarded"], true);
-    assert_eq!(payload_json["oauthResponsesRewrite"]["applied"], false);
-    assert_eq!(
-        payload_json["oauthForwardedHeaderFingerprints"]["session_id"]
-            .as_str()
-            .map(str::len),
-        Some(16)
-    );
-    assert_eq!(
-        payload_json["oauthForwardedHeaderFingerprints"]["traceparent"]
-            .as_str()
-            .map(str::len),
-        Some(16)
-    );
-    assert_eq!(
-        payload_json["oauthForwardedHeaderFingerprints"]["x-client-request-id"]
-            .as_str()
-            .map(str::len),
-        Some(16)
-    );
-    assert_eq!(
-        payload_json["oauthForwardedHeaderFingerprints"]["x-codex-turn-metadata"]
-            .as_str()
-            .map(str::len),
-        Some(16)
-    );
-    assert_eq!(
-        payload_json["oauthForwardedHeaderFingerprints"]["originator"]
-            .as_str()
-            .map(str::len),
-        Some(16)
-    );
-    assert!(
-        payload_json["oauthRequestBodyPrefixBytes"]
-            .as_u64()
-            .expect("compact body prefix byte count")
-            > 0
-    );
-    assert!(
-        payload_json["oauthRequestBodyPrefixFingerprint"]
-            .as_str()
-            .expect("compact body fingerprint")
-            .len()
-            == 16
-    );
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load persisted invocation payload");
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("payload should be persisted for oauth compact"),
+        )
+        .expect("decode persisted invocation payload");
+        assert_eq!(payload_json["upstreamAccountId"].as_i64(), Some(account_id));
+        assert_eq!(
+            payload_json["endpoint"].as_str(),
+            Some("/v1/responses/compact")
+        );
+        assert_eq!(payload_json["oauthFingerprintVersion"].as_str(), Some("v1"));
+        assert_eq!(payload_json["oauthPromptCacheHeaderForwarded"], true);
+        assert_eq!(payload_json["oauthResponsesRewrite"]["applied"], false);
+        assert_eq!(
+            payload_json["oauthForwardedHeaderFingerprints"]["session_id"]
+                .as_str()
+                .map(str::len),
+            Some(16)
+        );
+        assert_eq!(
+            payload_json["oauthForwardedHeaderFingerprints"]["traceparent"]
+                .as_str()
+                .map(str::len),
+            Some(16)
+        );
+        assert_eq!(
+            payload_json["oauthForwardedHeaderFingerprints"]["x-client-request-id"]
+                .as_str()
+                .map(str::len),
+            Some(16)
+        );
+        assert_eq!(
+            payload_json["oauthForwardedHeaderFingerprints"]["x-codex-turn-metadata"]
+                .as_str()
+                .map(str::len),
+            Some(16)
+        );
+        assert_eq!(
+            payload_json["oauthForwardedHeaderFingerprints"]["originator"]
+                .as_str()
+                .map(str::len),
+            Some(16)
+        );
+        assert!(
+            payload_json["oauthRequestBodyPrefixBytes"]
+                .as_u64()
+                .expect("compact body prefix byte count")
+                > 0
+        );
+        assert!(
+            payload_json["oauthRequestBodyPrefixFingerprint"]
+                .as_str()
+                .expect("compact body fingerprint")
+                .len()
+                == 16
+        );
 
-    upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+        upstream_handle.abort();
+        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+    });
 }
 
-#[tokio::test]
-async fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() {
-    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
-        .lock()
+#[test]
+fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() {
+    run_oauth_future_with_large_stack(async move {
+        let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+            .lock()
+            .await;
+
+        let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
+        oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("{upstream_base}/backend-api/codex"))
+                .expect("valid oauth base url"),
+        )
         .await;
 
-    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
-    oauth_bridge::set_test_oauth_codex_upstream_base_url(
-        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
-    )
-    .await;
+        let oauth_response = oauth_bridge::send_oauth_upstream_request(
+            &reqwest::Client::new(),
+            Method::POST,
+            &"/v1/responses".parse().expect("valid uri"),
+            &HeaderMap::from_iter([
+                (
+                    HeaderName::from_static("session_id"),
+                    HeaderValue::from_static("session-no-crypto"),
+                ),
+                (
+                    HeaderName::from_static("traceparent"),
+                    HeaderValue::from_static(
+                        "00-11111111111111111111111111111111-2222222222222222-01",
+                    ),
+                ),
+            ]),
+            oauth_bridge::OauthUpstreamRequestBody::Bytes(Bytes::from(
+                serde_json::to_vec(&json!({
+                    "model": "gpt-5.4",
+                    "input": "hello"
+                }))
+                .expect("serialize oauth responses body"),
+            )),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Some(7),
+            "oauth-no-crypto",
+            Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
+            None,
+            None,
+        )
+        .await;
 
-    let oauth_response = oauth_bridge::send_oauth_upstream_request(
-        &reqwest::Client::new(),
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([
-            (
-                HeaderName::from_static("session_id"),
-                HeaderValue::from_static("session-no-crypto"),
-            ),
-            (
-                HeaderName::from_static("traceparent"),
-                HeaderValue::from_static("00-11111111111111111111111111111111-2222222222222222-01"),
-            ),
-        ]),
-        oauth_bridge::OauthUpstreamRequestBody::Bytes(Bytes::from(
-            serde_json::to_vec(&json!({
-                "model": "gpt-5.4",
-                "input": "hello"
-            }))
-            .expect("serialize oauth responses body"),
-        )),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        Some(7),
-        "oauth-no-crypto",
-        Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
-        None,
-        None,
-    )
-    .await;
+        assert_eq!(oauth_response.response.status(), StatusCode::OK);
+        let body = to_bytes(oauth_response.response.into_body(), usize::MAX)
+            .await
+            .expect("read oauth response body");
+        let payload_json: Value =
+            serde_json::from_slice(&body).expect("decode oauth response body");
+        assert_eq!(
+            payload_json["path"].as_str(),
+            Some("/backend-api/codex/responses")
+        );
 
-    assert_eq!(oauth_response.response.status(), StatusCode::OK);
-    let body = to_bytes(oauth_response.response.into_body(), usize::MAX)
-        .await
-        .expect("read oauth response body");
-    let payload_json: Value = serde_json::from_slice(&body).expect("decode oauth response body");
-    assert_eq!(
-        payload_json["path"].as_str(),
-        Some("/backend-api/codex/responses")
-    );
+        let request_debug = oauth_response
+            .request_debug
+            .expect("oauth request debug should be present");
+        assert!(request_debug.fingerprint_version.is_none());
+        assert!(request_debug.forwarded_header_fingerprints.is_none());
+        assert!(request_debug.request_body_prefix_fingerprint.is_none());
+        assert!(request_debug.request_body_prefix_bytes.is_none());
+        assert_eq!(request_debug.request_body_snapshot_kind, Some("memory"));
+        assert_eq!(
+            request_debug.responses_body_mode,
+            Some("small_body_rewrite")
+        );
+        let serialized_debug =
+            serde_json::to_string(&request_debug).expect("serialize request debug");
+        assert!(
+            !serialized_debug.contains("session-no-crypto"),
+            "request debug should not leak raw header values"
+        );
 
-    let request_debug = oauth_response
-        .request_debug
-        .expect("oauth request debug should be present");
-    assert!(request_debug.fingerprint_version.is_none());
-    assert!(request_debug.forwarded_header_fingerprints.is_none());
-    assert!(request_debug.request_body_prefix_fingerprint.is_none());
-    assert!(request_debug.request_body_prefix_bytes.is_none());
-    assert_eq!(request_debug.request_body_snapshot_kind, Some("memory"));
-    assert_eq!(
-        request_debug.responses_body_mode,
-        Some("small_body_rewrite")
-    );
-    let serialized_debug = serde_json::to_string(&request_debug).expect("serialize request debug");
-    assert!(
-        !serialized_debug.contains("session-no-crypto"),
-        "request debug should not leak raw header values"
-    );
-
-    upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+        upstream_handle.abort();
+        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+    });
 }
 
 #[test]

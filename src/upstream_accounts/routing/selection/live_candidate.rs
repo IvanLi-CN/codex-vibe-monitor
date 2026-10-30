@@ -157,7 +157,7 @@ pub(crate) async fn evaluate_live_pool_candidate(
     } else {
         group_metadata.clone()
     };
-    let conversation_proxy_scope = conversation_forward_proxy_scope(conversation_override);
+    let explicit_proxy_scope = explicit_forward_proxy_scope(row, conversation_override);
     let build_evaluation =
         |eligibility, dispatch_state, resolved_account, assigned_blocked, blocked_message| {
             let runtime_last_selected_at = state
@@ -180,7 +180,7 @@ pub(crate) async fn evaluate_live_pool_candidate(
         };
 
     if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        let transit_proxy_scope = conversation_proxy_scope
+        let transit_proxy_scope = explicit_proxy_scope
             .clone()
             .unwrap_or_else(|| transit_account_forward_proxy_scope(row));
         let resolved_account = prepare_pool_account_with_scopes(
@@ -210,35 +210,35 @@ pub(crate) async fn evaluate_live_pool_candidate(
         ));
     }
 
-    if group_metadata.node_shunt_enabled {
-        if let Some(conversation_proxy_scope) = conversation_proxy_scope {
-            let resolved_account = prepare_pool_account_with_scopes(
-                state,
-                row,
-                effective_rule,
-                group_metadata.clone(),
-                ForwardProxyRouteScope::Automatic,
-                conversation_proxy_scope,
-                routing_source,
-            )
-            .await?;
-            return Ok(build_evaluation(
-                if resolved_account.is_some() {
-                    PoolRoutingCandidateEligibility::Assignable
-                } else {
-                    PoolRoutingCandidateEligibility::HardBlocked
-                },
-                if resolved_account.is_some() {
-                    PoolRoutingCandidateDispatchState::ReadyOnOwnedNode
-                } else {
-                    PoolRoutingCandidateDispatchState::HardBlocked
-                },
-                resolved_account,
-                None,
-                None,
-            ));
-        }
+    if let Some(proxy_scope) = explicit_proxy_scope {
+        let resolved_account = prepare_pool_account_with_scopes(
+            state,
+            row,
+            effective_rule,
+            group_metadata.clone(),
+            proxy_scope.clone(),
+            proxy_scope,
+            routing_source,
+        )
+        .await?;
+        return Ok(build_evaluation(
+            if resolved_account.is_some() {
+                PoolRoutingCandidateEligibility::Assignable
+            } else {
+                PoolRoutingCandidateEligibility::HardBlocked
+            },
+            if resolved_account.is_some() {
+                PoolRoutingCandidateDispatchState::ReadyOnOwnedNode
+            } else {
+                PoolRoutingCandidateDispatchState::HardBlocked
+            },
+            resolved_account,
+            None,
+            None,
+        ));
+    }
 
+    if group_metadata.node_shunt_enabled {
         let Some(group_name) = row
             .group_name
             .as_deref()
@@ -309,9 +309,7 @@ pub(crate) async fn evaluate_live_pool_candidate(
                 effective_rule,
                 group_metadata.clone(),
                 refresh_proxy_scope,
-                conversation_proxy_scope
-                    .clone()
-                    .unwrap_or_else(|| ForwardProxyRouteScope::pinned(proxy_key.clone())),
+                ForwardProxyRouteScope::pinned(proxy_key.clone()),
                 routing_source,
             )
             .await?;
@@ -354,9 +352,7 @@ pub(crate) async fn evaluate_live_pool_candidate(
                 effective_rule,
                 group_metadata.clone(),
                 refresh_proxy_scope,
-                conversation_proxy_scope
-                    .clone()
-                    .unwrap_or(dispatch_proxy_scope),
+                dispatch_proxy_scope,
                 routing_source,
             )
             .await?;
@@ -410,7 +406,7 @@ pub(crate) async fn evaluate_live_pool_candidate(
         effective_rule,
         group_metadata.clone(),
         refresh_proxy_scope.clone(),
-        conversation_proxy_scope.unwrap_or(refresh_proxy_scope),
+        refresh_proxy_scope,
         routing_source,
     )
     .await?;

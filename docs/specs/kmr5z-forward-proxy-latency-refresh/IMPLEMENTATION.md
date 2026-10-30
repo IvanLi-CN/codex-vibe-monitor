@@ -18,6 +18,7 @@
 - Storybook `SettingsPage` 新增 forward proxy latency/refresh 场景并作为视觉证据来源。
 - 订阅刷新结果与来源配置绑定并持久化；启动时在监听服务前恢复匹配快照并同步路由。全部来源成功的空结果会清空快照，任何部分失败会保留上次成功结果。
 - SQLite 增量迁移为 `forward_proxy_settings` 增加快照列，并用触发器确保旧版本修改订阅源时同步清除快照。
+- OAuth live-candidate 路由现在复用 `conversation > account > group` 代理 scope 解析；账号显式代理列表继续是硬约束，API-key 透传 scope 保持原有语义。回归覆盖见 `tests::stateful_sqlite::oauth_route_support_and_binding`。
 
 ## Remaining Gaps
 
@@ -47,3 +48,4 @@
 
 - `./SPEC.md`
 - `./HISTORY.md`
+- [`r4p9x-upstream-account-policy-inheritance`](../r4p9x-upstream-account-policy-inheritance/SPEC.md)

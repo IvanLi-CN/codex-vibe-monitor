@@ -286,6 +286,51 @@ async fn old_forward_proxy_settings_schema_gains_subscription_snapshot_column() 
 }
 
 #[tokio::test]
+async fn malformed_or_mismatched_subscription_snapshot_is_ignored() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let settings = ForwardProxySettings {
+        subscription_urls: vec!["https://subscription.example/feed".to_string()],
+        ..ForwardProxySettings::default()
+    };
+    save_forward_proxy_settings(&state.pool, settings.clone())
+        .await
+        .expect("save subscription settings");
+
+    sqlx::query("UPDATE forward_proxy_settings SET subscription_snapshot_json = ?1 WHERE id = 1")
+        .bind("{malformed")
+        .execute(&state.pool)
+        .await
+        .expect("save malformed subscription snapshot");
+    assert!(
+        load_forward_proxy_subscription_snapshot(&state.pool, &settings.subscription_urls)
+            .await
+            .expect("load malformed snapshot")
+            .is_empty(),
+        "malformed subscription snapshots must not restore endpoints"
+    );
+
+    sqlx::query(
+        "UPDATE forward_proxy_settings SET subscription_snapshot_json = ?1 WHERE id = 1",
+    )
+    .bind(
+        r#"{"subscription_urls":["https://different.example/feed"],"proxy_urls":["http://127.0.0.1:7890"]}"#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("save mismatched subscription snapshot");
+    assert!(
+        load_forward_proxy_subscription_snapshot(&state.pool, &settings.subscription_urls)
+            .await
+            .expect("load mismatched snapshot")
+            .is_empty(),
+        "snapshots for another source list must not restore endpoints"
+    );
+}
+
+#[tokio::test]
 async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_nodes() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
     let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");

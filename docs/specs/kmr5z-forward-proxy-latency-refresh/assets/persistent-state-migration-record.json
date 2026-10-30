@@ -12,7 +12,7 @@
     "storage_implementation": "One additive JSON column on the singleton forward_proxy_settings row. Snapshot writes are conditional on the configured source list; a SQLite trigger clears the snapshot whenever that list changes.",
     "source_compatibility_range": {
       "from_program_versions": "The origin/main schema at bc5258f74e61d976adabe1986e49aee773533df5, before the snapshot column.",
-      "to_program_version": "Candidate branch th/forward-proxy-subscription-recovery; final candidate revision is bound by delivery evidence.",
+      "to_program_version": "Candidate branch th/oauth-proxy-subscription-recovery; final candidate revision is bound by delivery evidence.",
       "direct_major_skips_supported": false
     }
   },
