@@ -81,6 +81,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
     start_after_id: i64,
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
+    publish_analytics_changes: bool,
 ) -> Result<BackfillBatchOutcome<PoolAttemptPublicIdBackfillSummary>> {
     let started_at = Instant::now();
     let mut summary = PoolAttemptPublicIdBackfillSummary::default();
@@ -176,6 +177,21 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
             if updated {
                 summary.updated += 1;
                 push_backfill_sample(&mut samples, format!("id={row_id}"));
+                if publish_analytics_changes {
+                    crate::schema::analytics_changes::append_attempt_upsert_for_row_tx(
+                        &mut transaction,
+                        row_id,
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow::Error::new(crate::BackfillPartialFailure {
+                            source: error,
+                            next_cursor_id: committed_cursor_id,
+                            scanned: committed_scanned,
+                            updated: committed_updated,
+                        })
+                    })?;
+                }
             }
         }
         transaction.commit().await.map_err(|error| {
@@ -215,6 +231,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_from_curso
         start_after_id,
         scan_limit,
         max_elapsed,
+        true,
     )
     .await
 }

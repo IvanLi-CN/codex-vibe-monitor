@@ -225,5 +225,10 @@ pub(super) async fn persist_runtime_attempt_snapshot_tx(
     .bind(snapshot.response_content_encoding.as_deref())
     .execute(&mut *connection)
     .await?;
+    crate::schema::analytics_changes::append_attempt_upsert_for_public_id_tx(
+        connection,
+        &snapshot.attempt_public_id,
+    )
+    .await?;
     Ok(())
 }
