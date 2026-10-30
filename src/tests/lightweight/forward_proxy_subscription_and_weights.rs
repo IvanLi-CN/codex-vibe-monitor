@@ -308,11 +308,16 @@ async fn partial_subscription_refresh_failure_preserves_cached_nodes() {
         manager.restore_subscription_urls(vec![cached_proxy_url.clone()]);
     }
 
-    assert!(
-        refresh_forward_proxy_subscriptions(state.clone(), true, None)
-            .await
-            .is_err(),
-        "a partial subscription refresh must be reported as incomplete"
+    let Json(response) = post_forward_proxy_refresh_subscriptions(
+        State(state.clone()),
+        HeaderMap::new(),
+    )
+    .await
+    .expect("a partial subscription refresh should preserve the existing HTTP response contract");
+    let response_json = serde_json::to_value(response).expect("serialize refresh response");
+    assert_eq!(
+        response_json["addedNodeCount"], 0,
+        "an incomplete refresh must not report new nodes"
     );
     assert_eq!(
         snapshot_active_forward_proxy_endpoints(&*state.forward_proxy.lock().await).len(),
@@ -499,6 +504,23 @@ async fn malformed_or_mismatched_subscription_snapshot_is_ignored() {
             .expect("load mismatched snapshot")
             .is_empty(),
         "snapshots for another source list must not restore endpoints"
+    );
+
+    sqlx::query(
+        "UPDATE forward_proxy_settings SET subscription_snapshot_json = ?1 WHERE id = 1",
+    )
+    .bind(
+        r#"{"subscription_urls":["https://subscription.example/feed"],"proxy_urls":["http://127.0.0.1:7890","not-a-proxy"]}"#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("save snapshot with an invalid endpoint");
+    assert!(
+        load_forward_proxy_subscription_snapshot(&state.pool, &settings.subscription_urls)
+            .await
+            .expect("load snapshot with invalid endpoint")
+            .is_empty(),
+        "a snapshot with any invalid endpoint must be ignored as a whole"
     );
 }
 

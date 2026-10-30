@@ -176,11 +176,18 @@ pub(crate) async fn load_forward_proxy_subscription_snapshot(
         }
         return Ok(Vec::new());
     };
+    if normalize_subscription_entries(snapshot.subscription_urls.clone())
+        != snapshot.subscription_urls
+        || normalize_proxy_url_entries(snapshot.proxy_urls.clone()) != snapshot.proxy_urls
+    {
+        warn!("ignoring non-normalized forward proxy subscription snapshot");
+        return Ok(Vec::new());
+    }
     let current_subscription_urls = normalize_subscription_entries(subscription_urls.to_vec());
     if snapshot.subscription_urls != current_subscription_urls {
         return Ok(Vec::new());
     }
-    Ok(normalize_proxy_url_entries(snapshot.proxy_urls))
+    Ok(snapshot.proxy_urls)
 }
 
 pub(crate) async fn save_forward_proxy_subscription_snapshot(

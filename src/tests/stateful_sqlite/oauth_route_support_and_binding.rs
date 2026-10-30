@@ -195,10 +195,10 @@ fn pool_route_oauth_live_candidate_prefers_account_proxy_and_honors_conversation
                 .expect("valid oauth base url"),
         )
         .await;
-        let (account_proxy_url, account_proxy_connects, account_proxy_handle) =
-            spawn_test_http_connect_proxy(&upstream_base).await;
-        let (group_proxy_url, group_proxy_connects, group_proxy_handle) =
-            spawn_test_http_connect_proxy(&upstream_base).await;
+        let (account_proxy_url, account_proxy_observations, account_proxy_handle) =
+            spawn_test_http_connect_proxy_with_observations(&upstream_base).await;
+        let (group_proxy_url, group_proxy_observations, group_proxy_handle) =
+            spawn_test_http_connect_proxy_with_observations(&upstream_base).await;
         let account_proxy_key =
             normalize_single_proxy_key(&account_proxy_url).expect("normalize account proxy key");
         let group_proxy_key =
@@ -263,8 +263,46 @@ fn pool_route_oauth_live_candidate_prefers_account_proxy_and_honors_conversation
             payload["authorization"].as_str(),
             Some("Bearer oauth-bound")
         );
-        assert_eq!(account_proxy_connects.load(Ordering::SeqCst), 1);
-        assert_eq!(group_proxy_connects.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            account_proxy_observations
+                .request_count
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            group_proxy_observations
+                .request_count
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            account_proxy_observations
+                .connect_count
+                .load(Ordering::SeqCst),
+            1,
+            "the account-bound OAuth request should use the local CONNECT proxy"
+        );
+        assert!(
+            account_proxy_observations
+                .request_lines
+                .lock()
+                .expect("lock account proxy request lines")
+                .iter()
+                .all(|line| line.starts_with("CONNECT ")),
+            "account proxy should receive a CONNECT request: {:?}",
+            account_proxy_observations
+                .request_lines
+                .lock()
+                .expect("lock account proxy request lines")
+        );
+        assert!(
+            group_proxy_observations
+                .request_lines
+                .lock()
+                .expect("lock group proxy request lines")
+                .is_empty(),
+            "group proxy should not receive the first OAuth request"
+        );
 
         let conversation_key = "oauth-conversation-proxy-override";
         let binding: UpdatePromptCacheConversationBindingRequest = serde_json::from_value(json!({
@@ -317,8 +355,34 @@ fn pool_route_oauth_live_candidate_prefers_account_proxy_and_honors_conversation
             payload["authorization"].as_str(),
             Some("Bearer oauth-bound")
         );
-        assert_eq!(account_proxy_connects.load(Ordering::SeqCst), 1);
-        assert_eq!(group_proxy_connects.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            account_proxy_observations
+                .request_count
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            group_proxy_observations
+                .request_count
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            group_proxy_observations
+                .connect_count
+                .load(Ordering::SeqCst),
+            1,
+            "the conversation override should use the local CONNECT proxy"
+        );
+        assert!(
+            group_proxy_observations
+                .request_lines
+                .lock()
+                .expect("lock group proxy request lines")
+                .iter()
+                .all(|line| line.starts_with("CONNECT ")),
+            "conversation override should send a CONNECT request through the group proxy"
+        );
 
         upstream_handle.abort();
         account_proxy_handle.abort();
@@ -392,10 +456,10 @@ fn pool_route_oauth_token_refresh_uses_account_proxy_before_live_send() {
                 .expect("valid oauth refresh base url"),
         )
         .await;
-        let (account_proxy_url, account_proxy_connects, account_proxy_handle) =
-            spawn_test_http_connect_proxy(&upstream_base).await;
-        let (group_proxy_url, group_proxy_connects, group_proxy_handle) =
-            spawn_test_http_connect_proxy(&upstream_base).await;
+        let (account_proxy_url, account_proxy_observations, account_proxy_handle) =
+            spawn_test_http_connect_proxy_with_observations(&upstream_base).await;
+        let (group_proxy_url, group_proxy_observations, group_proxy_handle) =
+            spawn_test_http_connect_proxy_with_observations(&upstream_base).await;
         let account_proxy_key =
             normalize_single_proxy_key(&account_proxy_url).expect("normalize account proxy key");
         let group_proxy_key =
@@ -468,11 +532,48 @@ fn pool_route_oauth_token_refresh_uses_account_proxy_before_live_send() {
         );
         assert_eq!(token_requests.load(Ordering::SeqCst), 1);
         assert!(
-            account_proxy_connects.load(Ordering::SeqCst) >= 3,
+            account_proxy_observations
+                .request_count
+                .load(Ordering::SeqCst)
+                >= 3,
             "account proxy should carry token refresh and final upstream send"
         );
+        assert!(
+            account_proxy_observations
+                .connect_count
+                .load(Ordering::SeqCst)
+                >= 2,
+            "account proxy should carry the egress and final upstream CONNECTs: count={} lines={:?}",
+            account_proxy_observations
+                .connect_count
+                .load(Ordering::SeqCst),
+            account_proxy_observations
+                .request_lines
+                .lock()
+                .expect("lock account proxy request lines")
+        );
+        let account_proxy_request_lines = account_proxy_observations
+            .request_lines
+            .lock()
+            .expect("lock account proxy request lines");
+        assert!(
+            account_proxy_request_lines
+                .iter()
+                .any(|line| line.contains("/oauth/token")),
+            "account proxy should carry OAuth token refresh: {:?}",
+            account_proxy_request_lines
+        );
+        assert!(
+            account_proxy_request_lines
+                .iter()
+                .any(|line| line.starts_with("CONNECT 127.0.0.1:")),
+            "account proxy should carry the final OAuth upstream CONNECT: {:?}",
+            account_proxy_request_lines
+        );
         assert_eq!(
-            group_proxy_connects.load(Ordering::SeqCst),
+            group_proxy_observations
+                .request_count
+                .load(Ordering::SeqCst),
             0,
             "group proxy must not receive an OAuth account-bound refresh or send"
         );
