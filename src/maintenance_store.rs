@@ -5138,7 +5138,7 @@ impl MaintenanceStore {
                         && owner_details
                             .get("waitReason")
                             .and_then(serde_json::Value::as_str)
-                            .map_or(true, str::is_empty)
+                            .is_none_or(str::is_empty)
                 });
         if owner_progress_without_wait {
             // A successful owner batch proves that the prior pressure/backoff gate is stale.
