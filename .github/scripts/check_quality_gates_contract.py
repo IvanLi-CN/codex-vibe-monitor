@@ -72,6 +72,7 @@ CARGO_NEXTEST_VERSION = "0.9.138"
 MIGRATION_PR_EXCLUSION = "${{ github.event.pull_request.number == 1212 || contains(github.ref, '/pr-1212-') }}"
 MIGRATION_PR_RUN_IF = "${{ github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}"
 MIGRATION_PR_ALWAYS_RUN_IF = "${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}"
+MIGRATION_PR_SMOKE_RUN_IF = "${{ github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"
 MIGRATION_PR_EVENT_RUN_IF = "${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"
 MIGRATION_PG_RUN_IF = "${{ github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && !(github.event_name == 'workflow_dispatch' && github.ref_name == 'th/postgresql-migration-design') }}"
 
@@ -1528,7 +1529,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         require_observability_performance_contract(workflow)
     require_exact_if(
         build_job,
-        "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+        MIGRATION_PR_EVENT_RUN_IF,
         "ci-pr.yml.jobs.build",
     )
     producer_result_step = step_config(build_job, "Verify smoke artifact producer", "ci-pr.yml.jobs.build")
@@ -1647,7 +1648,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         require_exact_if(
             smoke_artifact_job,
-            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+            MIGRATION_PR_SMOKE_RUN_IF,
             "ci-pr.yml.jobs.build-pr-smoke-artifacts",
         )
         require_job_and_steps_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")

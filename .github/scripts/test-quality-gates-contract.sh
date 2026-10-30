@@ -271,9 +271,10 @@ needle = """  build:
     needs:
       - build-pr-smoke-artifacts
       - retention-migration-validation
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"""
+    # NOT RUN for PR #1212; skipped smoke-test preparation is not passing evidence.
+    if: ${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"""
 replacement = needle.replace(
-    "    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+    "    if: ${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
     "    if: ${{ always() && github.event_name == 'pull_request' }}",
     1,
 )

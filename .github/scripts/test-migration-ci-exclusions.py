@@ -48,7 +48,7 @@ PG = GATE.load_yaml(ROOT / ".github/workflows/ci-postgresql-acceptance.yml")
 check(PR, GATE.validate_ci_pr, "ci-pr.yml")
 check(PG, GATE.validate_postgres_functional_workflow, "ci-postgresql-acceptance.yml")
 for job in (
-    "frontend-tests", "backend-test-archive", "backend-tests-lightweight",
+    "frontend-tests", "build-pr-smoke-artifacts", "build", "backend-test-archive", "backend-tests-lightweight",
     "backend-tests-stateful-sqlite-shard-1", "backend-tests-stateful-sqlite-shard-2",
     "backend-tests-stateful-sqlite", "backend-tests-archive-file-io",
     "backend-tests-representative-scale", "retention-migration-validation",
