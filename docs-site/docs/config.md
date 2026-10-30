@@ -30,6 +30,18 @@ description: 先覆盖首次部署真正要决定的参数，再说明账号池�
 
 如果你只是先把服务跑起来，通常先确认上表这 4 到 5 项就够了。
 
+## 可选 PostgreSQL Analytics
+
+PostgreSQL 18 analytics foundation 默认关闭，SQLite 仍是现有状态来源。只有经过单独的 owner-authorized 运维流程并显式选择 backend，服务才会初始化可选 PostgreSQL runtime；应用启动不会创建 schema、复制数据或切换生产查询路由。
+
+| 变量                       | 默认值   | 说明                                                                                                                        |
+| -------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `ANALYTICS_BACKEND`        | `sqlite` | 只接受 `sqlite` 或 `postgres`。只有在 schema 预置、容量和恢复门禁完成后，才可通过单独批准的运行时变更选择 `postgres`。      |
+| `POSTGRES_DATABASE_URL`    | 无       | 选择 `postgres` 时必填。将实际 URL 放入 secret manager；日志和配置 debug/serialization 会脱敏。文档和工单不得记录真实凭据。 |
+| `POSTGRES_MAX_CONNECTIONS` | `5`      | PostgreSQL analytics pool 的上限，必须大于 `0`，并纳入服务端连接数预算。                                                    |
+
+这些变量不会触发 schema bootstrap、历史回填或生产读路径切换。配置文件本身也不会更改运行中的进程；backend 选择需要 owner-authorized 的配置应用与重启。当前 foundation 没有 analytics status endpoint、shadow-read API 或生产读切换实现。操作顺序、私网配置、独立容量预算和备份恢复演练见 [PostgreSQL 18 Analytics 运维手册](https://github.com/IvanLi-CN/codex-vibe-monitor/blob/main/docs/runbooks/pg18-analytics.md)。
+
 ## 只想先跑起来，最小配置怎么理解
 
 - 只想先接流量、看面板：`HTTP_BIND`、`DATABASE_PATH` 基本就会先决定。
