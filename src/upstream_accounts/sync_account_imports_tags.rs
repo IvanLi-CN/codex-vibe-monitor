@@ -4219,6 +4219,11 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
     if !has_live_invocations && !has_minute_stats_rollups && !has_hourly_usage_rollups {
         return Ok(());
     }
+    let live_snapshot_id = if has_live_invocations {
+        Some(resolve_invocation_snapshot_id(&state.pool, InvocationSourceScope::All).await?)
+    } else {
+        None
+    };
 
     let query_start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
@@ -4310,6 +4315,11 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
             .copied()
             .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
             .collect::<HashSet<_>>();
+        let archived_exact_hour_bucket_epochs = archived_partial_hour_bucket_epochs
+            .iter()
+            .copied()
+            .chain(archived_missing_full_hour_bucket_epochs.iter().copied())
+            .collect::<HashSet<_>>();
         if query_start < retention_cutoff
             && (!archived_partial_minute_bucket_epochs.is_empty()
                 || !archived_partial_hour_bucket_epochs.is_empty()
@@ -4324,6 +4334,8 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                     &account_ids,
                     &query_start_at,
                     &archive_end_at,
+                    &archived_partial_minute_bucket_epochs,
+                    &archived_exact_hour_bucket_epochs,
                     &state.config.archive_dir,
                 )
                 .await?;
@@ -4368,14 +4380,16 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
             .chain(live_missing_full_hour_bucket_epochs.iter().copied())
             .collect::<HashSet<_>>();
         if !live_exact_fallback_bucket_epochs.is_empty() {
-            let live_rows = load_window_actual_usage_rows_from_pool(
+            // Exact fallback is restricted to uncovered buckets and the same
+            // snapshot as the tail query, so concurrent inserts are handled by
+            // one bounded high-watermark pass rather than a second broad scan.
+            let live_rows = load_window_actual_usage_rows_for_bucket_sets_from_pool(
                 &state.pool,
                 &account_ids,
-                &query_start_at,
-                &format_naive(query_end.with_timezone(&Shanghai).naive_local()),
+                &live_partial_minute_bucket_epochs,
+                &live_partial_hour_bucket_epochs,
                 None,
-                None,
-                (live_rollup_cursor > 0).then_some(live_rollup_cursor),
+                live_snapshot_id,
             )
             .await?;
             let live_rows = filter_account_window_usage_rows_for_exact_fallback(
@@ -4399,7 +4413,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                 &query_end_at,
                 None,
                 Some(live_rollup_cursor),
-                None,
+                live_snapshot_id,
             )
             .await?;
             for (account_id, summary) in fold_account_window_usage_rows(live_tail_rows, &plans) {

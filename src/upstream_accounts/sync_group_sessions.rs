@@ -235,6 +235,60 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
         .map_err(Into::into)
 }
 
+fn deduplicate_account_window_usage_rows(
+    rows: Vec<AccountWindowUsageRow>,
+) -> Vec<AccountWindowUsageRow> {
+    let mut rows_by_id = HashMap::with_capacity(rows.len());
+    for row in rows {
+        rows_by_id.insert(row.id, row);
+    }
+    let mut rows = rows_by_id.into_values().collect::<Vec<_>>();
+    rows.sort_unstable_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    rows
+}
+
+pub(crate) async fn load_window_actual_usage_rows_for_bucket_sets_from_pool(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    minute_bucket_epochs: &HashSet<i64>,
+    hour_bucket_epochs: &HashSet<i64>,
+    min_id_exclusive: Option<i64>,
+    max_id_inclusive: Option<i64>,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    let mut rows = Vec::new();
+    if !minute_bucket_epochs.is_empty() {
+        rows.extend(
+            load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+                pool,
+                account_ids,
+                minute_bucket_epochs,
+                60,
+                min_id_exclusive,
+                max_id_inclusive,
+            )
+            .await?,
+        );
+    }
+    if !hour_bucket_epochs.is_empty() {
+        rows.extend(
+            load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+                pool,
+                account_ids,
+                hour_bucket_epochs,
+                3_600,
+                min_id_exclusive,
+                max_id_inclusive,
+            )
+            .await?,
+        );
+    }
+    Ok(deduplicate_account_window_usage_rows(rows))
+}
+
 pub(crate) async fn load_window_actual_usage_hourly_rows_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -330,6 +384,8 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
     account_ids: &[i64],
     start_at: &str,
     end_at: &str,
+    minute_bucket_epochs: &HashSet<i64>,
+    hour_bucket_epochs: &HashSet<i64>,
     archive_dir: &Path,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if account_ids.is_empty() || !sqlite_table_exists(pool, "archive_batches").await? {
@@ -396,12 +452,11 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
         rows.extend(
-            load_window_actual_usage_rows_from_pool(
+            load_window_actual_usage_rows_for_bucket_sets_from_pool(
                 &archive_pool,
                 account_ids,
-                start_at,
-                end_at,
-                None,
+                minute_bucket_epochs,
+                hour_bucket_epochs,
                 None,
                 None,
             )
@@ -411,7 +466,7 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
         drop(temp_cleanup);
     }
 
-    Ok(rows)
+    Ok(deduplicate_account_window_usage_rows(rows))
 }
 
 pub(crate) fn resolve_archive_batch_path(archive_dir: &Path, file_path: &str) -> PathBuf {

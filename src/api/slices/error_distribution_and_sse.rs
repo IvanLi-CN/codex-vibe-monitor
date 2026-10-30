@@ -424,6 +424,9 @@ pub(crate) async fn query_parallel_work_active_minute_stats_on_connection(
         .timestamp_opt(complete_end_epoch, 0)
         .single()
         .ok_or_else(|| anyhow!("invalid parallel-work complete-minute end"))?;
+    let snapshot_id =
+        resolve_invocation_snapshot_id_on_connection(connection, source_scope).await?;
+    // Keep exact fallback and the live tail on one high-watermark boundary.
     let minute_keep_start_epoch = parallel_work_minute_rollup_keep_start_epoch(Utc::now())?;
     let current_hour_start_epoch = Utc::now().timestamp().div_euclid(3_600) * 3_600;
     let mut result = ParallelWorkActiveMinuteStats::empty_available();
@@ -497,7 +500,7 @@ pub(crate) async fn query_parallel_work_active_minute_stats_on_connection(
                     source_scope,
                     upstream_account_id,
                     None,
-                    None,
+                    Some(snapshot_id),
                 )
                 .await?,
             )
@@ -523,7 +526,7 @@ pub(crate) async fn query_parallel_work_active_minute_stats_on_connection(
                 source_scope,
                 upstream_account_id,
                 None,
-                None,
+                Some(snapshot_id),
             )
             .await?,
         ));

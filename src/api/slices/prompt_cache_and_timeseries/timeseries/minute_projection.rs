@@ -1250,13 +1250,17 @@ pub(crate) async fn invalidate_timeseries_minute_projection_coverage(
     observation: &mut Option<crate::TaskExecutionObservation>,
 ) -> Result<TimeseriesMinuteProjectionCoverageInvalidationOutcome, ApiError> {
     let mut stats = TimeseriesMinuteProjectionCoverageInvalidationStats::default();
+    let mut last_scanned_row_id = 0_i64;
     loop {
         if timeseries_minute_projection_is_cancelled(cancellation) {
             return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled);
         }
+        // Coverage invalidation only moves rows into `warming`, so a monotonic
+        // rowid cursor avoids rescanning the already inspected prefix.
         let row_ids = sqlx::query_scalar::<_, i64>(
-            "SELECT rowid FROM timeseries_minute_projection_v2 WHERE coverage_state <> 'warming' ORDER BY rowid LIMIT ?1",
+            "SELECT rowid FROM timeseries_minute_projection_v2 WHERE rowid > ?1 AND coverage_state <> 'warming' ORDER BY rowid LIMIT ?2",
         )
+        .bind(last_scanned_row_id)
         .bind(TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT)
         .fetch_all(&state.pool)
         .await?;
@@ -1298,6 +1302,7 @@ pub(crate) async fn invalidate_timeseries_minute_projection_coverage(
         query.push(")");
         let updated_rows = query.build().execute(tx.as_mut()).await?.rows_affected();
         tx.commit().await?;
+        last_scanned_row_id = row_ids.last().copied().unwrap_or(last_scanned_row_id);
         stats.row_count = stats.row_count.saturating_add(updated_rows);
         stats.transaction_count = stats.transaction_count.saturating_add(1);
         debug!(
