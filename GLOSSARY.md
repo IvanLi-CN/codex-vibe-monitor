@@ -159,3 +159,29 @@ _Avoid_: export package when referring to one account record.
 **sub2api Export Package**:
 A portable collection of sub2api account records and optional proxy definitions. A package may contain accounts from multiple platforms and with different credential types.
 _Avoid_: OAuth credential when referring to the whole package.
+
+## Task Operations Language
+
+**Task Run Identifier**:
+The durable identity of one triggered Managed Task run, used to locate that run's waiting, work, and result across operational views. It is distinct from the task's identity and from a business invocation's identity.
+_Avoid_: task name as run identity, invocation ID, process-local execution counter.
+
+**Task Scheduler Wait**:
+The time between accepting a trigger request and admitting its task to execution. It belongs to scheduling and is separate from the task's execution time, including when admission waits for a shared resource.
+_Avoid_: task execution time, task lock wait.
+
+**Task Run Execution Time**:
+The elapsed time from the task's actual execution start to its terminal result, including lock waiting and pressure retries inside that execution. Scheduler waiting before admission is separate.
+_Avoid_: trigger-to-finish time, computation-only time.
+
+**Task Run Service Rate**:
+The committed work of one task run divided by its execution time, measured for the same task, work population, and unit. It excludes scheduler waiting and does not by itself measure sustained backlog convergence across multiple runs.
+_Avoid_: scheduler waiting in task service rate, mixed-unit throughput, single-run rate as sustained capacity.
+
+**Task Run Completion**:
+The outcome of the work selected for one Managed Task run. An executing run is complete when all selected work is committed and its required stages have finished, even when additional eligible work remains outside that selection; a partial run leaves selected work or a required stage unfinished. A dry run reports its preview outcome without claiming commits.
+_Avoid_: global backlog clearance as run completion, remaining backlog as partial completion.
+
+**Remaining Maintenance Backlog**:
+Eligible work still awaiting maintenance after a task run, including work outside that run's selection. It determines whether catch-up is needed independently of the completed run's outcome.
+_Avoid_: unfinished selected work, failed task run.

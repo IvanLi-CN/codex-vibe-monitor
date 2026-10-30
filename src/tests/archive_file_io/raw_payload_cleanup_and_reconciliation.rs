@@ -1202,14 +1202,14 @@ async fn raw_orphan_sweep_defers_a_busy_directory_lock_without_holding_write_adm
         Err(_) => sweep.await.expect("join deferred bounded sweep task"),
     }
     .expect("defer the busy directory lock");
-
-    assert!(
-        completed_before_lock_release,
-        "a busy cross-process lock must defer without blocking"
+    assert!(completed_before_lock_release);
+    assert_eq!((pass.failures, pass.deferred), (0, true));
+    assert_eq!(pass.admission_stage.as_deref(), Some("archive_file_phase"));
+    assert_eq!(
+        pass.admission_cause.as_deref(),
+        Some("archive_directory_lock_busy")
     );
-    assert_eq!(pass.failures, 1);
-    assert_eq!(pass.removed, 0);
-    assert!(raw_path.exists());
+    assert_eq!((pass.removed, raw_path.exists()), (0, true));
     let _p1_permit = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
 
     pool.close().await;

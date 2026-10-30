@@ -41,7 +41,8 @@ impl PublicationFixture {
         sqlx::raw_sql(
             "CREATE TABLE archive_batches (
                 id INTEGER PRIMARY KEY, dataset TEXT, month_key TEXT, file_path TEXT,
-                sha256 TEXT, row_count INTEGER, cleanup_state TEXT, cleanup_source_safe_start_date TEXT,
+                sha256 TEXT, row_count INTEGER, status TEXT NOT NULL DEFAULT 'completed',
+                cleanup_state TEXT, cleanup_source_safe_start_date TEXT,
                 replacement_staged_path TEXT);
              CREATE TABLE retention_prepared_archives (
                 dataset TEXT, file_path TEXT, state TEXT, staged_file_path TEXT,
@@ -51,8 +52,8 @@ impl PublicationFixture {
         .await
         .expect("publication and recovery schemas");
         sqlx::query(
-            "INSERT INTO archive_batches(id,dataset,month_key,file_path,sha256,cleanup_state)
-             VALUES(1,'codex_invocations','2020-01',?1,?2,'active')",
+            "INSERT INTO archive_batches(id,dataset,month_key,file_path,sha256,status,cleanup_state)
+             VALUES(1,'codex_invocations','2020-01',?1,?2,'completed','active')",
         )
         .bind(final_path.to_string_lossy().to_string())
         .bind(&previous_sha)
@@ -142,6 +143,11 @@ async fn archive_publication_present_and_absent_predecessors_commit_and_clear_re
             .await
             .expect("committed digest");
         assert_eq!(manifest, fixture.next_sha);
+        let status: String = sqlx::query_scalar("SELECT status FROM archive_batches WHERE id=1")
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("staged publication status");
+        assert_eq!(status, "materializing");
         assert_eq!(fixture.pointers().await, (None, None));
         assert!(!fixture.temporary_path.exists());
         fixture.cleanup().await;

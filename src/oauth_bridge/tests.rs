@@ -87,6 +87,13 @@ fn extract_completed_response_from_sse_returns_completed_response() {
     assert_eq!(value["status"], "completed");
 }
 
+#[test]
+fn unknown_large_responses_stream_flag_keeps_upstream_passthrough() {
+    assert!(should_passthrough_oauth_stream_response(None));
+    assert!(should_passthrough_oauth_stream_response(Some(true)));
+    assert!(!should_passthrough_oauth_stream_response(Some(false)));
+}
+
 #[tokio::test]
 async fn oauth_codex_upstream_base_url_uses_test_override() {
     let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;

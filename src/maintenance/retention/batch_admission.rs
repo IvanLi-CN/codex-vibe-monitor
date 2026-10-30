@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 pub(crate) struct BatchCommitProbe {
     pub(crate) committed: Notify,
     pub(crate) resume: Notify,
+    pub(crate) paused_after_first_chunk: std::sync::atomic::AtomicBool,
     pub(crate) force_commit_busy_timeout_zero: std::sync::atomic::AtomicBool,
 }
 
@@ -61,6 +62,9 @@ tokio::task_local! {
 pub(super) async fn pause_after_first_chunk(committed_rows: usize) {
     if committed_rows == RETENTION_WRITE_MAX_ROWS
         && let Ok(probe) = RETENTION_TEST_BATCH_COMMIT.try_with(Arc::clone)
+        && !probe
+            .paused_after_first_chunk
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
     {
         probe.committed.notify_one();
         probe.resume.notified().await;
@@ -181,6 +185,9 @@ where
     let requested_at = Instant::now();
     let pressure_retry_started = Instant::now();
     let mut pressure_retry_attempts = 0;
+    let mut maintenance_waiter: Option<
+        crate::proxy_sqlite_write_coordinator::ProxySqliteMaintenanceWaiter,
+    > = None;
 
     loop {
         // Confirm pool readiness before taking the archive fence. This readiness notification is
@@ -260,8 +267,9 @@ where
             return Ok(None);
         }
 
-        // The fence is held only while the digest and non-blocking admission probe run. If either
-        // resource is unavailable, release the fence before waiting for the other resource.
+        // The shared file permit and directory fence cover only artifact verification. If either
+        // resource is unavailable, release both before waiting for database admission.
+        let file_phase = acquire_file_phase_permit(operation).await?;
         let archive_lock = retention_archive_file_try_lock(archive_path)?;
         #[cfg(test)]
         pause_before_archive_file_verify().await;
@@ -283,6 +291,7 @@ where
         } else {
             false
         };
+        drop(file_phase);
         drop(file_verify_phase);
         if expected_sha256
             .zip(actual_sha256)
@@ -293,7 +302,9 @@ where
         if target_exists {
             bail!("archive target exists while awaiting retention admission");
         }
-        match try_acquire_write_admission(operation, gate, requested_at).await {
+        match try_acquire_write_admission(operation, gate, requested_at, &mut maintenance_waiter)
+            .await
+        {
             Ok(mut admission) => {
                 if retention_run_budget_expired()
                     || retention_run_shutdown_token()
@@ -347,9 +358,9 @@ where
             }
             Err(RetentionWriteAdmissionRejection::CoordinatorBusy) => {
                 drop(archive_lock);
-                if !wait_for_maintenance_eligibility(operation, requested_at).await {
-                    return Ok(None);
-                }
+                // Keep the registered FIFO ticket in `maintenance_waiter` for the next
+                // admission attempt. A readiness-only waiter would be dropped before the
+                // non-blocking claim and could let a re-entering owner bypass this batch.
             }
             Err(RetentionWriteAdmissionRejection::BudgetExpired) => {
                 drop(archive_lock);
@@ -373,14 +384,53 @@ async fn try_acquire_write_admission(
     operation: &'static str,
     gate: &crate::db_pressure::DbPressureGate,
     requested_at: Instant,
+    maintenance_waiter: &mut Option<
+        crate::proxy_sqlite_write_coordinator::ProxySqliteMaintenanceWaiter,
+    >,
 ) -> Result<RetentionWriteAdmission, RetentionWriteAdmissionRejection> {
     if retention_run_budget_expired() {
         return Err(RetentionWriteAdmissionRejection::BudgetExpired);
     }
     let coordinator = retention_write_coordinator_handle();
-    let mut write_permit = coordinator
-        .try_acquire_maintenance(requested_at, RETENTION_FAIRNESS_INTERVAL)
-        .ok_or(RetentionWriteAdmissionRejection::CoordinatorBusy)?;
+    let mut write_permit =
+        match coordinator.try_acquire_maintenance(requested_at, RETENTION_FAIRNESS_INTERVAL) {
+            Some(permit) => {
+                maintenance_waiter.take();
+                permit
+            }
+            None => {
+                if maintenance_waiter.is_none() {
+                    *maintenance_waiter = Some(coordinator.new_maintenance_waiter());
+                }
+                let (admission_budget, timeout_reason) = retention_write_admission_budget();
+                let waiter = maintenance_waiter
+                    .as_mut()
+                    .expect("maintenance waiter registered before bounded admission");
+                let eligibility = tokio::time::timeout(
+                    admission_budget,
+                    coordinator.acquire_maintenance_from_waiter(
+                        waiter,
+                        requested_at,
+                        RETENTION_FAIRNESS_INTERVAL,
+                    ),
+                );
+                let permit = if let Some(shutdown) = retention_run_shutdown_token() {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.cancelled() => None,
+                        result = eligibility => result.ok(),
+                    }
+                } else {
+                    eligibility.await.ok()
+                };
+                let Some(permit) = permit else {
+                    retention_record_defer(operation, timeout_reason);
+                    return Err(RetentionWriteAdmissionRejection::CoordinatorBusy);
+                };
+                maintenance_waiter.take();
+                permit
+            }
+        };
     if retention_run_budget_expired() {
         drop(write_permit);
         return Err(RetentionWriteAdmissionRejection::BudgetExpired);
@@ -409,43 +459,6 @@ async fn try_acquire_write_admission(
             Err(RetentionWriteAdmissionRejection::GateDenied { reason, generation })
         }
     }
-}
-
-async fn wait_for_maintenance_eligibility(operation: &'static str, requested_at: Instant) -> bool {
-    if retention_run_budget_expired()
-        || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
-    {
-        retention_record_defer(
-            operation,
-            if retention_run_budget_expired() {
-                "retention_work_budget"
-            } else {
-                "shutdown"
-            },
-        );
-        return false;
-    }
-    let coordinator = retention_write_coordinator_handle();
-    let eligibility =
-        coordinator.wait_for_maintenance_eligibility(requested_at, RETENTION_FAIRNESS_INTERVAL);
-    let (admission_budget, timeout_reason) = retention_write_admission_budget();
-    let eligibility = tokio::time::timeout(admission_budget, eligibility);
-    let waited = if let Some(shutdown) = retention_run_shutdown_token() {
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                retention_record_defer(operation, "shutdown");
-                return false;
-            }
-            result = eligibility => result.is_ok(),
-        }
-    } else {
-        eligibility.await.is_ok()
-    };
-    if !waited {
-        retention_record_defer(operation, timeout_reason);
-    }
-    waited
 }
 
 async fn wait_for_pressure_cooldown_retry(

@@ -67,9 +67,15 @@ where
     T: Send + 'static,
     F: FnOnce() -> io::Result<T> + Send + 'static,
 {
-    tokio::task::spawn_blocking(op)
+    let file_phase = crate::maintenance::acquire_file_phase_permit("proxy_raw_file_io")
         .await
-        .map_err(|err| io::Error::other(format!("raw writer task join failed: {err}")))?
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    tokio::task::spawn_blocking(move || {
+        let _file_phase = file_phase;
+        op()
+    })
+    .await
+    .map_err(|err| io::Error::other(format!("raw writer task join failed: {err}")))?
 }
 
 pub(crate) struct StreamingRawPayloadChunk {

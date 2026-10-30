@@ -840,6 +840,22 @@ fn sqlite_busy_and_locked_are_actual_backfill_failures() {
         StartupBackfillFailureKind::ArchiveLockBusy
     );
     assert_eq!(
+        startup_backfill_failure_kind(&anyhow::anyhow!("raw file phase is busy")),
+        StartupBackfillFailureKind::FilePhaseBusy
+    );
+    assert_eq!(
+        startup_backfill_failure_kind(&crate::retention_write_deferred(
+            "archive_public_id_file_phase",
+        )),
+        StartupBackfillFailureKind::FilePhaseBusy
+    );
+    assert_eq!(
+        startup_backfill_failure_kind(&crate::retention_write_deferred(
+            "archive_public_id_cleanup",
+        )),
+        StartupBackfillFailureKind::FilePhaseBusy
+    );
+    assert_eq!(
         startup_backfill_failure_kind(&anyhow::anyhow!("source unavailable")),
         StartupBackfillFailureKind::Operation
     );
@@ -852,6 +868,29 @@ fn sqlite_busy_and_locked_are_actual_backfill_failures() {
     assert_eq!(health.pressure_defer_count, 0);
     assert_eq!(health.failed_task_count, 1);
     assert_eq!(health.deferred_task_count, 0);
+}
+
+#[test]
+fn resource_defer_preserves_committed_partial_progress() {
+    let progress = StartupBackfillProgress {
+        cursor_id: 10,
+        last_scanned: 4,
+        last_updated: 3,
+        ..StartupBackfillProgress::pending("partial-resource-defer")
+    };
+    let error = anyhow::Error::new(BackfillPartialFailure {
+        source: anyhow::anyhow!("file phase busy"),
+        next_cursor_id: 12,
+        scanned: 7,
+        updated: 6,
+    });
+
+    let deferred =
+        super::task_runner::startup_backfill_progress_after_partial_failure(&progress, &error);
+
+    assert_eq!(deferred.cursor_id, 12);
+    assert_eq!(deferred.last_scanned, 7);
+    assert_eq!(deferred.last_updated, 6);
 }
 
 #[test]

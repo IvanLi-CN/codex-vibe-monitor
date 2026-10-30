@@ -1,8 +1,12 @@
-use super::{RetentionArchiveFileLock, RetentionWriteAdmission};
+use super::{
+    RetentionArchiveFileLock, RetentionWriteAdmission, RetentionWriteCommit,
+    record_retention_write_commit,
+};
 use anyhow::{Result, anyhow};
 use sqlx::{Sqlite, SqliteConnection, pool::PoolConnection};
 #[cfg(test)]
 use std::sync::{Arc, atomic::AtomicUsize};
+use std::time::Duration;
 
 pub(crate) struct RetentionTransactionResources {
     connection: Option<PoolConnection<Sqlite>>,
@@ -18,6 +22,13 @@ struct RetentionCleanupParts {
     admission: Option<RetentionWriteAdmission>,
     archive_lock: Option<RetentionArchiveFileLock>,
     transaction_started: bool,
+    write_commit: Option<RetentionWriteCommit>,
+}
+
+struct RetentionCleanupResult {
+    archive_lock: Option<RetentionArchiveFileLock>,
+    write_hold_elapsed: Option<Duration>,
+    write_commit_breached: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -104,7 +115,10 @@ impl RetentionTransactionResources {
         self.release_admission();
     }
 
-    fn take_cleanup_parts(&mut self) -> Option<RetentionCleanupParts> {
+    fn take_cleanup_parts(
+        &mut self,
+        write_commit: Option<RetentionWriteCommit>,
+    ) -> Option<RetentionCleanupParts> {
         self.connection
             .take()
             .map(|connection| RetentionCleanupParts {
@@ -112,6 +126,7 @@ impl RetentionTransactionResources {
                 admission: self.admission.take(),
                 archive_lock: self.archive_lock.take(),
                 transaction_started: self.transaction_started,
+                write_commit,
             })
     }
 
@@ -119,10 +134,15 @@ impl RetentionTransactionResources {
         mut self,
         mode: RetentionConnectionCleanup,
         retain_archive_lock: bool,
-    ) -> Result<Option<RetentionArchiveFileLock>> {
-        let Some(parts) = self.take_cleanup_parts() else {
+        write_commit: Option<RetentionWriteCommit>,
+    ) -> Result<RetentionCleanupResult> {
+        let Some(parts) = self.take_cleanup_parts(write_commit) else {
             self.release_resources();
-            return Ok(None);
+            return Ok(RetentionCleanupResult {
+                archive_lock: None,
+                write_hold_elapsed: None,
+                write_commit_breached: None,
+            });
         };
         #[cfg(test)]
         let return_probe = RETENTION_TEST_RETURN_TO_POOL
@@ -149,30 +169,51 @@ impl RetentionTransactionResources {
     }
 
     pub(crate) async fn rollback_and_close(self) -> Result<()> {
-        self.cleanup(RetentionConnectionCleanup::RollbackAndClose, false)
+        self.cleanup(RetentionConnectionCleanup::RollbackAndClose, false, None)
             .await
             .map(|_| ())
     }
 
     pub(crate) async fn return_to_pool(self) -> Result<()> {
-        self.cleanup(RetentionConnectionCleanup::ReturnToPool, false)
+        self.cleanup(RetentionConnectionCleanup::ReturnToPool, false, None)
             .await
             .map(|_| ())
+    }
+
+    pub(crate) async fn return_to_pool_with_hold(self) -> Result<Duration> {
+        self.cleanup(RetentionConnectionCleanup::ReturnToPool, false, None)
+            .await
+            .map(|result| result.write_hold_elapsed.unwrap_or_default())
+    }
+
+    pub(crate) async fn return_to_pool_and_record_commit(
+        self,
+        write_commit: RetentionWriteCommit,
+    ) -> Result<bool> {
+        self.cleanup(
+            RetentionConnectionCleanup::ReturnToPool,
+            false,
+            Some(write_commit),
+        )
+        .await
+        .map(|result| result.write_commit_breached.unwrap_or(false))
     }
 
     pub(crate) async fn rollback_and_close_retaining_archive_fence(
         self,
     ) -> Result<RetentionArchiveFileLock> {
-        self.cleanup(RetentionConnectionCleanup::RollbackAndClose, true)
+        self.cleanup(RetentionConnectionCleanup::RollbackAndClose, true, None)
             .await?
+            .archive_lock
             .ok_or_else(|| anyhow!("archive publication lost its file fence"))
     }
 
     pub(crate) async fn return_to_pool_retaining_archive_fence(
         self,
     ) -> Result<RetentionArchiveFileLock> {
-        self.cleanup(RetentionConnectionCleanup::ReturnToPool, true)
+        self.cleanup(RetentionConnectionCleanup::ReturnToPool, true, None)
             .await?
+            .archive_lock
             .ok_or_else(|| anyhow!("archive publication lost its file fence"))
     }
 }
@@ -183,7 +224,7 @@ async fn cleanup_retention_transaction(
     #[cfg(test)] return_probe: Option<Arc<RetentionReturnToPoolProbe>>,
     #[cfg(not(test))] _return_probe: Option<()>,
     retain_archive_lock: bool,
-) -> Result<Option<RetentionArchiveFileLock>> {
+) -> Result<RetentionCleanupResult> {
     let mut cleanup_error = None;
     if matches!(mode, RetentionConnectionCleanup::RollbackAndClose)
         && parts.transaction_started
@@ -231,13 +272,28 @@ async fn cleanup_retention_transaction(
         drop(parts.archive_lock.take());
         None
     };
+    let write_hold_elapsed = parts
+        .admission
+        .as_ref()
+        .map(RetentionWriteAdmission::write_hold_elapsed);
+    let write_commit_breached = parts.write_commit.map(|mut commit| {
+        commit.write_hold_elapsed = write_hold_elapsed;
+        record_retention_write_commit(commit)
+    });
     drop(parts.admission);
-    cleanup_error.map_or(Ok(archive_lock), Err)
+    cleanup_error.map_or(
+        Ok(RetentionCleanupResult {
+            archive_lock,
+            write_hold_elapsed,
+            write_commit_breached,
+        }),
+        Err,
+    )
 }
 
 impl Drop for RetentionTransactionResources {
     fn drop(&mut self) {
-        let Some(parts) = self.take_cleanup_parts() else {
+        let Some(parts) = self.take_cleanup_parts(None) else {
             self.release_resources();
             return;
         };

@@ -296,7 +296,9 @@ impl PoolReplayBodySnapshot {
             Self::File { temp_file, .. } => {
                 let path = temp_file.path.clone();
                 let content_encoding = content_encoding.map(str::to_string);
+                let file_phase = crate::maintenance::try_acquire_file_phase_permit()?;
                 tokio::task::spawn_blocking(move || {
+                    let _file_phase = file_phase;
                     let reader =
                         open_decoded_response_reader(&path, content_encoding.as_deref()).ok()?;
                     parse_stream_flag_from_reader(std::io::BufReader::new(reader))
@@ -1328,6 +1330,53 @@ pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn file_backed_stream_flag_does_not_wait_for_file_phase_permit() {
+        let path = build_pool_replay_temp_path(91_001);
+        tokio::fs::write(&path, br#"{"stream":true}"#)
+            .await
+            .expect("write stream flag fixture");
+        let snapshot = PoolReplayBodySnapshot::File {
+            temp_file: Arc::new(PoolReplayTempFile { path }),
+            size: br#"{"stream":true}"#.len(),
+        };
+        let holder_ready = Arc::new(Notify::new());
+        let holder_release = Arc::new(Notify::new());
+        let ready = Arc::clone(&holder_ready);
+        let release = Arc::clone(&holder_release);
+        let holder = tokio::spawn(async move {
+            let permit =
+                crate::maintenance::acquire_file_phase_permit("test_replay_stream_flag_holder")
+                    .await
+                    .expect("acquire file phase holder");
+            ready.notify_one();
+            release.notified().await;
+            drop(permit);
+        });
+
+        holder_ready.notified().await;
+        let extraction = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            snapshot.extract_request_stream_flag(None),
+        )
+        .await
+        .expect("stream flag extraction must not wait while the file phase is busy");
+        assert_eq!(extraction, None);
+        holder_release.notify_one();
+        holder.await.expect("file phase holder task");
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                snapshot.extract_request_stream_flag(None),
+            )
+            .await
+            .expect("stream flag extraction should finish after permit release"),
+            Some(true)
+        );
+    }
 
     #[tokio::test]
     async fn oauth_transcode_validation_rejects_oversized_decoded_file_snapshot() {

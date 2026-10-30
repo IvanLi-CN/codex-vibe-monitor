@@ -2695,6 +2695,11 @@ type DemoManagedTaskOverride = {
 type DemoManagedTaskRun = {
   id: number;
   startedAt: string;
+  executionUid?: string | null;
+  actualStartedAt?: string | null;
+  actualFinishedAt?: string | null;
+  executionDurationMs?: number | null;
+  schedulerWaitMs?: number | null;
   finishedAt: string | null;
   durationMs: number | null;
   triggerKind?: string;
@@ -2782,10 +2787,10 @@ const DEMO_RETENTION_ARCHIVE_OWNER_V2 = {
   unit: "invocation rows",
   scope: "expired_invocations:retention_policy",
   globalBacklogTotal: 4_920,
-  discovered: 1_020,
-  selected: 1_020,
-  committed: 1_020,
-  batches: 3,
+  discovered: 866,
+  selected: 866,
+  committed: 866,
+  batches: 1,
   rawFilesRemoved: 0,
   hasMore: true,
 } as const;
@@ -2863,9 +2868,17 @@ function demoRetentionOwnerV2Details(
               monthKey: "2026-09",
               batchRows: fixture.committed,
               committedRows: dryRun ? 0 : fixture.committed,
-              committedRowsPerSecond: dryRun ? 0 : taskKey === "retention_archive" ? 26.2 : 18.4,
-              arrivalRowsPerSecond: taskKey === "retention_archive" ? 0.35 : 0.42,
-              serviceRateMultiple: dryRun ? 0 : taskKey === "retention_archive" ? 74.9 : 43.8,
+              committedRowsPerSecond: dryRun
+                ? 0
+                : taskKey === "retention_archive"
+                  ? 866 / 500
+                  : 18.4,
+              arrivalRowsPerSecond: taskKey === "retention_archive" ? 0.673 : 0.42,
+              serviceRateMultiple: dryRun
+                ? 0
+                : taskKey === "retention_archive"
+                  ? 866 / 500 / 0.673
+                  : 43.8,
               filePrepareMs: taskKey === "retention_archive" ? 1_480 : 1_240,
               sourceIdentityMs: taskKey === "retention_archive" ? 380 : 210,
               archiveWriterMs: taskKey === "retention_archive" ? 1_120 : 980,
@@ -3386,13 +3399,15 @@ export function managedTasks() {
     const fallbackFinishedAt = new Date(
       Date.parse(fallbackStartedAt) + fallbackDurationMs,
     ).toISOString();
-    const run = latestRun ?? {
+    const run: DemoManagedTaskRun = latestRun ?? {
       id: index + 1,
       startedAt: fallbackStartedAt,
       finishedAt: fallbackFinishedAt,
       durationMs: fallbackDurationMs,
       triggerKind: task.isManual ? "manual" : task.triggerMode,
       status: "success",
+      processedCount: null,
+      updatedCount: null,
       errorDetail: null,
     };
     return {
@@ -3400,11 +3415,14 @@ export function managedTasks() {
       displayColorLight: `hsl(${hue} 72% 43%)`,
       displayColorDark: `hsl(${hue} 76% 66%)`,
       lastExecution: {
-        executionUid: `demo-execution-${task.taskKey}`,
+        executionUid: run.executionUid ?? null,
         runId: run.id,
         triggerKind: run.triggerKind ?? (task.isManual ? "manual" : task.triggerMode),
         attemptedAt: run.startedAt,
-        actualStartedAt: run.startedAt,
+        actualStartedAt: run.actualStartedAt ?? null,
+        actualFinishedAt: run.actualFinishedAt ?? null,
+        executionDurationMs: run.executionDurationMs ?? null,
+        schedulerWaitMs: run.schedulerWaitMs ?? null,
         finishedAt: run.finishedAt,
         durationMs: run.durationMs,
         status: run.status,
@@ -4025,11 +4043,29 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
   );
   const retentionCommittedRows = latestSample?.processed?.value ?? 0;
   const retentionElapsedSeconds = (latestRunDurationMs || 31_000) / 1000;
+  const hasRetentionTimingFixture = taskKey === "retention_archive" && ownerV2Fixture != null;
+  const executionUid = `demo-execution-${taskKey}`;
+  const executionDurationMs = hasRetentionTimingFixture ? 500_000 : latestRunDurationMs || 31_000;
+  const schedulerWaitMs = hasRetentionTimingFixture ? 1_360_000 : null;
+  const actualStartedAt = latestRunStartedAt;
+  const actualFinishedAt = hasRetentionTimingFixture
+    ? new Date(Date.parse(actualStartedAt) + executionDurationMs).toISOString()
+    : latestRunFinishedAt;
+  const attemptedAt = hasRetentionTimingFixture
+    ? new Date(Date.parse(actualStartedAt) - (schedulerWaitMs ?? 0)).toISOString()
+    : latestRunStartedAt;
   const defaultRun: DemoManagedTaskRun = {
     id: latestSample?.managedRunId ?? 1,
-    startedAt: latestRunStartedAt,
-    finishedAt: latestRunFinishedAt,
-    durationMs: latestRunDurationMs || 31_000,
+    startedAt: attemptedAt,
+    executionUid,
+    actualStartedAt,
+    actualFinishedAt,
+    executionDurationMs,
+    schedulerWaitMs,
+    finishedAt: actualFinishedAt,
+    durationMs: hasRetentionTimingFixture
+      ? (schedulerWaitMs ?? 0) + executionDurationMs
+      : latestRunDurationMs || 31_000,
     triggerKind: latestSample?.triggerKind ?? (task.isManual ? "manual" : task.triggerMode),
     status: latestSample?.status ?? "success",
     processedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1842),
@@ -5948,9 +5984,15 @@ export async function handleDemoRequest(request: Request) {
       return json({ error: "task is disabled" }, { status: 409 });
     }
     const startedAt = demoNow();
+    const runId = nextManagedTaskRunId++;
     const run: DemoManagedTaskRun = {
-      id: nextManagedTaskRunId++,
+      id: runId,
       startedAt,
+      executionUid: `demo-execution-${taskKey}-${runId}`,
+      actualStartedAt: null,
+      actualFinishedAt: null,
+      executionDurationMs: null,
+      schedulerWaitMs: null,
       finishedAt: null,
       durationMs: null,
       triggerKind: "manual",
@@ -5967,6 +6009,10 @@ export async function handleDemoRequest(request: Request) {
       run.status = "success";
       run.finishedAt = new Date(Date.parse(startedAt) + 1_200).toISOString();
       run.durationMs = 1_200;
+      run.actualStartedAt = startedAt;
+      run.actualFinishedAt = run.finishedAt;
+      run.executionDurationMs = 1_200;
+      run.schedulerWaitMs = 0;
       run.processedCount = detail.task.isManual ? null : 1842;
       run.updatedCount = detail.task.isManual ? null : 1780;
       run.completion = detail.task.isManual ? "completed" : "partial";

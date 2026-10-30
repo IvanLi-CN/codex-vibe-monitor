@@ -453,6 +453,15 @@ impl DbPressureGate {
     }
 
     pub(crate) fn record_error(&self, task: &'static str, err: &Error) -> bool {
+        self.record_error_with_cooldown(task, err, self.pressure_cooldown)
+    }
+
+    pub(crate) fn record_error_with_cooldown(
+        &self,
+        task: &'static str,
+        err: &Error,
+        cooldown: Duration,
+    ) -> bool {
         let Some(error_class) = classify_db_pressure_error(err) else {
             return false;
         };
@@ -470,13 +479,22 @@ impl DbPressureGate {
         }
         self.last_error_class
             .store(error_class.as_atomic(), Ordering::Release);
-        self.record_pressure(task, error_class.as_str());
+        self.record_pressure_with_cooldown(task, error_class.as_str(), cooldown);
         true
     }
 
     pub(crate) fn record_pressure(&self, task: &'static str, reason: &'static str) {
+        self.record_pressure_with_cooldown(task, reason, self.pressure_cooldown);
+    }
+
+    pub(crate) fn record_pressure_with_cooldown(
+        &self,
+        task: &'static str,
+        reason: &'static str,
+        cooldown: Duration,
+    ) {
         let now_ms = current_epoch_ms();
-        let cooldown_ms = duration_ms_u64(self.pressure_cooldown);
+        let cooldown_ms = duration_ms_u64(cooldown);
         let until_ms = now_ms.saturating_add(cooldown_ms);
         update_atomic_max(&self.pressure_until_epoch_ms, until_ms);
         crate::task_timeline::note_background_denial(task, "pressure_cooldown", Some(cooldown_ms));
@@ -921,5 +939,21 @@ mod tests {
             snapshot.last_error_class,
             Some(DbPressureErrorClass::PoolAcquireTimeout)
         );
+    }
+
+    #[test]
+    fn custom_pressure_cooldown_is_used_for_a_scoped_retry() {
+        let gate = DbPressureGate::new(1, Duration::from_secs(30));
+        let error = anyhow!("database is locked");
+
+        assert!(gate.record_error_with_cooldown("scoped_retry", &error, Duration::from_millis(1),));
+        let remaining = match gate
+            .try_begin_background("maintenance")
+            .expect_err("custom cooldown must deny immediately")
+        {
+            DbPressureDenyReason::PressureCooldown { remaining_ms } => remaining_ms,
+            DbPressureDenyReason::BackgroundBusy => panic!("unexpected background slot denial"),
+        };
+        assert!(remaining <= 1);
     }
 }

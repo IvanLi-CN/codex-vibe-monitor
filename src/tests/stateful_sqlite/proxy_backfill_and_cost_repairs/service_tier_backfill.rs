@@ -160,3 +160,42 @@ async fn backfill_invocation_service_tiers_tracks_skip_counters() {
     assert_eq!(summary.skipped_missing_file, 1);
     assert_eq!(summary.skipped_missing_tier, 1);
 }
+
+#[tokio::test]
+async fn backfill_invocation_service_tiers_preserves_cursor_when_file_phase_is_busy() {
+    let pool = test_current_schema_pool().await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("service-tier-file-phase-busy")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(r#"{"endpoint":"/v1/responses"}"#)
+    .bind("{}")
+    .bind("/tmp/service-tier-file-phase-busy-response.bin")
+    .execute(&pool)
+    .await
+    .expect("insert busy service-tier row");
+
+    let _file_phase =
+        crate::maintenance::acquire_file_phase_permit("test_service_tier_file_phase_busy")
+            .await
+            .expect("hold the shared file phase permit");
+    let error = backfill_invocation_service_tiers_from_cursor(&pool, 0, None, None, None)
+        .await
+        .expect_err("busy file phase must defer instead of skipping the row");
+    let partial = error
+        .downcast_ref::<crate::BackfillPartialFailure>()
+        .expect("backfill failure must preserve partial progress");
+    assert_eq!(partial.next_cursor_id, 0);
+    assert_eq!(partial.scanned, 0);
+    assert_eq!(partial.updated, 0);
+    assert!(error.to_string().contains("raw file phase is busy"));
+}

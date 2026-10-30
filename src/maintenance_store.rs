@@ -188,7 +188,7 @@ pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
     )
 }
 
-fn is_retention_owner_v2_task(key: &str) -> bool {
+pub(crate) fn is_retention_owner_v2_task(key: &str) -> bool {
     RETENTION_OWNER_V2_TASKS.contains(&key)
 }
 
@@ -492,6 +492,9 @@ pub(crate) struct TaskExecutionSummary {
     pub(crate) trigger_kind: String,
     pub(crate) attempted_at: String,
     pub(crate) actual_started_at: Option<String>,
+    pub(crate) actual_finished_at: Option<String>,
+    pub(crate) execution_duration_ms: Option<i64>,
+    pub(crate) scheduler_wait_ms: Option<i64>,
     pub(crate) finished_at: Option<String>,
     pub(crate) duration_ms: Option<i64>,
     pub(crate) status: String,
@@ -626,6 +629,11 @@ pub(crate) struct TaskRun {
     pub(crate) id: i64,
     pub(crate) trigger_kind: String,
     pub(crate) started_at: String,
+    pub(crate) execution_uid: Option<String>,
+    pub(crate) actual_started_at: Option<String>,
+    pub(crate) actual_finished_at: Option<String>,
+    pub(crate) execution_duration_ms: Option<i64>,
+    pub(crate) scheduler_wait_ms: Option<i64>,
     pub(crate) finished_at: Option<String>,
     pub(crate) duration_ms: Option<i64>,
     pub(crate) status: String,
@@ -724,8 +732,12 @@ struct TaskRunRow {
     id: i64,
     trigger_kind: String,
     started_at: String,
+    execution_uid: Option<String>,
+    actual_started_at: Option<String>,
+    actual_finished_at: Option<String>,
     finished_at: Option<String>,
     duration_ms: Option<i64>,
+    actual_duration_ms: Option<i64>,
     status: String,
     summary: Option<String>,
     processed_count: Option<i64>,
@@ -2290,10 +2302,17 @@ fn task_progress_from_row(row: TaskProgressRow) -> TaskProgress {
 }
 
 fn task_run_from_row(row: TaskRunRow) -> TaskRun {
+    let scheduler_wait_ms =
+        scheduler_wait_duration_ms(&row.started_at, row.actual_started_at.as_deref());
     TaskRun {
         id: row.id,
         trigger_kind: row.trigger_kind,
         started_at: row.started_at,
+        execution_uid: row.execution_uid,
+        actual_started_at: row.actual_started_at,
+        actual_finished_at: row.actual_finished_at,
+        execution_duration_ms: row.actual_duration_ms.map(|value| value.max(0)),
+        scheduler_wait_ms,
         finished_at: row.finished_at,
         duration_ms: row.duration_ms,
         status: row.status,
@@ -2307,6 +2326,13 @@ fn task_run_from_row(row: TaskRunRow) -> TaskRun {
             .details
             .and_then(|value| serde_json::from_str(&value).ok()),
     }
+}
+
+fn scheduler_wait_duration_ms(requested_at: &str, actual_started_at: Option<&str>) -> Option<i64> {
+    let requested_at = crate::stats::parse_to_utc_datetime(requested_at)?;
+    let actual_started_at = crate::stats::parse_to_utc_datetime(actual_started_at?)?;
+    let elapsed_ms = (actual_started_at - requested_at).num_milliseconds();
+    (elapsed_ms >= 0).then_some(elapsed_ms)
 }
 
 pub(crate) fn managed_startup_backfill_suffix(task_name: &str) -> Option<&'static str> {
@@ -3299,8 +3325,8 @@ impl MaintenanceStore {
                         .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64)
                         .bind(status).bind(revision).bind(id)
                         .execute(&mut *transaction).await?;
-                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=CASE WHEN task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep') THEN MAX(0,CAST(ROUND((julianday(?)-julianday(actual_started_at))*86400000) AS INTEGER)) ELSE ? END WHERE execution_uid=? AND actual_started_at IS NOT NULL")
-                        .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
+                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=? WHERE execution_uid=? AND actual_started_at IS NOT NULL")
+                        .bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
                         .execute(&mut *transaction).await?;
                 }
                 crate::task_timeline::TimelineEvent::ExecutionResourcesPending { id } => {
@@ -4599,18 +4625,19 @@ impl MaintenanceStore {
             }
         }
         if enqueued > 0 {
+            // Keep the derived progress projection in the same transaction as admission. If
+            // SQLite is under pressure, rolling back the whole admission lets the dispatcher
+            // retry without leaving a requested run that it cannot claim.
+            for task_key in RETENTION_OWNER_V2_TASKS {
+                Self::sync_retention_progress_schedule_in_transaction(&mut transaction, task_key)
+                    .await?;
+            }
             transaction.commit().await?;
         } else {
             // A preflight candidate may become ineligible before the in-transaction
             // revalidation. Roll back the deferred transaction so this race does not
             // turn into an observable no-op write commit.
             transaction.rollback().await?;
-        }
-        if enqueued > 0 {
-            for task_key in RETENTION_OWNER_V2_TASKS {
-                self.sync_retention_owner_progress_schedule(task_key)
-                    .await?;
-            }
         }
         Ok(enqueued)
     }
@@ -4800,6 +4827,34 @@ impl MaintenanceStore {
                 next_retry_at,
                 stages,
             }),
+        )
+        .await
+    }
+
+    pub(crate) async fn update_progress_wait_state(
+        &self,
+        task_key: &str,
+        wait_reason: Option<&str>,
+        next_retry_at: Option<&str>,
+    ) -> Result<()> {
+        let now = format_utc_iso_millis(Utc::now());
+        observe_store_write(
+            StoreOperation::Progress,
+            async {
+                sqlx::query(
+                    "UPDATE managed_task_progress
+                     SET updated_at=?, freshness='fresh', last_progress_at=?, wait_reason=?, next_retry_at=?
+                     WHERE task_key=?",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(wait_reason)
+                .bind(next_retry_at)
+                .bind(task_key)
+                .execute(&self.pool)
+                .await?;
+                Ok(())
+            },
         )
         .await
     }
@@ -5069,6 +5124,37 @@ impl MaintenanceStore {
             )
             .await?;
         }
+        let owner_progress_without_wait = owner_v2
+            && owner_processed_count.is_some_and(|value| value > 0)
+            && !matches!(completion, Some("failed") | None)
+            && details
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .is_some_and(|owner_details| {
+                    !owner_details
+                        .get("dryRun")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+                        && owner_details
+                            .get("waitReason")
+                            .and_then(serde_json::Value::as_str)
+                            .is_none_or(str::is_empty)
+                });
+        if owner_progress_without_wait {
+            // A successful owner batch proves that the prior pressure/backoff gate is stale.
+            // Clear it before the next catch-up admission, otherwise a still-future retry gate
+            // can suppress the schedule just written above and create a long idle hole.
+            sqlx::query(
+                "DELETE FROM maintenance_owner_retry_state
+                 WHERE task_key=?
+                   AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
+            )
+            .bind(task_key.as_deref().expect("owner progress has a task key"))
+            .bind(task_key.as_deref().expect("owner progress has a task key"))
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        }
         let owner_run_is_complete_without_more_work = owner_v2
             && matches!(
                 task_key.as_deref(),
@@ -5323,6 +5409,16 @@ impl MaintenanceStore {
     }
 
     async fn sync_retention_progress_schedule_inner(&self, task_key: &str) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        Self::sync_retention_progress_schedule_in_transaction(&mut transaction, task_key).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    async fn sync_retention_progress_schedule_in_transaction(
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        task_key: &str,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO managed_task_progress(
                  task_key,updated_at,freshness,next_inspection_at,next_catchup_at,catchup_state
@@ -5342,7 +5438,7 @@ impl MaintenanceStore {
         )
         .bind(format_utc_iso_millis(Utc::now()))
         .bind(task_key)
-        .execute(&self.pool)
+        .execute(&mut **transaction)
         .await?;
         Ok(())
     }
@@ -5471,13 +5567,19 @@ impl MaintenanceStore {
         .await?
         .into_iter()
         .map(|row| {
+            let scheduler_wait_ms =
+                scheduler_wait_duration_ms(&row.started_at, row.actual_started_at.as_deref());
+            let finished_at = row.actual_finished_at.clone().or(row.finished_at);
             let summary = TaskExecutionSummary {
                 execution_uid: row.execution_uid,
                 run_id: row.id,
                 trigger_kind: row.trigger_kind,
                 attempted_at: row.started_at,
                 actual_started_at: row.actual_started_at,
-                finished_at: row.actual_finished_at.or(row.finished_at),
+                actual_finished_at: row.actual_finished_at,
+                execution_duration_ms: row.actual_duration_ms.map(|value| value.max(0)),
+                scheduler_wait_ms,
+                finished_at,
                 // Legacy duration_ms may include dispatcher wait; only the observer-owned
                 // field proves the actual execution interval.
                 duration_ms: row.actual_duration_ms,
@@ -5543,7 +5645,7 @@ impl MaintenanceStore {
         };
         let progress = sqlx::query_as::<_, TaskProgressRow>("SELECT total,completed,phase,checkpoint,eta_seconds,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,next_inspection_at,next_catchup_at,catchup_state,stages FROM managed_task_progress WHERE task_key=?")
             .bind(task_key).fetch_optional(&self.pool).await?.map(task_progress_from_row);
-        let recent_runs = sqlx::query_as::<_, TaskRunRow>("SELECT id,trigger_kind,started_at,finished_at,duration_ms,status,summary,processed_count,updated_count,error_detail,completion,core_completion,details FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 100")
+        let recent_runs = sqlx::query_as::<_, TaskRunRow>("SELECT id,trigger_kind,started_at,execution_uid,actual_started_at,actual_finished_at,finished_at,duration_ms,actual_duration_ms,status,summary,processed_count,updated_count,error_detail,completion,core_completion,details FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 100")
             .bind(task_key).fetch_all(&self.pool).await?.into_iter().map(task_run_from_row).collect();
         let retention_backlog_trend = if task_key == "retention_archive" {
             Some(self.retention_backlog_trend(Utc::now()).await?)
@@ -6165,6 +6267,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn progress_wait_state_preserves_live_owner_checkpoint() {
+        let store = super::ownership_test_store().await;
+        let task_key = "pool_upstream_attempt_archive";
+        store
+            .publish_progress(
+                task_key,
+                Some(1_000),
+                Some(400),
+                Some("running"),
+                Some("admitted"),
+                Some("rows"),
+                Some("pool_upstream_request_attempts:retention_policy"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("publish live owner progress");
+
+        store
+            .update_progress_wait_state(
+                task_key,
+                Some("retention_write_admission"),
+                Some("2026-10-30T00:00:01.000Z"),
+            )
+            .await
+            .expect("publish live owner wait state");
+        let waiting: (
+            Option<i64>,
+            Option<i64>,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT total,completed,phase,checkpoint,wait_reason,next_retry_at
+                 FROM managed_task_progress WHERE task_key=?",
+        )
+        .bind(task_key)
+        .fetch_one(&store.pool)
+        .await
+        .expect("load live owner wait state");
+        assert_eq!(
+            waiting,
+            (
+                Some(1_000),
+                Some(400),
+                "running".to_string(),
+                "admitted".to_string(),
+                Some("retention_write_admission".to_string()),
+                Some("2026-10-30T00:00:01.000Z".to_string()),
+            )
+        );
+
+        store
+            .update_progress_wait_state(task_key, None, None)
+            .await
+            .expect("clear live owner wait state");
+        let cleared: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT wait_reason,next_retry_at FROM managed_task_progress WHERE task_key=?",
+        )
+        .bind(task_key)
+        .fetch_one(&store.pool)
+        .await
+        .expect("load cleared live owner wait state");
+        assert_eq!(cleared, (None, None));
+    }
+
+    #[tokio::test]
     async fn schema_repair_preserves_duplicate_active_run_history() {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
@@ -6406,7 +6577,7 @@ mod tests {
         let ends = [
             crate::task_timeline::TimelineEvent::ExecutionFinished {
                 id: "execution-one".to_string(),
-                finished_at: timestamp(6),
+                finished_at: timestamp(60),
                 duration_ms: 5_000,
                 status: "failed".to_string(),
             },
@@ -6416,7 +6587,7 @@ mod tests {
             },
         ];
         store
-            .write_timeline_batch("session-one", &ends, 2, &timestamp(7), false)
+            .write_timeline_batch("session-one", &ends, 2, &timestamp(61), false)
             .await
             .expect("write execution and deferral finishes");
         let actual_fields: (String, i64, String, i64) = sqlx::query_as(
@@ -7747,6 +7918,32 @@ mod tests {
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 
+    #[test]
+    fn scheduler_wait_duration_requires_ordered_parseable_timestamps() {
+        assert_eq!(
+            super::scheduler_wait_duration_ms(
+                "2026-10-03T00:00:00.000Z",
+                Some("2026-10-03T00:22:40.000Z"),
+            ),
+            Some(1_360_000)
+        );
+        assert_eq!(
+            super::scheduler_wait_duration_ms(
+                "2026-10-03T00:00:00.000Z",
+                Some("2026-10-02T23:59:59.000Z"),
+            ),
+            None
+        );
+        assert_eq!(
+            super::scheduler_wait_duration_ms("not-a-timestamp", Some("2026-10-03T00:00:01Z")),
+            None
+        );
+        assert_eq!(
+            super::scheduler_wait_duration_ms("2026-10-03T00:00:00.000Z", None),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn decorates_root_and_backfill_tasks_with_effective_policy_and_capability() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -7758,11 +7955,12 @@ mod tests {
         seed_tasks(&pool).await.expect("seed maintenance tasks");
         sqlx::query(
             "INSERT INTO managed_task_runs
-             (task_key,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,
+             (task_key,trigger_kind,started_at,execution_uid,actual_started_at,finished_at,actual_finished_at,
               duration_ms,actual_duration_ms,status,error_detail)
              VALUES('retention_archive','manual','2026-10-03T00:00:00.000Z',
-                    '2026-10-03T00:00:05.000Z','2026-10-03T00:00:07.000Z',
-                    '2026-10-03T00:00:06.000Z',777,2,'failed','committed failure')",
+                    'execution-retention-1',
+                    '2026-10-03T00:22:40.000Z','2026-10-03T00:31:01.000Z',
+                    '2026-10-03T00:31:00.000Z',777,500000,'failed','committed failure')",
         )
         .execute(&pool)
         .await
@@ -7815,11 +8013,57 @@ mod tests {
         assert_eq!(latest.attempted_at, "2026-10-03T00:00:00.000Z");
         assert_eq!(
             latest.actual_started_at.as_deref(),
-            Some("2026-10-03T00:00:05.000Z")
+            Some("2026-10-03T00:22:40.000Z")
         );
-        assert_eq!(latest.duration_ms, Some(2));
+        assert_eq!(
+            latest.actual_finished_at.as_deref(),
+            Some("2026-10-03T00:31:00.000Z")
+        );
+        assert_eq!(latest.execution_duration_ms, Some(500_000));
+        assert_eq!(latest.scheduler_wait_ms, Some(1_360_000));
+        assert_eq!(latest.duration_ms, Some(500_000));
         assert_eq!(latest.result, "failed");
         assert_eq!(latest.reason.as_deref(), Some("committed failure"));
+        assert_eq!(
+            latest.execution_uid.as_deref(),
+            Some("execution-retention-1")
+        );
+        let retention_detail = store
+            .detail("retention_archive")
+            .await
+            .expect("load retention task detail")
+            .expect("retention task detail");
+        let retention_run = retention_detail
+            .recent_runs
+            .first()
+            .expect("retention task run");
+        assert_eq!(
+            retention_run.execution_uid.as_deref(),
+            Some("execution-retention-1")
+        );
+        assert_eq!(
+            retention_run.actual_started_at.as_deref(),
+            Some("2026-10-03T00:22:40.000Z")
+        );
+        assert_eq!(
+            retention_run.actual_finished_at.as_deref(),
+            Some("2026-10-03T00:31:00.000Z")
+        );
+        assert_eq!(retention_run.execution_duration_ms, Some(500_000));
+        assert_eq!(retention_run.scheduler_wait_ms, Some(1_360_000));
+        assert_eq!(retention_run.duration_ms, Some(777));
+        let latest_json = serde_json::to_value(latest).expect("serialize latest execution");
+        assert_eq!(latest_json["actualFinishedAt"], "2026-10-03T00:31:00.000Z");
+        assert_eq!(latest_json["executionDurationMs"], 500_000);
+        assert_eq!(latest_json["schedulerWaitMs"], 1_360_000);
+        let retention_run_json =
+            serde_json::to_value(retention_run).expect("serialize detail execution");
+        assert_eq!(
+            retention_run_json["actualFinishedAt"],
+            "2026-10-03T00:31:00.000Z"
+        );
+        assert_eq!(retention_run_json["executionDurationMs"], 500_000);
+        assert_eq!(retention_run_json["schedulerWaitMs"], 1_360_000);
         let status_without_run = tasks
             .iter()
             .find(|task| task.task_key == "system_status_snapshot")
@@ -9110,6 +9354,59 @@ mod tests {
                 .await
                 .expect("avoid duplicate catch-up"),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn due_run_admission_rolls_back_when_progress_sync_fails() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention admission rollback fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "UPDATE managed_tasks
+             SET next_catchup_at='2000-01-01T00:00:00.000Z',catchup_reason='test'
+             WHERE task_key='retention_archive'",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed due retention catch-up");
+        sqlx::query(
+            "CREATE TRIGGER fail_retention_progress_sync
+             BEFORE INSERT ON managed_task_progress
+             BEGIN SELECT RAISE(ABORT, 'injected progress sync failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("install progress sync failure trigger");
+
+        let store = MaintenanceStore::from_pool(pool.clone());
+        assert!(store.enqueue_due_runs().await.is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM managed_task_runs WHERE task_key='retention_archive'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count rolled back retention runs"),
+            0
+        );
+        let schedule: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT next_catchup_at,catchup_reason
+             FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read rolled back retention schedule");
+        assert_eq!(
+            schedule,
+            (
+                Some("2000-01-01T00:00:00.000Z".to_string()),
+                Some("test".to_string())
+            )
         );
     }
 

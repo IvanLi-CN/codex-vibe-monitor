@@ -2774,6 +2774,9 @@ export interface TaskExecutionSummary {
   triggerKind: string;
   attemptedAt: string;
   actualStartedAt?: string | null;
+  actualFinishedAt?: string | null;
+  executionDurationMs?: number | null;
+  schedulerWaitMs?: number | null;
   finishedAt?: string | null;
   durationMs?: number | null;
   status: string;
@@ -3013,6 +3016,8 @@ export interface ManagedTaskRunDetails {
   budgetMs?: number | null;
   elapsedMs?: number | null;
   settlementMs?: number | null;
+  resourceWaitMs?: number | null;
+  fileResourceWaitMs?: number | null;
   budgetExhausted?: boolean | null;
   waitReason?: string | null;
   promptCacheStats?: {
@@ -3027,6 +3032,11 @@ export interface ManagedTaskRun {
   id: number;
   triggerKind?: string;
   startedAt: string;
+  executionUid?: string | null;
+  actualStartedAt?: string | null;
+  actualFinishedAt?: string | null;
+  executionDurationMs?: number | null;
+  schedulerWaitMs?: number | null;
   finishedAt?: string | null;
   durationMs?: number | null;
   status: string;
@@ -5966,12 +5976,20 @@ function normalizeManagedTask(raw: unknown): ManagedTask | null {
     typeof execution.status === "string" &&
     typeof execution.result === "string"
       ? {
-          executionUid: typeof execution.executionUid === "string" ? execution.executionUid : null,
+          executionUid:
+            typeof execution.executionUid === "string" && execution.executionUid.trim()
+              ? execution.executionUid
+              : null,
           runId: execution.runId,
           triggerKind: execution.triggerKind,
           attemptedAt: execution.attemptedAt,
           actualStartedAt:
             typeof execution.actualStartedAt === "string" ? execution.actualStartedAt : null,
+          actualFinishedAt:
+            typeof execution.actualFinishedAt === "string" ? execution.actualFinishedAt : null,
+          executionDurationMs:
+            normalizeNonNegativeFiniteNumber(execution.executionDurationMs) ?? null,
+          schedulerWaitMs: normalizeNonNegativeFiniteNumber(execution.schedulerWaitMs) ?? null,
           finishedAt: typeof execution.finishedAt === "string" ? execution.finishedAt : null,
           durationMs: normalizeFiniteNumber(execution.durationMs),
           status: execution.status,
@@ -6220,6 +6238,8 @@ function normalizeManagedTaskRun(raw: unknown): ManagedTaskRun | null {
     ? {
         ...details,
         timeoutCount: normalizeFiniteNumber(details.timeoutCount),
+        resourceWaitMs: normalizeNonNegativeFiniteNumber(details.resourceWaitMs) ?? null,
+        fileResourceWaitMs: normalizeNonNegativeFiniteNumber(details.fileResourceWaitMs) ?? null,
         archiveBatches: Array.isArray(details.archiveBatches)
           ? details.archiveBatches
               .map(normalizeArchiveBatch)
@@ -6240,6 +6260,15 @@ function normalizeManagedTaskRun(raw: unknown): ManagedTaskRun | null {
     id,
     triggerKind: typeof payload.triggerKind === "string" ? payload.triggerKind : undefined,
     startedAt,
+    executionUid:
+      typeof payload.executionUid === "string" && payload.executionUid.trim()
+        ? payload.executionUid
+        : null,
+    actualStartedAt: typeof payload.actualStartedAt === "string" ? payload.actualStartedAt : null,
+    actualFinishedAt:
+      typeof payload.actualFinishedAt === "string" ? payload.actualFinishedAt : null,
+    executionDurationMs: normalizeNonNegativeFiniteNumber(payload.executionDurationMs) ?? null,
+    schedulerWaitMs: normalizeNonNegativeFiniteNumber(payload.schedulerWaitMs) ?? null,
     finishedAt: typeof payload.finishedAt === "string" ? payload.finishedAt : null,
     durationMs: normalizeFiniteNumber(payload.durationMs),
     status: payload.status,

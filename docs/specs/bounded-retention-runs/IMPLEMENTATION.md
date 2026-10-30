@@ -10,9 +10,35 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 ## Current Status
 
+执行计量的 runtime 集成调用已改用 maintenance 公开重导出，修复 CI 发现的私有模块访问编译错误，前一候选随后通过 GitHub Actions。正式审查发现的离线 owner 计时缺失和未知耗时被写成零值直方图问题已修复；当前修复又让 owner 成功分类显式接收 `dry_run`，使任何有候选的预演记录 `complete`、`committed=0` 并单独保留等待诊断，无候选且存在等待原因时仍为 `deferred`，同时保留真实运行的 `partial`/`deferred` 边界。新增 stateful SQLite 回归通过真实 `model_route_expiry` owner 核对预演不变更和写准入延期；此前真实离线 CLI 的归档提交后 backlog 观测失败回归仍保留，核对源转换、归档文件及持久 `complete`/`backlog_unknown` 事实。Exact head `b943aa273d32652ec70dbbf91a8a069bdd2675fc` 的 source-quality policy 曾拒绝未登记的 `#[expect(clippy::too_many_arguments)]`，source repair candidate `254e749e5bff4892c3146a4470687ce28c3d42b2` 改用显式 owner facts 聚合且不新增 suppression，本地 source-quality policy check 已通过。当前候选尚待发布、当前 head 的 GitHub Actions 编译与回归及重新正式审查。旧候选通过结果不代替补修后的验证，旧编译失败后的依赖任务失败也不作为独立迁移或性能结论。
+
+候选身份工具已区分普通进度文档同步与修改绑定证明记录的证据载体，前者绑定真实 checkout、GitHub SHA 和二进制，后者继续严格要求四份文件及直接实现父提交。临时 Git 历史回归和质量门禁合同检查通过，不表示归档迁移或持续性能验证通过。
+
+ADR 0048 已接受按实际文件操作阶段互斥。整项任务占用重文件许可、主库 SQL 与压力等待阻塞其他文件任务的问题仍待实现修复；文件阶段公平性、取消后的 native 排空、重新准入身份复验，以及执行耗时／服务速率与调度等待分离的验收均未完成。该设计确认不构成容量目标通过或已部署的证据。
+
+计量候选已在 owner 返回后冻结单调执行耗时，包含任务内等待、重试、native 排空及到达率查询尾部；持久执行耗时与每个数据集的提交速率、未舍入倍率使用该同一分母，调度器放行前等待独立记录。在线 runtime 和离线 CLI 的成功、失败路径复用同一冻结终结入口；真实离线 CLI 回归核对持久执行身份、起止时间、耗时和工作量样本，成功归档另核对提交速率及倍率使用持久耗时。未知耗时不产生零值直方图样本，明确测得的零值保留。866 条选中且全部提交、必要阶段成功时为本轮完成；任何有候选的 dry-run 预演同样报告 `complete` 但不伪造提交并保留等待诊断，无候选且存在等待原因时为 `deferred`，真实运行的 partial/deferred 仍按已提交边界分类；历史等待原因与剩余全局积压不再强制部分完成，必要阶段失败仍保留失败事实。当前修复移除 CI source-quality policy 拒绝的未登记 suppression，不改变 owner 分类或真实 stateful 回归范围。新增回归尚待 GitHub Actions 验证，文件互斥和执行效率改动仍未实现，不以此计量修正签发持续 10 倍性能验收。
+
+### Sustained convergence acceptance
+
+本轮交付要求在独立 GitHub Actions 中证明 invocation 和 pool upstream attempt 各自持续成功提交量至少为实际新增量的 10 倍。固定基线为 `76beb053ac529bde47961dddb1e14b4d176700f8`，候选绑定实际被测 SHA、生产镜像及输入指纹；两版本在同一测量主机使用相同资源配置、种子、cutoff 和双月合成快照，包含 100,000 条 invocation、120,000 条上游尝试、单 key 倾斜及代表性 payload。输入速率分别为 0.673 rows/s 和其 1.2 倍，保留实际新增计数及全部准备、调度与轮间间隙。只计已通过归档证明并成功转换的不同源记录，不计 staging、压缩输出或重复提交。
+
+基线和候选各串行重复三次，每次观测 120 秒；镜像在独立 job 预构建，测量 job 不编译，测试阶段连同准备和清理最多 900 秒。候选三次须分别在两个数据集达到至少 10 倍，前台读写 p95/p99 的三次中位数不得劣于基线，稳态写许可 p95 不超过 250ms。缺失竞争任务、身份不匹配、证明失败、超时或缺测均不能签收。验收工作流按 PR 标签单独启动，不加入通用 PR 必过套件；其结果是本轮父 PR 的额外合并门槛。
+
+该短时受控门槛不替代既有 50 倍容量、百万级固定存量 24 小时清空或真实生产持续收敛目标，这些目标继续保持未签收。生产复核在主人合并并更新服务后只读开展，保留调度影响并独立报告。
+
+验收实现入口为 `.github/workflows/ci-retention-acceptance.yml`，以同仓 PR 的 `run:retention-acceptance` 标签显式启动，默认只读权限及独立 GitHub-hosted runner，checkout 不持久化凭据。构建 job 分别导出基线与候选生产镜像及 SHA/镜像摘要，镜像和报告保留 14 天；测量 job 校验后在同一主机串行运行。`fixture.py` 生成固定输入，`measure.py` 驱动生产调度与完整窗口，`foreground.py` 在共享应用隔离网络命名空间的 sidecar 中执行真实 HTTP，`oracle.py` 核对实际归档及源转换，`contract.py` 对身份、计数、窗口、资源及延迟实施拒绝式判定。schema v5 拒绝基线与候选 SHA 相同，绑定同一实验 run ID、固定 registry digest、实际 driver image ID 和试验顺序；三对试验顺序为基线／候选、候选／基线、基线／候选，各版本仍为三次 120 秒，输入和资源门槛不变。
+
+前台读延迟采自 `GET /api/pool/upstream-accounts`，写延迟采自 `POST /v1/responses`，不使用直接 SQLite 写入替代实际服务写入路径。每个 120 秒窗口发送 81 次 Responses 请求，合成上游分散返回 16 次可重试 503；测量驱动以响应 invocation ID 对照 97 条终态 attempt 的 `attempt_public_id`。归档 oracle 对照保留的源真值核验所有归档字段、精确时间、行指纹和 attempt→invocation 关联，不只比较 ID 与月份。压缩文件经同一已持有描述符复制到私有快照，核对实际消费字节的 manifest 摘要，并在读取前后复核源文件身份、元数据和内容，拒绝等价行不同压缩字节的替换及原位改写。每次基线与候选须完成同样的 512 文件竞争工作，且证据快照前确认 raw owner 空闲；基线可串行，只有候选要求执行区间重叠。初始化、应用及前台容器使用共享身份登记和明确清理事实；无法确认移除时保留试验目录及其祖先根目录，并记录恢复身份和路径。每个 driver 名称绑定 run ID、版本和轮次，六轮通过同一登记表执行仍保留独立清理历史。工作和清理使用同一 900 秒阶段期限，预留 45 秒清理预算，超限或缺少清理证据拒绝通过。
+
+测量 job 在候选 checkout 前写入绑定 run ID、运行次数、PR、基线／候选 SHA 和阶段起点的 `preflight.json`。始终执行的收尾只记录 checkout、两个镜像下载、镜像验证及测量的允许结果，不收集环境或凭据；这些前置步骤失败而未启动测量时仍有失败证据。上传缺少证据文件直接失败，保留既有只读权限、显式标签及最先开始的阶段时钟。
+
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -q` 的 60 项合同/oracle/测量控制/preflight 回归通过，另通过工作流 actionlint、YAML 解析和差异检查。新增回归覆盖真实 gzip 替换及原位变更、容器无法确认清理时外层目录仍保留、已知容器 ID 改名与替换、创建超时后按 owner labels 找回及无法确认时保留数据、同一登记表六次真实前台注册／清理，以及 checkout／下载／镜像验证失败记录。早期源码的自动 CI 成功仅作历史事实；当前候选 `0b0f8a9f084260984927b60917ad348c174ad699` 尚未推送，当前 head 的 CI、正式审查、专用镜像构建和实际负载测量均尚未完成。通过的工具测试不证明候选吞吐、前台延迟、公平性或生产持续收敛。10 倍门槛留待效率任务和父 PR 在 Actions 取得完整证据；本地不运行性能实验。普通进度文档使用真实 checkout 身份，只有变更绑定证明记录才进入严格四文件载体校验，不把旧载体或旧审查当作当前验证。既有生产构建输入的可变性仅记录为重建来源观察，引用的工作流也未证明 ambient token 可读，不把建议写成已证实泄露或完整供应链固定保证。
+
+### Historical implementation context
+
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
 
-当前候选绑定为 PR #1108；基线和当前 head 以 PR 当前提交及其 required CI 为准。旧候选日志、retained profile 和历史兼容卡仅作历史证据，不替代当前 head 证明。
+本轮当前候选由父 PR #1183 统合，子 PR #1184（验收工具）和 #1185（计量）分别绑定父分支 `f3f9288050e92202a42d1db52ef7f3b4b1716a2f`；旧候选日志、retained profile 和历史兼容卡仅作历史证据，不替代当前 head 证明。
 
 代码实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。50 倍新增速率、固定存量 24 小时归零及在线延迟不劣仍需当前候选发布构建实证，尚未签收。主人明确以其他验证通过、推送后 GitHub Actions 必过检查通过及 PR 可合并作为本次交付条件，暂不在本地运行 stateful profile。性能试验只允许在 GitHub Actions 单独执行，不得在本机或 Agent VM 运行，也不得将不必要的性能试验加入通用 PR 必过测试集；历史容量卡不能冒充本次通过证据。
 

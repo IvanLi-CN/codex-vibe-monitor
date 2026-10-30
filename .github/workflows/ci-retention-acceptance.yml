@@ -1,0 +1,302 @@
+name: Retention Acceptance
+
+on:
+  pull_request:
+    types:
+      - labeled
+      - reopened
+      - synchronize
+
+concurrency:
+  group: retention-acceptance-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Retention Acceptance Contract
+    if: github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'run:retention-acceptance')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout acceptance candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run fail-closed evidence contract tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -v
+
+  images:
+    name: Build ${{ matrix.version }} production image
+    if: github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'run:retention-acceptance')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: baseline
+            source_sha: dff0b88dc00681720acfaa9103c8ddbba84d3325
+          - version: candidate
+            source_sha: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.source_sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Bind source revision
+        id: identity
+        working-directory: source
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "${{ matrix.source_sha }}"
+          echo "sha=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build exact production runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: retention-acceptance:${{ steps.identity.outputs.sha }}
+          build-args: |
+            APP_GIT_REVISION=${{ steps.identity.outputs.sha }}
+            APP_EFFECTIVE_VERSION=retention-acceptance
+          cache-from: type=gha,scope=retention-acceptance-${{ matrix.version }}-amd64
+
+      - name: Export and bind immutable image artifact
+        env:
+          VERSION: ${{ matrix.version }}
+          SOURCE_SHA: ${{ steps.identity.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="retention-acceptance:$SOURCE_SHA"
+          output="$RUNNER_TEMP/retention-image"
+          mkdir -p "$output"
+          zstd --version
+          docker save "$image" | zstd -q -T0 -3 > "$output/$VERSION.tar.zst"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          version = os.environ["VERSION"]
+          source = os.environ["SOURCE_SHA"]
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "retention-image"
+          archive = root / f"{version}.tar.zst"
+          image = json.loads(subprocess.check_output(["docker", "image", "inspect", f"retention-acceptance:{source}"], text=True))[0]
+          assert image["Config"]["Labels"]["org.opencontainers.image.revision"] == source
+          metadata = {
+              "version": version,
+              "sourceSha": source,
+              "imageId": image["Id"],
+              "tag": f"retention-acceptance:{source}",
+              "archive": archive.name,
+              "compression": "zstd",
+              "archiveSha256": hashlib.file_digest(archive.open("rb"), "sha256").hexdigest(),
+          }
+          (root / f"{version}.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Upload immutable ${{ matrix.version }} image
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-image-${{ github.run_id }}-${{ matrix.version }}
+          path: ${{ runner.temp }}/retention-image/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  measurement:
+    name: Serial baseline/candidate measurement
+    if: github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'run:retention-acceptance')
+    needs: [contract, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Start complete test-phase clock and initialize preflight evidence
+        env:
+          ACCEPTANCE_BASELINE_SHA: dff0b88dc00681720acfaa9103c8ddbba84d3325
+          ACCEPTANCE_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          ACCEPTANCE_EVIDENCE_DIR: ${{ runner.temp }}/retention-acceptance-evidence
+          ACCEPTANCE_PR_NUMBER: ${{ github.event.pull_request.number }}
+          ACCEPTANCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          ACCEPTANCE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          phase_started_at="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+          echo "RETENTION_ACCEPTANCE_PHASE_START_UTC=$phase_started_at" >> "$GITHUB_ENV"
+          export PHASE_STARTED_AT="$phase_started_at"
+          mkdir -p "$ACCEPTANCE_EVIDENCE_DIR"
+          python3 - <<'PY'
+          import json, os, pathlib
+          path = pathlib.Path(os.environ["ACCEPTANCE_EVIDENCE_DIR"]) / "preflight.json"
+          record = {
+              "schema_version": 1,
+              "status": "incomplete",
+              "identity": {
+                  "run_id": os.environ["ACCEPTANCE_RUN_ID"],
+                  "run_attempt": os.environ["ACCEPTANCE_RUN_ATTEMPT"],
+                  "pull_request_number": os.environ["ACCEPTANCE_PR_NUMBER"],
+                  "baseline_sha": os.environ["ACCEPTANCE_BASELINE_SHA"],
+                  "candidate_sha": os.environ["ACCEPTANCE_CANDIDATE_SHA"],
+                  "phase_started_at": os.environ["PHASE_STARTED_AT"],
+              },
+              "stages": [
+                  {"name": name, "outcome": "not_started"}
+                  for name in (
+                      "checkout_candidate",
+                      "download_baseline",
+                      "download_candidate",
+                      "verify_images",
+                      "measure_acceptance",
+                  )
+              ],
+          }
+          temporary = path.with_suffix(".json.tmp")
+          temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+          temporary.replace(path)
+          PY
+
+      - name: Checkout exact candidate harness
+        id: checkout_candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Download baseline image artifact
+        id: download_baseline
+        uses: actions/download-artifact@v7
+        with:
+          name: retention-image-${{ github.run_id }}-baseline
+          path: ${{ runner.temp }}/retention-images/baseline
+
+      - name: Download candidate image artifact
+        id: download_candidate
+        uses: actions/download-artifact@v7
+        with:
+          name: retention-image-${{ github.run_id }}-candidate
+          path: ${{ runner.temp }}/retention-images/candidate
+
+      - name: Verify and load exact image artifacts
+        id: verify_images
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "retention-images"
+          expected = {
+              "baseline": "dff0b88dc00681720acfaa9103c8ddbba84d3325",
+              "candidate": os.environ["CANDIDATE_SHA"],
+          }
+          for version, source in expected.items():
+              directory = root / version
+              metadata = json.loads((directory / f"{version}.json").read_text())
+              archive = directory / metadata.get("archive", f"{version}.tar.gz")
+              assert metadata["version"] == version
+              assert metadata["sourceSha"] == source
+              assert metadata["tag"] == f"retention-acceptance:{source}"
+              assert hashlib.file_digest(archive.open("rb"), "sha256").hexdigest() == metadata["archiveSha256"]
+              if metadata.get("compression") == "zstd":
+                  with archive.open("rb") as compressed:
+                      decoder = subprocess.Popen(
+                          ["zstd", "-q", "-d", "-c"],
+                          stdin=compressed,
+                          stdout=subprocess.PIPE,
+                      )
+                      assert decoder.stdout is not None
+                      try:
+                          subprocess.run(["docker", "load"], stdin=decoder.stdout, check=True)
+                      finally:
+                          decoder.stdout.close()
+                      assert decoder.wait() == 0
+              else:
+                  subprocess.run(["docker", "load", "--input", str(archive)], check=True)
+              image = json.loads(subprocess.check_output(["docker", "image", "inspect", metadata["tag"]], text=True))[0]
+              assert image["Id"] == metadata["imageId"]
+              assert image["Config"]["Labels"]["org.opencontainers.image.revision"] == source
+          PY
+
+      - name: Start bounded measurement window
+        run: |
+          set -euo pipefail
+          measurement_started_at="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+          echo "RETENTION_ACCEPTANCE_MEASUREMENT_START_UTC=$measurement_started_at" >> "$GITHUB_ENV"
+
+      - name: Run complete 900-second-bounded comparison
+        id: measure_acceptance
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          PYTHONDONTWRITEBYTECODE: "1"
+          RETENTION_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/retention-acceptance-evidence
+        run: python3 candidate/scripts/retention-acceptance/measure.py
+
+      - name: Record preflight stage outcomes
+        if: always()
+        env:
+          ACCEPTANCE_EVIDENCE_DIR: ${{ runner.temp }}/retention-acceptance-evidence
+          ACCEPTANCE_OUTCOME_CHECKOUT: ${{ steps.checkout_candidate.outcome }}
+          ACCEPTANCE_OUTCOME_DOWNLOAD_BASELINE: ${{ steps.download_baseline.outcome }}
+          ACCEPTANCE_OUTCOME_DOWNLOAD_CANDIDATE: ${{ steps.download_candidate.outcome }}
+          ACCEPTANCE_OUTCOME_MEASURE: ${{ steps.measure_acceptance.outcome }}
+          ACCEPTANCE_OUTCOME_VERIFY: ${{ steps.verify_images.outcome }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          path = pathlib.Path(os.environ["ACCEPTANCE_EVIDENCE_DIR"]) / "preflight.json"
+          record = json.loads(path.read_text())
+          outcomes = {
+              "checkout_candidate": os.environ["ACCEPTANCE_OUTCOME_CHECKOUT"],
+              "download_baseline": os.environ["ACCEPTANCE_OUTCOME_DOWNLOAD_BASELINE"],
+              "download_candidate": os.environ["ACCEPTANCE_OUTCOME_DOWNLOAD_CANDIDATE"],
+              "verify_images": os.environ["ACCEPTANCE_OUTCOME_VERIFY"],
+              "measure_acceptance": os.environ["ACCEPTANCE_OUTCOME_MEASURE"],
+          }
+          stages = list(outcomes)
+          allowed = {"success", "failure", "cancelled", "skipped"}
+          interrupted = False
+          for name, outcome in outcomes.items():
+              if outcome not in allowed:
+                  raise SystemExit(f"preflight outcome is not allowlisted: {name}")
+              if interrupted and outcome not in {"skipped", "cancelled"}:
+                  raise SystemExit(f"preflight stage ran after an earlier failure: {name}")
+              if outcome != "success":
+                  interrupted = True
+          if [stage["name"] for stage in record["stages"]] != stages:
+              raise SystemExit("preflight stage identity drift")
+          record["stages"] = [
+              {"name": name, "outcome": outcome}
+              for name, outcome in outcomes.items()
+          ]
+          record["status"] = "completed" if all(
+              outcome == "success" for outcome in outcomes.values()
+          ) else "failed"
+          temporary = path.with_suffix(".json.tmp")
+          temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+          temporary.replace(path)
+          PY
+
+      - name: Upload acceptance evidence, including failed runs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-acceptance-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retention-acceptance-evidence/
+          if-no-files-found: error
+          retention-days: 14

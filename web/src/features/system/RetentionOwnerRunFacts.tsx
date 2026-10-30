@@ -10,7 +10,7 @@ function resultLabel(value?: string | null): string {
     case "no-work":
       return "无待处理工作";
     case "complete":
-      return "完成";
+      return "本轮完成";
     case "partial":
       return "部分完成";
     case "deferred":

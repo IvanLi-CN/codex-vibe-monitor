@@ -126,6 +126,7 @@ const INVOCATION_ARCHIVE_SELECTION_COLUMNS: &str = r#"
     invoke_id,
     occurred_at,
     source,
+    NULL AS model,
     status,
     input_tokens,
     output_tokens,
@@ -133,6 +134,15 @@ const INVOCATION_ARCHIVE_SELECTION_COLUMNS: &str = r#"
     reasoning_tokens,
     total_tokens,
     cost,
+    NULL AS cost_input,
+    NULL AS cost_cache_write,
+    NULL AS cost_cache_read,
+    NULL AS cost_output,
+    NULL AS cost_reasoning,
+    NULL AS error_message,
+    NULL AS failure_kind,
+    NULL AS failure_class,
+    NULL AS is_actionable,
     first_token_ms,
     NULL AS payload,
     request_raw_path,
@@ -317,10 +327,53 @@ pub(crate) async fn invocation_archive_candidate_selection_for_test(
 }
 
 struct ArchiveSourceIdentityProof {
-    cleanup: TempSqliteCleanup,
-    _work_owner_file: crate::maintenance::archive::TaskWorkOwner,
-    connection: Option<SqliteConnection>,
+    resources: std::sync::Arc<tokio::sync::Mutex<Option<ArchiveSourceIdentityProofResources>>>,
     spec: ArchiveTableSpec,
+}
+
+struct ArchiveSourceIdentityProofResources {
+    connection: Option<SqliteConnection>,
+    cleanup: Option<TempSqliteCleanup>,
+    _work_owner_file: Option<crate::maintenance::archive::TaskWorkOwner>,
+    proof_path: PathBuf,
+}
+
+impl Drop for ArchiveSourceIdentityProofResources {
+    fn drop(&mut self) {
+        let connection = self.connection.take();
+        let cleanup = self.cleanup.take();
+        let work_owner_file = self._work_owner_file.take();
+        if connection.is_none() && cleanup.is_none() && work_owner_file.is_none() {
+            return;
+        }
+        let proof_path = self.proof_path.clone();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // Runtime teardown cannot acknowledge native drain. Keep every ownership part
+            // through process exit instead of advertising release.
+            std::mem::forget(connection);
+            std::mem::forget(cleanup);
+            std::mem::forget(work_owner_file);
+            return;
+        };
+        drop(handle.spawn(async move {
+            let file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
+            crate::maintenance::with_file_phase_permit(file_phase, async move {
+                wait_for_archive_file_operation_to_finish(&proof_path).await;
+                if let Some(connection) = connection {
+                    let _ = connection.close().await;
+                }
+                drop(cleanup);
+                drop(work_owner_file);
+            })
+            .await;
+        }));
+    }
+}
+
+async fn wait_for_archive_file_operation_to_finish(path: &Path) {
+    while crate::is_archive_file_operation_active(path) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
@@ -350,6 +403,11 @@ fn archive_identity_proof_load_cancelled(error: &anyhow::Error) -> bool {
 
 impl ArchiveSourceIdentityProof {
     async fn load(path: &Path, spec: ArchiveTableSpec) -> Result<Self> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_load").await?;
+        with_file_phase_permit(file_phase, Self::load_with_file_phase(path, spec)).await
+    }
+
+    async fn load_with_file_phase(path: &Path, spec: ArchiveTableSpec) -> Result<Self> {
         // The writer/publication path already proves the returned artifact digest. The first
         // source admission revalidates that digest under the archive fence; this local copy only
         // supplies per-chunk identity data and must not replace that final recheck.
@@ -358,118 +416,331 @@ impl ArchiveSourceIdentityProof {
             path.display(),
             retention_temp_suffix()
         ));
-        let work_owner_file =
-            crate::maintenance::archive::create_retention_identity_work_file(path, &proof_path)?;
-        let cleanup = TempSqliteCleanup::new(proof_path.clone());
-        #[cfg(test)]
-        batch_admission::pause_before_archive_identity_proof_inflate().await;
+        let mut work_owner_file = Some(
+            crate::maintenance::archive::create_retention_identity_work_file(path, &proof_path)?,
+        );
+        let mut cleanup = Some(TempSqliteCleanup::new(proof_path.clone()));
+        let result = async {
+            #[cfg(test)]
+            batch_admission::pause_before_archive_identity_proof_inflate().await;
+            let operation_deadline = retention_archive_file_operation_deadline();
+            let operation_budget = operation_deadline.saturating_duration_since(Instant::now());
+            if operation_budget.is_zero() {
+                return Err(retention_archive_file_operation_budget_exhausted());
+            }
+            if !inflate_gzip_sqlite_file_with_budget(
+                path,
+                &proof_path,
+                Instant::now(),
+                Some(operation_budget),
+            )
+            .await?
+            {
+                bail!("retention archive identity proof inflate exceeded the operation deadline");
+            }
+            let remaining = operation_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(retention_archive_file_operation_budget_exhausted());
+            }
+            let file_phase = try_current_file_phase_permit()
+                .context("archive identity proof load lost its file phase permit")?;
+            open_archive_identity_connection_and_close(proof_path.clone(), file_phase, remaining)
+                .await?;
+            Ok(Self {
+                resources: std::sync::Arc::new(tokio::sync::Mutex::new(Some(
+                    ArchiveSourceIdentityProofResources {
+                        connection: None,
+                        cleanup: cleanup.take(),
+                        _work_owner_file: work_owner_file.take(),
+                        proof_path: proof_path.clone(),
+                    },
+                ))),
+                spec,
+            })
+        }
+        .await;
+        if result.is_err() {
+            wait_for_archive_file_operation_to_finish(&proof_path).await;
+            drop(cleanup.take());
+            drop(work_owner_file.take());
+        }
+        result
+    }
+
+    async fn identity(&self, ids: &[i64]) -> Result<String> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
+        let spec = self.spec;
+        let resources = std::sync::Arc::clone(&self.resources);
+        let ids = ids.to_vec();
         let operation_deadline = retention_archive_file_operation_deadline();
-        let operation_budget = operation_deadline.saturating_duration_since(Instant::now());
-        if operation_budget.is_zero() {
-            return Err(retention_archive_file_operation_budget_exhausted());
-        }
-        if !inflate_gzip_sqlite_file_with_budget(
-            path,
-            &proof_path,
-            Instant::now(),
-            Some(operation_budget),
-        )
-        .await?
-        {
-            bail!("retention archive identity proof inflate exceeded the operation deadline");
-        }
         let remaining = operation_deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(retention_archive_file_operation_budget_exhausted());
         }
+        spawn_file_phase_task(file_phase, async move {
+            let mut resources_guard = resources.lock().await;
+            let resources = resources_guard
+                .as_mut()
+                .context("archive identity proof resources are unavailable")?;
+            if resources.connection.is_none() {
+                let opened = tokio::time::timeout(remaining, async {
+                    open_archive_sqlite_connection(&resources.proof_path).await
+                })
+                .await
+                .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+                resources.connection = Some(opened);
+            }
+            let result = {
+                let connection = resources
+                    .connection
+                    .as_mut()
+                    .context("archive identity proof connection is unavailable")?;
+                let remaining = operation_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(retention_archive_file_operation_budget_exhausted())
+                } else if spec.dataset == "codex_invocations" {
+                    match tokio::time::timeout(
+                        remaining,
+                        invocation_archive_source_identity_sha256(
+                            connection,
+                            InvocationArchiveIdentityDatabase::Main,
+                            &ids,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
+                } else {
+                    match tokio::time::timeout(
+                        remaining,
+                        archive_table_source_identity_sha256(connection, spec, "main", &ids),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
+                }
+            };
+            match result {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    // A cancelled SQLx future may leave the connection in an unknown state. Do
+                    // not carry it into another selected chunk after a proof read failed. The
+                    // cleanup guard and work owner follow the connection through this drain.
+                    Err(close_archive_identity_proof_resources(&mut resources_guard, error).await)
+                }
+            }
+        })
+        .await
+    }
+
+    async fn has_exact_ids(&self, ids: &[i64], expected_count: i64) -> Result<bool> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
+        let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
+        let resources = std::sync::Arc::clone(&self.resources);
+        let operation_deadline = retention_archive_file_operation_deadline();
+        let remaining = operation_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        spawn_file_phase_task(file_phase, async move {
+            let mut resources_guard = resources.lock().await;
+            let resources = resources_guard
+                .as_mut()
+                .context("archive identity proof resources are unavailable")?;
+            if resources.connection.is_none() {
+                let opened = tokio::time::timeout(remaining, async {
+                    open_archive_sqlite_connection(&resources.proof_path).await
+                })
+                .await
+                .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+                resources.connection = Some(opened);
+            }
+            let result = {
+                let connection = resources
+                    .connection
+                    .as_mut()
+                    .context("archive identity proof connection is unavailable")?;
+                let remaining = operation_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(retention_archive_file_operation_budget_exhausted())
+                } else {
+                    match tokio::time::timeout(remaining, async {
+                        let archive_row_count = sqlx::query_scalar::<_, i64>(
+                            "SELECT COUNT(*) FROM main.codex_invocations",
+                        )
+                        .fetch_one(&mut *connection)
+                        .await
+                        .context("count rows in archive source identity proof")?;
+                        let selected_count = sqlx::query_scalar::<_, i64>(
+                            "SELECT COUNT(*) FROM main.codex_invocations
+                             WHERE id IN (SELECT value FROM json_each(?1))",
+                        )
+                        .bind(ids_json)
+                        .fetch_one(&mut *connection)
+                        .await
+                        .context("count selected rows in archive source identity proof")?;
+                        Ok::<bool, anyhow::Error>(
+                            archive_row_count == expected_count && selected_count == expected_count,
+                        )
+                    })
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
+                }
+            };
+            match result {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    Err(close_archive_identity_proof_resources(&mut resources_guard, error).await)
+                }
+            }
+        })
+        .await
+    }
+
+    async fn has_ids(&self, ids: &[i64], expected_count: i64) -> Result<bool> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
+        let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
+        let resources = std::sync::Arc::clone(&self.resources);
+        let operation_deadline = retention_archive_file_operation_deadline();
+        let remaining = operation_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        spawn_file_phase_task(file_phase, async move {
+            let mut resources_guard = resources.lock().await;
+            let resources = resources_guard
+                .as_mut()
+                .context("archive identity proof resources are unavailable")?;
+            if resources.connection.is_none() {
+                let opened = tokio::time::timeout(remaining, async {
+                    open_archive_sqlite_connection(&resources.proof_path).await
+                })
+                .await
+                .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+                resources.connection = Some(opened);
+            }
+            let result = {
+                let connection = resources
+                    .connection
+                    .as_mut()
+                    .context("archive identity proof connection is unavailable")?;
+                let remaining = operation_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(retention_archive_file_operation_budget_exhausted())
+                } else {
+                    match tokio::time::timeout(remaining, async {
+                        let selected_count = sqlx::query_scalar::<_, i64>(
+                            "SELECT COUNT(*) FROM main.codex_invocations
+                             WHERE id IN (SELECT value FROM json_each(?1))",
+                        )
+                        .bind(ids_json)
+                        .fetch_one(&mut *connection)
+                        .await
+                        .context("count selected rows in archive source identity proof")?;
+                        Ok::<bool, anyhow::Error>(selected_count == expected_count)
+                    })
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
+                }
+            };
+            match result {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    Err(close_archive_identity_proof_resources(&mut resources_guard, error).await)
+                }
+            }
+        })
+        .await
+    }
+
+    async fn close(self) -> Result<()> {
+        let file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
+        let resources = std::sync::Arc::clone(&self.resources);
+        spawn_file_phase_task(file_phase, async move {
+            let mut resources = resources.lock().await;
+            if let Some(mut resources) = resources.take() {
+                close_archive_identity_proof_resources_owned(&mut resources).await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+}
+
+async fn close_archive_identity_proof_resources(
+    resources: &mut Option<ArchiveSourceIdentityProofResources>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let Some(mut resources) = resources.take() else {
+        return error;
+    };
+    if let Err(close_error) = close_archive_identity_proof_resources_owned(&mut resources).await {
+        return error.context(format!(
+            "close archive source identity proof after read failure: {close_error}"
+        ));
+    }
+    drop(resources);
+    error
+}
+
+async fn close_archive_identity_proof_resources_owned(
+    resources: &mut ArchiveSourceIdentityProofResources,
+) -> std::result::Result<(), sqlx::Error> {
+    wait_for_archive_file_operation_to_finish(&resources.proof_path).await;
+    let close_result = if let Some(connection) = resources.connection.take() {
+        connection.close().await
+    } else {
+        Ok(())
+    };
+    drop(resources.cleanup.take());
+    drop(resources._work_owner_file.take());
+    close_result
+}
+
+async fn finish_archive_identity_proof<T>(
+    proof: ArchiveSourceIdentityProof,
+    result: Result<T>,
+) -> Result<T> {
+    match (result, proof.close().await) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(close_error)) => {
+            Err(close_error.context("close archive source identity proof"))
+        }
+        (Err(error), Err(close_error)) => Err(error.context(format!(
+            "close archive source identity proof after operation failure: {close_error}"
+        ))),
+    }
+}
+
+async fn open_archive_identity_connection_and_close(
+    proof_path: PathBuf,
+    file_phase: FilePhasePermit,
+    remaining: Duration,
+) -> Result<()> {
+    spawn_file_phase_task(file_phase, async move {
         let connection = tokio::time::timeout(remaining, async {
             open_archive_sqlite_connection(&proof_path).await
         })
         .await
         .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
-        Ok(Self {
-            cleanup,
-            _work_owner_file: work_owner_file,
-            connection: Some(connection),
-            spec,
-        })
-    }
-
-    async fn identity(&mut self, ids: &[i64]) -> Result<String> {
-        let connection = self
-            .connection
-            .as_mut()
-            .context("archive source identity proof connection is closed")?;
-        let remaining =
-            retention_archive_file_operation_deadline().saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(retention_archive_file_operation_budget_exhausted());
-        }
-        let result = if self.spec.dataset == "codex_invocations" {
-            tokio::time::timeout(
-                remaining,
-                invocation_archive_source_identity_sha256(
-                    connection,
-                    InvocationArchiveIdentityDatabase::Main,
-                    ids,
-                ),
-            )
-            .await
-            .map_err(|_| retention_archive_file_operation_budget_exhausted())?
-        } else {
-            tokio::time::timeout(
-                remaining,
-                archive_table_source_identity_sha256(connection, self.spec, "main", ids),
-            )
-            .await
-            .map_err(|_| retention_archive_file_operation_budget_exhausted())?
-        }?;
-        Ok(result)
-    }
-
-    async fn has_exact_ids(&mut self, ids: &[i64], expected_count: i64) -> Result<bool> {
-        let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
-        let connection = self
-            .connection
-            .as_mut()
-            .context("archive source identity proof connection is closed")?;
-        let remaining =
-            retention_archive_file_operation_deadline().saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(retention_archive_file_operation_budget_exhausted());
-        }
-        tokio::time::timeout(remaining, async {
-            let archive_row_count =
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
-                    .fetch_one(&mut *connection)
-                    .await
-                    .context("count rows in archive source identity proof")?;
-            let selected_count = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM main.codex_invocations
-                 WHERE id IN (SELECT value FROM json_each(?1))",
-            )
-            .bind(ids_json)
-            .fetch_one(&mut *connection)
-            .await
-            .context("count selected rows in archive source identity proof")?;
-            Ok::<bool, anyhow::Error>(
-                archive_row_count == expected_count && selected_count == expected_count,
-            )
-        })
-        .await
-        .map_err(|_| retention_archive_file_operation_budget_exhausted())?
-    }
-
-    async fn close(mut self) -> Result<()> {
-        if let Some(connection) = self.connection.take() {
-            connection.close().await?;
-        }
-        let _ = &self.cleanup;
+        connection.close().await?;
         Ok(())
-    }
+    })
+    .await
 }
 
-struct ReusableTaskMonthArchive {
+struct ReusableTaskArchive {
     outcome: ArchiveBatchOutcome,
     proof: crate::VerifiedSummaryArchiveSnapshot,
     identity_proof: ArchiveSourceIdentityProof,
@@ -482,7 +753,7 @@ async fn reuse_task_month_archive_if_proven(
     month_key: &str,
     ids: &[i64],
     source_identity_sha256: &str,
-) -> Result<Option<ReusableTaskMonthArchive>> {
+) -> Result<Option<ReusableTaskArchive>> {
     if spec.dataset != "codex_invocations" {
         return Ok(None);
     }
@@ -566,7 +837,7 @@ async fn reuse_task_month_archive_if_proven(
 
     // A durable Summary proof makes the published artifact reusable. The source admission
     // below still rechecks the file digest while holding the archive fence before deletion.
-    let mut identity_proof = match ArchiveSourceIdentityProof::load(&final_path, spec).await {
+    let identity_proof = match ArchiveSourceIdentityProof::load(&final_path, spec).await {
         Ok(proof) => proof,
         Err(_) => return Ok(None),
     };
@@ -602,7 +873,7 @@ async fn reuse_task_month_archive_if_proven(
                 return Ok(None);
             }
         };
-    Ok(Some(ReusableTaskMonthArchive {
+    Ok(Some(ReusableTaskArchive {
         outcome: ArchiveBatchOutcome {
             dataset: spec.dataset,
             month_key: month_key.to_string(),
@@ -628,11 +899,172 @@ async fn reuse_task_month_archive_if_proven(
     }))
 }
 
+async fn reuse_task_segment_archive_if_proven(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    spec: ArchiveTableSpec,
+    day_key: &str,
+    ids: &[i64],
+    source_identity_sha256: &str,
+) -> Result<Option<ReusableTaskArchive>> {
+    if spec.dataset != "codex_invocations" {
+        return Ok(None);
+    }
+    let expected_row_count =
+        i64::try_from(ids.len()).context("count retention archive source ids")?;
+    let retry_hint = batch_plan::retry_archive_hint(spec.dataset, day_key, ids);
+    let manifests = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT id, file_path, sha256, row_count, part_key, coverage_start_at,
+                coverage_end_at, archive_expires_at
+         FROM archive_batches
+         WHERE dataset = ?1
+           AND day_key = ?2
+           AND layout = ?3
+           AND status IN (?4, ?5)
+           AND cleanup_state = ?6
+           AND superseded_by IS NULL
+           AND summary_source_kind = ?7
+           AND sha256 IS NOT NULL
+           AND TRIM(sha256) <> ''
+           AND (?8 IS NULL OR file_path = ?8)
+           AND (?9 IS NULL OR sha256 = ?9)
+         ORDER BY id DESC",
+    )
+    .bind(spec.dataset)
+    .bind(day_key)
+    .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_STATUS_MATERIALIZING)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
+    .bind(retry_hint.as_ref().map(|hint| hint.file_path.as_str()))
+    .bind(retry_hint.as_ref().map(|hint| hint.sha256.as_str()))
+    .fetch_all(pool)
+    .await?;
+
+    for (
+        archive_batch_id,
+        file_path,
+        sha256,
+        row_count,
+        part_key,
+        coverage_start_at,
+        coverage_end_at,
+        archive_expires_at,
+    ) in manifests
+    {
+        let final_path = PathBuf::from(&file_path);
+        if !final_path.is_file() {
+            continue;
+        }
+        let identity_proof = match ArchiveSourceIdentityProof::load(&final_path, spec).await {
+            Ok(proof) => proof,
+            Err(_) => continue,
+        };
+        let has_ids = match identity_proof.has_ids(ids, expected_row_count).await {
+            Ok(has_ids) => has_ids,
+            Err(_) => {
+                let _ = identity_proof.close().await;
+                continue;
+            }
+        };
+        if !has_ids {
+            let _ = identity_proof.close().await;
+            continue;
+        }
+        let archive_identity = match identity_proof.identity(ids).await {
+            Ok(identity) => identity,
+            Err(_) => {
+                let _ = identity_proof.close().await;
+                continue;
+            }
+        };
+        if archive_identity != source_identity_sha256 {
+            let _ = identity_proof.close().await;
+            continue;
+        }
+        let proof =
+            match crate::prepare_verified_summary_archive_snapshot(pool, archive_batch_id, &sha256)
+                .await
+            {
+                Ok(proof) => proof,
+                Err(_) => {
+                    let _ = identity_proof.close().await;
+                    continue;
+                }
+            };
+        return Ok(Some(ReusableTaskArchive {
+            outcome: ArchiveBatchOutcome {
+                dataset: spec.dataset,
+                month_key: archive_month_key_from_day_key(day_key)?,
+                day_key: Some(day_key.to_string()),
+                part_key,
+                file_path,
+                sha256,
+                source_identity_sha256: Some(source_identity_sha256.to_string()),
+                row_count,
+                upstream_last_activity: Vec::new(),
+                coverage_start_at,
+                coverage_end_at,
+                archive_expires_at,
+                summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE,
+                layout: ARCHIVE_LAYOUT_SEGMENT_V1,
+                codec: config.invocation_archive_codec.as_str(),
+                writer_version: ARCHIVE_WRITER_VERSION_SEGMENT_V1,
+                cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+                superseded_by: None,
+            },
+            proof,
+            identity_proof,
+        }));
+    }
+    Ok(None)
+}
+
 struct RetentionBatchCommit {
     raw_deletion_plan: ProxyRawDeletionPlan,
     raw_reference_check_elapsed: Option<Duration>,
     commit_started: Instant,
     prompt_cache_keys: Vec<String>,
+}
+
+type InvocationDetailProofResult = (Option<(usize, usize, usize)>, usize);
+type InvocationArchiveProofResult = (bool, usize);
+type TimestampedPendingGroup = (usize, Vec<TimestampedArchiveCandidate>, HashMap<i64, usize>);
+type TimestampedPendingGroups = BTreeMap<String, TimestampedPendingGroup>;
+
+fn prepend_retention_pending_group<T>(pending_group: &mut Vec<T>, mut deferred_group: Vec<T>) {
+    deferred_group.append(pending_group);
+    *pending_group = deferred_group;
+}
+
+fn retry_prepared_archive_tail_in_place(committed_rows: usize) -> bool {
+    committed_rows > 0
+        && !retention_run_budget_expired()
+        && !retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+        && !matches!(
+            retention_run_defer_reason().as_deref(),
+            Some("retention_work_budget") | Some("shutdown")
+        )
+}
+
+async fn wait_before_retrying_prepared_archive_tail() {
+    // A failed admission already waited through its bounded pressure/coordinator budget. Keep
+    // the prepared artifact alive, but yield before probing the pool again so a transient pool
+    // shortage cannot become a tight loop.
+    tokio::time::sleep(Duration::from_millis(250)).await;
 }
 
 struct RetentionSqliteTransaction<'a>(&'a mut SqliteConnection);
@@ -732,76 +1164,104 @@ pub(crate) async fn prune_old_invocation_details(
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
+    let mut pending_groups: Option<BTreeMap<String, (usize, Vec<InvocationDetailPruneCandidate>)>> =
+        None;
 
-    'work_unit: {
+    'work_unit: loop {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
         }
-        let sql = format!(
-            r#"
-            SELECT id, occurred_at, request_raw_path, response_raw_path,
-                   COALESCE(length(payload), 0) + COALESCE(length(raw_response), 0) + 512
-                       AS estimated_write_bytes
-            FROM codex_invocations
-            WHERE {success_like_condition}
-              AND detail_level = ?1
-              AND occurred_at < ?2
-              AND occurred_at >= ?3
-            ORDER BY occurred_at ASC, id ASC
-            LIMIT ?4
-            "#,
-            success_like_condition = success_like_condition,
-        );
-        let candidate_limit = archive_candidate_limit(config);
-        let candidates_query = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
-            .bind(DETAIL_LEVEL_FULL)
-            .bind(&prune_cutoff)
-            .bind(&archive_cutoff)
-            .bind(candidate_limit.saturating_add(1) as i64)
-            .fetch_all(pool);
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => {
+        let (mut candidate_remaining_hint, selected_groups) = if let Some(selected_groups) =
+            pending_groups.take()
+        {
+            (true, selected_groups)
+        } else {
+            let sql = format!(
+                r#"
+                    SELECT id, occurred_at, request_raw_path, response_raw_path,
+                           COALESCE(length(payload), 0) + COALESCE(length(raw_response), 0) + 512
+                               AS estimated_write_bytes
+                    FROM codex_invocations
+                    WHERE {success_like_condition}
+                      AND detail_level = ?1
+                      AND occurred_at < ?2
+                      AND occurred_at >= ?3
+                    ORDER BY occurred_at ASC, id ASC
+                    LIMIT ?4
+                    "#,
+                success_like_condition = success_like_condition,
+            );
+            let candidate_limit = archive_candidate_limit(config);
+            let candidates_query = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
+                .bind(DETAIL_LEVEL_FULL)
+                .bind(&prune_cutoff)
+                .bind(&archive_cutoff)
+                .bind(candidate_limit.saturating_add(1) as i64)
+                .fetch_all(pool);
+            let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, candidates_query).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        recovery_diagnostic.mark_budget();
+                        break 'work_unit;
+                    }
+                }
+            } else {
+                candidates_query.await?
+            };
+            let discovered = candidates.len();
+            let has_more = discovered > candidate_limit;
+            let mut candidates = candidates;
+            candidates.truncate(candidate_limit);
+            batch_plan::record_discovered_rows("codex_invocation_details", discovered);
+            batch_plan::record_candidate_window_has_more("codex_invocation_details", has_more);
+
+            if candidates.is_empty() {
+                break 'work_unit;
+            }
+
+            let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> =
+                BTreeMap::new();
+            for candidate in candidates {
+                if retention_run_budget_expired() {
                     recovery_diagnostic.mark_budget();
-                    break 'work_unit;
+                    break;
+                }
+                let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
+                by_group.entry(group_key).or_default().push(candidate);
+            }
+
+            let mut selected_groups = BTreeMap::new();
+            for (group_key, group) in by_group {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
+                let group_candidate_count = group.len();
+                let selected_group = select_archive_batch(group, |candidate| {
+                    candidate.estimated_write_bytes.max(1) as usize
+                });
+                if selected_group.len() < group_candidate_count {
+                    batch_plan::record_candidate_window_has_more("codex_invocation_details", true);
+                }
+                if !selected_group.is_empty() {
+                    selected_groups.insert(group_key, (group_candidate_count, selected_group));
                 }
             }
-        } else {
-            candidates_query.await?
+            (has_more, selected_groups)
         };
-        let discovered = candidates.len();
-        let has_more = discovered > candidate_limit;
-        let mut candidates = candidates;
-        candidates.truncate(candidate_limit);
-        batch_plan::record_discovered_rows("codex_invocation_details", discovered);
-        batch_plan::record_candidate_window_has_more("codex_invocation_details", has_more);
+        let mut next_pending_groups = BTreeMap::new();
 
-        if candidates.is_empty() {
-            break 'work_unit;
-        }
-
-        let mut candidate_remaining_hint = has_more;
-        let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
-        for candidate in candidates {
+        for (group_key, (group_candidate_count, mut pending_group)) in selected_groups {
             if retention_run_budget_expired() {
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
-            by_group.entry(group_key).or_default().push(candidate);
-        }
-
-        for (group_key, group) in by_group {
-            if retention_run_budget_expired() {
-                recovery_diagnostic.mark_budget();
-                break;
-            }
-            let group_candidate_count = group.len();
-            let group = select_archive_batch(group, |candidate| {
-                candidate.estimated_write_bytes.max(1) as usize
-            });
+            // The candidate window is the file-preparation boundary. Source deletion below is
+            // still split into adaptive SQL micro-batches, but the prepared live-mirror artifact
+            // must be built once for the whole selected window.
+            let group = std::mem::take(&mut pending_group);
             if group.len() < group_candidate_count {
                 candidate_remaining_hint = true;
                 batch_plan::record_candidate_window_has_more("codex_invocation_details", true);
@@ -825,8 +1285,9 @@ pub(crate) async fn prune_old_invocation_details(
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "invocation_detail_identity").await?
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((rows_pruned, archive_batches, raw_files_removed));
+                break;
             };
             let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
             let source_identity_started = Instant::now();
@@ -908,8 +1369,9 @@ pub(crate) async fn prune_old_invocation_details(
                     }
                 })
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((rows_pruned, archive_batches, raw_files_removed));
+                break;
             };
             if archive_outcome.source_identity_sha256.as_deref()
                 != Some(descriptor.source_identity_sha256.as_str())
@@ -927,7 +1389,7 @@ pub(crate) async fn prune_old_invocation_details(
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
-            let mut archive_identity_proof =
+            let archive_identity_proof =
                 match ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
                     .await
                 {
@@ -952,258 +1414,278 @@ pub(crate) async fn prune_old_invocation_details(
                         return Err(error);
                     }
                 };
-            #[cfg(test)]
-            batch_admission::pause_after_archive_artifact_verified().await;
-            let mut committed_rows = 0;
-            let mut pending_group = group;
-            while !pending_group.is_empty() {
-                let group = take_retention_batch(
-                    &mut pending_group,
-                    config,
-                    "invocation_detail_prune",
-                    |candidate| candidate.estimated_write_bytes.max(1) as usize,
-                );
-                let ids = group
-                    .iter()
-                    .map(|candidate| candidate.id)
-                    .collect::<Vec<_>>();
-                let raw_paths = group
-                    .iter()
-                    .flat_map(|candidate| {
-                        [
-                            candidate.request_raw_path.clone(),
-                            candidate.response_raw_path.clone(),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                let chunk_identity = match archive_identity_proof.identity(&ids).await {
-                    Ok(identity) => identity,
-                    Err(error) => {
-                        recovery_diagnostic.mark_proof_unavailable();
-                        return Err(
-                            error.context("read task-local invocation source chunk identity")
-                        );
-                    }
-                };
-                let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let admission_result =
-                    acquire_retention_batch_write_connection_with_archive_fence_observed(
-                        pool,
-                        "invocation_detail_prune",
-                        Path::new(&archive_outcome.file_path),
-                        Some(&archive_outcome.sha256),
-                        || Some(batch_observation.phase(RetentionPhase::FileVerify)),
-                    )
-                    .await;
-                let Some((source_connection, admission, archive_lock)) = (match admission_result {
-                    Ok(value) => value,
-                    Err(error) => {
-                        mark_error(&mut recovery_diagnostic, &error);
-                        return Err(error);
-                    }
-                }) else {
-                    drop(admission_wait_phase);
-                    recovery_diagnostic.mark_stop();
-                    return Ok((rows_pruned, archive_batches, raw_files_removed));
-                };
-                let admission_mode = admission.admission_mode();
-                let lock_wait = admission.lock_wait();
-                let p1_waiter_count = admission.p1_waiter_count();
-                let mut transaction_resources =
-                    RetentionTransactionResources::new(source_connection, admission, archive_lock);
-                drop(admission_wait_phase);
-                let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
-                let execute_started = Instant::now();
-                transaction_resources.mark_transaction_started();
-                let begin_result = sqlx::query("BEGIN")
-                    .execute(transaction_resources.connection_mut())
-                    .await;
-                if let Err(error) = begin_result {
-                    let cleanup_error = transaction_resources.rollback_and_close().await;
-                    drop(transaction_phase);
-                    let mut error: anyhow::Error = error.into();
-                    if let Err(cleanup_error) = cleanup_error {
-                        error = error.context(format!(
-                            "failed to rollback and close source connection after begin failure: {cleanup_error}"
-                        ));
-                    }
-                    return Err(error);
-                }
+            let group_result: Result<InvocationDetailProofResult> = async {
                 #[cfg(test)]
-                batch_admission::pause_after_transaction_begin().await;
-                let transaction_result: Result<RetentionBatchCommit> = async {
-                    let mut tx = RetentionSqliteTransaction(transaction_resources.connection_mut());
-                            upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
-                            mark_archive_batch_historical_rollups_materialized_tx(
-                                tx.as_mut(),
-                                spec.dataset,
-                                &archive_outcome.file_path,
-                            )
-                            .await?;
-                            let source_verify_phase =
-                                batch_observation.phase(RetentionPhase::SourceVerify);
-                            if invocation_archive_source_identity_sha256(
-                                tx.as_mut(),
-                                InvocationArchiveIdentityDatabase::Main,
-                                &ids,
-                            )
-                            .await?
-                                != chunk_identity
-                            {
-                                recovery_diagnostic.mark_proof_unavailable();
-                                bail!("retention task-local detail source changed before conversion");
-                            }
-                            drop(source_verify_phase);
-                            let prompt_cache_keys =
-                                load_prompt_cache_keys_for_invocation_ids_tx(tx.as_mut(), &ids)
-                                    .await?;
-                            let prompt_cache_key_refs = prompt_cache_keys
-                                .iter()
-                                .map(String::as_str)
-                                .collect::<Vec<_>>();
-                            if !prompt_cache_key_refs.is_empty() {
-                                mark_prompt_cache_conversation_stats_stale_on_connection(
-                                    tx.as_mut(),
-                                )
-                                .await?;
-                            }
-                            let mut query = QueryBuilder::<Sqlite>::new(
-                                "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND (json_extract(payload, '$.upstreamAccountId') IS NOT NULL OR json_extract(payload, '$.requestModel') IS NOT NULL OR json_extract(payload, '$.responseModel') IS NOT NULL OR json_extract(payload, '$.reasoningEffort') IS NOT NULL OR json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL) THEN json_patch(json_patch(json_patch(json_patch(json_patch('{}', CASE WHEN json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestModel') IS NOT NULL THEN json_object('requestModel', json_extract(payload, '$.requestModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.responseModel') IS NOT NULL THEN json_object('responseModel', json_extract(payload, '$.responseModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.reasoningEffort') IS NOT NULL THEN json_object('reasoningEffort', json_extract(payload, '$.reasoningEffort')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL THEN json_object('requestCompressionAlgorithm', json_extract(payload, '$.requestCompressionAlgorithm')) ELSE '{}' END) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
+                batch_admission::pause_after_archive_artifact_verified().await;
+                let mut committed_rows = 0;
+                let mut microbatch_group = group;
+                while !microbatch_group.is_empty() {
+                    let group = take_retention_batch(
+                        &mut microbatch_group,
+                        config,
+                        "invocation_detail_prune",
+                        |candidate| candidate.estimated_write_bytes.max(1) as usize,
+                    );
+                    let ids = group
+                        .iter()
+                        .map(|candidate| candidate.id)
+                        .collect::<Vec<_>>();
+                    let raw_paths = group
+                        .iter()
+                        .flat_map(|candidate| {
+                            [
+                                candidate.request_raw_path.clone(),
+                                candidate.response_raw_path.clone(),
+                            ]
+                        })
+                        .collect::<Vec<_>>();
+                    let chunk_identity = match archive_identity_proof.identity(&ids).await {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            recovery_diagnostic.mark_proof_unavailable();
+                            return Err(
+                                error.context("read task-local invocation source chunk identity")
                             );
-                            query
-                                .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
-                                .push(", detail_pruned_at = ")
-                                .push_bind(&pruned_at)
-                                .push(", detail_prune_reason = ")
-                                .push_bind(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
-                                .push(" WHERE id IN (");
-                            {
-                                let mut separated = query.separated(", ");
-                                for id in &ids {
-                                    separated.push_bind(id);
-                                }
-                            }
-                            query.push(")");
-                            let delete_phase = batch_observation.phase(RetentionPhase::Delete);
-                            query.build().execute(tx.as_mut()).await?;
-                            drop(delete_phase);
-                            // UPDATE triggers persist the affected keys. Statistics are refreshed by the
-                            // materialization owner after this retention transaction commits.
-                            if let Some(latest) = group
-                                .iter()
-                                .map(|candidate| candidate.occurred_at.as_str())
-                                .max()
-                            {
-                                record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest)
-                                    .await?;
-                            }
-                            let raw_reference_check_started = Instant::now();
-                            let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-                            let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
-                                tx.as_mut(),
-                                &raw_paths,
-                                raw_path_fallback_root,
-                            )
-                            .await?;
-                            let raw_reference_check_elapsed = had_raw_reference_candidates
-                                .then(|| raw_reference_check_started.elapsed());
-                            let commit_started = Instant::now();
-                    Ok(RetentionBatchCommit {
-                        raw_deletion_plan,
-                        raw_reference_check_elapsed,
-                        commit_started,
-                        prompt_cache_keys: Vec::new(),
-                    })
-                }
-                .await;
-                let commit = match transaction_result {
-                    Ok(commit) => commit,
-                    Err(error) => {
+                        }
+                    };
+                    let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
+                    let admission_result =
+                        acquire_retention_batch_write_connection_with_archive_fence_observed(
+                            pool,
+                            "invocation_detail_prune",
+                            Path::new(&archive_outcome.file_path),
+                            Some(&archive_outcome.sha256),
+                            || Some(batch_observation.phase(RetentionPhase::FileVerify)),
+                        )
+                        .await;
+                    let Some((source_connection, admission, archive_lock)) = (match admission_result {
+                        Ok(value) => value,
+                        Err(error) => {
+                            mark_error(&mut recovery_diagnostic, &error);
+                            return Err(error);
+                        }
+                    }) else {
+                        drop(admission_wait_phase);
+                        let mut deferred_group = group;
+                        deferred_group.append(&mut microbatch_group);
+                        if retry_prepared_archive_tail_in_place(committed_rows) {
+                            microbatch_group = deferred_group;
+                            wait_before_retrying_prepared_archive_tail().await;
+                            continue;
+                        }
+                        prepend_retention_pending_group(&mut pending_group, deferred_group);
+                        recovery_diagnostic.mark_stop();
+                        return Ok((None, committed_rows));
+                    };
+                    let admission_mode = admission.admission_mode();
+                    let lock_wait = admission.lock_wait();
+                    let p1_waiter_count = admission.p1_waiter_count();
+                    let mut transaction_resources =
+                        RetentionTransactionResources::new(source_connection, admission, archive_lock);
+                    drop(admission_wait_phase);
+                    let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
+                    let execute_started = Instant::now();
+                    transaction_resources.mark_transaction_started();
+                    let begin_result = sqlx::query("BEGIN")
+                        .execute(transaction_resources.connection_mut())
+                        .await;
+                    if let Err(error) = begin_result {
                         let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
-                        let mut error = error;
-                        mark_error(&mut recovery_diagnostic, &error);
+                        let mut error: anyhow::Error = error.into();
                         if let Err(cleanup_error) = cleanup_error {
                             error = error.context(format!(
-                                "retention transaction rollback and close failed: {cleanup_error}"
+                                "failed to rollback and close source connection after begin failure: {cleanup_error}"
                             ));
                         }
                         return Err(error);
                     }
-                };
-                let commit_phase = batch_observation.phase(RetentionPhase::Commit);
-                #[cfg(test)]
-                batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
-                    .await;
-                let commit_result = sqlx::query("COMMIT")
-                    .execute(transaction_resources.connection_mut())
-                    .await;
-                drop(commit_phase);
-                if let Err(error) = commit_result {
-                    let cleanup_error = transaction_resources.rollback_and_close().await;
-                    drop(transaction_phase);
-                    let mut error: anyhow::Error = error.into();
-                    if let Err(cleanup_error) = cleanup_error {
-                        error = error.context(format!(
-                            "retention transaction rollback and close failed after commit failure: {cleanup_error}"
-                        ));
-                    } else {
-                        mark_error(&mut recovery_diagnostic, &error);
+                    #[cfg(test)]
+                    batch_admission::pause_after_transaction_begin().await;
+                    let transaction_result: Result<RetentionBatchCommit> = async {
+                        let mut tx = RetentionSqliteTransaction(transaction_resources.connection_mut());
+                        upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+                        mark_archive_batch_historical_rollups_materialized_tx(
+                            tx.as_mut(),
+                            spec.dataset,
+                            &archive_outcome.file_path,
+                        )
+                        .await?;
+                        let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
+                        if invocation_archive_source_identity_sha256(
+                            tx.as_mut(),
+                            InvocationArchiveIdentityDatabase::Main,
+                            &ids,
+                        )
+                        .await?
+                            != chunk_identity
+                        {
+                            recovery_diagnostic.mark_proof_unavailable();
+                            bail!("retention task-local detail source changed before conversion");
+                        }
+                        drop(source_verify_phase);
+                        let prompt_cache_keys =
+                            load_prompt_cache_keys_for_invocation_ids_tx(tx.as_mut(), &ids).await?;
+                        let prompt_cache_key_refs = prompt_cache_keys
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>();
+                        if !prompt_cache_key_refs.is_empty() {
+                            mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut())
+                                .await?;
+                        }
+                        let mut query = QueryBuilder::<Sqlite>::new(
+                            "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND (json_extract(payload, '$.upstreamAccountId') IS NOT NULL OR json_extract(payload, '$.requestModel') IS NOT NULL OR json_extract(payload, '$.responseModel') IS NOT NULL OR json_extract(payload, '$.reasoningEffort') IS NOT NULL OR json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL) THEN json_patch(json_patch(json_patch(json_patch(json_patch('{}', CASE WHEN json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestModel') IS NOT NULL THEN json_object('requestModel', json_extract(payload, '$.requestModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.responseModel') IS NOT NULL THEN json_object('responseModel', json_extract(payload, '$.responseModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.reasoningEffort') IS NOT NULL THEN json_object('reasoningEffort', json_extract(payload, '$.reasoningEffort')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL THEN json_object('requestCompressionAlgorithm', json_extract(payload, '$.requestCompressionAlgorithm')) ELSE '{}' END) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
+                        );
+                        query
+                            .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
+                            .push(", detail_pruned_at = ")
+                            .push_bind(&pruned_at)
+                            .push(", detail_prune_reason = ")
+                            .push_bind(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
+                            .push(" WHERE id IN (");
+                        {
+                            let mut separated = query.separated(", ");
+                            for id in &ids {
+                                separated.push_bind(id);
+                            }
+                        }
+                        query.push(")");
+                        let delete_phase = batch_observation.phase(RetentionPhase::Delete);
+                        query.build().execute(tx.as_mut()).await?;
+                        drop(delete_phase);
+                        // UPDATE triggers persist the affected keys. Statistics are refreshed by the
+                        // materialization owner after this retention transaction commits.
+                        if let Some(latest) = group
+                            .iter()
+                            .map(|candidate| candidate.occurred_at.as_str())
+                            .max()
+                        {
+                            record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest)
+                                .await?;
+                        }
+                        let raw_reference_check_started = Instant::now();
+                        let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
+                        let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
+                            tx.as_mut(),
+                            &raw_paths,
+                            raw_path_fallback_root,
+                        )
+                        .await?;
+                        let raw_reference_check_elapsed = had_raw_reference_candidates
+                            .then(|| raw_reference_check_started.elapsed());
+                        let commit_started = Instant::now();
+                        Ok(RetentionBatchCommit {
+                            raw_deletion_plan,
+                            raw_reference_check_elapsed,
+                            commit_started,
+                            prompt_cache_keys: Vec::new(),
+                        })
                     }
-                    return Err(error);
+                    .await;
+                    let commit = match transaction_result {
+                        Ok(commit) => commit,
+                        Err(error) => {
+                            let cleanup_error = transaction_resources.rollback_and_close().await;
+                            drop(transaction_phase);
+                            let mut error = error;
+                            mark_error(&mut recovery_diagnostic, &error);
+                            if let Err(cleanup_error) = cleanup_error {
+                                error = error.context(format!(
+                                    "retention transaction rollback and close failed: {cleanup_error}"
+                                ));
+                            }
+                            return Err(error);
+                        }
+                    };
+                    let commit_phase = batch_observation.phase(RetentionPhase::Commit);
+                    #[cfg(test)]
+                    batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
+                        .await;
+                    let commit_started_at = Instant::now();
+                    let commit_result = sqlx::query("COMMIT")
+                        .execute(transaction_resources.connection_mut())
+                        .await;
+                    let commit_elapsed = commit_started_at.elapsed();
+                    drop(commit_phase);
+                    if let Err(error) = commit_result {
+                        let cleanup_error = transaction_resources.rollback_and_close().await;
+                        drop(transaction_phase);
+                        let mut error: anyhow::Error = error.into();
+                        if let Err(cleanup_error) = cleanup_error {
+                            error = error.context(format!(
+                                "retention transaction rollback and close failed after commit failure: {cleanup_error}"
+                            ));
+                        } else {
+                            mark_error(&mut recovery_diagnostic, &error);
+                        }
+                        return Err(error);
+                    }
+                    transaction_resources.mark_transaction_finished();
+                    let raw_deletion_plan = commit.raw_deletion_plan;
+                    rows_pruned += group.len();
+                    committed_rows += group.len();
+                    workload::record_owner_processed_count("invocation_detail_prune", group.len());
+                    recovery_diagnostic.committed(group.len());
+                    batch_observation.committed(group.len(), lock_wait);
+                    drop(transaction_phase);
+                    let breached = transaction_resources
+                        .return_to_pool_and_record_commit(RetentionWriteCommit {
+                            operation: "invocation_detail_prune",
+                            admission_mode,
+                            rows: group.len(),
+                            estimated_bytes: group
+                                .iter()
+                                .map(|candidate| candidate.estimated_write_bytes.max(1) as usize)
+                                .sum(),
+                            prepare_elapsed,
+                            lock_wait,
+                            execute_elapsed: commit.commit_started.duration_since(execute_started),
+                            commit_elapsed,
+                            write_hold_elapsed: None,
+                            raw_reference_check_elapsed: commit.raw_reference_check_elapsed,
+                            p1_waiter_count,
+                            candidate_remaining_hint: usize::from(candidate_remaining_hint),
+                        })
+                        .await
+                        .context("failed to return retention transaction connection to pool")?;
+                    let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
+                    if !raw_deletion_plan.paths.is_empty() {
+                        mark_retention_raw_inventory_reset_intent(pool).await?;
+                    }
+                    let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
+                    raw_files_removed += removed;
+                    workload::record_owner_raw_files_removed("invocation_detail_prune", removed);
+                    batch_observation.raw_files_removed(removed);
+                    drop(cleanup_phase);
+                    if breached {
+                        tokio::task::yield_now().await;
+                    }
                 }
-                transaction_resources.mark_transaction_finished();
-                let raw_deletion_plan = commit.raw_deletion_plan;
-                let breached = retention_record_commit_with_reference_check!(
-                    "invocation_detail_prune",
-                    admission_mode,
-                    group.len(),
-                    group
-                        .iter()
-                        .map(|candidate| candidate.estimated_write_bytes.max(1) as usize)
-                        .sum(),
-                    prepare_elapsed,
-                    lock_wait,
-                    commit.commit_started.duration_since(execute_started),
-                    commit.commit_started.elapsed(),
-                    commit.raw_reference_check_elapsed,
-                    p1_waiter_count,
-                    usize::from(candidate_remaining_hint),
-                );
-                rows_pruned += group.len();
-                committed_rows += group.len();
-                workload::record_owner_processed_count("invocation_detail_prune", group.len());
-                recovery_diagnostic.committed(group.len());
-                batch_observation.committed(group.len(), lock_wait);
-                drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Err(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
-                let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                if !raw_deletion_plan.paths.is_empty() {
-                    mark_retention_raw_inventory_reset_intent(pool).await?;
-                }
-                let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
-                raw_files_removed += removed;
-                workload::record_owner_raw_files_removed("invocation_detail_prune", removed);
-                batch_observation.raw_files_removed(removed);
-                drop(cleanup_phase);
-                if breached {
-                    tokio::task::yield_now().await;
-                }
+                Ok((None, committed_rows))
             }
-            archive_identity_proof.close().await?;
+            .await;
+            let (early_return, committed_rows) =
+                finish_archive_identity_proof(archive_identity_proof, group_result).await?;
+            if let Some(result) = early_return {
+                return Ok(result);
+            }
             if committed_rows > 0 {
                 archive_batches += 1;
             }
             batch_observation.complete();
+            if !pending_group.is_empty() {
+                next_pending_groups
+                    .entry(group_key)
+                    .or_insert_with(|| (group_candidate_count, Vec::new()))
+                    .1
+                    .extend(pending_group);
+            }
         }
-        // One invocation owns the selected bounded archive window. A test-injected operation
-        // deadline may stop it inside that window; production scheduling does not use a total
-        // timer to split the work into hidden follow-up tasks.
+        pending_groups = (!next_pending_groups.is_empty()).then_some(next_pending_groups);
+        if pending_groups.is_some() && !retention_run_budget_expired() {
+            continue 'work_unit;
+        }
         break 'work_unit;
     }
 
@@ -1304,8 +1786,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let mut prompt_cache_keys = std::collections::HashSet::new();
     let mut discovered_ids = HashSet::new();
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
+    let mut pending_groups: Option<BTreeMap<String, (usize, Vec<InvocationArchiveCandidate>)>> =
+        None;
 
-    'work_unit: {
+    'work_unit: loop {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
@@ -1314,70 +1798,101 @@ pub(super) async fn archive_old_invocations_with_source_max(
             recovery_diagnostic.mark_budget();
             break 'work_unit;
         }
-        let candidate_limit = archive_candidate_limit(config);
-        let candidates_query = load_invocation_archive_candidate_metadata(
-            pool,
-            cutoff,
-            source_max_invocation_id,
-            Some(candidate_limit.saturating_add(1)),
-        );
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => {
-                    recovery_diagnostic.mark_budget();
-                    break 'work_unit;
-                }
-            }
+        let (mut candidate_remaining_hint, selected_groups) = if let Some(selected_groups) =
+            pending_groups.take()
+        {
+            // Continue only through the rows selected by this dispatch. A later dispatch
+            // must reselect the live tail instead of becoming a hidden catch-up loop.
+            (true, selected_groups)
         } else {
-            candidates_query.await?
-        };
-        let discovered = candidates.len();
-        let has_more = discovered > candidate_limit;
-        let mut candidates = candidates;
-        candidates.truncate(candidate_limit);
-        batch_plan::record_discovered_rows(spec.dataset, discovered);
-        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
-
-        if candidates.is_empty() {
-            break 'work_unit;
-        }
-
-        discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
-        workload::record_discovered_count(discovered_ids.len());
-
-        let mut candidate_remaining_hint = has_more;
-        let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
-        for candidate in candidates {
-            if retention_run_budget_expired() {
-                recovery_diagnostic.mark_budget();
-                break;
-            }
-            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
-            by_group.entry(group_key).or_default().push(candidate);
-        }
-
-        for (group_key, group) in by_group {
-            if retention_run_budget_expired() {
-                recovery_diagnostic.mark_budget();
-                break;
-            }
-            let group_candidate_count = group.len();
-            let selection = select_invocation_archive_group(pool, group).await;
-            let (ids, group) = match selection {
-                Ok(selection) => selection,
-                Err(error) => {
-                    if error
-                        .to_string()
-                        .contains("archive source selection changed")
-                    {
-                        recovery_diagnostic.mark_proof_unavailable();
-                    } else {
-                        mark_error(&mut recovery_diagnostic, &error);
+            let candidate_limit = archive_candidate_limit(config);
+            let candidates_query = load_invocation_archive_candidate_metadata(
+                pool,
+                cutoff,
+                source_max_invocation_id,
+                Some(candidate_limit.saturating_add(1)),
+            );
+            let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, candidates_query).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        recovery_diagnostic.mark_budget();
+                        break 'work_unit;
                     }
-                    return Err(error);
                 }
+            } else {
+                candidates_query.await?
             };
+            let discovered = candidates.len();
+            let has_more = discovered > candidate_limit;
+            let mut candidates = candidates;
+            candidates.truncate(candidate_limit);
+            batch_plan::record_discovered_rows(spec.dataset, discovered);
+            batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
+
+            if candidates.is_empty() {
+                break 'work_unit;
+            }
+
+            discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
+            workload::record_discovered_count(discovered_ids.len());
+
+            let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
+            for candidate in candidates {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
+                let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
+                by_group.entry(group_key).or_default().push(candidate);
+            }
+
+            let mut selected_groups = BTreeMap::new();
+            for (group_key, group) in by_group {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
+                let group_candidate_count = group.len();
+                let selection = select_invocation_archive_group(pool, group).await;
+                let (_selected_ids, selected_group) = match selection {
+                    Ok(selection) => selection,
+                    Err(error) => {
+                        if error
+                            .to_string()
+                            .contains("archive source selection changed")
+                        {
+                            recovery_diagnostic.mark_proof_unavailable();
+                        } else {
+                            mark_error(&mut recovery_diagnostic, &error);
+                        }
+                        return Err(error);
+                    }
+                };
+                if selected_group.len() < group_candidate_count {
+                    batch_plan::record_candidate_window_has_more(spec.dataset, true);
+                }
+                if !selected_group.is_empty() {
+                    selected_groups.insert(group_key, (group_candidate_count, selected_group));
+                }
+            }
+            (has_more, selected_groups)
+        };
+        let mut next_pending_groups = BTreeMap::new();
+
+        for (group_key, (group_candidate_count, mut pending_group)) in selected_groups {
+            if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
+                break;
+            }
+            // The candidate window is the file-preparation boundary. Source deletion below is
+            // still split into adaptive SQL micro-batches, while the prepared archive artifact
+            // is reused for every source chunk in this selected window.
+            let group = std::mem::take(&mut pending_group);
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
             if group.len() < group_candidate_count {
                 candidate_remaining_hint = true;
                 batch_plan::record_candidate_window_has_more(spec.dataset, true);
@@ -1393,13 +1908,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "invocation_archive_identity").await?
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((
-                    rows_archived,
-                    archive_batches,
-                    raw_files_removed,
-                    prompt_cache_keys,
-                ));
+                break;
             };
             let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
             let source_identity_started = Instant::now();
@@ -1433,30 +1944,51 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let prepare_started = Instant::now();
             let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
             let archive_layout = archive_layout_for_dataset(config, spec.dataset);
-            let reusable_archive = if archive_layout == ArchiveBatchLayout::LegacyMonth {
-                let reuse_future = reuse_task_month_archive_if_proven(
-                    pool,
-                    config,
-                    spec,
-                    &group_key,
-                    &ids,
-                    &source_identity_sha256,
-                );
-                if let Some(remaining) = retention_run_remaining_budget() {
-                    match tokio::time::timeout(remaining, reuse_future).await {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            recovery_diagnostic.mark_budget();
-                            break;
+            let reusable_archive = match archive_layout {
+                ArchiveBatchLayout::LegacyMonth => {
+                    let reuse_future = reuse_task_month_archive_if_proven(
+                        pool,
+                        config,
+                        spec,
+                        &group_key,
+                        &ids,
+                        &source_identity_sha256,
+                    );
+                    if let Some(remaining) = retention_run_remaining_budget() {
+                        match tokio::time::timeout(remaining, reuse_future).await {
+                            Ok(result) => result?,
+                            Err(_) => {
+                                recovery_diagnostic.mark_budget();
+                                break;
+                            }
                         }
+                    } else {
+                        reuse_future.await?
                     }
-                } else {
-                    reuse_future.await?
                 }
-            } else {
-                None
+                ArchiveBatchLayout::SegmentV1 => {
+                    let reuse_future = reuse_task_segment_archive_if_proven(
+                        pool,
+                        config,
+                        spec,
+                        &group_key,
+                        &ids,
+                        &source_identity_sha256,
+                    );
+                    if let Some(remaining) = retention_run_remaining_budget() {
+                        match tokio::time::timeout(remaining, reuse_future).await {
+                            Ok(result) => result?,
+                            Err(_) => {
+                                recovery_diagnostic.mark_budget();
+                                break;
+                            }
+                        }
+                    } else {
+                        reuse_future.await?
+                    }
+                }
             };
-            let (archive_outcome, proof, mut archive_identity_proof, prepare_elapsed) =
+            let (archive_outcome, proof, archive_identity_proof, prepare_elapsed) =
                 if let Some(reusable_archive) = reusable_archive {
                     let elapsed = prepare_started.elapsed();
                     batch_observation.archive_writer_finished(elapsed);
@@ -1551,6 +2083,13 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         recovery_diagnostic.mark_proof_unavailable();
                         bail!("retention task-local archive source identity verification failed");
                     }
+                    batch_plan::record_retry_archive_hint(
+                        spec.dataset,
+                        &group_key,
+                        &ids,
+                        &archive_outcome.file_path,
+                        &archive_outcome.sha256,
+                    );
                     set_archive_batch_coverage_from_local_rows(
                         &mut archive_outcome,
                         group.iter().map(|candidate| candidate.occurred_at.as_str()),
@@ -1619,6 +2158,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                                 batch_observation
                                     .summary_proof_finished(summary_proof_started.elapsed());
                                 recovery_diagnostic.mark_budget();
+                                let _ = archive_identity_proof.close().await;
                                 break;
                             }
                         }
@@ -1632,6 +2172,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         Ok(Some(proof)) => proof,
                         Ok(None) => {
                             recovery_diagnostic.mark_proof_unavailable();
+                            let _ = archive_identity_proof.close().await;
                             return Ok((
                                 rows_archived,
                                 archive_batches,
@@ -1641,6 +2182,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         }
                         Err(error) => {
                             recovery_diagnostic.mark_proof_unavailable();
+                            let _ = archive_identity_proof.close().await;
                             return Err(error);
                         }
                     };
@@ -1651,14 +2193,15 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         prepare_elapsed,
                     )
                 };
-            #[cfg(test)]
-            batch_admission::pause_after_archive_artifact_verified().await;
-            let mut committed_rows = 0;
-            let mut chunk_index = 0usize;
-            let mut pending_group = group;
-            while !pending_group.is_empty() {
+            let proof_result: Result<InvocationArchiveProofResult> = async {
+                #[cfg(test)]
+                batch_admission::pause_after_archive_artifact_verified().await;
+                let mut committed_rows = 0;
+                let mut chunk_index = 0usize;
+                let mut microbatch_group = group;
+                while !microbatch_group.is_empty() {
                 let group = take_retention_batch(
-                    &mut pending_group,
+                    &mut microbatch_group,
                     config,
                     "invocation_archive",
                     |candidate| {
@@ -1704,50 +2247,53 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         || Some(batch_observation.phase(RetentionPhase::FileVerify)),
                     )
                     .await;
-                let Some((source_connection, admission, archive_lock)) = (match admission_result {
+                    let Some((source_connection, admission, archive_lock)) = (match admission_result {
                     Ok(value) => value,
                     Err(error) => {
                         mark_error(&mut recovery_diagnostic, &error);
                         return Err(error);
                     }
-                }) else {
+                    }) else {
+                        drop(admission_wait_phase);
+                        let mut deferred_group = group;
+                        deferred_group.append(&mut microbatch_group);
+                        if retry_prepared_archive_tail_in_place(committed_rows) {
+                            microbatch_group = deferred_group;
+                            wait_before_retrying_prepared_archive_tail().await;
+                            continue;
+                        }
+                        prepend_retention_pending_group(&mut pending_group, deferred_group);
+                        recovery_diagnostic.mark_stop();
+                        return Ok((false, committed_rows));
+                    };
+                    let admission_mode = admission.admission_mode();
+                    let lock_wait = admission.lock_wait();
+                    let p1_waiter_count = admission.p1_waiter_count();
+                    let mut transaction_resources =
+                        RetentionTransactionResources::new(source_connection, admission, archive_lock);
+                    #[cfg(test)]
+                    transaction_resources.observe_return_for_test("invocation_archive");
                     drop(admission_wait_phase);
-                    recovery_diagnostic.mark_stop();
-                    return Ok((
-                        rows_archived,
-                        archive_batches,
-                        raw_files_removed,
-                        prompt_cache_keys,
-                    ));
-                };
-                let admission_mode = admission.admission_mode();
-                let lock_wait = admission.lock_wait();
-                let p1_waiter_count = admission.p1_waiter_count();
-                let mut transaction_resources =
-                    RetentionTransactionResources::new(source_connection, admission, archive_lock);
-                #[cfg(test)]
-                transaction_resources.observe_return_for_test("invocation_archive");
-                drop(admission_wait_phase);
-                let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
-                let execute_started = Instant::now();
-                transaction_resources.mark_transaction_started();
-                let begin_result = sqlx::query("BEGIN")
-                    .execute(transaction_resources.connection_mut())
-                    .await;
-                if let Err(error) = begin_result {
-                    let cleanup_error = transaction_resources.rollback_and_close().await;
-                    drop(transaction_phase);
-                    let mut error: anyhow::Error = error.into();
-                    if let Err(cleanup_error) = cleanup_error {
-                        error = error.context(format!(
-                            "failed to rollback and close source connection after begin failure: {cleanup_error}"
-                        ));
+                    let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
+                    let execute_started = Instant::now();
+                    transaction_resources.mark_transaction_started();
+                    let begin_result = sqlx::query("BEGIN")
+                        .execute(transaction_resources.connection_mut())
+                        .await;
+                    if let Err(error) = begin_result {
+                        let cleanup_error = transaction_resources.rollback_and_close().await;
+                        drop(transaction_phase);
+                        let mut error: anyhow::Error = error.into();
+                        if let Err(cleanup_error) = cleanup_error {
+                            error = error.context(format!(
+                                "failed to rollback and close source connection after begin failure: {cleanup_error}"
+                            ));
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
-                }
-                #[cfg(test)]
-                batch_admission::pause_after_transaction_begin().await;
-                let transaction_result: Result<RetentionBatchCommit> = async {
+                    #[cfg(test)]
+                    batch_admission::pause_after_transaction_begin().await;
+                    let transaction_result: Result<RetentionBatchCommit> = async {
                     let mut tx = RetentionSqliteTransaction(transaction_resources.connection_mut());
                     // P2 normally advances this cursor before retention. Rows beyond it would be
                     // deleted before the regular replay can observe them, so materialize just those
@@ -1805,7 +2351,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     upsert_invocation_rollups(tx.as_mut(), &group).await?;
                     // The file fence is released between chunks. Recheck pages and manifest in
                     // the source transaction after any admission wait or concurrent rewrite.
-                    store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
+                    crate::validate_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof)
+                        .await?;
                     if chunk_index == 0 {
                         mark_archive_batch_historical_rollups_materialized_tx(
                             tx.as_mut(),
@@ -1873,6 +2420,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                             &archive_outcome.file_path,
                         )
                         .await?;
+                        // Manifest publication invalidates the pre-publication proof. Store the
+                        // final marker only after that state transition has completed.
+                        store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
                     }
                     let raw_reference_check_started = Instant::now();
                     let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
@@ -1891,9 +2441,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         commit_started,
                         prompt_cache_keys: archived_prompt_cache_keys,
                     })
-                }
-                .await;
-                let commit = match transaction_result {
+                    }
+                    .await;
+                    let commit = match transaction_result {
                     Ok(commit) => commit,
                     Err(error) => {
                         let cleanup_error = transaction_resources.rollback_and_close().await;
@@ -1907,89 +2457,110 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         }
                         return Err(error);
                     }
-                };
-                let commit_phase = batch_observation.phase(RetentionPhase::Commit);
-                #[cfg(test)]
-                batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
-                    .await;
-                let commit_result = sqlx::query("COMMIT")
-                    .execute(transaction_resources.connection_mut())
-                    .await;
-                drop(commit_phase);
-                if let Err(error) = commit_result {
-                    let cleanup_error = transaction_resources.rollback_and_close().await;
-                    drop(transaction_phase);
-                    let mut error: anyhow::Error = error.into();
-                    if let Err(cleanup_error) = cleanup_error {
-                        error = error.context(format!(
-                            "retention transaction rollback and close failed after commit failure: {cleanup_error}"
-                        ));
-                    } else {
-                        mark_error(&mut recovery_diagnostic, &error);
+                    };
+                    let commit_phase = batch_observation.phase(RetentionPhase::Commit);
+                    #[cfg(test)]
+                    batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
+                        .await;
+                    let commit_started_at = Instant::now();
+                    let commit_result = sqlx::query("COMMIT")
+                        .execute(transaction_resources.connection_mut())
+                        .await;
+                    let commit_elapsed = commit_started_at.elapsed();
+                    drop(commit_phase);
+                    if let Err(error) = commit_result {
+                        let cleanup_error = transaction_resources.rollback_and_close().await;
+                        drop(transaction_phase);
+                        let mut error: anyhow::Error = error.into();
+                        if let Err(cleanup_error) = cleanup_error {
+                            error = error.context(format!(
+                                "retention transaction rollback and close failed after commit failure: {cleanup_error}"
+                            ));
+                        } else {
+                            mark_error(&mut recovery_diagnostic, &error);
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
+                    transaction_resources.mark_transaction_finished();
+                    prompt_cache_keys.extend(commit.prompt_cache_keys);
+                    let raw_deletion_plan = commit.raw_deletion_plan;
+                    workload::record_processed_count(group.len());
+                    rows_archived += group.len();
+                    committed_rows += group.len();
+                    recovery_diagnostic.committed(group.len());
+                    batch_observation.committed(group.len(), lock_wait);
+                    drop(transaction_phase);
+                    let breached = transaction_resources
+                    .return_to_pool_and_record_commit(RetentionWriteCommit {
+                        operation: "invocation_archive",
+                        admission_mode,
+                        rows: group.len(),
+                        estimated_bytes: group
+                            .iter()
+                            .map(|candidate| {
+                                candidate
+                                    .payload
+                                    .as_deref()
+                                    .map_or(256, |payload| payload.len())
+                            })
+                            .sum(),
+                        prepare_elapsed,
+                        lock_wait,
+                        execute_elapsed: commit.commit_started.duration_since(execute_started),
+                        commit_elapsed,
+                        write_hold_elapsed: None,
+                        raw_reference_check_elapsed: commit.raw_reference_check_elapsed,
+                        p1_waiter_count,
+                        candidate_remaining_hint: usize::from(candidate_remaining_hint),
+                    })
+                    .await
+                        .context("failed to return retention transaction connection to pool")?;
+                    let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
+                    if !raw_deletion_plan.paths.is_empty() {
+                        mark_retention_raw_inventory_reset_intent(pool).await?;
+                    }
+                    retention_recovery_record_progress();
+                    let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
+                    raw_files_removed += removed;
+                    workload::record_owner_raw_files_removed("retention_archive", removed);
+                    batch_observation.raw_files_removed(removed);
+                    drop(cleanup_phase);
+                    if breached {
+                        tokio::task::yield_now().await;
+                    }
+                    #[cfg(test)]
+                    batch_admission::pause_after_first_chunk(committed_rows).await;
+                    chunk_index += 1;
                 }
-                transaction_resources.mark_transaction_finished();
-                prompt_cache_keys.extend(commit.prompt_cache_keys);
-                let raw_deletion_plan = commit.raw_deletion_plan;
-                workload::record_processed_count(group.len());
-                let breached = retention_record_commit_with_reference_check!(
-                    "invocation_archive",
-                    admission_mode,
-                    group.len(),
-                    group
-                        .iter()
-                        .map(|candidate| {
-                            candidate
-                                .payload
-                                .as_deref()
-                                .map_or(256, |payload| payload.len())
-                        })
-                        .sum(),
-                    prepare_elapsed,
-                    lock_wait,
-                    commit.commit_started.duration_since(execute_started),
-                    commit.commit_started.elapsed(),
-                    commit.raw_reference_check_elapsed,
-                    p1_waiter_count,
-                    usize::from(candidate_remaining_hint),
-                );
-                rows_archived += group.len();
-                committed_rows += group.len();
-                recovery_diagnostic.committed(group.len());
-                batch_observation.committed(group.len(), lock_wait);
-                drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Err(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
-                let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                if !raw_deletion_plan.paths.is_empty() {
-                    mark_retention_raw_inventory_reset_intent(pool).await?;
-                }
-                retention_recovery_record_progress();
-                let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
-                raw_files_removed += removed;
-                workload::record_owner_raw_files_removed("retention_archive", removed);
-                batch_observation.raw_files_removed(removed);
-                drop(cleanup_phase);
-                if breached {
-                    tokio::task::yield_now().await;
-                }
-                #[cfg(test)]
-                batch_admission::pause_after_first_chunk(committed_rows).await;
-                chunk_index += 1;
+                Ok((false, committed_rows))
             }
-            archive_identity_proof.close().await?;
+            .await;
+            let (early_return, committed_rows) =
+                finish_archive_identity_proof(archive_identity_proof, proof_result).await?;
+            if early_return {
+                return Ok((
+                    rows_archived,
+                    archive_batches,
+                    raw_files_removed,
+                    prompt_cache_keys,
+                ));
+            }
             if committed_rows > 0 {
                 archive_batches += 1;
             }
             batch_observation.complete();
+            if !pending_group.is_empty() {
+                next_pending_groups
+                    .entry(group_key)
+                    .or_insert_with(|| (group_candidate_count, Vec::new()))
+                    .1
+                    .extend(pending_group);
+            }
         }
-        // One scheduled invocation owns one selected candidate window. It completes that logical
-        // work unit before returning; the next invocation reselects the remaining live rows.
+        pending_groups = (!next_pending_groups.is_empty()).then_some(next_pending_groups);
+        if pending_groups.is_some() && !retention_run_budget_expired() {
+            continue 'work_unit;
+        }
         break 'work_unit;
     }
 
@@ -2075,8 +2646,9 @@ pub(crate) async fn archive_timestamped_dataset(
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
+    let mut pending_groups: Option<TimestampedPendingGroups> = None;
 
-    'work_unit: {
+    'work_unit: loop {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
@@ -2085,56 +2657,85 @@ pub(crate) async fn archive_timestamped_dataset(
             recovery_diagnostic.mark_budget();
             break 'work_unit;
         }
-        let candidate_limit = archive_candidate_limit(config);
-        let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
-            .bind(&cutoff)
-            .bind(candidate_limit.saturating_add(1) as i64)
-            .fetch_all(pool);
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => {
+        let (mut candidate_remaining_hint, selected_groups) = if let Some(selected_groups) =
+            pending_groups.take()
+        {
+            (true, selected_groups)
+        } else {
+            let candidate_limit = archive_candidate_limit(config);
+            let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
+                .bind(&cutoff)
+                .bind(candidate_limit.saturating_add(1) as i64)
+                .fetch_all(pool);
+            let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, candidates_query).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        recovery_diagnostic.mark_budget();
+                        break 'work_unit;
+                    }
+                }
+            } else {
+                candidates_query.await?
+            };
+            let discovered = candidates.len();
+            let has_more = discovered > candidate_limit;
+            let mut candidates = candidates;
+            candidates.truncate(candidate_limit);
+            batch_plan::record_discovered_rows(spec.dataset, discovered);
+            batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
+
+            if candidates.is_empty() {
+                break 'work_unit;
+            }
+
+            let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
+            for candidate in candidates {
+                if retention_run_budget_expired() {
                     recovery_diagnostic.mark_budget();
-                    break 'work_unit;
+                    break;
+                }
+                let month_key = archive_timestamped_dataset_month_key(
+                    spec.dataset,
+                    &candidate.timestamp_value,
+                )?;
+                by_month.entry(month_key).or_default().push(candidate);
+            }
+
+            let mut selected_groups = BTreeMap::new();
+            for (month_key, group) in by_month {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
+                let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
+                let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
+                let group_candidate_count = group.len();
+                let selected_group = select_archive_batch(group, |candidate| {
+                    row_sizes.get(&candidate.id).copied().unwrap_or(512)
+                });
+                if selected_group.len() < group_candidate_count {
+                    batch_plan::record_candidate_window_has_more(spec.dataset, true);
+                }
+                if !selected_group.is_empty() {
+                    selected_groups.insert(
+                        month_key,
+                        (group_candidate_count, selected_group, row_sizes),
+                    );
                 }
             }
-        } else {
-            candidates_query.await?
+            (has_more, selected_groups)
         };
-        let discovered = candidates.len();
-        let has_more = discovered > candidate_limit;
-        let mut candidates = candidates;
-        candidates.truncate(candidate_limit);
-        batch_plan::record_discovered_rows(spec.dataset, discovered);
-        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
+        let mut next_pending_groups = BTreeMap::new();
 
-        if candidates.is_empty() {
-            break 'work_unit;
-        }
-
-        let mut candidate_remaining_hint = has_more;
-        let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
-        for candidate in candidates {
+        for (month_key, (group_candidate_count, mut pending_group, row_sizes)) in selected_groups {
             if retention_run_budget_expired() {
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            let month_key =
-                archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
-            by_month.entry(month_key).or_default().push(candidate);
-        }
-
-        for (month_key, group) in by_month {
-            if retention_run_budget_expired() {
-                recovery_diagnostic.mark_budget();
-                break;
-            }
-            let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
-            let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
-            let group_candidate_count = group.len();
-            let group = select_archive_batch(group, |candidate| {
-                row_sizes.get(&candidate.id).copied().unwrap_or(512)
-            });
+            // See the invocation archive path above: prepare the file once for the selected
+            // candidate window, then use adaptive SQL micro-batches for source conversion.
+            let group = std::mem::take(&mut pending_group);
             if group.len() < group_candidate_count {
                 candidate_remaining_hint = true;
                 batch_plan::record_candidate_window_has_more(spec.dataset, true);
@@ -2166,8 +2767,9 @@ pub(crate) async fn archive_timestamped_dataset(
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "timestamped_archive_identity").await?
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((rows_archived, archive_batches, raw_files_removed));
+                break;
             };
             let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
             let source_identity_started = Instant::now();
@@ -2219,8 +2821,9 @@ pub(crate) async fn archive_timestamped_dataset(
                     }
                 })
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((rows_archived, archive_batches, raw_files_removed));
+                break;
             };
             if archive_outcome.source_identity_sha256.as_deref() != Some(source_identity.as_str()) {
                 recovery_diagnostic.mark_proof_unavailable();
@@ -2254,7 +2857,7 @@ pub(crate) async fn archive_timestamped_dataset(
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
-            let mut archive_identity_proof =
+            let archive_identity_proof =
                 match ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
                     .await
                 {
@@ -2283,10 +2886,10 @@ pub(crate) async fn archive_timestamped_dataset(
             batch_admission::pause_after_archive_artifact_verified().await;
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
             let mut committed_rows = 0;
-            let mut pending_group = group;
-            while !pending_group.is_empty() {
+            let mut microbatch_group = group;
+            while !microbatch_group.is_empty() {
                 let group = take_retention_batch(
-                    &mut pending_group,
+                    &mut microbatch_group,
                     config,
                     "timestamped_archive",
                     |candidate| row_sizes.get(&candidate.id).copied().unwrap_or(512),
@@ -2342,8 +2945,16 @@ pub(crate) async fn archive_timestamped_dataset(
                     }
                 }) else {
                     drop(admission_wait_phase);
+                    let mut deferred_group = group;
+                    deferred_group.append(&mut microbatch_group);
+                    if retry_prepared_archive_tail_in_place(committed_rows) {
+                        microbatch_group = deferred_group;
+                        wait_before_retrying_prepared_archive_tail().await;
+                        continue;
+                    }
+                    prepend_retention_pending_group(&mut pending_group, deferred_group);
                     recovery_diagnostic.mark_stop();
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    break;
                 };
                 let admission_mode = admission.admission_mode();
                 let lock_wait = admission.lock_wait();
@@ -2558,9 +3169,11 @@ pub(crate) async fn archive_timestamped_dataset(
                 #[cfg(test)]
                 batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
                     .await;
+                let commit_started_at = Instant::now();
                 let commit_result = sqlx::query("COMMIT")
                     .execute(transaction_resources.connection_mut())
                     .await;
+                let commit_elapsed = commit_started_at.elapsed();
                 drop(commit_phase);
                 if let Err(error) = commit_result {
                     let cleanup_error = transaction_resources.rollback_and_close().await;
@@ -2584,23 +3197,13 @@ pub(crate) async fn archive_timestamped_dataset(
                             "failed to return retention transaction connection to pool: {cleanup_error}"
                         ));
                     }
+                    let mut deferred_group = group;
+                    deferred_group.append(&mut microbatch_group);
+                    prepend_retention_pending_group(&mut pending_group, deferred_group);
                     recovery_diagnostic.mark_stop();
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    break;
                 };
                 let raw_deletion_plan = commit.raw_deletion_plan;
-                let breached = retention_record_commit_with_reference_check!(
-                    "timestamped_archive",
-                    admission_mode,
-                    group.len(),
-                    group.len().saturating_mul(256),
-                    prepare_elapsed,
-                    lock_wait,
-                    commit.commit_started.duration_since(execute_started),
-                    commit.commit_started.elapsed(),
-                    commit.raw_reference_check_elapsed,
-                    p1_waiter_count,
-                    usize::from(candidate_remaining_hint),
-                );
                 workload::record_owner_processed_count(
                     if spec.dataset == "pool_upstream_request_attempts" {
                         "pool_upstream_attempt_archive"
@@ -2609,21 +3212,33 @@ pub(crate) async fn archive_timestamped_dataset(
                     },
                     group.len(),
                 );
+                rows_archived += group.len();
+                committed_rows += group.len();
+                recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Err(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
+                let breached = transaction_resources
+                    .return_to_pool_and_record_commit(RetentionWriteCommit {
+                        operation: "timestamped_archive",
+                        admission_mode,
+                        rows: group.len(),
+                        estimated_bytes: group.len().saturating_mul(256),
+                        prepare_elapsed,
+                        lock_wait,
+                        execute_elapsed: commit.commit_started.duration_since(execute_started),
+                        commit_elapsed,
+                        write_hold_elapsed: None,
+                        raw_reference_check_elapsed: commit.raw_reference_check_elapsed,
+                        p1_waiter_count,
+                        candidate_remaining_hint: usize::from(candidate_remaining_hint),
+                    })
+                    .await
+                    .context("failed to return retention transaction connection to pool")?;
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if spec.dataset == "pool_upstream_request_attempts" {
                     if !raw_deletion_plan.paths.is_empty() {
                         mark_retention_raw_inventory_reset_intent(pool).await?;
                     }
-                    rows_archived += group.len();
-                    committed_rows += group.len();
                     let removed =
                         delete_proxy_raw_paths(raw_deletion_plan, config.database_path.parent())?;
                     raw_files_removed += removed;
@@ -2632,11 +3247,7 @@ pub(crate) async fn archive_timestamped_dataset(
                         removed,
                     );
                     batch_observation.raw_files_removed(removed);
-                } else {
-                    rows_archived += group.len();
-                    committed_rows += group.len();
                 }
-                recovery_diagnostic.committed(group.len());
                 drop(cleanup_phase);
                 if breached {
                     tokio::task::yield_now().await;
@@ -2649,9 +3260,18 @@ pub(crate) async fn archive_timestamped_dataset(
                 archive_batches += 1;
             }
             batch_observation.complete();
+            if !pending_group.is_empty() {
+                next_pending_groups
+                    .entry(month_key)
+                    .or_insert_with(|| (group_candidate_count, Vec::new(), row_sizes.clone()))
+                    .1
+                    .extend(pending_group);
+            }
         }
-        // Keep the selected timestamped candidate window as one logical work unit. Operation
-        // budgets and cancellation may stop it earlier, but it is never split by a total timer.
+        pending_groups = (!next_pending_groups.is_empty()).then_some(next_pending_groups);
+        if pending_groups.is_some() && !retention_run_budget_expired() {
+            continue 'work_unit;
+        }
         break 'work_unit;
     }
 
