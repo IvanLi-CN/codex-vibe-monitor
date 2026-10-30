@@ -89,6 +89,7 @@ fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
         let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
             .lock()
             .await;
+        let _upstream_reset_guard = ResetTestOauthCodexUpstreamBaseUrl;
 
         let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
         oauth_bridge::set_test_oauth_codex_upstream_base_url(
@@ -177,7 +178,6 @@ fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
         );
 
         upstream_handle.abort();
-        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
     });
 }
 
@@ -187,6 +187,7 @@ fn pool_route_oauth_live_candidate_prefers_account_proxy_and_honors_conversation
         let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
             .lock()
             .await;
+        let _upstream_reset_guard = ResetTestOauthCodexUpstreamBaseUrl;
 
         let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
         oauth_bridge::set_test_oauth_codex_upstream_base_url(
@@ -322,7 +323,6 @@ fn pool_route_oauth_live_candidate_prefers_account_proxy_and_honors_conversation
         upstream_handle.abort();
         account_proxy_handle.abort();
         group_proxy_handle.abort();
-        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
     });
 }
 
@@ -480,7 +480,6 @@ fn pool_route_oauth_token_refresh_uses_account_proxy_before_live_send() {
         upstream_handle.abort();
         account_proxy_handle.abort();
         group_proxy_handle.abort();
-        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
     });
 }
 
@@ -499,6 +498,7 @@ fn pool_route_oauth_standalone_search_is_forwarded_and_recorded() {
         let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
             .lock()
             .await;
+        let _upstream_reset_guard = ResetTestOauthCodexUpstreamBaseUrl;
         let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
         oauth_bridge::set_test_oauth_codex_upstream_base_url(
             Url::parse(&format!("{upstream_base}/backend-api/codex"))
@@ -579,7 +579,6 @@ fn pool_route_oauth_standalone_search_is_forwarded_and_recorded() {
         assert_ne!(payload["failureKind"], "oauth_unsupported_route");
 
         upstream_handle.abort();
-        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
     });
 }
 
@@ -594,6 +593,7 @@ fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
         let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
             .lock()
             .await;
+        let _upstream_reset_guard = ResetTestOauthCodexUpstreamBaseUrl;
 
         let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
         oauth_bridge::set_test_oauth_codex_upstream_base_url(
@@ -788,7 +788,6 @@ fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
         );
 
         upstream_handle.abort();
-        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
     });
 }
 
@@ -798,6 +797,7 @@ fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() {
         let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
             .lock()
             .await;
+        let _upstream_reset_guard = ResetTestOauthCodexUpstreamBaseUrl;
 
         let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
         oauth_bridge::set_test_oauth_codex_upstream_base_url(
@@ -870,7 +870,6 @@ fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() {
         );
 
         upstream_handle.abort();
-        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
     });
 }
 

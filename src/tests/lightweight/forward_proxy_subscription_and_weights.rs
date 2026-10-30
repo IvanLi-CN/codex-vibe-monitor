@@ -150,7 +150,9 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
         .await
         .expect("first refresh should reach the subscription source");
 
-    let (second_refresh_entered_tx, second_refresh_entered_rx) = tokio::sync::oneshot::channel();
+    let (second_refresh_lock_attempted_tx, second_refresh_lock_attempted_rx) =
+        tokio::sync::oneshot::channel();
+    install_forward_proxy_subscription_refresh_lock_attempt_hook(second_refresh_lock_attempted_tx);
     let second_started = async {
         while !*second_request_started_rx.borrow() {
             second_request_started_rx
@@ -160,16 +162,17 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
         }
     };
     let second_refresh_state = state.clone();
-    let second_refresh = tokio::spawn(async move {
-        second_refresh_entered_tx
-            .send(())
-            .expect("second refresh task should remain alive");
-        refresh_forward_proxy_subscriptions(second_refresh_state, true, None).await
-    });
-    tokio::time::timeout(Duration::from_secs(1), second_refresh_entered_rx)
+    let second_refresh = tokio::spawn(refresh_forward_proxy_subscriptions(
+        second_refresh_state,
+        true,
+        None,
+    ));
+    tokio::time::timeout(Duration::from_secs(1), second_refresh_lock_attempted_rx)
         .await
-        .expect("second refresh should enter before the first refresh is released")
-        .expect("second refresh entry signal should remain open");
+        .expect(
+            "second refresh should attempt the shared lock before the first refresh is released",
+        )
+        .expect("second refresh lock-attempt signal should remain open");
     tokio::task::yield_now().await;
     assert!(
         tokio::time::timeout(Duration::from_millis(100), second_started)

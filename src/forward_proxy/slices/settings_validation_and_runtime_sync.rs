@@ -3,12 +3,42 @@ use super::*;
 pub(crate) const FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX: &str =
     "partial forward proxy subscription refresh:";
 
+#[cfg(test)]
+fn forward_proxy_subscription_refresh_lock_attempt_hook()
+-> &'static std::sync::Mutex<Option<oneshot::Sender<()>>> {
+    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<oneshot::Sender<()>>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(crate) fn install_forward_proxy_subscription_refresh_lock_attempt_hook(
+    sender: oneshot::Sender<()>,
+) {
+    *forward_proxy_subscription_refresh_lock_attempt_hook()
+        .lock()
+        .expect("forward proxy refresh test hook lock") = Some(sender);
+}
+
+#[cfg(test)]
+fn notify_forward_proxy_subscription_refresh_lock_attempt() {
+    let sender = forward_proxy_subscription_refresh_lock_attempt_hook()
+        .lock()
+        .expect("forward proxy refresh test hook lock")
+        .take();
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+}
+
 pub(crate) async fn refresh_forward_proxy_subscriptions(
     state: Arc<AppState>,
     force: bool,
     known_subscription_keys_override: Option<HashSet<String>>,
 ) -> Result<()> {
     // Keep each fetch-and-apply cycle ordered so a slower older response cannot overwrite a newer snapshot.
+    #[cfg(test)]
+    notify_forward_proxy_subscription_refresh_lock_attempt();
     let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
     let (subscription_urls, interval_secs, last_refresh_at) = {
         let manager = state.forward_proxy.lock().await;
