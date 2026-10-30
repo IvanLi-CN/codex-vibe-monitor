@@ -4192,7 +4192,6 @@ pub(crate) fn collect_forward_proxy_catalog_keys(
         .into_iter()
         .collect()
 }
-
 pub(crate) async fn enrich_window_actual_usage_for_summaries(
     state: &AppState,
     items: &mut [UpstreamAccountSummary],
@@ -4200,7 +4199,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
     if items.is_empty() {
         return Ok(());
     }
-
     let now = Utc::now();
     let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
     else {
@@ -4210,7 +4208,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
     if account_ids.is_empty() {
         return Ok(());
     }
-
     let has_live_invocations = sqlite_table_exists(&state.pool, "codex_invocations").await?;
     let has_minute_stats_rollups =
         sqlite_table_exists(&state.pool, "upstream_account_stats_minute").await?;
@@ -4219,7 +4216,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
     if !has_live_invocations && !has_minute_stats_rollups && !has_hourly_usage_rollups {
         return Ok(());
     }
-
     let query_start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let retention_cutoff_epoch = retention_cutoff.timestamp();
@@ -4279,7 +4275,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
         covered_hourly_keys.extend(collect_account_window_hourly_coverage_keys(&hourly_rows));
         fold_account_window_usage_hourly_rows(&mut usage, &hourly_rows, &plans);
     }
-
     if has_live_invocations {
         let live_rollup_cursor =
             load_hourly_rollup_live_progress(&state.pool, HOURLY_ROLLUP_DATASET_INVOCATIONS)
@@ -4289,7 +4284,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
         let partial_hour_bucket_epochs = collect_account_window_partial_bucket_epochs(&plans)?;
         let missing_full_hour_bucket_epochs =
             collect_account_window_missing_full_hour_bucket_epochs(&plans, &covered_hourly_keys);
-
         let archived_partial_minute_bucket_keys = partial_minute_bucket_keys
             .iter()
             .copied()
@@ -4339,7 +4333,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                 }
             }
         }
-
         let live_partial_minute_bucket_keys = partial_minute_bucket_keys
             .iter()
             .copied()
@@ -4372,7 +4365,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
             .collect::<Vec<_>>();
         live_exact_fallback_bucket_ranges.sort_unstable();
         live_exact_fallback_bucket_ranges.dedup();
-
         let live_snapshot_id =
             sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
                 .fetch_one(&state.pool)
@@ -4399,7 +4391,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
                 usage.entry(account_id).or_default().merge(summary);
             }
         }
-
         if live_rollup_cursor > 0 {
             let query_end_at = format_naive(query_end.with_timezone(&Shanghai).naive_local());
             let live_tail_rows = load_window_actual_usage_rows_from_pool(
@@ -4417,7 +4408,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
             }
         }
     }
-
     apply_window_actual_usage_to_summaries(items, &usage);
     Ok(())
 }

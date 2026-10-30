@@ -4,6 +4,7 @@ use super::*;
 #[allow(unused_imports)]
 pub(crate) use super::*;
 
+mod account_window_archive_fallback_scope;
 #[expect(
     clippy::too_many_arguments,
     clippy::type_complexity,

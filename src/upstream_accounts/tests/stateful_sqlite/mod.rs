@@ -4,6 +4,7 @@ use super::*;
 #[allow(unused_imports)]
 pub(crate) use super::*;
 
+mod account_window_bounded_fallbacks;
 #[expect(
     clippy::too_many_arguments,
     reason = "OAuth fixture builders mirror credential and metadata fields."
