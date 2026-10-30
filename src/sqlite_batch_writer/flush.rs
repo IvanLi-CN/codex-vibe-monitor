@@ -1,5 +1,7 @@
 use super::*;
 
+const SQLITE_P2_PRESSURE_RETRY_COOLDOWN: Duration = Duration::from_secs(1);
+
 async fn acquire_sqlite_flush_connection(
     pool: &Pool<Sqlite>,
     recovery_replay: bool,
@@ -694,8 +696,11 @@ pub(crate) async fn flush_pending_batch(
         {
             Ok(system_task_deferred) => deferred_batch.merge_p2(system_task_deferred),
             Err(err) => {
-                crate::db_pressure::global_db_pressure_gate()
-                    .record_error("sqlite_batch_writer_p2", &err);
+                crate::db_pressure::global_db_pressure_gate().record_error_with_cooldown(
+                    "sqlite_batch_writer_p2",
+                    &err,
+                    SQLITE_P2_PRESSURE_RETRY_COOLDOWN,
+                );
                 warn!(
                     error = %err,
                     flush_priority = "P2",
@@ -788,8 +793,11 @@ pub(crate) async fn flush_pending_batch(
             }
         }
         Err(err) => {
-            crate::db_pressure::global_db_pressure_gate()
-                .record_error("sqlite_batch_writer_p2", &err);
+            crate::db_pressure::global_db_pressure_gate().record_error_with_cooldown(
+                "sqlite_batch_writer_p2",
+                &err,
+                SQLITE_P2_PRESSURE_RETRY_COOLDOWN,
+            );
             warn!(
                 error = %err,
                 flush_priority = "P2",
