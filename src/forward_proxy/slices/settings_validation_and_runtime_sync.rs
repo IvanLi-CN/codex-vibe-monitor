@@ -76,7 +76,16 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         bail!("all forward proxy subscriptions failed to refresh");
     }
     if successful_subscription_count != subscription_urls.len() {
-        bail!("one or more forward proxy subscriptions failed to refresh");
+        warn!(
+            successful_subscription_count,
+            subscription_count = subscription_urls.len(),
+            "retaining the last successful forward proxy subscription refresh after a partial failure"
+        );
+        crate::record_managed_task_processed_work(
+            &["forward_proxy_subscription_refresh"],
+            i64::try_from(fetched_subscription_count).unwrap_or(i64::MAX),
+        );
+        return Ok(());
     }
     if state.shutdown.is_cancelled() {
         crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);

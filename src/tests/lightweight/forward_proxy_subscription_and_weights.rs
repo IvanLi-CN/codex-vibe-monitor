@@ -75,15 +75,17 @@ async fn cached_subscription_nodes_survive_restart_and_failed_refresh() {
 #[tokio::test]
 async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
     let request_count = Arc::new(AtomicUsize::new(0));
-    let first_request_started = Arc::new(Notify::new());
-    let second_request_started = Arc::new(Notify::new());
+    let (first_request_started_tx, mut first_request_started_rx) =
+        tokio::sync::watch::channel(false);
+    let (second_request_started_tx, mut second_request_started_rx) =
+        tokio::sync::watch::channel(false);
     let release_first_request = Arc::new(Notify::new());
     let app = Router::new().route(
         "/subscription",
         get({
             let request_count = request_count.clone();
-            let first_request_started = first_request_started.clone();
-            let second_request_started = second_request_started.clone();
+            let first_request_started = first_request_started_tx.clone();
+            let second_request_started = second_request_started_tx.clone();
             let release_first_request = release_first_request.clone();
             move || {
                 let request_index = request_count.fetch_add(1, Ordering::SeqCst);
@@ -92,11 +94,11 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
                 let release_first_request = release_first_request.clone();
                 async move {
                     if request_index == 0 {
-                        first_request_started.notify_waiters();
+                        first_request_started.send_replace(true);
                         release_first_request.notified().await;
                         return (StatusCode::OK, "http://127.0.0.1:7890\n");
                     }
-                    second_request_started.notify_waiters();
+                    second_request_started.send_replace(true);
                     (StatusCode::OK, "http://127.0.0.1:7891\n")
                 }
             }
@@ -131,7 +133,14 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
         .await
         .apply_settings(settings.clone());
 
-    let first_started = first_request_started.notified();
+    let first_started = async {
+        while !*first_request_started_rx.borrow() {
+            first_request_started_rx
+                .changed()
+                .await
+                .expect("first refresh signal should remain open");
+        }
+    };
     let first_refresh = tokio::spawn(refresh_forward_proxy_subscriptions(
         state.clone(),
         true,
@@ -141,7 +150,14 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
         .await
         .expect("first refresh should reach the subscription source");
 
-    let second_started = second_request_started.notified();
+    let second_started = async {
+        while !*second_request_started_rx.borrow() {
+            second_request_started_rx
+                .changed()
+                .await
+                .expect("second refresh signal should remain open");
+        }
+    };
     let second_refresh = tokio::spawn(refresh_forward_proxy_subscriptions(
         state.clone(),
         true,
@@ -155,7 +171,7 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
     );
     assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
-    release_first_request.notify_waiters();
+    release_first_request.notify_one();
     first_refresh
         .await
         .expect("first refresh task should join")
@@ -278,12 +294,9 @@ async fn partial_subscription_refresh_failure_preserves_cached_nodes() {
         manager.restore_subscription_urls(vec![cached_proxy_url.clone()]);
     }
 
-    assert!(
-        refresh_forward_proxy_subscriptions(state.clone(), true, None)
-            .await
-            .is_err(),
-        "a partial subscription refresh must be reported as incomplete"
-    );
+    refresh_forward_proxy_subscriptions(state.clone(), true, None)
+        .await
+        .expect("a partial subscription refresh should retain the last successful result");
     assert_eq!(
         snapshot_active_forward_proxy_endpoints(&*state.forward_proxy.lock().await).len(),
         1,
