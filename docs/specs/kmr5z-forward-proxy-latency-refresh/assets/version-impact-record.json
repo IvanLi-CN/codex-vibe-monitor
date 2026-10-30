@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "candidate-evidence-pending-current-ci-review",
+  "change": {
+    "description": "Restore persisted forward proxy subscription nodes on restart and retain the last complete result across failed refreshes.",
+    "release_unit_description": "Forward proxy subscription restart recovery.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "No public API changes are introduced. The additive internal SQLite column records state that previously existed only in memory, and old schema initialization adds it with an empty default.",
+      "assessed_at": "2026-10-30T14:41:59Z",
+      "evidence": [
+        "docs/specs/kmr5z-forward-proxy-latency-refresh/SPEC.md",
+        "docs/specs/kmr5z-forward-proxy-latency-refresh/assets/persistent-state-migration-record.json"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "The implementation remains within restart recovery, refresh retention, source invalidation, and additive SQLite compatibility."
+      },
+      "reasoning": "HTTP contracts are unchanged. The new column is additive, the trigger only invalidates derived cache when its source configuration changes, and there is no historical row rewrite or backfill.",
+      "reassessed_at": "2026-10-30T14:41:59Z",
+      "evidence": [
+        "src/schema/runtime_system.rs",
+        "src/forward_proxy/slices/storage_and_hourly_stats.rs",
+        "src/forward_proxy/slices/settings_validation_and_runtime_sync.rs"
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "status": "unverified",
+      "reasoning": "The patch classification is expected to hold, but compatibility and refresh behavior remain unverified until the focused regression, migration, and candidate review evidence pass.",
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "No public response or status contract change.",
+      "supported_consumer_range": "Existing forward proxy settings and refresh API consumers.",
+      "evidence": [
+        "No request or response fields changed."
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "impact": "patch",
+      "state_description": "A last-successful subscription proxy URL snapshot associated with its configured subscription sources.",
+      "source_program_compatibility_range": "The origin/main schema at bc5258f74e61d976adabe1986e49aee773533df5 and the candidate branch; direct major-version skips are not claimed.",
+      "evidence": [
+        "Additive defaulted column and idempotent schema initialization.",
+        "Legacy-style setting updates invalidate the snapshot through a database trigger.",
+        "Candidate regression evidence remains pending."
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "persistent-state-migration-record.json"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": [
+      "planned public-api=patch",
+      "planned persistent-state=patch",
+      "verified maximum impact is pending candidate validation"
+    ]
+  }
+}

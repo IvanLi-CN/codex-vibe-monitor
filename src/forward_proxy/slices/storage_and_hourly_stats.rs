@@ -117,10 +117,12 @@ pub(crate) async fn save_forward_proxy_settings(
     settings: ForwardProxySettings,
 ) -> Result<()> {
     let normalized = settings.normalized();
+    let previous = load_forward_proxy_settings(pool).await?;
     let proxy_urls_json = serde_json::to_string(&normalized.proxy_urls)
         .context("failed to serialize forward proxy urls")?;
     let subscription_urls_json = serde_json::to_string(&normalized.subscription_urls)
         .context("failed to serialize forward proxy subscription urls")?;
+    let subscription_urls_changed = previous.subscription_urls != normalized.subscription_urls;
 
     sqlx::query(
         r#"
@@ -129,19 +131,87 @@ pub(crate) async fn save_forward_proxy_settings(
             proxy_urls_json = ?1,
             subscription_urls_json = ?2,
             subscription_update_interval_secs = ?3,
+            subscription_snapshot_json = CASE WHEN ?4 THEN '{}' ELSE subscription_snapshot_json END,
             updated_at = datetime('now')
-        WHERE id = ?4
+        WHERE id = ?5
         "#,
     )
     .bind(proxy_urls_json)
     .bind(subscription_urls_json)
     .bind(normalized.subscription_update_interval_secs as i64)
+    .bind(subscription_urls_changed)
     .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
     .execute(pool)
     .await
     .context("failed to persist forward_proxy_settings row")?;
 
     Ok(())
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ForwardProxySubscriptionSnapshot {
+    subscription_urls: Vec<String>,
+    proxy_urls: Vec<String>,
+}
+
+pub(crate) async fn load_forward_proxy_subscription_snapshot(
+    pool: &Pool<Sqlite>,
+    subscription_urls: &[String],
+) -> Result<Vec<String>> {
+    let Some(snapshot_json) = sqlx::query_scalar::<_, String>(
+        "SELECT subscription_snapshot_json FROM forward_proxy_settings WHERE id = ?1 LIMIT 1",
+    )
+    .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
+    .fetch_optional(pool)
+    .await
+    .context("failed to load forward proxy subscription snapshot")?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let Ok(snapshot) = serde_json::from_str::<ForwardProxySubscriptionSnapshot>(&snapshot_json)
+    else {
+        if snapshot_json != "{}" {
+            warn!("ignoring invalid forward proxy subscription snapshot");
+        }
+        return Ok(Vec::new());
+    };
+    let current_subscription_urls = normalize_subscription_entries(subscription_urls.to_vec());
+    if snapshot.subscription_urls != current_subscription_urls {
+        return Ok(Vec::new());
+    }
+    Ok(normalize_proxy_url_entries(snapshot.proxy_urls))
+}
+
+pub(crate) async fn save_forward_proxy_subscription_snapshot(
+    pool: &Pool<Sqlite>,
+    subscription_urls: &[String],
+    proxy_urls: &[String],
+) -> Result<bool> {
+    let snapshot = ForwardProxySubscriptionSnapshot {
+        subscription_urls: normalize_subscription_entries(subscription_urls.to_vec()),
+        proxy_urls: normalize_proxy_url_entries(proxy_urls.to_vec()),
+    };
+    let snapshot_json = serde_json::to_string(&snapshot)
+        .context("failed to serialize forward proxy subscription snapshot")?;
+    let subscription_urls_json = serde_json::to_string(&snapshot.subscription_urls)
+        .context("failed to serialize forward proxy subscription snapshot sources")?;
+
+    let result = sqlx::query(
+        r#"
+        UPDATE forward_proxy_settings
+        SET subscription_snapshot_json = ?1, updated_at = datetime('now')
+        WHERE id = ?2 AND subscription_urls_json = ?3
+        "#,
+    )
+    .bind(snapshot_json)
+    .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
+    .bind(subscription_urls_json)
+    .execute(pool)
+    .await
+    .context("failed to persist forward proxy subscription snapshot")?;
+
+    Ok(result.rows_affected() == 1)
 }
 
 pub(crate) async fn load_forward_proxy_runtime_states(
@@ -2315,11 +2385,16 @@ pub(crate) async fn put_forward_proxy_settings(
     let next: ForwardProxySettings = payload.into();
     let _update_guard = state.forward_proxy_settings_update_lock.lock().await;
 
-    let (previous_settings, known_subscription_keys_before_settings) = {
+    let (
+        previous_settings,
+        previous_subscription_snapshot,
+        known_subscription_keys_before_settings,
+    ) = {
         let manager = state.forward_proxy.lock().await;
         let before = snapshot_active_forward_proxy_endpoints(&manager);
         (
             manager.settings.clone(),
+            manager.subscription_proxy_urls.clone(),
             before
                 .into_iter()
                 .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
@@ -2350,7 +2425,26 @@ pub(crate) async fn put_forward_proxy_settings(
                     ),
                 ));
             }
+            if let Err(rollback_err) = save_forward_proxy_subscription_snapshot(
+                &state.pool,
+                &previous_settings.subscription_urls,
+                &previous_subscription_snapshot,
+            )
+            .await
+            .and_then(|saved| {
+                saved
+                    .then_some(())
+                    .ok_or_else(|| anyhow!("subscription settings changed during rollback"))
+            }) {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "failed to restore forward proxy subscription snapshot after shutdown interruption: {rollback_err}"
+                    ),
+                ));
+            }
             manager.apply_settings(previous_settings);
+            manager.restore_subscription_urls(previous_subscription_snapshot);
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("forward proxy settings update interrupted by shutdown: {err}"),

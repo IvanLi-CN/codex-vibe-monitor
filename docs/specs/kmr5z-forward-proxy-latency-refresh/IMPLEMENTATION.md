@@ -16,6 +16,8 @@
 - 延迟均值只统计成功样本，出站 IP、OAuth `/models` 与 Codex `/responses` 成功耗时均可贡献展示样本；任一目标失败会让节点最终显示异常。
 - Settings 页新增延迟列、测试全部、刷新订阅按钮、渐进结果状态和中英文文案。
 - Storybook `SettingsPage` 新增 forward proxy latency/refresh 场景并作为视觉证据来源。
+- 订阅刷新结果与来源配置绑定并持久化；启动时在监听服务前恢复匹配快照并同步路由。全部来源成功的空结果会清空快照，任何部分失败会保留上次成功结果。
+- SQLite 增量迁移为 `forward_proxy_settings` 增加快照列，并用触发器确保旧版本修改订阅源时同步清除快照。
 
 ## Remaining Gaps
 
@@ -23,6 +25,8 @@
 
 ## Verification
 
+- Current subscription recovery regression: `cargo test tests::lightweight::forward_proxy_subscription_and_weights -- --nocapture --test-threads=1` passed (15 passed, 0 failed), including restart restore, complete empty refresh, partial failure retention, source invalidation, and old-schema migration.
+- Current source and documentation checks: `cargo fmt --all -- --check`, `git diff --check`, dprint for this Spec set, JSON parsing for both migration records, and the Spec drift detector passed.
 - `cargo fmt --check`: passed
 - `cargo test manual_latency -- --test-threads=1`: passed
 - `cargo test`: passed

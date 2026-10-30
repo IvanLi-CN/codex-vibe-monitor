@@ -1164,13 +1164,20 @@ pub(crate) async fn run() -> Result<()> {
         ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config).await?;
         let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
         let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
+        let forward_proxy_subscription_snapshot = load_forward_proxy_subscription_snapshot(
+            &pool,
+            &forward_proxy_settings.subscription_urls,
+        )
+        .await?;
         let forward_proxy_runtime = load_forward_proxy_runtime_states(&pool).await?;
         let oauth_installation_seed = oauth_bridge::load_or_init_oauth_installation_seed(&pool).await?;
-        let forward_proxy = Arc::new(Mutex::new(ForwardProxyManager::with_algo(
+        let mut forward_proxy_manager = ForwardProxyManager::with_algo(
             forward_proxy_settings,
             forward_proxy_runtime,
             config.forward_proxy_algo,
-        )));
+        );
+        forward_proxy_manager.restore_subscription_urls(forward_proxy_subscription_snapshot);
+        let forward_proxy = Arc::new(Mutex::new(forward_proxy_manager));
         let resolved_proxy_raw_dir = config.resolved_proxy_raw_dir();
         fs::create_dir_all(&resolved_proxy_raw_dir).with_context(|| {
             format!(
