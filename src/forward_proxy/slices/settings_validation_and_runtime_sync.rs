@@ -31,6 +31,7 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
 
     let mut subscription_proxy_urls = Vec::new();
     let mut fetched_any_subscription = false;
+    let mut successful_subscription_count = 0usize;
     let mut fetched_subscription_count = 0usize;
     for subscription_url in &subscription_urls {
         if state.shutdown.is_cancelled() {
@@ -53,6 +54,7 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         match fetch_result {
             Ok(urls) => {
                 fetched_any_subscription = true;
+                successful_subscription_count = successful_subscription_count.saturating_add(1);
                 if !urls.is_empty() {
                     fetched_subscription_count = fetched_subscription_count.saturating_add(1);
                 }
@@ -71,6 +73,9 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     if !subscription_urls.is_empty() && !fetched_any_subscription {
         bail!("all forward proxy subscriptions failed to refresh");
     }
+    if successful_subscription_count != subscription_urls.len() {
+        bail!("one or more forward proxy subscriptions failed to refresh");
+    }
     if state.shutdown.is_cancelled() {
         crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
         info!("stopping forward proxy subscription refresh because shutdown is in progress");
@@ -78,36 +83,46 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     }
 
     let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
-    let added_subscription_endpoints = {
-        let mut manager = state.forward_proxy.lock().await;
-        if state.shutdown.is_cancelled() {
-            crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
-            info!(
-                "stopping forward proxy subscription refresh before applying refreshed endpoints because shutdown is in progress"
-            );
-            return Ok(());
-        }
-        if manager.settings.subscription_urls != subscription_urls {
-            crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
-            debug!("skip stale forward proxy subscription refresh after settings changed");
-            return Ok(());
-        }
-        let mut known_subscription_keys = snapshot_active_forward_proxy_endpoints(&manager)
-            .into_iter()
-            .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
-            .map(|endpoint| endpoint.key)
-            .collect::<HashSet<_>>();
-        if let Some(override_keys) = &known_subscription_keys_override {
-            known_subscription_keys.extend(override_keys.iter().cloned());
-        }
-        manager.apply_subscription_urls(subscription_proxy_urls);
-        let after = snapshot_active_forward_proxy_endpoints(&manager);
-        after
-            .into_iter()
-            .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
-            .filter(|endpoint| !known_subscription_keys.contains(&endpoint.key))
-            .collect::<Vec<_>>()
-    };
+    let mut manager = state.forward_proxy.lock().await;
+    if state.shutdown.is_cancelled() {
+        crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
+        info!(
+            "stopping forward proxy subscription refresh before applying refreshed endpoints because shutdown is in progress"
+        );
+        return Ok(());
+    }
+    if manager.settings.subscription_urls != subscription_urls {
+        crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
+        debug!("skip stale forward proxy subscription refresh after settings changed");
+        return Ok(());
+    }
+    if !save_forward_proxy_subscription_snapshot(
+        &state.pool,
+        &subscription_urls,
+        &subscription_proxy_urls,
+    )
+    .await?
+    {
+        crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
+        debug!("skip stale forward proxy subscription snapshot after settings changed");
+        return Ok(());
+    }
+    let mut known_subscription_keys = snapshot_active_forward_proxy_endpoints(&manager)
+        .into_iter()
+        .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+        .map(|endpoint| endpoint.key)
+        .collect::<HashSet<_>>();
+    if let Some(override_keys) = &known_subscription_keys_override {
+        known_subscription_keys.extend(override_keys.iter().cloned());
+    }
+    manager.apply_subscription_urls(subscription_proxy_urls);
+    let after = snapshot_active_forward_proxy_endpoints(&manager);
+    let added_subscription_endpoints = after
+        .into_iter()
+        .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+        .filter(|endpoint| !known_subscription_keys.contains(&endpoint.key))
+        .collect::<Vec<_>>();
+    drop(manager);
     sync_forward_proxy_routes(state.as_ref()).await?;
     crate::record_managed_task_processed_work(
         &["forward_proxy_subscription_refresh"],
@@ -1024,6 +1039,7 @@ pub(crate) struct ForwardProxyManager {
     pub(crate) algo: ForwardProxyAlgo,
     pub(crate) settings: ForwardProxySettings,
     pub(crate) endpoints: Vec<ForwardProxyEndpoint>,
+    pub(crate) subscription_proxy_urls: Vec<String>,
     pub(crate) runtime: HashMap<String, ForwardProxyRuntimeState>,
     pub(crate) bound_key_aliases: HashMap<String, String>,
     pub(crate) bound_key_endpoint_keys: HashMap<String, String>,
@@ -1150,6 +1166,7 @@ impl ForwardProxyManager {
             algo,
             settings,
             endpoints: Vec::new(),
+            subscription_proxy_urls: Vec::new(),
             runtime,
             bound_key_aliases: HashMap::new(),
             bound_key_endpoint_keys: HashMap::new(),
@@ -1191,14 +1208,32 @@ impl ForwardProxyManager {
     }
 
     pub(crate) fn apply_settings(&mut self, settings: ForwardProxySettings) {
+        if self.settings.subscription_urls != settings.subscription_urls {
+            self.subscription_proxy_urls.clear();
+            self.last_subscription_refresh_at = None;
+        }
         self.settings = settings;
-        self.rebuild_endpoints(Vec::new());
+        let subscription_endpoints = normalize_proxy_endpoints_from_urls(
+            &self.subscription_proxy_urls,
+            FORWARD_PROXY_SOURCE_SUBSCRIPTION,
+        );
+        self.rebuild_endpoints(subscription_endpoints);
+    }
+
+    pub(crate) fn restore_subscription_urls(&mut self, proxy_urls: Vec<String>) {
+        self.subscription_proxy_urls = normalize_proxy_url_entries(proxy_urls);
+        let subscription_endpoints = normalize_proxy_endpoints_from_urls(
+            &self.subscription_proxy_urls,
+            FORWARD_PROXY_SOURCE_SUBSCRIPTION,
+        );
+        self.rebuild_endpoints(subscription_endpoints);
+        self.last_subscription_refresh_at = None;
     }
 
     pub(crate) fn apply_subscription_urls(&mut self, proxy_urls: Vec<String>) {
-        let normalized_urls = normalize_proxy_url_entries(proxy_urls);
+        self.subscription_proxy_urls = normalize_proxy_url_entries(proxy_urls);
         let subscription_endpoints = normalize_proxy_endpoints_from_urls(
-            &normalized_urls,
+            &self.subscription_proxy_urls,
             FORWARD_PROXY_SOURCE_SUBSCRIPTION,
         );
         self.rebuild_endpoints(subscription_endpoints);
