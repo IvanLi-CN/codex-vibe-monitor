@@ -284,17 +284,29 @@ async fn load_analytics_change_state(tx: &mut SqliteConnection) -> Result<Analyt
     .context("analytics change state is not initialized")
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn append_analytics_change_tx(
-    tx: &mut SqliteConnection,
-    event_kind: &str,
-    entity_kind: &str,
-    source: &str,
+struct AnalyticsChangeInput<'a> {
+    event_kind: &'a str,
+    entity_kind: &'a str,
+    source: &'a str,
     source_row_id: Option<i64>,
-    entity_key: &str,
-    occurred_at: &str,
-    fact_json: &str,
+    entity_key: &'a str,
+    occurred_at: &'a str,
+    fact_json: &'a str,
+}
+
+async fn append_analytics_change_tx(
+    tx: &mut SqliteConnection,
+    input: AnalyticsChangeInput<'_>,
 ) -> Result<AnalyticsChangeReceipt> {
+    let AnalyticsChangeInput {
+        event_kind,
+        entity_kind,
+        source,
+        source_row_id,
+        entity_key,
+        occurred_at,
+        fact_json,
+    } = input;
     if !matches!(event_kind, "upsert" | "tombstone" | "coverage") {
         bail!("unsupported analytics change event kind: {event_kind}");
     }
@@ -571,13 +583,15 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
     .to_string();
     append_analytics_change_tx(
         tx,
-        "upsert",
-        "invocation",
-        &source,
-        Some(row.id),
-        &entity_key,
-        &row.occurred_at,
-        &fact_json,
+        AnalyticsChangeInput {
+            event_kind: "upsert",
+            entity_kind: "invocation",
+            source: &source,
+            source_row_id: Some(row.id),
+            entity_key: &entity_key,
+            occurred_at: &row.occurred_at,
+            fact_json: &fact_json,
+        },
     )
     .await
 }
@@ -602,13 +616,15 @@ pub(crate) async fn append_invocation_tombstone_for_identity_tx(
     .to_string();
     append_analytics_change_tx(
         tx,
-        "tombstone",
-        "invocation",
-        &source,
-        Some(source_row_id),
-        &format!("invocation:{}:{}", source, source_row_id),
-        occurred_at,
-        &fact_json,
+        AnalyticsChangeInput {
+            event_kind: "tombstone",
+            entity_kind: "invocation",
+            source: &source,
+            source_row_id: Some(source_row_id),
+            entity_key: &format!("invocation:{}:{}", source, source_row_id),
+            occurred_at,
+            fact_json: &fact_json,
+        },
     )
     .await
 }
@@ -727,13 +743,15 @@ async fn append_attempt_analytics_row_tx(
     .to_string();
     append_analytics_change_tx(
         tx,
-        "upsert",
-        "pool_attempt",
-        source,
-        Some(row.id),
-        &format!("attempt:{}", row.id),
-        &row.occurred_at,
-        &fact_json,
+        AnalyticsChangeInput {
+            event_kind: "upsert",
+            entity_kind: "pool_attempt",
+            source,
+            source_row_id: Some(row.id),
+            entity_key: &format!("attempt:{}", row.id),
+            occurred_at: &row.occurred_at,
+            fact_json: &fact_json,
+        },
     )
     .await
 }
@@ -786,16 +804,18 @@ pub(crate) async fn append_archive_coverage_for_file_tx(
     .to_string();
     append_analytics_change_tx(
         tx,
-        "coverage",
-        "archive_coverage",
-        &row.dataset,
-        Some(row.id),
-        &format!(
-            "archive:{}:{}:{}",
-            row.dataset, row.month_key, row.file_path
-        ),
-        occurred_at,
-        &fact_json,
+        AnalyticsChangeInput {
+            event_kind: "coverage",
+            entity_kind: "archive_coverage",
+            source: &row.dataset,
+            source_row_id: Some(row.id),
+            entity_key: &format!(
+                "archive:{}:{}:{}",
+                row.dataset, row.month_key, row.file_path
+            ),
+            occurred_at,
+            fact_json: &fact_json,
+        },
     )
     .await
 }
@@ -991,13 +1011,15 @@ mod tests {
         let mut tx = pool.begin().await.expect("begin source change transaction");
         let receipt = append_analytics_change_tx(
             tx.as_mut(),
-            "upsert",
-            "invocation",
-            "proxy",
-            Some(1),
-            "invocation:proxy:1",
-            "2026-10-30 12:00:00",
-            fact,
+            AnalyticsChangeInput {
+                event_kind: "upsert",
+                entity_kind: "invocation",
+                source: "proxy",
+                source_row_id: Some(1),
+                entity_key: "invocation:proxy:1",
+                occurred_at: "2026-10-30 12:00:00",
+                fact_json: fact,
+            },
         )
         .await
         .expect("append source change");
@@ -1218,13 +1240,15 @@ mod tests {
             let mut tx = pool.begin().await.expect("begin bounded event transaction");
             append_analytics_change_tx(
                 tx.as_mut(),
-                "upsert",
-                "test",
-                "test",
-                Some(index),
-                &format!("test:{index}"),
-                "2026-10-30 12:00:00",
-                &json!({"factVersion": 1, "index": index}).to_string(),
+                AnalyticsChangeInput {
+                    event_kind: "upsert",
+                    entity_kind: "test",
+                    source: "test",
+                    source_row_id: Some(index),
+                    entity_key: &format!("test:{index}"),
+                    occurred_at: "2026-10-30 12:00:00",
+                    fact_json: &json!({"factVersion": 1, "index": index}).to_string(),
+                },
             )
             .await
             .expect("append bounded event");
@@ -1241,13 +1265,15 @@ mod tests {
         let mut tx = pool.begin().await.expect("begin bounded event transaction");
         append_analytics_change_tx(
             tx.as_mut(),
-            "upsert",
-            "test",
-            "test",
-            Some(2),
-            "test:2",
-            "2026-10-30 12:00:00",
-            &json!({"factVersion": 1, "index": 2}).to_string(),
+            AnalyticsChangeInput {
+                event_kind: "upsert",
+                entity_kind: "test",
+                source: "test",
+                source_row_id: Some(2),
+                entity_key: "test:2",
+                occurred_at: "2026-10-30 12:00:00",
+                fact_json: &json!({"factVersion": 1, "index": 2}).to_string(),
+            },
         )
         .await
         .expect("append bounded event");
@@ -1292,13 +1318,15 @@ mod tests {
             .expect("begin post-ack event transaction");
         append_analytics_change_tx(
             tx.as_mut(),
-            "upsert",
-            "test",
-            "test",
-            Some(3),
-            "test:3",
-            "2026-10-30 12:00:00",
-            &json!({"factVersion": 1, "index": 3}).to_string(),
+            AnalyticsChangeInput {
+                event_kind: "upsert",
+                entity_kind: "test",
+                source: "test",
+                source_row_id: Some(3),
+                entity_key: "test:3",
+                occurred_at: "2026-10-30 12:00:00",
+                fact_json: &json!({"factVersion": 1, "index": 3}).to_string(),
+            },
         )
         .await
         .expect("append post-ack bounded event");
