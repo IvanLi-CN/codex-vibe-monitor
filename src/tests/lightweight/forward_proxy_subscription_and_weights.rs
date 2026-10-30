@@ -152,7 +152,10 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
 
     let (second_refresh_lock_attempted_tx, second_refresh_lock_attempted_rx) =
         tokio::sync::oneshot::channel();
-    install_forward_proxy_subscription_refresh_lock_attempt_hook(second_refresh_lock_attempted_tx);
+    install_forward_proxy_subscription_refresh_lock_attempt_hook(
+        &state,
+        second_refresh_lock_attempted_tx,
+    );
     let second_started = async {
         while !*second_request_started_rx.borrow() {
             second_request_started_rx
