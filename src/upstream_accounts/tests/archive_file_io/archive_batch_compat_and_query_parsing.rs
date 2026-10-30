@@ -3412,6 +3412,9 @@ pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> Ap
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
+        analytics_backend: AnalyticsBackend::Sqlite,
+        postgres_database_url: None,
+        postgres_max_connections: DEFAULT_POSTGRES_MAX_CONNECTIONS as u32,
         observability: ObservabilityConfig::default(),
         poll_interval: Duration::from_secs(10),
         request_timeout: Duration::from_secs(5),
@@ -4159,6 +4162,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         config,
+        pg_analytics: Arc::new(PgAnalyticsRuntime::disabled()),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),

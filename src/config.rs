@@ -314,6 +314,9 @@ pub(crate) struct PerformanceIndexPreparationArgs {
 pub(crate) struct AppConfig {
     pub(crate) openai_upstream_base_url: Url,
     pub(crate) database_path: PathBuf,
+    pub(crate) analytics_backend: AnalyticsBackend,
+    pub(crate) postgres_database_url: Option<PostgresDatabaseUrl>,
+    pub(crate) postgres_max_connections: u32,
     pub(crate) observability: ObservabilityConfig,
     pub(crate) poll_interval: Duration,
     pub(crate) request_timeout: Duration,
@@ -420,6 +423,26 @@ impl AppConfig {
             .clone()
             .or_else(|| env::var(ENV_DATABASE_PATH).ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("codex_vibe_monitor.db"));
+        let analytics_backend = env::var(ENV_ANALYTICS_BACKEND)
+            .ok()
+            .map(|raw| AnalyticsBackend::from_str(&raw))
+            .transpose()?
+            .unwrap_or_default();
+        let postgres_database_url = env::var(ENV_POSTGRES_DATABASE_URL)
+            .ok()
+            .map(|raw| PostgresDatabaseUrl::parse(&raw))
+            .transpose()?;
+        let postgres_max_connections = u32::try_from(parse_usize_env_var(
+            ENV_POSTGRES_MAX_CONNECTIONS,
+            DEFAULT_POSTGRES_MAX_CONNECTIONS,
+        )?)
+        .context("POSTGRES_MAX_CONNECTIONS exceeds the supported range")?;
+        if postgres_max_connections == 0 {
+            bail!("{ENV_POSTGRES_MAX_CONNECTIONS} must be greater than 0");
+        }
+        if analytics_backend == AnalyticsBackend::Postgres && postgres_database_url.is_none() {
+            bail!("{ENV_POSTGRES_DATABASE_URL} is required when {ENV_ANALYTICS_BACKEND}=postgres");
+        }
         let maintenance_database_path = Self::derive_maintenance_database_path(&database_path);
         if Self::normalized_path_identity(&maintenance_database_path)
             == Self::normalized_path_identity(&database_path)
@@ -759,6 +782,9 @@ impl AppConfig {
             openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
             database_path,
+            analytics_backend,
+            postgres_database_url,
+            postgres_max_connections,
             observability,
             poll_interval,
             request_timeout,

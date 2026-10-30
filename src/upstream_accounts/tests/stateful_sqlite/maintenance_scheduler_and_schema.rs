@@ -158,6 +158,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         config,
+        pg_analytics: Arc::new(PgAnalyticsRuntime::disabled()),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
