@@ -20,6 +20,7 @@ This topic covers the upstream account policy model and its owner-facing account
 ## Requirements
 
 - `REQ-ACCOUNT-POOL-DEFAULT-TRANSIT`: The web application MUST redirect `/account-pool` to `/account-pool/transits`; explicit `/account-pool/pool` and legacy `/account-pool/upstream-accounts` links MUST continue to open the OAuth/Session surface.
+- `REQ-OAUTH-ACCOUNT-PROXY-PRECEDENCE`: OAuth routing MUST resolve forward-proxy bindings as conversation > account > group for both token refresh and final upstream dispatch; an explicit account list is a hard constraint, while API-key transit routing MUST retain its existing transit scope.
 
 Only root, group, account, and conversation model policy are operator-editable. Tags are no longer a user-managed policy layer. The account-pool UI may display and filter system tags, but tag creation, editing, deletion, manual attach/detach, and tag-based policy authoring are not supported.
 
@@ -180,6 +181,8 @@ Forward-proxy bindings are resolved independently from routing policy and timeou
 Each layer may store a list of existing forward-proxy binding keys, including `__direct__`. An empty account list means inherit the group list; an empty conversation list means inherit the selected account/group scope.
 
 An explicit proxy list is a hard constraint. Runtime must select only from the configured list, keep the current selected node sticky for that scope, and switch to the next best selectable node from the same list only after the existing consecutive network-failure threshold is reached. If every explicit node is unavailable, routing fails with the existing proxy/account readiness error instead of falling back to an upstream layer or automatic proxy routing.
+
+OAuth token refresh and final upstream dispatch MUST use the same resolved conversation/account/group proxy scope. API-key transit candidates continue to use their existing transit scope and do not inherit this OAuth account-binding path.
 
 System tags are not an editable routing authoring surface. Their current contract is:
 
@@ -714,6 +717,7 @@ Startup schema maintenance automatically migrates every legacy API-key record in
 ## Verification
 
 - `VER-ACCOUNT-POOL-DEFAULT-TRANSIT` covers: `REQ-ACCOUNT-POOL-DEFAULT-TRANSIT` through App route tests, account-pool layout tests, and the Web Demo route matrix.
+- `VER-OAUTH-ACCOUNT-PROXY-PRECEDENCE` covers: `REQ-OAUTH-ACCOUNT-PROXY-PRECEDENCE` through `tests::stateful_sqlite::oauth_route_support_and_binding`, including account/group proxy observations, conversation override, token refresh, and final send.
 
 ## Related ADRs
 

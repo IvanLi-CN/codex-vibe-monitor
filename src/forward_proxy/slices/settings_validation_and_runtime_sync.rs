@@ -8,9 +8,21 @@ type ForwardProxySubscriptionRefreshLockAttemptHook =
     std::sync::Mutex<Option<(usize, oneshot::Sender<()>)>>;
 
 #[cfg(test)]
+type ForwardProxySubscriptionRefreshLockAcquiredHook =
+    std::sync::Mutex<Option<(usize, Arc<AtomicBool>, Arc<AtomicBool>)>>;
+
+#[cfg(test)]
 fn forward_proxy_subscription_refresh_lock_attempt_hook()
 -> &'static ForwardProxySubscriptionRefreshLockAttemptHook {
     static HOOK: std::sync::OnceLock<ForwardProxySubscriptionRefreshLockAttemptHook> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn forward_proxy_subscription_refresh_lock_acquired_hook()
+-> &'static ForwardProxySubscriptionRefreshLockAcquiredHook {
+    static HOOK: std::sync::OnceLock<ForwardProxySubscriptionRefreshLockAcquiredHook> =
         std::sync::OnceLock::new();
     HOOK.get_or_init(|| std::sync::Mutex::new(None))
 }
@@ -24,6 +36,21 @@ pub(crate) fn install_forward_proxy_subscription_refresh_lock_attempt_hook(
         .lock()
         .expect("forward proxy refresh test hook lock") =
         Some((Arc::as_ptr(state) as usize, sender));
+}
+
+#[cfg(test)]
+pub(crate) fn install_forward_proxy_subscription_refresh_lock_acquired_hook(
+    state: &Arc<AppState>,
+    active_fetch: Arc<AtomicBool>,
+    acquired_while_active: Arc<AtomicBool>,
+) {
+    *forward_proxy_subscription_refresh_lock_acquired_hook()
+        .lock()
+        .expect("forward proxy refresh acquired hook lock") = Some((
+        Arc::as_ptr(state) as usize,
+        active_fetch,
+        acquired_while_active,
+    ));
 }
 
 #[cfg(test)]
@@ -47,6 +74,29 @@ fn notify_forward_proxy_subscription_refresh_lock_attempt(state: &Arc<AppState>)
     }
 }
 
+#[cfg(test)]
+fn notify_forward_proxy_subscription_refresh_lock_acquired(state: &Arc<AppState>) {
+    let state_id = Arc::as_ptr(state) as usize;
+    let hook = {
+        let mut hook = forward_proxy_subscription_refresh_lock_acquired_hook()
+            .lock()
+            .expect("forward proxy refresh acquired hook lock");
+        if hook
+            .as_ref()
+            .is_some_and(|(hook_state_id, _, _)| *hook_state_id == state_id)
+        {
+            hook.take()
+        } else {
+            None
+        }
+    };
+    if let Some((_, active_fetch, acquired_while_active)) = hook
+        && active_fetch.load(Ordering::SeqCst)
+    {
+        acquired_while_active.store(true, Ordering::SeqCst);
+    }
+}
+
 pub(crate) async fn refresh_forward_proxy_subscriptions(
     state: Arc<AppState>,
     force: bool,
@@ -56,6 +106,8 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     #[cfg(test)]
     notify_forward_proxy_subscription_refresh_lock_attempt(&state);
     let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
+    #[cfg(test)]
+    notify_forward_proxy_subscription_refresh_lock_acquired(&state);
     let (subscription_urls, interval_secs, last_refresh_at) = {
         let manager = state.forward_proxy.lock().await;
         (

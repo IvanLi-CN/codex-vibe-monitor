@@ -77,28 +77,29 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
     let request_count = Arc::new(AtomicUsize::new(0));
     let (first_request_started_tx, mut first_request_started_rx) =
         tokio::sync::watch::channel(false);
-    let (second_request_started_tx, mut second_request_started_rx) =
-        tokio::sync::watch::channel(false);
+    let first_fetch_active = Arc::new(AtomicBool::new(false));
+    let second_lock_acquired_while_first_active = Arc::new(AtomicBool::new(false));
     let release_first_request = Arc::new(Notify::new());
     let app = Router::new().route(
         "/subscription",
         get({
             let request_count = request_count.clone();
             let first_request_started = first_request_started_tx.clone();
-            let second_request_started = second_request_started_tx.clone();
+            let first_fetch_active = first_fetch_active.clone();
             let release_first_request = release_first_request.clone();
             move || {
                 let request_index = request_count.fetch_add(1, Ordering::SeqCst);
                 let first_request_started = first_request_started.clone();
-                let second_request_started = second_request_started.clone();
+                let first_fetch_active = first_fetch_active.clone();
                 let release_first_request = release_first_request.clone();
                 async move {
                     if request_index == 0 {
+                        first_fetch_active.store(true, Ordering::SeqCst);
                         first_request_started.send_replace(true);
                         release_first_request.notified().await;
+                        first_fetch_active.store(false, Ordering::SeqCst);
                         return (StatusCode::OK, "http://127.0.0.1:7890\n");
                     }
-                    second_request_started.send_replace(true);
                     (StatusCode::OK, "http://127.0.0.1:7891\n")
                 }
             }
@@ -156,14 +157,11 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
         &state,
         second_refresh_lock_attempted_tx,
     );
-    let second_started = async {
-        while !*second_request_started_rx.borrow() {
-            second_request_started_rx
-                .changed()
-                .await
-                .expect("second refresh signal should remain open");
-        }
-    };
+    install_forward_proxy_subscription_refresh_lock_acquired_hook(
+        &state,
+        first_fetch_active,
+        second_lock_acquired_while_first_active.clone(),
+    );
     let second_refresh_state = state.clone();
     let second_refresh = tokio::spawn(refresh_forward_proxy_subscriptions(
         second_refresh_state,
@@ -176,14 +174,6 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
             "second refresh should attempt the shared lock before the first refresh is released",
         )
         .expect("second refresh lock-attempt signal should remain open");
-    tokio::task::yield_now().await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), second_started)
-            .await
-            .is_err(),
-        "a second refresh must not fetch while the first fetch-and-apply cycle is active"
-    );
-    assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
     release_first_request.notify_one();
     first_refresh
@@ -195,6 +185,10 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
         .expect("second refresh task should join")
         .expect("second refresh should succeed");
 
+    assert!(
+        !second_lock_acquired_while_first_active.load(Ordering::SeqCst),
+        "a second refresh must not acquire the shared lock while the first fetch is active"
+    );
     assert_eq!(request_count.load(Ordering::SeqCst), 2);
     let restored_subscription_sources = {
         state

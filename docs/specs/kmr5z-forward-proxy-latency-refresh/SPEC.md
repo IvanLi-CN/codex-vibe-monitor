@@ -2,7 +2,7 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
-## 背景 / 问题陈述
+## Context and Scope
 
 - Forward proxy 设置页已有节点历史成功率、历史均值延迟和订阅配置，但缺少用户主动确认“当前节点是否可用、当前延迟是多少”的操作入口。
 - 订阅节点可能在后台周期刷新前发生变化，用户需要在设置页手动强制刷新订阅并立刻看到新增节点。
@@ -39,9 +39,13 @@
 - 账号池绑定节点选择器的展示逻辑。
 - 自定义测速站点配置。
 
-## 需求（Requirements）
+## Requirements
 
 ### MUST
+
+- `REQ-KMR5Z-LATENCY-TEST`: 节点测速 MUST 保持既有预算、目标可达性和渐进结果契约。
+- `REQ-KMR5Z-SUBSCRIPTION-RECOVERY`: 订阅节点快照 MUST 在匹配源配置时于启动恢复，并在完整刷新成功前保留上次成功结果。
+- `REQ-KMR5Z-REFRESH-CONTRACT`: 订阅刷新 MUST 保持既有 HTTP 响应字段契约；部分失败只能保留旧结果并标记内部任务为 `skipped`，完整空结果 MUST 清空节点。
 
 - 节点表必须新增“延迟”列，内容为可点击 badge/button。
 - 未测状态显示 `测试`；测试中显示当前轮次进度；有结果显示整数毫秒；五轮全失败显示 `--` 或“超时”。
@@ -82,7 +86,9 @@
 - 单节点整体 15 秒预算耗尽后，返回已完成样本；无有效样本时显示超时。
 - 批量测试中单个节点失败不影响其他节点继续测试。
 - 启动恢复快照时，若其订阅源列表与当前设置不一致，则忽略快照并继续使用当前手动代理配置。
+- 启动恢复快照时，若 JSON 无法解析、订阅源不匹配，或快照包含非法/非规范化的订阅节点 URL，则整体忽略快照，不恢复其中的部分节点。
 - 订阅刷新出现任一来源错误时，本轮结果不完整，不得清除或部分替换上次成功的节点快照。
+- 手动刷新遇到部分来源失败时，继续沿用既有 HTTP 状态和响应字段契约；只在内部任务观测中标记为 `skipped`，并保留上次成功结果。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -109,10 +115,22 @@
 - Given 用户点击刷新订阅，When 后端成功解析订阅，Then Settings 页节点列表包含刷新后的节点。
 - Given 上次成功刷新已保存节点且订阅源配置未变，When 服务重启但订阅源暂时不可用，Then 服务开始处理请求前恢复并路由上次成功的节点。
 - Given 多个订阅源中任一来源刷新失败，When 本轮刷新结束，Then 活动节点与持久化快照均保留本轮前的上次成功结果。
+- Given 手动刷新中部分订阅源失败，When 请求完成，Then 响应仍使用既有状态和字段，内部刷新任务标记为 `skipped`，且不报告替换出的新节点。
+- Given 启动快照 JSON 可解析但包含非法或非规范化节点 URL，When 服务尝试恢复，Then 整个快照被忽略，不恢复剩余合法节点。
 - Given 所有订阅源均成功返回但解析结果为空，When 本轮刷新结束，Then 活动节点和持久化快照立即变为空。
 - Given 用户删除或修改订阅源，When 设置保存成功，Then 旧订阅源的节点快照被清除，不会因重新添加相同地址而恢复。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
+## Verification
+
+### VER-KMR5Z-BACKEND
+
+- Method: backend unit and integration regressions for latency probing, OAuth proxy precedence, subscription restart recovery, refresh retention, source invalidation, and schema compatibility.
+- covers: `REQ-KMR5Z-LATENCY-TEST`, `REQ-KMR5Z-SUBSCRIPTION-RECOVERY`, `REQ-KMR5Z-REFRESH-CONTRACT`
+
+### VER-KMR5Z-FRONTEND
+
+- Method: Settings page unit, Storybook, and build checks for latency and subscription refresh states.
+- covers: `REQ-KMR5Z-LATENCY-TEST`, `REQ-KMR5Z-REFRESH-CONTRACT`
 
 ### Testing
 
@@ -196,9 +214,9 @@
 
 ![Settings forward proxy mobile window order](./assets/settings-forward-proxy-window-order-mobile.png)
 
-## Related PRs
+## Related ADRs
 
-- None
+None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

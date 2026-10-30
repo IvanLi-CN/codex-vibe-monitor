@@ -90,7 +90,9 @@
       "required_test_evidence": []
     },
     "completed_evidence": [
-      "cargo test tests::lightweight::forward_proxy_subscription_and_weights -- --nocapture --test-threads=1: 15 passed",
+      "cargo test tests::lightweight::forward_proxy_subscription_and_weights -- --nocapture --test-threads=4: 17 passed, including invalid-endpoint snapshot rejection",
+      "cargo test tests::lightweight::time_ranges_and_proxy_display::restarted_xray_subscription_snapshot_recreates_local_route -- --nocapture --test-threads=1: 1 passed",
+      "cargo test tests::stateful_sqlite::oauth_route_support_and_binding -- --nocapture --test-threads=1: 10 passed, including account-bound OAuth CONNECT observations",
       "cargo fmt --all -- --check",
       "git diff --check",
       "dprint check on the associated Spec, Implementation, and History documents",
