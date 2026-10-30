@@ -263,6 +263,8 @@ pub(crate) struct MaintenanceCliArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum MaintenanceCommand {
+    /// Operate the explicitly controlled PostgreSQL analytics replica.
+    AnalyticsReplica(AnalyticsReplicaCliArgs),
     /// Prepare optional contention indexes under an explicit total work budget.
     PreparePerformanceIndexes(PerformanceIndexPreparationArgs),
     /// Release orphan conversation identities and ended hourly invocation prefixes.
@@ -293,6 +295,26 @@ pub(crate) enum MaintenanceCommand {
     PruneArchiveBatches(MaintenanceDryRunArgs),
     /// Prune legacy archive batches that are no longer needed for online history.
     PruneLegacyArchiveBatches(MaintenanceDryRunArgs),
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct AnalyticsReplicaCliArgs {
+    #[command(subcommand)]
+    pub(crate) command: AnalyticsReplicaCommand,
+}
+
+#[derive(Subcommand, Debug, Clone, Copy)]
+pub(crate) enum AnalyticsReplicaCommand {
+    /// Rebuild the private replica from a consistent SQLite source snapshot.
+    Bootstrap,
+    /// Show durable replica and source-retention state.
+    Status,
+    /// Pause the replica worker and remove service eligibility.
+    Pause,
+    /// Resume the bounded replica worker and drain retained source changes.
+    Resume,
+    /// Verify schema, checkpoint, retention, and service-eligibility invariants.
+    Verify,
 }
 
 #[derive(Args, Debug, Default)]

@@ -1035,6 +1035,9 @@ pub(crate) async fn run() -> Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::from_sources(&cli)?;
+    if let Some(command) = selected_analytics_replica_command(&cli) {
+        return run_analytics_replica_cli(&config, command).await;
+    }
     if let Some(CliCommand::Maintenance(MaintenanceCliArgs {
         command: MaintenanceCommand::PreparePerformanceIndexes(options),
     })) = &cli.command
