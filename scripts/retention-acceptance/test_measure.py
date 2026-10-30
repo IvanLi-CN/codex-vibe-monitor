@@ -49,6 +49,7 @@ from measure import (
     task_runs,
     competitor_file_oracle,
     validate_task_snapshot,
+    wait_for_terminal_task_settlement,
     wait_for_task_evidence,
 )
 
@@ -364,15 +365,16 @@ class MeasurementBudgetTests(unittest.TestCase):
                     "CREATE TABLE managed_task_progress (task_key TEXT, total INTEGER, completed INTEGER, phase TEXT, checkpoint TEXT, eta_seconds REAL, updated_at TEXT, freshness TEXT, unit TEXT, source_scope TEXT, last_progress_at TEXT, wait_reason TEXT, next_retry_at TEXT, next_inspection_at TEXT, next_catchup_at TEXT, catchup_state TEXT, stages TEXT)"
                 )
                 connection.execute(
-                    "CREATE TABLE managed_task_runs (id INTEGER PRIMARY KEY, task_key TEXT, trigger_kind TEXT, status TEXT, started_at TEXT, actual_started_at TEXT, actual_finished_at TEXT, processed_count INTEGER, updated_count INTEGER, details TEXT, summary TEXT, error_detail TEXT, completion TEXT)"
+                    "CREATE TABLE managed_task_runs (id INTEGER PRIMARY KEY, task_key TEXT, trigger_kind TEXT, status TEXT, started_at TEXT, finished_at TEXT, actual_started_at TEXT, actual_finished_at TEXT, processed_count INTEGER, updated_count INTEGER, details TEXT, summary TEXT, error_detail TEXT, completion TEXT)"
                 )
                 connection.execute(
-                    "INSERT INTO managed_task_runs VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO managed_task_runs VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         "retention_archive",
                         "schedule",
                         "running",
                         "2026-10-25T00:00:00Z",
+                        None,
                         None,
                         None,
                         0,
@@ -416,6 +418,28 @@ class MeasurementBudgetTests(unittest.TestCase):
         self.assertIsNone(rows[0]["actual_started_at"])
         self.assertEqual(rows[0]["started_at"], "2026-10-25T00:00:00Z")
         self.assertEqual(rows[0]["activity_started_at"], "2026-10-25T00:00:02Z")
+
+    def test_terminal_task_settlement_waits_for_actual_finish_timestamp(self) -> None:
+        unsettled = [{
+            "task_key": "pool_upstream_attempt_archive",
+            "status": "skipped",
+            "finished_at": "2026-10-25T00:00:02Z",
+            "actual_finished_at": None,
+        }]
+        settled = [{
+            **unsettled[0],
+            "actual_finished_at": "2026-10-25T00:00:03Z",
+        }]
+        with patch("measure.task_runs", side_effect=[settled]) as runs, patch("measure.time.sleep") as sleep:
+            result = wait_for_terminal_task_settlement(
+                Path("maintenance.sqlite"),
+                time.monotonic(),
+                initial_rows=unsettled,
+            )
+
+        self.assertEqual(result, settled)
+        runs.assert_called_once_with(Path("maintenance.sqlite"))
+        sleep.assert_called_once_with(0.1)
 
     def test_legacy_partial_status_is_accepted_when_selected_batch_is_complete(self) -> None:
         archive_details = {

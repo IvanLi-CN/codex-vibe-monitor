@@ -68,6 +68,7 @@ RAW_CONTAINER = f"{CONTAINER_DATA}/proxy_raw_payloads"
 METRICS_NAME = "cvm_retention_phase_duration_seconds_bucket"
 WRITE_HOLD_OPERATIONS = ("invocation_archive", "timestamped_archive")
 WRITE_HOLD_PHASE = "write_hold"
+TERMINAL_SETTLEMENT_WAIT_SECONDS = 10.0
 RUN_ID = uuid.uuid4().hex[:12]
 WORKER_IMAGE = DRIVER_IMAGE_REF
 
@@ -1077,7 +1078,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
                 "stages": stages,
             }
         rows = connection.execute(
-            "SELECT task_key,trigger_kind,status,started_at,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND (actual_started_at IS NOT NULL OR status='running') ORDER BY id"
+            "SELECT task_key,trigger_kind,status,started_at,finished_at,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND (actual_started_at IS NOT NULL OR status='running') ORDER BY id"
         ).fetchall()
         result = []
         for row in rows:
@@ -1093,6 +1094,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
                 "trigger_kind": row["trigger_kind"],
                 "status": row["status"],
                 "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
                 "actual_started_at": row["actual_started_at"],
                 "actual_finished_at": row["actual_finished_at"],
                 "processed_count": row["processed_count"],
@@ -1119,6 +1121,44 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
         return result
     finally:
         connection.close()
+
+
+def wait_for_terminal_task_settlement(
+    maintenance_db: Path,
+    started: float,
+    timeout_seconds: float = TERMINAL_SETTLEMENT_WAIT_SECONDS,
+    initial_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Wait for terminal managed runs to receive their persisted actual finish timestamp.
+
+    The execution timeline is settled asynchronously from the managed-run journal.  A terminal
+    status with ``finished_at`` but no ``actual_finished_at`` is therefore not a safe oracle
+    boundary: freezing the application container at that point can preserve a logically finished
+    run as an apparent active run.  Require the durable execution timestamp before evidence is
+    handed to the oracle.
+    """
+    deadline = time.monotonic() + min(timeout_seconds, remaining_budget(started))
+    latest: list[dict[str, Any]] = task_runs(maintenance_db) if initial_rows is None else initial_rows
+    unsettled: list[dict[str, Any]] = []
+    terminal_statuses = {"success", "failed", "skipped"}
+    while time.monotonic() < deadline:
+        unsettled = [
+            row
+            for row in latest
+            if row.get("task_key") in CONTROLLED_TASK_KEYS
+            and row.get("status") in terminal_statuses
+            and row.get("finished_at") is not None
+            and row.get("actual_finished_at") is None
+        ]
+        if not unsettled:
+            return latest
+        time.sleep(0.1)
+        latest = task_runs(maintenance_db)
+    keys = sorted({row["task_key"] for row in unsettled})
+    raise AcceptanceError(
+        "terminal managed task runs did not settle their actual finish timestamps: "
+        + ",".join(keys)
+    )
 
 
 def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
@@ -1495,6 +1535,12 @@ def wait_for_task_evidence(
                 scheduling_suspended = True
             active = active_controlled_task_keys(latest)
             if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
+                latest = wait_for_terminal_task_settlement(
+                    maintenance_db,
+                    started,
+                    initial_rows=latest,
+                )
+                active = active_controlled_task_keys(latest)
                 if active:
                     proof_edge_latest = mark_proof_edge_active(latest)
                     if not all(

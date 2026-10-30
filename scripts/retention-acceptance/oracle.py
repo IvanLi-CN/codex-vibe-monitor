@@ -30,6 +30,66 @@ CONTAINER_ARCHIVE_ROOT = Path("/srv/app/data/archives")
 SUMMARY_PAGE_MAX_BYTES = 64 * 1024 * 1024
 SUMMARY_PAGE_MAX_RECORDS = 400
 
+# The pristine template is immutable for the lifetime of one measurement run.  Reusing its
+# verified seed-row fingerprints keeps the independent oracle strict while avoiding a full
+# 220,000-row template scan for every trial.
+_SEED_FINGERPRINT_CACHE: dict[
+    tuple[str, tuple[int, int, int, int, int, int, int], str, tuple[str, ...], str],
+    dict[str, str],
+] = {}
+
+
+def _template_file_signature(path: Path) -> tuple[int, int, int, int, int, int, int]:
+    return _file_signature(path.stat(follow_symlinks=False))
+
+
+def _seed_fingerprints_for_template(
+    template_database: Path,
+    template: sqlite3.Connection,
+    table: str,
+    template_columns: list[str],
+    content_columns: list[str],
+    identity_column: str,
+    seed_ids: set[str],
+    budget_check: Callable[[], float] | None,
+) -> dict[str, str]:
+    signature = _template_file_signature(template_database)
+    seed_identity_digest = hashlib.sha256(
+        b"".join(identity.encode() + b"\n" for identity in sorted(seed_ids))
+    ).hexdigest()
+    key = (
+        str(template_database.resolve()),
+        signature,
+        table,
+        tuple(content_columns),
+        seed_identity_digest,
+    )
+    cached = _SEED_FINGERPRINT_CACHE.get(key)
+    if cached is not None:
+        if set(cached) != seed_ids:
+            raise AcceptanceError(f"{table} pristine template seed identities changed")
+        return cached
+
+    identity_index = template_columns.index(identity_column)
+    content_indexes = [template_columns.index(column) for column in content_columns]
+    seed_fingerprints: dict[str, str] = {}
+    template_column_list = ",".join(template_columns)
+    for index, row in enumerate(template.execute(f"SELECT {template_column_list} FROM {table}")):
+        if budget_check is not None and index % 256 == 0:
+            budget_check()
+        identity = row[identity_index]
+        if identity not in seed_ids:
+            continue
+        if identity in seed_fingerprints:
+            raise AcceptanceError(f"{table} pristine template contains a duplicate seed identity")
+        seed_fingerprints[identity] = _row_digest(tuple(row[index] for index in content_indexes))
+    if set(seed_fingerprints) != seed_ids:
+        raise AcceptanceError(f"{table} pristine template does not contain every seed source row")
+    if _template_file_signature(template_database) != signature:
+        raise AcceptanceError(f"{table} pristine template changed while its seed rows were verified")
+    _SEED_FINGERPRINT_CACHE[key] = seed_fingerprints
+    return seed_fingerprints
+
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in connection.execute(f"PRAGMA table_info('{table}')")}
@@ -500,20 +560,16 @@ def verify_dataset(
             column for column in source_columns if column not in allowed_legacy_missing_columns
         ]
         content_indexes = [source_columns.index(column) for column in content_columns]
-        template_column_list = ",".join(template_columns)
-        identity_index = template_columns.index(identity_column)
-        seed_fingerprints: dict[str, str] = {}
-        for index, row in enumerate(template.execute(f"SELECT {template_column_list} FROM {table}")):
-            if budget_check is not None and index % 256 == 0:
-                budget_check()
-            identity = row[identity_index]
-            if identity not in seed_ids:
-                continue
-            if identity in seed_fingerprints:
-                raise AcceptanceError(f"{dataset} pristine template contains a duplicate seed identity")
-            seed_fingerprints[identity] = _row_digest(tuple(row[index] for index in content_indexes))
-        if set(seed_fingerprints) != seed_ids:
-            raise AcceptanceError(f"{dataset} pristine template does not contain every seed source row")
+        seed_fingerprints = _seed_fingerprints_for_template(
+            template_database,
+            template,
+            table,
+            template_columns,
+            content_columns,
+            identity_column,
+            seed_ids,
+            budget_check,
+        )
 
         manifest_columns = _columns(connection, "archive_batches")
         required = {"id", "dataset", "month_key", "file_path", "sha256", "row_count", "status", "cleanup_state", "superseded_by"}
