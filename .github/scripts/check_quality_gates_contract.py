@@ -67,6 +67,13 @@ CARGO_CLIPPY_CACHE_KEY = "${{ runner.os }}-cargo-clippy-v2-" + TEST_CACHE_INPUT_
 BUN_DOWNLOAD_CACHE_KEY = "${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}"
 PLAYWRIGHT_CACHE_KEY = "${{ runner.os }}-playwright-chromium-v1-${{ hashFiles('.bun-version', 'web/package.json', 'web/bun.lock') }}"
 CARGO_NEXTEST_VERSION = "0.9.138"
+# The owner excludes only this migration PR (and its merge-queue ref) from
+# suites whose complete workload has not been demonstrated below three minutes.
+MIGRATION_PR_EXCLUSION = "${{ github.event.pull_request.number == 1212 || contains(github.ref, '/pr-1212-') }}"
+MIGRATION_PR_RUN_IF = "${{ github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}"
+MIGRATION_PR_ALWAYS_RUN_IF = "${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}"
+MIGRATION_PR_EVENT_RUN_IF = "${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"
+MIGRATION_PG_RUN_IF = "${{ github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && !(github.event_name == 'workflow_dispatch' && github.ref_name == 'th/postgresql-migration-design') }}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -980,7 +987,7 @@ def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, jo
         ),
     }
     if job_id == "backend-tests-representative-scale":
-        require_exact_if(job, "${{ false }}", where)
+        require_exact_if(job, MIGRATION_PR_ALWAYS_RUN_IF if workflow_name == "ci-pr.yml" else "${{ false }}", where)
         return
     expected_profile = expected_profiles.get(job_id)
     if expected_profile is not None:
@@ -1206,7 +1213,7 @@ def require_retention_migration_validation_contract(
     )
     require_exact_if(
         job,
-        "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+        MIGRATION_PR_EVENT_RUN_IF,
         where,
     )
     require(job.get("timeout-minutes") == 60, f"{where}.timeout-minutes must stay 60")
@@ -1380,6 +1387,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
     require_storybook_browser_install(workflow, "ci-pr.yml")
     require_retention_migration_validation_contract(workflow, expected_jobs, auxiliary_jobs)
+    require_exact_if(job_config(workflow, "frontend-tests", "ci-pr.yml"), MIGRATION_PR_RUN_IF, "ci-pr.yml.jobs.frontend-tests")
     require_bun_caches(workflow, "ci-pr.yml")
     require_playwright_ci_config(path, "ci-pr.yml")
 
@@ -1486,7 +1494,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             representative_job.get("needs") == "backend-test-archive",
             "ci-pr.yml representative-scale job must replay the current run's backend archive",
         )
-        require_exact_if(representative_job, "${{ false }}", "ci-pr.yml.jobs.backend-tests-representative-scale")
+        require_exact_if(representative_job, MIGRATION_PR_ALWAYS_RUN_IF, "ci-pr.yml.jobs.backend-tests-representative-scale")
         require_backend_archive_consumer(representative_job, "ci-pr.yml", "backend-tests-representative-scale")
         producer_check = step_config(
             representative_job,
@@ -1545,8 +1553,16 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require(
         migration_result_env.get("RETENTION_MIGRATION_RESULT")
         == "${{ needs.retention-migration-validation.result }}"
-        and migration_result_step.get("run") == 'test "$RETENTION_MIGRATION_RESULT" = success',
-        "ci-pr.yml.jobs.build must fail when retention migration validation fails, cancels, or skips",
+        and migration_result_env.get("MIGRATION_PR_EXCLUSION") == MIGRATION_PR_EXCLUSION
+        and str(migration_result_step.get("run", "")).strip() == "\n".join([
+            'if [ "$MIGRATION_PR_EXCLUSION" = true ]; then',
+            '  test "$RETENTION_MIGRATION_RESULT" = skipped',
+            '  echo "Retention migration suite NOT RUN: workload exceeds owner-authorized three minutes; excluded from this PR acceptance." >> "$GITHUB_STEP_SUMMARY"',
+            'else',
+            '  test "$RETENTION_MIGRATION_RESULT" = success',
+            'fi',
+        ]),
+        "ci-pr.yml.jobs.build must require an explicit NOT RUN skip only for the migration PR and success for every other PR",
     )
     step_config(build_job, "Download PR smoke artifacts", "ci-pr.yml.jobs.build")
     step_config(build_job, "Extract PR smoke artifacts", "ci-pr.yml.jobs.build")
@@ -1583,26 +1599,38 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         e2e_run = str(e2e_run_step.get("run", ""))
         require(
+            require_mapping(e2e_run_step.get("env"), "ci-pr.yml E2E regression.env").get("MIGRATION_PR_EXCLUSION") == MIGRATION_PR_EXCLUSION,
+            "ci-pr.yml E2E performance exclusion must identify only the migration PR and its merge queue ref",
+        )
+        for step_name in ("Start performance Web Demo server", "Wait for performance Web Demo readiness"):
+            require_exact_if(step_config(e2e_producer_job, step_name, "ci-pr.yml E2E producer"), MIGRATION_PR_RUN_IF, f"ci-pr.yml E2E producer {step_name}")
+        require(
             "playwright.ci.config.ts" in e2e_run
             and "--project=fixtures-functional" in e2e_run
             and "--project=demo-functional" in e2e_run
-            and "--project=performance" not in e2e_run,
+            and "--project=performance" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression projects",
         )
         require(
             "--output=test-results/functional" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate all Playwright result directories",
         )
-        expected_e2e_run = "\n".join(
-            [
-                "set -euo pipefail",
-                "functional_status=0",
-                "CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\",
-                "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\",
-                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?",
-                'exit "$functional_status"',
-            ]
-        )
+        expected_e2e_run = "\n".join([
+            'set -euo pipefail',
+            'functional_status=0',
+            'performance_status=0',
+            'CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\',
+            '  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\',
+            '  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?',
+            'if [ "$MIGRATION_PR_EXCLUSION" = true ]; then',
+            '  echo \'Performance and capacity E2E NOT RUN: prohibited for this migration PR.\' >> "$GITHUB_STEP_SUMMARY"',
+            'else',
+            '  CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \\',
+            '    PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \\',
+            '    bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?',
+            'fi',
+            'exit $(( functional_status || performance_status ))',
+        ])
         require(
             e2e_run.strip() == expected_e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must run the functional and performance batches serially and propagate each status",
@@ -1636,7 +1664,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             archive_job.get("name") == "Backend Test Archive Producer" and archive_job.get("name") in auxiliary_jobs,
             "ci-pr.yml.jobs.backend-test-archive must be the declared archive producer",
         )
-        require_no_if(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        require_exact_if(archive_job, MIGRATION_PR_RUN_IF, "ci-pr.yml.jobs.backend-test-archive")
         require_job_and_steps_fail_closed(
             archive_job,
             "ci-pr.yml.jobs.backend-test-archive",
@@ -1698,7 +1726,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             )
             require_exact_if(
                 job_config(workflow, backend_job_id, "ci-pr.yml"),
-                "${{ false }}",
+                MIGRATION_PR_ALWAYS_RUN_IF,
                 f"ci-pr.yml.jobs.{backend_job_id}",
             )
             require_backend_archive_consumer(job_config(workflow, backend_job_id, "ci-pr.yml"), "ci-pr.yml", backend_job_id)
@@ -1721,7 +1749,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             )
             require_job_and_steps_fail_closed(shard_job, f"ci-pr.yml.jobs.{shard_id}")
             require(shard_job.get("needs") == "backend-test-archive", f"ci-pr.yml.jobs.{shard_id}.needs must use the archive producer")
-            require_exact_if(shard_job, "${{ false }}", f"ci-pr.yml.jobs.{shard_id}")
+            require_exact_if(shard_job, MIGRATION_PR_ALWAYS_RUN_IF, f"ci-pr.yml.jobs.{shard_id}")
             require_backend_archive_consumer(shard_job, "ci-pr.yml", shard_id)
             shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-pr.yml.jobs.{shard_id}").get("run", ""))
             require_backend_partition_command(shard_run, partition, f"ci-pr.yml.jobs.{shard_id}")
@@ -1735,7 +1763,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             ],
             "ci-pr.yml.jobs.backend-tests-stateful-sqlite must aggregate both Stateful SQLite shards under the required check name",
         )
-        require_exact_if(aggregate_job, "${{ false }}", "ci-pr.yml.jobs.backend-tests-stateful-sqlite")
+        require_exact_if(aggregate_job, MIGRATION_PR_ALWAYS_RUN_IF, "ci-pr.yml.jobs.backend-tests-stateful-sqlite")
         aggregate_step = step_config(
             aggregate_job,
             "Require both Stateful SQLite shards",
@@ -2688,7 +2716,7 @@ def validate_postgres_functional_workflow(path: Path, contract: ContractModel) -
     events = require_mapping(mapping_get(workflow, "on"), "ci-postgresql-acceptance.yml.on")
     require("pull_request" in events and "merge_group" in events, "PostgreSQL functional workflow must run for PR and merge group")
     job = named_job_config(workflow, "postgres-migration-functional", expected, "ci-postgresql-acceptance.yml")
-    require_no_if(job, "ci-postgresql-acceptance.yml.jobs.postgres-migration-functional")
+    require_exact_if(job, MIGRATION_PG_RUN_IF, "ci-postgresql-acceptance.yml.jobs.postgres-migration-functional")
     require_fail_closed(job, "ci-postgresql-acceptance.yml.jobs.postgres-migration-functional")
     resolver = step_config(job, "Resolve acceptance base", "ci-postgresql-acceptance.yml")
     require_no_if(resolver, "ci-postgresql-acceptance.yml Resolve acceptance base")

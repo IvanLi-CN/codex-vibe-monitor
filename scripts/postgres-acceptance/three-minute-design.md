@@ -1,8 +1,8 @@
 # Three-minute migration functional check design
 
-The current migration PR excludes the existing compile-and-test PostgreSQL workflow from acceptance. Its job is excluded for this parent branch, its merge-group ref and a manual dispatch on this branch, and the evidence report records not-run. Existing shared suite scripts retain their behavior for other callers; they are not an approved substitute for this check.
+The current migration PR excludes the existing compile-and-test PostgreSQL workflow from acceptance. Its job is excluded only for pull request number 1212, its `/pr-1212-` merge-group ref and a manual dispatch on `th/postgresql-migration-design`, and the evidence report records not-run. Existing shared suite scripts retain their behavior for other callers; they are not an approved substitute for this check.
 
-The full frontend test job, backend test archive producer and legacy retention migration job are likewise excluded for this PR. Their skipped checks are not successful test evidence. Other PRs and shared main-branch callers retain their previous behavior.
+The full frontend test job, backend test archive producer and legacy retention migration job are likewise excluded for this PR. Their skipped checks are not successful test evidence. Other PRs, including fork PRs with the same branch name, and shared main-branch callers retain their previous behavior.
 
 The replacement must naturally finish the complete test work in less than three minutes. A timeout, forced termination, a retry, or splitting the same long work between jobs does not meet this requirement. This design has not yet demonstrated that duration and must not be executed or claimed as passing evidence.
 

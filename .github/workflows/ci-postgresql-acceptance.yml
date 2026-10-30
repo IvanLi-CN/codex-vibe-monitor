@@ -43,7 +43,7 @@ jobs:
           for name in ("BASE_SHA", "CANDIDATE_SHA"):
               if not re.fullmatch(r"[0-9a-f]{40}", os.environ[name]):
                   raise SystemExit(f"{name} must be a full lowercase commit SHA")
-          report = {"status": "blocked", "result": "not-run", "base_sha": os.environ["BASE_SHA"], "candidate_sha": os.environ["CANDIDATE_SHA"], "reason": "all test work must naturally complete within three minutes; the existing compile-and-test workflow is prohibited and is not current-PR acceptance evidence", "functional_evidence_not_verified_by_this_report": ["archive ownership and raw-link atomicity", "source fence uncertainty", "authority and router publication uncertainty", "journal acknowledgement uncertainty", "post-cutover PostgreSQL outage without stale SQLite fallback"], "deployment_safety_unverified": ["target capacity and data-volume headroom", "WAL backlog", "backup and restore", "natural-traffic baseline"]}
+          report = {"status": "excluded", "result": "not-run", "base_sha": os.environ["BASE_SHA"], "candidate_sha": os.environ["CANDIDATE_SHA"], "reason": "all test work must naturally complete within three minutes; the existing compile-and-test workflow is prohibited and is not current-PR acceptance evidence", "functional_evidence_not_verified_by_this_report": ["archive ownership and raw-link atomicity", "source fence uncertainty", "authority and router publication uncertainty", "journal acknowledgement uncertainty", "post-cutover PostgreSQL outage without stale SQLite fallback"], "deployment_safety_unverified": ["target capacity and data-volume headroom", "WAL backlog", "backup and restore", "natural-traffic baseline"]}
           Path(os.environ["RUNNER_TEMP"], "postgres-acceptance-not-run.json").write_text(json.dumps(report, indent=2) + "\n")
           PY
       - name: Upload missing-evidence report
@@ -55,7 +55,7 @@ jobs:
   # Owner restriction: the complete test work must naturally finish within three minutes.
   # Exclude this migration PR and its merge group; preserve other PR behavior.
   postgres-migration-functional:
-    if: ${{ github.head_ref != 'th/postgresql-migration-design' && !contains(github.ref, '/pr-1212-') && !(github.event_name == 'workflow_dispatch' && github.ref_name == 'th/postgresql-migration-design') }}
+    if: ${{ github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') && !(github.event_name == 'workflow_dispatch' && github.ref_name == 'th/postgresql-migration-design') }}
     name: PostgreSQL Migration Functional and Recovery
     runs-on: ubuntu-24.04
     timeout-minutes: 45

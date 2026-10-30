@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/.github/scripts/test-migration-ci-exclusions.py"
+
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-validator-contract.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-candidate-binding.py"
 
@@ -362,10 +364,10 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text()
-needle = '  backend-tests-representative-scale:\n    name: Backend Tests (Representative Scale)\n    needs: backend-test-archive\n    # Not run: the selected acceptance includes pressure tests.\n    if: ${{ false }}'
+needle = "  backend-tests-representative-scale:\n    name: Backend Tests (Representative Scale)\n    needs: backend-test-archive\n    # Pressure tests are prohibited for migration PR #1212.\n    if: ${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}"
 if text.count(needle) != 1:
     raise SystemExit("expected disabled representative-scale job")
-path.write_text(text.replace(needle, needle.replace('${{ false }}', 'always()'), 1))
+path.write_text(text.replace(needle, needle.replace("${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}", 'always()'), 1))
 PY
 if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   --repo-root "$continue_error_repo" --profile final >/dev/null 2>"$tmp_dir/missing-joint-acceptance.log"; then
@@ -890,7 +892,7 @@ text = path.read_text()
 needle = '''  backend-tests-lightweight:
     needs: backend-test-archive
     # Not run: this profile has not been established to exclude pressure tests.
-    if: ${{ false }}
+    if: ${{ always() && github.event.pull_request.number != 1212 && !contains(github.ref, '/pr-1212-') }}
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1321,7 +1323,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must run all required Playwright regression projects" "$tmp_dir/e2e-parallel.log"
+grep -q "must run the functional and performance batches serially" "$tmp_dir/e2e-parallel.log"
 
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"
