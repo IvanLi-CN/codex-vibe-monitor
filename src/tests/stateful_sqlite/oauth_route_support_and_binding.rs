@@ -21,6 +21,14 @@ where
         .expect("join large-stack test worker")
 }
 
+struct ResetTestOauthCodexUpstreamBaseUrl;
+
+impl Drop for ResetTestOauthCodexUpstreamBaseUrl {
+    fn drop(&mut self) {
+        oauth_bridge::reset_test_oauth_codex_upstream_base_url_now();
+    }
+}
+
 #[tokio::test]
 async fn oauth_streaming_passthrough_backfills_body_prefix_from_replay_status() {
     let crypto_key: [u8; 32] = Sha256::digest(b"test-upstream-account-secret").into();
@@ -324,6 +332,7 @@ fn pool_route_oauth_token_refresh_uses_account_proxy_before_live_send() {
         let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
             .lock()
             .await;
+        let _upstream_reset_guard = ResetTestOauthCodexUpstreamBaseUrl;
 
         let token_requests = Arc::new(AtomicUsize::new(0));
         let final_authorization = Arc::new(std::sync::Mutex::new(None));
