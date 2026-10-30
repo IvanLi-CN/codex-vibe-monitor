@@ -310,7 +310,7 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
             "merge_group:\n    types:\n      - checks_requested",
             "github.event_name == 'merge_group' && github.event.merge_group.base_sha",
             "github.event_name == 'merge_group' && github.event.merge_group.head_sha",
-            '"status": "blocked", "result": "not-run"',
+            '"status": "excluded", "result": "not-run"',
             "bash scripts/postgres-acceptance/run-functional-suite.sh",
             "actions/upload-artifact@v7",
             "if-no-files-found: error",
