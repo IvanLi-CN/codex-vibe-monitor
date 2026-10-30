@@ -46,6 +46,72 @@ const POSTGRES_ACCEPTANCE_FIXTURE: &str = include_str!(
     "../../../docs/adr/assets/module-owned-postgresql-migration/acceptance-fixtures.json"
 );
 
+#[tokio::test]
+async fn postgres_module_metadata_isolation_and_reset() -> Result<()> {
+    let Some(url) = crate::tests::optional_postgres_test_database_url(
+        "postgres_module_metadata_isolation_and_reset",
+    ) else {
+        return Ok(());
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await?;
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let schema = format!("module_scope_{}_{}", std::process::id(), stamp);
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&pool)
+        .await?;
+    let result: Result<()> = async {
+        sqlx::query(&format!("SET search_path TO {schema}"))
+            .execute(&pool).await?;
+        let sqlite = SqlitePool::connect("sqlite::memory:").await?;
+        for table in ["codex_invocations", "prompt_cache_conversations"] {
+            sqlx::query(&format!("CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
+                .execute(&sqlite).await?;
+        }
+        let catalog = ModuleCatalog::inspect_sqlite(&sqlite).await?
+            .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])?;
+        let traffic = PostgresMigrationTarget::new_native(
+            pool.clone(), "module_test", catalog.clone(), StorageModule::TrafficArchive,
+        )?;
+        let analytics = PostgresMigrationTarget::new_native(
+            pool.clone(), "module_test", catalog, StorageModule::Analytics,
+        )?;
+        traffic.ensure_schema().await?;
+        analytics.ensure_schema().await?;
+        for (target, table) in [(&traffic, "codex_invocations"), (&analytics, "prompt_cache_conversations")] {
+            target.save_plan(&TableCopyPlan {
+                migration_id: "shared".into(), table_name: table.into(),
+                installation_id: "install".into(), source_identity: "source".into(),
+                target_identity: "target".into(), scan_lower_bound: None,
+                scan_upper_bound: None, capture_start: 0,
+            }).await?;
+            sqlx::query(&format!("INSERT INTO {table} (id) VALUES (1)"))
+                .execute(&pool).await?;
+        }
+        assert_eq!(traffic.known_tables("shared").await?, vec!["codex_invocations"]);
+        assert_eq!(analytics.known_tables("shared").await?, vec!["prompt_cache_conversations"]);
+        analytics.reset_attempt("shared").await?;
+        assert_eq!(traffic.known_tables("shared").await?, vec!["codex_invocations"]);
+        assert!(analytics.known_tables("shared").await?.is_empty());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool).await?;
+        assert_eq!(count, 1);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+            .fetch_one(&pool).await?;
+        assert_eq!(count, 0);
+        sqlx::query("INSERT INTO module_test_plans (migration_id, table_name, installation_id, source_identity, target_identity, capture_start) VALUES ('shared', 'unknown_table', 'install', 'source', 'target', 0)")
+            .execute(&pool).await?;
+        assert!(traffic.known_tables("shared").await.is_err());
+        Ok(())
+    }.await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&pool)
+        .await?;
+    result
+}
+
 #[derive(Debug, Deserialize)]
 struct PostgresAcceptanceFixture {
     source: PostgresAcceptanceSource,

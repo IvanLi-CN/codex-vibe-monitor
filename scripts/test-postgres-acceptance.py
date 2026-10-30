@@ -78,7 +78,7 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
 
     def test_audited_backend_selectors_are_explicit_and_exist(self) -> None:
         names = (REPO_ROOT / "scripts/postgres-acceptance/non-pressure-backend-tests.txt").read_text().splitlines()
-        self.assertEqual(len(names), 99)
+        self.assertEqual(len(names), 101)
         self.assertEqual(len(set(names)), len(names))
         for name in names:
             self.assertRegex(name, r"^(?:tests|upstream_accounts::tests)::(?:lightweight|stateful_sqlite|archive_file_io)::[a-z0-9_]+::[a-z0-9_]+$")

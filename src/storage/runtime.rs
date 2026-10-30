@@ -39,7 +39,7 @@ use super::{
     migration_sqlx::{PostgresMigrationTarget, SqliteMigrationSource},
     migration_status::{
         StorageMigrationProgress, StorageMigrationResponse, StorageMigrationRuntime,
-        StorageMigrationState, source_identity_for,
+        StorageMigrationState, StorageMigrationWorkerError, source_identity_for,
     },
     traffic::TrafficFactStore,
 };
@@ -325,12 +325,12 @@ impl StorageRuntimeRouter {
     }
 
     pub(crate) async fn start(&self) {
-        if let Err(error) = self.worker.migration.ensure_auto_start().await {
-            tracing::warn!(error = %error, "could not automatically start configured storage migration");
+        if self.worker.migration.ensure_auto_start().await.is_err() {
+            tracing::warn!("could not automatically start configured storage migration");
             let _ = self
                 .worker
                 .migration
-                .publish_worker_error(error.to_string())
+                .publish_worker_error(StorageMigrationWorkerError::AutoStart)
                 .await;
         }
         self.worker.start().await;
@@ -496,8 +496,8 @@ impl StorageMigrationWorker {
         }
         let sample = match source.capacity_sample().await {
             Ok(sample) => sample,
-            Err(error) => {
-                tracing::warn!(error = %error, "SQLite migration capacity observation failed");
+            Err(_) => {
+                tracing::warn!("SQLite migration capacity observation failed");
                 MigrationCapacitySample::unavailable(limits.max_capture_bytes)
             }
         };
@@ -559,9 +559,12 @@ impl StorageMigrationWorker {
                     | StorageMigrationState::Switching
                     | StorageMigrationState::Recovering
             );
-            if should_run && let Err(error) = self.run_migration(status).await {
-                tracing::warn!(error = %error, "online storage migration worker iteration failed");
-                let _ = self.migration.publish_worker_error(error.to_string()).await;
+            if should_run && self.run_migration(status).await.is_err() {
+                tracing::warn!("online storage migration worker iteration failed");
+                let _ = self
+                    .migration
+                    .publish_worker_error(StorageMigrationWorkerError::Iteration)
+                    .await;
                 tokio::select! {
                     _ = self.shutdown.cancelled() => return,
                     _ = tokio::time::sleep(WORKER_RETRY_INTERVAL) => {},

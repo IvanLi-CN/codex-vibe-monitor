@@ -97,3 +97,5 @@ upstream_accounts::tests::archive_file_io::archive_batch_compat_and_query_parsin
 tests::lightweight::postgres_tests::native_catalog_recognizes_only_actual_check_constraints
 tests::lightweight::postgres_tests::native_ddl_translates_only_known_id_alphabet_glob_checks
 tests::lightweight::postgres_tests::native_ddl_translates_known_defaults_and_rejects_sqlite_only_expressions
+tests::lightweight::postgres_tests::postgres_module_metadata_isolation_and_reset
+tests::lightweight::storage_migration_status::worker_failure_status_exposes_only_fixed_safe_categories

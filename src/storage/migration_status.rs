@@ -27,6 +27,22 @@ const ANALYTICS_SOURCE_IDENTITY: &str = "sqlite:local:analytics";
 const STORAGE_MIGRATION_RUNTIME_TABLE: &str = "storage_migration_runtime";
 const STORAGE_MIGRATION_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Error categories exposed to operators must not contain database or business values.
+#[derive(Clone, Copy)]
+pub(crate) enum StorageMigrationWorkerError {
+    AutoStart,
+    Iteration,
+}
+
+impl StorageMigrationWorkerError {
+    fn description(self) -> &'static str {
+        match self {
+            Self::AutoStart => "Unable to start storage migration automatically",
+            Self::Iteration => "Storage migration worker failed; retrying",
+        }
+    }
+}
+
 const MIGRATION_HELD_TASK_KEYS: &[&str] = &[
     "retention_archive",
     "pool_upstream_attempt_archive",
@@ -1204,14 +1220,14 @@ impl StorageMigrationRuntime {
 
     pub(crate) async fn publish_worker_error(
         &self,
-        error: String,
+        error: StorageMigrationWorkerError,
     ) -> Result<StorageMigrationResponse> {
         let (previous, snapshot) = {
             let mut state = self.state.lock().await;
             let previous = state.clone();
             let now = Utc::now();
-            state.response.verification.last_error = Some(error.clone());
-            state.response.switch.failure_reason = Some(error);
+            state.response.verification.last_error = Some(error.description().to_owned());
+            state.response.switch.failure_reason = Some(error.description().to_owned());
             state.response.heartbeat = StorageMigrationHeartbeat {
                 at: now.to_rfc3339(),
                 healthy: false,

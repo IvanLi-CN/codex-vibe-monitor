@@ -6,6 +6,7 @@ use crate::storage::migration_sqlx::{MigrationTableSpec, SqliteMigrationSource};
 use crate::storage::migration_status::{
     StorageMigrationBackend, StorageMigrationControlRequest, StorageMigrationProgress,
     StorageMigrationResponse, StorageMigrationRuntime, StorageMigrationState,
+    StorageMigrationWorkerError,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use sqlx::sqlite::SqlitePoolOptions;
@@ -40,6 +41,38 @@ async fn default_status_exposes_safe_target_and_unknown_progress() {
     let serialized = serde_json::to_string(&status).expect("status serializes");
     assert!(!serialized.contains("POSTGRES_DATABASE_URL"));
     assert!(!serialized.contains("postgresql://"));
+}
+
+#[tokio::test]
+async fn worker_failure_status_exposes_only_fixed_safe_categories() {
+    let runtime = StorageMigrationRuntime::default();
+    let mut events = runtime.subscribe();
+
+    for (error, expected) in [
+        (
+            StorageMigrationWorkerError::AutoStart,
+            "Unable to start storage migration automatically",
+        ),
+        (
+            StorageMigrationWorkerError::Iteration,
+            "Storage migration worker failed; retrying",
+        ),
+    ] {
+        let status = runtime
+            .publish_worker_error(error)
+            .await
+            .expect("publish error");
+        events.changed().await.expect("error event");
+        let event = events.borrow_and_update().clone();
+        assert_eq!(status.verification.last_error.as_deref(), Some(expected));
+        assert_eq!(status.switch.failure_reason.as_deref(), Some(expected));
+        assert_eq!(event.kind, "error");
+        assert_eq!(
+            event.status.switch.failure_reason.as_deref(),
+            Some(expected)
+        );
+        assert!(!status.heartbeat.healthy);
+    }
 }
 
 #[tokio::test]

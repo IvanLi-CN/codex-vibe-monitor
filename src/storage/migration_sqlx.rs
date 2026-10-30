@@ -2988,8 +2988,8 @@ impl PostgresMigrationTarget {
             .ok_or_else(|| anyhow!("PostgreSQL migration reset has no target tables"))?;
         let mut logical_tables = ordered_native_module_table_names(&self.specs, module)?;
         logical_tables.reverse();
-        for table_name in logical_tables {
-            let spec = self.spec(&table_name)?;
+        for table_name in &logical_tables {
+            let spec = self.spec(table_name)?;
             let table =
                 quote_identifier(&spec.target_table_name, "PostgreSQL migration target table")?;
             sqlx::query(&format!("DELETE FROM {table}"))
@@ -3010,11 +3010,14 @@ impl PostgresMigrationTarget {
             &self.metadata.plans,
         ] {
             let table = quote_identifier(table, "PostgreSQL migration metadata table")?;
-            sqlx::query(&format!("DELETE FROM {table} WHERE migration_id = $1"))
-                .bind(migration_id)
-                .execute(&mut *transaction)
-                .await
-                .context("clear PostgreSQL migration staging metadata")?;
+            sqlx::query(&format!(
+                "DELETE FROM {table} WHERE migration_id = $1 AND table_name = ANY($2)"
+            ))
+            .bind(migration_id)
+            .bind(&logical_tables)
+            .execute(&mut *transaction)
+            .await
+            .context("clear PostgreSQL migration staging metadata")?;
         }
         transaction
             .commit()
@@ -3259,11 +3262,25 @@ impl MigrationTarget for PostgresMigrationTarget {
         let plans = quote_identifier(&self.metadata.plans, "PostgreSQL migration plans table")?;
         let query =
             format!("SELECT table_name FROM {plans} WHERE migration_id = $1 ORDER BY table_name");
-        Ok(sqlx::query_scalar(&query)
+        let tables: Vec<String> = sqlx::query_scalar(&query)
             .bind(migration_id)
             .fetch_all(&self.pool)
             .await
-            .context("list PostgreSQL migration plans")?)
+            .context("list PostgreSQL migration plans")?;
+        let Some(catalog) = &self.native_catalog else {
+            return Ok(tables);
+        };
+        // Metadata is shared by module attempts, so exclude known tables belonging to
+        // another module. Unknown tables still fail closed rather than hiding corruption.
+        for table in &tables {
+            if catalog.table(table).is_none() {
+                bail!("PostgreSQL migration plan has unknown table {table}");
+            }
+        }
+        Ok(tables
+            .into_iter()
+            .filter(|table| self.specs.contains_key(table))
+            .collect())
     }
 
     async fn load_plan(
