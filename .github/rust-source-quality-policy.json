@@ -93,7 +93,7 @@
     {
       "path": "src/tests/lightweight/forward_proxy_subscription_and_weights.rs",
       "role": "test_helper",
-      "line_budget": 700,
+      "line_budget": 720,
       "next_module_workstream": "Split forward-proxy subscription and weight fixtures by refresh, bootstrap probing, and endpoint selection."
     },
     {

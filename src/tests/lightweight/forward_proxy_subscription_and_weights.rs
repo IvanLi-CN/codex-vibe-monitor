@@ -150,6 +150,7 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
         .await
         .expect("first refresh should reach the subscription source");
 
+    let (second_refresh_entered_tx, second_refresh_entered_rx) = tokio::sync::oneshot::channel();
     let second_started = async {
         while !*second_request_started_rx.borrow() {
             second_request_started_rx
@@ -158,11 +159,18 @@ async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
                 .expect("second refresh signal should remain open");
         }
     };
-    let second_refresh = tokio::spawn(refresh_forward_proxy_subscriptions(
-        state.clone(),
-        true,
-        None,
-    ));
+    let second_refresh_state = state.clone();
+    let second_refresh = tokio::spawn(async move {
+        second_refresh_entered_tx
+            .send(())
+            .expect("second refresh task should remain alive");
+        refresh_forward_proxy_subscriptions(second_refresh_state, true, None).await
+    });
+    tokio::time::timeout(Duration::from_secs(1), second_refresh_entered_rx)
+        .await
+        .expect("second refresh should enter before the first refresh is released")
+        .expect("second refresh entry signal should remain open");
+    tokio::task::yield_now().await;
     assert!(
         tokio::time::timeout(Duration::from_millis(100), second_started)
             .await
@@ -294,9 +302,12 @@ async fn partial_subscription_refresh_failure_preserves_cached_nodes() {
         manager.restore_subscription_urls(vec![cached_proxy_url.clone()]);
     }
 
-    refresh_forward_proxy_subscriptions(state.clone(), true, None)
-        .await
-        .expect("a partial subscription refresh should retain the last successful result");
+    assert!(
+        refresh_forward_proxy_subscriptions(state.clone(), true, None)
+            .await
+            .is_err(),
+        "a partial subscription refresh must be reported as incomplete"
+    );
     assert_eq!(
         snapshot_active_forward_proxy_endpoints(&*state.forward_proxy.lock().await).len(),
         1,

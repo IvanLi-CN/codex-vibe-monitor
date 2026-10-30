@@ -1,5 +1,8 @@
 use super::*;
 
+pub(crate) const FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX: &str =
+    "partial forward proxy subscription refresh:";
+
 pub(crate) async fn refresh_forward_proxy_subscriptions(
     state: Arc<AppState>,
     force: bool,
@@ -81,11 +84,9 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
             subscription_count = subscription_urls.len(),
             "retaining the last successful forward proxy subscription refresh after a partial failure"
         );
-        crate::record_managed_task_processed_work(
-            &["forward_proxy_subscription_refresh"],
-            i64::try_from(fetched_subscription_count).unwrap_or(i64::MAX),
+        bail!(
+            "{FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX} one or more forward proxy subscriptions failed to refresh"
         );
-        return Ok(());
     }
     if state.shutdown.is_cancelled() {
         crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);

@@ -2384,6 +2384,7 @@ pub(crate) async fn put_forward_proxy_settings(
 
     let next: ForwardProxySettings = payload.into();
     let _update_guard = state.forward_proxy_settings_update_lock.lock().await;
+    let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
 
     let (
         previous_settings,
@@ -2455,6 +2456,7 @@ pub(crate) async fn put_forward_proxy_settings(
             "failed to sync forward proxy routes after settings update"
         );
     }
+    drop(_refresh_guard);
     if let Err(err) = refresh_forward_proxy_subscriptions(
         state.clone(),
         true,
@@ -2529,22 +2531,42 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
     )
     .await;
 
-    if let Err(err) = refresh_result {
-        let detail = sanitize_forward_proxy_error_detail(&err);
-        observation.finish_with_status_and_reason("failed", Some(&detail));
-        if let Some(run) = task_run.as_ref() {
-            finish_system_task_run_batched(
-                state.as_ref(),
-                run,
-                SystemTaskStatus::Failed,
-                Some("forward proxy manual refresh failed".to_string()),
-                Some(detail.clone()),
-            )
-            .await;
+    match refresh_result {
+        Ok(()) => observation.finish_with_status("success"),
+        Err(err)
+            if err
+                .to_string()
+                .starts_with(FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX) =>
+        {
+            let detail = sanitize_forward_proxy_error_detail(&err);
+            observation.finish_with_status_and_reason("skipped", Some("partial_refresh"));
+            if let Some(run) = task_run.as_ref() {
+                finish_system_task_run_batched(
+                    state.as_ref(),
+                    run,
+                    SystemTaskStatus::Skipped,
+                    Some("forward proxy manual refresh retained the previous result".to_string()),
+                    Some(detail),
+                )
+                .await;
+            }
         }
-        return Err((StatusCode::BAD_GATEWAY, detail));
+        Err(err) => {
+            let detail = sanitize_forward_proxy_error_detail(&err);
+            observation.finish_with_status_and_reason("failed", Some(&detail));
+            if let Some(run) = task_run.as_ref() {
+                finish_system_task_run_batched(
+                    state.as_ref(),
+                    run,
+                    SystemTaskStatus::Failed,
+                    Some("forward proxy manual refresh failed".to_string()),
+                    Some(detail.clone()),
+                )
+                .await;
+            }
+            return Err((StatusCode::BAD_GATEWAY, detail));
+        }
     }
-    observation.finish_with_status("success");
 
     let after_subscription_keys = {
         let manager = state.forward_proxy.lock().await;
