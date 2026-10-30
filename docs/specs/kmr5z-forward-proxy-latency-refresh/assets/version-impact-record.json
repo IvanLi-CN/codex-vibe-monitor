@@ -3,7 +3,7 @@
   "kind": "version-impact-record",
   "status": "candidate-evidence-pending-current-ci-review",
   "change": {
-    "description": "Restore persisted forward proxy subscription nodes on restart and retain the last complete result across failed refreshes.",
+    "description": "Restore persisted forward proxy subscription nodes on restart, retain the last complete result across failed refreshes, and atomically restore subscription state after interrupted settings updates.",
     "release_unit_description": "Forward proxy subscription restart recovery.",
     "affected_contracts": ["public-api", "persistent-state"]
   },
@@ -22,7 +22,7 @@
       "impact": "patch",
       "scope_drift": {
         "detected": false,
-        "description": "The implementation remains within restart recovery, refresh retention, source invalidation, and additive SQLite compatibility."
+        "description": "The implementation remains within restart recovery, refresh retention, source invalidation, atomic settings rollback, and additive SQLite compatibility."
       },
       "reasoning": "HTTP contracts are unchanged. The new column is additive, the trigger only invalidates derived cache when its source configuration changes, and there is no historical row rewrite or backfill.",
       "reassessed_at": "2026-10-30T14:41:59Z",

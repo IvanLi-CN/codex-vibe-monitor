@@ -154,6 +154,21 @@ struct ForwardProxySubscriptionSnapshot {
     proxy_urls: Vec<String>,
 }
 
+fn serialize_forward_proxy_subscription_snapshot(
+    subscription_urls: &[String],
+    proxy_urls: &[String],
+) -> Result<(String, String)> {
+    let snapshot = ForwardProxySubscriptionSnapshot {
+        subscription_urls: normalize_subscription_entries(subscription_urls.to_vec()),
+        proxy_urls: normalize_proxy_url_entries(proxy_urls.to_vec()),
+    };
+    let snapshot_json = serde_json::to_string(&snapshot)
+        .context("failed to serialize forward proxy subscription snapshot")?;
+    let subscription_urls_json = serde_json::to_string(&snapshot.subscription_urls)
+        .context("failed to serialize forward proxy subscription snapshot sources")?;
+    Ok((snapshot_json, subscription_urls_json))
+}
+
 pub(crate) async fn load_forward_proxy_subscription_snapshot(
     pool: &Pool<Sqlite>,
     subscription_urls: &[String],
@@ -188,14 +203,8 @@ pub(crate) async fn save_forward_proxy_subscription_snapshot(
     subscription_urls: &[String],
     proxy_urls: &[String],
 ) -> Result<bool> {
-    let snapshot = ForwardProxySubscriptionSnapshot {
-        subscription_urls: normalize_subscription_entries(subscription_urls.to_vec()),
-        proxy_urls: normalize_proxy_url_entries(proxy_urls.to_vec()),
-    };
-    let snapshot_json = serde_json::to_string(&snapshot)
-        .context("failed to serialize forward proxy subscription snapshot")?;
-    let subscription_urls_json = serde_json::to_string(&snapshot.subscription_urls)
-        .context("failed to serialize forward proxy subscription snapshot sources")?;
+    let (snapshot_json, subscription_urls_json) =
+        serialize_forward_proxy_subscription_snapshot(subscription_urls, proxy_urls)?;
 
     let result = sqlx::query(
         r#"
@@ -212,6 +221,70 @@ pub(crate) async fn save_forward_proxy_subscription_snapshot(
     .context("failed to persist forward proxy subscription snapshot")?;
 
     Ok(result.rows_affected() == 1)
+}
+
+pub(crate) async fn restore_forward_proxy_settings_and_subscription_snapshot(
+    pool: &Pool<Sqlite>,
+    settings: ForwardProxySettings,
+    proxy_urls: &[String],
+) -> Result<()> {
+    let normalized = settings.normalized();
+    let proxy_urls_json = serde_json::to_string(&normalized.proxy_urls)
+        .context("failed to serialize forward proxy urls for rollback")?;
+    let subscription_urls_json = serde_json::to_string(&normalized.subscription_urls)
+        .context("failed to serialize forward proxy subscription urls for rollback")?;
+    let (snapshot_json, snapshot_sources_json) =
+        serialize_forward_proxy_subscription_snapshot(&normalized.subscription_urls, proxy_urls)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .context("failed to begin forward proxy settings rollback")?;
+
+    let settings_result = sqlx::query(
+        r#"
+        UPDATE forward_proxy_settings
+        SET
+            proxy_urls_json = ?1,
+            subscription_urls_json = ?2,
+            subscription_update_interval_secs = ?3,
+            updated_at = datetime('now')
+        WHERE id = ?4
+        "#,
+    )
+    .bind(proxy_urls_json)
+    .bind(subscription_urls_json)
+    .bind(normalized.subscription_update_interval_secs as i64)
+    .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
+    .execute(&mut *tx)
+    .await
+    .context("failed to restore forward proxy settings")?;
+    if settings_result.rows_affected() != 1 {
+        return Err(anyhow!(
+            "forward proxy settings row is missing during rollback"
+        ));
+    }
+
+    let snapshot_result = sqlx::query(
+        r#"
+        UPDATE forward_proxy_settings
+        SET subscription_snapshot_json = ?1, updated_at = datetime('now')
+        WHERE id = ?2 AND subscription_urls_json = ?3
+        "#,
+    )
+    .bind(snapshot_json)
+    .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
+    .bind(snapshot_sources_json)
+    .execute(&mut *tx)
+    .await
+    .context("failed to restore forward proxy subscription snapshot")?;
+    if snapshot_result.rows_affected() != 1 {
+        return Err(anyhow!("subscription settings changed during rollback"));
+    }
+
+    tx.commit()
+        .await
+        .context("failed to commit forward proxy settings rollback")?;
+    Ok(())
 }
 
 pub(crate) async fn load_forward_proxy_runtime_states(
@@ -2415,31 +2488,17 @@ pub(crate) async fn put_forward_proxy_settings(
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
         if state.shutdown.is_cancelled() {
             let mut manager = state.forward_proxy.lock().await;
-            if let Err(rollback_err) =
-                save_forward_proxy_settings(&state.pool, previous_settings.clone()).await
+            if let Err(rollback_err) = restore_forward_proxy_settings_and_subscription_snapshot(
+                &state.pool,
+                previous_settings.clone(),
+                &previous_subscription_snapshot,
+            )
+            .await
             {
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!(
-                        "failed to roll back forward proxy settings after shutdown interruption: {rollback_err}"
-                    ),
-                ));
-            }
-            if let Err(rollback_err) = save_forward_proxy_subscription_snapshot(
-                &state.pool,
-                &previous_settings.subscription_urls,
-                &previous_subscription_snapshot,
-            )
-            .await
-            .and_then(|saved| {
-                saved
-                    .then_some(())
-                    .ok_or_else(|| anyhow!("subscription settings changed during rollback"))
-            }) {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!(
-                        "failed to restore forward proxy subscription snapshot after shutdown interruption: {rollback_err}"
+                        "failed to atomically roll back forward proxy settings after shutdown interruption: {rollback_err}"
                     ),
                 ));
             }

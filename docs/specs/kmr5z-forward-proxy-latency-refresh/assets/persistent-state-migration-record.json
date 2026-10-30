@@ -9,7 +9,7 @@
   },
   "durable_state": {
     "description": "The successful parsed proxy URLs and the subscription source list that produced them.",
-    "storage_implementation": "One additive JSON column on the singleton forward_proxy_settings row. Snapshot writes are conditional on the configured source list; a SQLite trigger clears the snapshot whenever that list changes.",
+    "storage_implementation": "One additive JSON column on the singleton forward_proxy_settings row. Snapshot writes are conditional on the configured source list; a SQLite trigger clears the snapshot whenever that list changes. Shutdown rollback restores settings and the matching snapshot in one transaction.",
     "source_compatibility_range": {
       "from_program_versions": "The origin/main schema at bc5258f74e61d976adabe1986e49aee773533df5, before the snapshot column.",
       "to_program_version": "Candidate branch th/forward-proxy-subscription-recovery; final candidate revision is bound by delivery evidence.",
@@ -72,6 +72,7 @@
     "deployed_migrations_immutable": true,
     "program_rollback_state_behavior": "An older same-line binary ignores the additive snapshot column; its subscription source updates fire the retained trigger and clear the snapshot. The old binary does not restore cached nodes itself.",
     "faulty_release_recovery": "A later compatible binary validates snapshot sources before restore and replaces state only after a complete successful refresh.",
+    "interrupted_settings_update_recovery": "When route synchronization is interrupted by shutdown, the previous settings and snapshot are restored in one SQLite transaction. If that transaction fails, it rolls back as a unit and the manager remains aligned with the last committed database settings.",
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
@@ -80,7 +81,8 @@
         "An existing schema without the column upgrades idempotently and receives the empty default.",
         "A restarted manager restores a source-matched snapshot before refresh; failed and partial refreshes preserve it.",
         "A complete successful empty refresh clears active nodes and durable state immediately.",
-        "Changing the source list, including through a legacy-style SQL update, clears the snapshot."
+        "Changing the source list, including through a legacy-style SQL update, clears the snapshot.",
+        "An interrupted settings update restores the old settings and snapshot atomically, and a failed rollback transaction leaves database and manager state aligned."
       ]
     },
     "minor": {
@@ -90,7 +92,7 @@
       "required_test_evidence": []
     },
     "completed_evidence": [
-      "cargo test tests::lightweight::forward_proxy_subscription_and_weights -- --nocapture --test-threads=1: 15 passed",
+      "cargo test tests::lightweight::forward_proxy_subscription_and_weights -- --nocapture --test-threads=1: 17 passed",
       "cargo fmt --all -- --check",
       "git diff --check",
       "dprint check on the associated Spec, Implementation, and History documents",

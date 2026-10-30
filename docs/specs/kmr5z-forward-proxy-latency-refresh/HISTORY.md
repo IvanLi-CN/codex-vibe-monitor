@@ -8,6 +8,7 @@
 - 手动延迟测试从“任一探针成功即可显示正常”升级为“出站 IP、OAuth `/models`、Codex `/responses` 全部可达才健康”，用于暴露通用探针可过但 `chatgpt.com/backend-api/codex/responses` 不可达的节点异常。
 - 订阅解析结果此前只保存在 `ForwardProxyManager` 内存中，重启后不能从持久化数据恢复；新增与订阅源配置绑定的快照，并在所有来源成功后原子替换。
 - 刷新失败或部分失败保留上次成功节点；完整成功但解析为空时立即清空节点，以保持空订阅结果的明确语义。
+- 停机中断导致配置回滚时，旧设置与旧节点快照必须原子恢复；数据库回滚事务失败则保留最后提交的运行配置，避免 manager 与 SQLite 分裂。
 
 ## Key Reasons / Replacements
 
