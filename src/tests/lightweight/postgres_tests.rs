@@ -1760,6 +1760,48 @@ async fn native_ddl_translates_known_defaults_and_rejects_sqlite_only_expression
 }
 
 #[tokio::test]
+async fn native_ddl_translates_only_known_rfc3339_partial_indexes() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    for statement in [
+        "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, occurred_at TEXT, t_total_ms INTEGER, status TEXT)",
+        "CREATE INDEX idx_codex_invocations_long_term_projection_rfc3339_occurred_at ON codex_invocations (occurred_at) WHERE instr(occurred_at, 'T') > 0 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')",
+        "CREATE INDEX idx_codex_invocations_long_term_projection_rfc3339_duration ON codex_invocations (t_total_ms DESC) WHERE instr(occurred_at, 'T') > 0 AND t_total_ms IS NOT NULL AND t_total_ms > 0 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')",
+        "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, status TEXT)",
+        "CREATE INDEX archive_batches_unknown ON archive_batches(status) WHERE instr(status, 'T') > 0",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
+        .unwrap();
+    let indexes = native
+        .table("codex_invocations")
+        .unwrap()
+        .postgres_index_sql()
+        .unwrap();
+    assert_eq!(indexes.len(), 2);
+    assert!(
+        indexes
+            .iter()
+            .all(|sql| sql.contains("strpos(occurred_at, 'T') > 0"))
+    );
+    assert!(
+        indexes
+            .iter()
+            .any(|sql| sql.contains("t_total_ms IS NOT NULL AND t_total_ms > 0"))
+    );
+    let error = native
+        .table("archive_batches")
+        .unwrap()
+        .postgres_index_sql()
+        .unwrap_err();
+    assert!(
+        matches!(error, CatalogError::NativeCatalogIncomplete { detail, .. } if detail.contains("instr()"))
+    );
+}
+
+#[tokio::test]
 async fn native_catalog_rejects_unapproved_cross_module_trigger_edges() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     for statement in [

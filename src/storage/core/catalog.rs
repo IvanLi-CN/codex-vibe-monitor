@@ -336,11 +336,8 @@ $$",
             }
             let unique = if index.unique { "UNIQUE " } else { "" };
             let predicate = if let Some(value) = index.partial_predicate.as_deref() {
-                ensure_native_expression_supported(
-                    &self.owner.table,
-                    "partial index predicate",
-                    value,
-                )?;
+                let value =
+                    normalize_native_index_predicate(&self.owner.table, &index.name, value)?;
                 format!(" WHERE {value}")
             } else {
                 String::new()
@@ -1363,6 +1360,38 @@ fn normalize_native_check(table: &str, check: &str) -> Result<String, CatalogErr
     }
     ensure_native_expression_supported(table, "CHECK", check)?;
     Ok(check.to_owned())
+}
+
+fn normalize_native_index_predicate(
+    table: &str,
+    index: &str,
+    predicate: &str,
+) -> Result<String, CatalogError> {
+    // The source's two RFC3339 indexes test for the literal ASCII 'T' in a TEXT column.
+    // strpos has the same positive/zero/NULL behavior for this predicate as SQLite instr.
+    let canonical = predicate.split_whitespace().collect::<Vec<_>>().join(" ");
+    let translated = match (table, index, canonical.as_str()) {
+        (
+            "codex_invocations",
+            "idx_codex_invocations_long_term_projection_rfc3339_occurred_at",
+            "instr(occurred_at, 'T') > 0 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')",
+        ) => Some(
+            "strpos(occurred_at, 'T') > 0 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')",
+        ),
+        (
+            "codex_invocations",
+            "idx_codex_invocations_long_term_projection_rfc3339_duration",
+            "instr(occurred_at, 'T') > 0 AND t_total_ms IS NOT NULL AND t_total_ms > 0 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')",
+        ) => Some(
+            "strpos(occurred_at, 'T') > 0 AND t_total_ms IS NOT NULL AND t_total_ms > 0 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')",
+        ),
+        _ => None,
+    };
+    if let Some(translated) = translated {
+        return Ok(translated.to_owned());
+    }
+    ensure_native_expression_supported(table, "partial index predicate", predicate)?;
+    Ok(predicate.to_owned())
 }
 
 fn ensure_native_expression_supported(
