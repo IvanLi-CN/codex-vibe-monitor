@@ -1284,12 +1284,8 @@ fn normalize_native_default(value: &str) -> Option<String> {
     if lower == "datetime('now')" || lower == "current_timestamp" {
         return Some("CURRENT_TIMESTAMP".into());
     }
-    let compact = value.split_whitespace().collect::<String>();
-    if compact.eq_ignore_ascii_case("strftime('%Y-%m-%dT%H:%M:%fZ','now')") {
-        return Some(
-            "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
-                .into(),
-        );
+    if let Some(translated) = normalize_known_strftime_default(value) {
+        return Some(translated.into());
     }
     if sqlite_expression_detail(value).is_some() {
         return None;
@@ -1304,6 +1300,30 @@ fn normalize_native_default(value: &str) -> Option<String> {
         return Some(value.to_owned());
     }
     None
+}
+
+fn normalize_known_strftime_default(value: &str) -> Option<&'static str> {
+    // Whitespace inside the format string and the case of conversion tokens are significant.
+    if !value.get(..9)?.eq_ignore_ascii_case("strftime(") {
+        return None;
+    }
+    let arguments = value.get(9..)?.trim_start().strip_prefix('\'')?;
+    let end = arguments.find('\'')?;
+    let format = &arguments[..end];
+    let tail = arguments[end + 1..].trim_start().strip_prefix(',')?;
+    let tail = tail.trim_start().strip_prefix("'now'")?.trim_start();
+    if tail != ")" {
+        return None;
+    }
+    match format {
+        "%Y-%m-%dT%H:%M:%fZ" => Some(
+            "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')",
+        ),
+        "%Y-%m-%d %H:%M:%f" => {
+            Some("to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS')")
+        }
+        _ => None,
+    }
 }
 
 fn native_capture_metadata() -> NativeCaptureMetadata {
