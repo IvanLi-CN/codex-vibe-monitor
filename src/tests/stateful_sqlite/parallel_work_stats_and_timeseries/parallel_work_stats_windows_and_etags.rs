@@ -62,7 +62,6 @@ async fn parallel_work_stats_returns_not_modified_for_matching_etag() {
         .expect("read cached response body");
     assert!(second_body.is_empty());
 }
-
 #[tokio::test]
 async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones() {
     let state = test_state_with_openai_base(

@@ -1250,19 +1250,22 @@ pub(crate) async fn invalidate_timeseries_minute_projection_coverage(
     observation: &mut Option<crate::TaskExecutionObservation>,
 ) -> Result<TimeseriesMinuteProjectionCoverageInvalidationOutcome, ApiError> {
     let mut stats = TimeseriesMinuteProjectionCoverageInvalidationStats::default();
+    let mut last_row_id = 0_i64;
     loop {
         if timeseries_minute_projection_is_cancelled(cancellation) {
             return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled);
         }
         let row_ids = sqlx::query_scalar::<_, i64>(
-            "SELECT rowid FROM timeseries_minute_projection_v2 WHERE coverage_state <> 'warming' ORDER BY rowid LIMIT ?1",
+            "SELECT rowid FROM timeseries_minute_projection_v2 WHERE rowid > ?1 AND coverage_state <> 'warming' ORDER BY rowid LIMIT ?2",
         )
+        .bind(last_row_id)
         .bind(TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT)
         .fetch_all(&state.pool)
         .await?;
         if row_ids.is_empty() {
             return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats));
         }
+        last_row_id = row_ids.last().copied().unwrap_or(last_row_id);
 
         let admission = match try_acquire_timeseries_minute_projection_write(
             coordinator,

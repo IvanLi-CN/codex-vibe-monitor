@@ -4041,7 +4041,6 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
         Some(9.0),
     )
     .await;
-
     insert_window_actual_usage_invocation(
         &state.pool,
         account_id,
