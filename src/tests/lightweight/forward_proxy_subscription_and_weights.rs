@@ -73,6 +73,125 @@ async fn cached_subscription_nodes_survive_restart_and_failed_refresh() {
 }
 
 #[tokio::test]
+async fn concurrent_subscription_refreshes_serialize_fetch_and_apply() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let first_request_started = Arc::new(Notify::new());
+    let second_request_started = Arc::new(Notify::new());
+    let release_first_request = Arc::new(Notify::new());
+    let app = Router::new().route(
+        "/subscription",
+        get({
+            let request_count = request_count.clone();
+            let first_request_started = first_request_started.clone();
+            let second_request_started = second_request_started.clone();
+            let release_first_request = release_first_request.clone();
+            move || {
+                let request_index = request_count.fetch_add(1, Ordering::SeqCst);
+                let first_request_started = first_request_started.clone();
+                let second_request_started = second_request_started.clone();
+                let release_first_request = release_first_request.clone();
+                async move {
+                    if request_index == 0 {
+                        first_request_started.notify_waiters();
+                        release_first_request.notified().await;
+                        return (StatusCode::OK, "http://127.0.0.1:7890\n");
+                    }
+                    second_request_started.notify_waiters();
+                    (StatusCode::OK, "http://127.0.0.1:7891\n")
+                }
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind serialized subscription source");
+    let addr = listener
+        .local_addr()
+        .expect("serialized subscription source addr");
+    let source_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serialized subscription source should run");
+    });
+    let subscription_url = format!("http://{addr}/subscription");
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let settings = ForwardProxySettings {
+        subscription_urls: vec![subscription_url],
+        ..ForwardProxySettings::default()
+    };
+    save_forward_proxy_settings(&state.pool, settings.clone())
+        .await
+        .expect("save serialized subscription settings");
+    state
+        .forward_proxy
+        .lock()
+        .await
+        .apply_settings(settings.clone());
+
+    let first_started = first_request_started.notified();
+    let first_refresh = tokio::spawn(refresh_forward_proxy_subscriptions(
+        state.clone(),
+        true,
+        None,
+    ));
+    tokio::time::timeout(Duration::from_secs(1), first_started)
+        .await
+        .expect("first refresh should reach the subscription source");
+
+    let second_started = second_request_started.notified();
+    let second_refresh = tokio::spawn(refresh_forward_proxy_subscriptions(
+        state.clone(),
+        true,
+        None,
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), second_started)
+            .await
+            .is_err(),
+        "a second refresh must not fetch while the first fetch-and-apply cycle is active"
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+    release_first_request.notify_waiters();
+    first_refresh
+        .await
+        .expect("first refresh task should join")
+        .expect("first refresh should succeed");
+    second_refresh
+        .await
+        .expect("second refresh task should join")
+        .expect("second refresh should succeed");
+
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+    let restored_subscription_sources = {
+        state
+            .forward_proxy
+            .lock()
+            .await
+            .settings
+            .subscription_urls
+            .clone()
+    };
+    assert_eq!(
+        load_forward_proxy_subscription_snapshot(&state.pool, &restored_subscription_sources)
+            .await
+            .expect("load serialized subscription snapshot"),
+        vec!["http://127.0.0.1:7891"],
+        "the newer refresh must own the durable snapshot"
+    );
+    assert_eq!(
+        state.forward_proxy.lock().await.subscription_proxy_urls,
+        vec!["http://127.0.0.1:7891"],
+        "the newer refresh must own the active subscription nodes"
+    );
+
+    source_handle.abort();
+}
+
+#[tokio::test]
 async fn successful_empty_subscription_refresh_clears_cached_nodes() {
     let (subscription_url, subscription_handle) =
         spawn_test_subscription_source(String::new()).await;

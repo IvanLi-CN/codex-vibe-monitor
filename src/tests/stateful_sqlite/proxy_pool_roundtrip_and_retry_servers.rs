@@ -2135,18 +2135,49 @@ pub(crate) async fn spawn_test_http_connect_proxy(
                         );
                     }
 
-                    assert!(
-                        String::from_utf8_lossy(&request).starts_with("CONNECT "),
-                        "test proxy should receive an HTTP CONNECT request"
-                    );
+                    let is_connect_request = request.starts_with(b"CONNECT ");
+                    let forwarded_request = if is_connect_request {
+                        request
+                    } else {
+                        let first_line_end = request
+                            .windows(2)
+                            .position(|window| window == b"\r\n")
+                            .expect("HTTP proxy request should include a request line");
+                        let first_line = String::from_utf8_lossy(&request[..first_line_end]);
+                        let mut parts = first_line.splitn(3, ' ');
+                        let method = parts.next().expect("HTTP proxy request method");
+                        let target = parts.next().expect("HTTP proxy request target");
+                        let version = parts.next().expect("HTTP proxy request version");
+                        let target_url = Url::parse(target).expect("absolute HTTP proxy target");
+                        let mut origin_form = target_url.path().to_string();
+                        if origin_form.is_empty() {
+                            origin_form.push('/');
+                        }
+                        if let Some(query) = target_url.query() {
+                            origin_form.push('?');
+                            origin_form.push_str(query);
+                        }
+                        let mut rewritten =
+                            format!("{method} {origin_form} {version}\r\n").into_bytes();
+                        rewritten.extend_from_slice(&request[first_line_end + 2..]);
+                        rewritten
+                    };
                     let mut target = TcpStream::connect(target_addr)
                         .await
                         .expect("connect HTTP CONNECT test proxy target");
-                    client
-                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                        .await
-                        .expect("write HTTP CONNECT success response");
+                    if is_connect_request {
+                        client
+                            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                            .await
+                            .expect("write HTTP CONNECT success response");
+                    }
                     connect_attempts.fetch_add(1, Ordering::SeqCst);
+                    if !is_connect_request {
+                        target
+                            .write_all(&forwarded_request)
+                            .await
+                            .expect("forward HTTP proxy request");
+                    }
                     let _ = tokio::io::copy_bidirectional(&mut client, &mut target).await;
                 });
             }

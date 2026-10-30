@@ -319,6 +319,163 @@ fn pool_route_oauth_live_candidate_prefers_account_proxy_and_honors_conversation
 }
 
 #[test]
+fn pool_route_oauth_token_refresh_uses_account_proxy_before_live_send() {
+    run_oauth_future_with_large_stack(async move {
+        let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+            .lock()
+            .await;
+
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let final_authorization = Arc::new(std::sync::Mutex::new(None));
+        let upstream_app = Router::new().fallback({
+            let token_requests = token_requests.clone();
+            let final_authorization = final_authorization.clone();
+            any(move |request: axum::extract::Request| {
+                let token_requests = token_requests.clone();
+                let final_authorization = final_authorization.clone();
+                async move {
+                    let path = request.uri().path().to_string();
+                    if path == "/oauth/token" {
+                        token_requests.fetch_add(1, Ordering::SeqCst);
+                        return (
+                            StatusCode::OK,
+                            Json(json!({
+                                "access_token": "oauth-refreshed",
+                                "refresh_token": "refresh-token-rotated",
+                                "token_type": "Bearer",
+                                "expires_in": 3600,
+                            })),
+                        )
+                            .into_response();
+                    }
+                    let authorization = request
+                        .headers()
+                        .get(http_header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_string);
+                    if !path.is_empty() {
+                        *final_authorization
+                            .lock()
+                            .expect("lock final oauth authorization") = authorization.clone();
+                    }
+                    (
+                        StatusCode::OK,
+                        Json(json!({"authorization": authorization})),
+                    )
+                        .into_response()
+                }
+            })
+        });
+        let upstream_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind oauth refresh upstream");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("oauth refresh upstream addr");
+        let upstream_handle = tokio::spawn(async move {
+            axum::serve(upstream_listener, upstream_app)
+                .await
+                .expect("oauth refresh upstream should run");
+        });
+        let upstream_base = format!("http://{upstream_addr}");
+        oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("{upstream_base}/backend-api/codex"))
+                .expect("valid oauth refresh base url"),
+        )
+        .await;
+        let (account_proxy_url, account_proxy_connects, account_proxy_handle) =
+            spawn_test_http_connect_proxy(&upstream_base).await;
+        let (group_proxy_url, group_proxy_connects, group_proxy_handle) =
+            spawn_test_http_connect_proxy(&upstream_base).await;
+        let account_proxy_key =
+            normalize_single_proxy_key(&account_proxy_url).expect("normalize account proxy key");
+        let group_proxy_key =
+            normalize_single_proxy_key(&group_proxy_url).expect("normalize group proxy key");
+
+        let mut state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        Arc::get_mut(&mut state)
+            .expect("oauth refresh state should be uniquely owned")
+            .config
+            .upstream_accounts_oauth_issuer =
+            Url::parse(&upstream_base).expect("valid local oauth issuer");
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        apply_forward_proxy_settings_without_bootstrap(
+            &state,
+            ForwardProxySettings {
+                proxy_urls: vec![account_proxy_url, group_proxy_url],
+                ..ForwardProxySettings::default()
+            },
+        )
+        .await;
+        let account_id =
+            insert_test_pool_oauth_account(&state, "Refresh OAuth", "oauth-expired").await;
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET bound_proxy_keys_json = ?1, token_expires_at = ?2 WHERE id = ?3",
+        )
+        .bind(
+            serde_json::to_string(&vec![account_proxy_key]).expect("encode account proxy key"),
+        )
+        .bind(format_utc_iso(Utc::now() - ChronoDuration::hours(1)))
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("expire and bind oauth account");
+        sqlx::query(
+            "UPDATE pool_upstream_account_group_notes SET bound_proxy_keys_json = ?1 WHERE group_name = ?2",
+        )
+        .bind(serde_json::to_string(&vec![group_proxy_key]).expect("encode group proxy key"))
+        .bind(test_required_group_name())
+        .execute(&state.pool)
+        .await
+        .expect("bind group proxy key");
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(br#"{"model":"gpt-5.4","input":"refresh route"}"#.to_vec()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            final_authorization
+                .lock()
+                .expect("lock final oauth authorization")
+                .as_deref(),
+            Some("Bearer oauth-refreshed"),
+        );
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+        assert!(
+            account_proxy_connects.load(Ordering::SeqCst) >= 3,
+            "account proxy should carry token refresh and final upstream send"
+        );
+        assert_eq!(
+            group_proxy_connects.load(Ordering::SeqCst),
+            0,
+            "group proxy must not receive an OAuth account-bound refresh or send"
+        );
+
+        upstream_handle.abort();
+        account_proxy_handle.abort();
+        group_proxy_handle.abort();
+        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+    });
+}
+
+#[test]
 fn pool_route_oauth_standalone_search_is_forwarded_and_recorded() {
     run_oauth_future_with_large_stack(async move {
         #[derive(Debug, sqlx::FromRow)]

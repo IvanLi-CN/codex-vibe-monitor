@@ -5,6 +5,8 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     force: bool,
     known_subscription_keys_override: Option<HashSet<String>>,
 ) -> Result<()> {
+    // Keep each fetch-and-apply cycle ordered so a slower older response cannot overwrite a newer snapshot.
+    let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
     let (subscription_urls, interval_secs, last_refresh_at) = {
         let manager = state.forward_proxy.lock().await;
         (
@@ -82,7 +84,6 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         return Ok(());
     }
 
-    let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
     let mut manager = state.forward_proxy.lock().await;
     if state.shutdown.is_cancelled() {
         crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);

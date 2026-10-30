@@ -9,6 +9,7 @@
 - 订阅解析结果此前只保存在 `ForwardProxyManager` 内存中，重启后不能从持久化数据恢复；新增与订阅源配置绑定的快照，并在所有来源成功后原子替换。
 - 刷新失败或部分失败保留上次成功节点；完整成功但解析为空时立即清空节点，以保持空订阅结果的明确语义。
 - OAuth live-candidate 之前只按会话或分组 scope 准备最终请求，遗漏了账号级绑定；现改为复用既有 `conversation > account > group` 代理继承契约，并保留 API-key 的 transit scope。
+- 刷新任务的互斥范围扩展到整个抓取与应用周期，并用受控慢源回归验证旧响应不能覆盖后续刷新结果；OAuth 回归同时覆盖过期 token 的账号级代理刷新。
 
 ## Key Reasons / Replacements
 
