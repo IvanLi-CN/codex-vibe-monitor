@@ -1618,7 +1618,7 @@ async fn native_ddl_translates_known_defaults_and_rejects_sqlite_only_expression
         "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))",
         "CREATE TABLE invocation_rollup_hourly (bucket_start_epoch INTEGER PRIMARY KEY, updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
         "CREATE TABLE hourly_rollup_archive_repair_deferred (scope TEXT NOT NULL, archive_id INTEGER NOT NULL, deferred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')), PRIMARY KEY (scope, archive_id))",
-        "CREATE TABLE forward_proxy_attempts (id INTEGER PRIMARY KEY, changed_at TEXT DEFAULT (strftime('%Y-%M-%d %H:%M:%f', 'now')))",
+        "CREATE TABLE forward_proxy_attempts (id INTEGER PRIMARY KEY, changed_at TEXT DEFAULT (strftime('%Y/%m/%d %H:%M:%f', 'now')))",
         "CREATE TABLE prompt_cache_conversations (conversation_id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), CHECK (json_valid(payload)))",
         "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, status TEXT NOT NULL, coverage_start_at TEXT, CHECK (julianday(coverage_start_at) >= 0))",
         "CREATE INDEX archive_batches_completed_at ON archive_batches(status) WHERE datetime(coverage_start_at) IS NOT NULL",
