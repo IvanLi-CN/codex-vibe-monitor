@@ -4,6 +4,23 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 #[test]
+fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
+    let (usage_code, _) = classify_refresh_error(
+        "usage endpoint returned 401: access token revoked",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    );
+    assert_ne!(usage_code, "refresh_token_invalid");
+
+    let (credential_code, _) = classify_refresh_error(
+        "OAuth token endpoint returned 400: refresh token revoked",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    );
+    assert_eq!(credential_code, "refresh_token_invalid");
+    assert!(!is_explicit_reauth_error_message("access token expired"));
+    assert!(is_explicit_reauth_error_message("refresh token expired"));
+}
+
+#[test]
 fn explicit_model_failure_recognizes_standard_not_found_and_rate_limit_shapes() {
     assert!(is_explicit_model_failure(
         StatusCode::NOT_FOUND,
@@ -4532,6 +4549,17 @@ async fn manual_credential_refresh_updates_credentials_without_refreshing_usage(
         UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
     );
     assert!(credential_status.last_success_at.is_some());
+    let next_attempt_at = credential_status
+        .next_attempt_at
+        .as_deref()
+        .and_then(parse_rfc3339_utc)
+        .expect("opaque access token should use expires_in for next refresh");
+    let now = Utc::now();
+    assert!(
+        next_attempt_at > now + ChronoDuration::minutes(30)
+            && next_attempt_at < now + ChronoDuration::hours(2),
+        "opaque access token refresh should follow expires_in instead of the eight-day fallback: {next_attempt_at}"
+    );
     let usage_status = load_upstream_account_refresh_status(
         &state.pool,
         account_id,

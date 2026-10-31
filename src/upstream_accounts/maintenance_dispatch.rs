@@ -619,7 +619,19 @@ fn maintenance_candidate_fast_retry_due(
         candidate.usage_window_refresh_state.as_deref(),
         candidate.usage_window_refresh_next_attempt_at.as_deref(),
         now,
-    ) || !maintenance_candidate_has_complete_usage(candidate)
+    ) || (!maintenance_candidate_has_complete_usage(candidate)
+        && match candidate.usage_window_refresh_state.as_deref() {
+            Some(UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING)
+            | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL)
+            | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR) => candidate
+                .usage_window_refresh_next_attempt_at
+                .as_deref()
+                .and_then(parse_rfc3339_utc)
+                .is_none_or(|next| next <= now),
+            Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
+            | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH) => false,
+            _ => true,
+        })
 }
 
 fn maintenance_candidate_has_active_upstream_rejected_cooldown(

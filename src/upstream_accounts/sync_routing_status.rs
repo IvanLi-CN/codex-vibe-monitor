@@ -1644,7 +1644,7 @@ pub(crate) async fn record_status_change_suppressed_event_with_proxy_snapshot(
 pub(crate) async fn record_account_maintenance_deferred(
     pool: &Pool<Sqlite>,
     account_id: i64,
-    source: &'static str,
+    source: &str,
     reason_message: &str,
     occurred_at: &str,
     forward_proxy_key: Option<&str>,

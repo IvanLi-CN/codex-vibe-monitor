@@ -228,6 +228,8 @@ pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
     pub(crate) route_facts: Mutex<Option<Arc<RuntimeRouteFacts>>>,
     pub(crate) account_ops: AccountOpCoordinator,
+    pub(crate) credential_refresh_locks:
+        Arc<std::sync::Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>>,
     pub(crate) validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
     pub(crate) bulk_sync_jobs: Arc<Mutex<HashMap<String, Arc<BulkUpstreamAccountSyncJob>>>>,
     pub(crate) bulk_sync_creation: Arc<Mutex<()>>,

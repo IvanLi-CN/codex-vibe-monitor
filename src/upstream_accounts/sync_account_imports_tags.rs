@@ -456,6 +456,9 @@ pub(crate) enum OAuthUsageRefreshOutcome {
         http_status: Option<StatusCode>,
         proxy_snapshot: Option<AccountMaintenanceProxySnapshot>,
     },
+    Deferred {
+        proxy_snapshot: Option<AccountMaintenanceProxySnapshot>,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -529,6 +532,12 @@ async fn refresh_oauth_credentials_with_source(
     refresh_scope: &ForwardProxyRouteScope,
     force: bool,
 ) -> Result<()> {
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(row.id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
+    let current_row = load_upstream_account_row(&state.pool, row.id)
+        .await?
+        .ok_or_else(|| anyhow!("account not found"))?;
+    let row = &current_row;
     let now = Utc::now();
     let credential_status = load_upstream_account_refresh_status(
         &state.pool,
@@ -539,24 +548,25 @@ async fn refresh_oauth_credentials_with_source(
     if !force && credential_refresh_attempt_is_blocked(&credential_status, now) {
         return Ok(());
     }
+    let token_expiry = row
+        .encrypted_credentials
+        .as_deref()
+        .and_then(|encrypted| {
+            state
+                .upstream_accounts
+                .crypto_key
+                .as_ref()
+                .and_then(|key| decrypt_credentials(key, encrypted).ok())
+        })
+        .and_then(|credentials| match credentials {
+            StoredCredentials::Oauth(credentials) => {
+                parse_access_token_expiry(&credentials.access_token)
+            }
+            StoredCredentials::ApiKey(_) => None,
+        })
+        .or_else(|| row.token_expires_at.as_deref().and_then(parse_rfc3339_utc));
     let refresh_due = force
-        || if let Some(expires) = row
-            .encrypted_credentials
-            .as_deref()
-            .and_then(|encrypted| {
-                state
-                    .upstream_accounts
-                    .crypto_key
-                    .as_ref()
-                    .and_then(|key| decrypt_credentials(key, encrypted).ok())
-            })
-            .and_then(|credentials| match credentials {
-                StoredCredentials::Oauth(credentials) => {
-                    parse_access_token_expiry(&credentials.access_token)
-                }
-                StoredCredentials::ApiKey(_) => None,
-            })
-        {
+        || if let Some(expires) = token_expiry {
             expires
                 <= now
                     + ChronoDuration::seconds(
@@ -693,12 +703,12 @@ async fn refresh_oauth_credentials_with_source(
                     operation = UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
                     stage = "access_token_jwt",
                     error_code = "access_token_jwt_parse_failed",
-                    "refreshed access token JWT exp could not be parsed; using the eight-day fallback"
+                    "refreshed access token JWT exp could not be parsed; using the OAuth expires_in fallback"
                 );
             }
             let stored_token_expires_at = parse_access_token_expiry(&credentials.access_token)
                 .map(format_utc_iso)
-                .unwrap_or(response_token_expires_at);
+                .unwrap_or_else(|| response_token_expires_at.clone());
             if let Err(err) = persist_oauth_credentials(
                 &state.pool,
                 row.id,
@@ -727,6 +737,7 @@ async fn refresh_oauth_credentials_with_source(
                 return Ok(());
             }
             let next_attempt_at = access_token_expiry
+                .or_else(|| parse_rfc3339_utc(&response_token_expires_at))
                 .map(|expires| {
                     format_utc_iso(
                         expires
@@ -746,6 +757,34 @@ async fn refresh_oauth_credentials_with_source(
             .await?;
         }
         Err(err) => {
+            if let Some(throttle) = err.downcast_ref::<AccountMaintenanceEgressThrottleError>() {
+                let reason_message = format!(
+                    "maintenance egress via {} is throttled for another {} seconds",
+                    throttle.proxy_display_name, throttle.retry_after_secs
+                );
+                defer_upstream_account_refresh_attempt(
+                    &state.pool,
+                    row.id,
+                    UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+                    source,
+                    throttle.retry_after_secs,
+                    &reason_message,
+                )
+                .await?;
+                record_oauth_maintenance_throttled(
+                    state,
+                    row.id,
+                    source,
+                    if row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
+                        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+                    } else {
+                        row.status.as_str()
+                    },
+                    throttle,
+                )
+                .await?;
+                return Ok(());
+            }
             let (code, message) = classify_refresh_error(
                 &err.to_string(),
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -885,6 +924,40 @@ pub(crate) async fn refresh_oauth_usage_windows(
     let (snapshot, usage_proxy_snapshot) = match usage_result {
         Ok(value) => value,
         Err(err) => {
+            if let Some(throttle) = err.downcast_ref::<AccountMaintenanceEgressThrottleError>() {
+                let reason_message = format!(
+                    "maintenance egress via {} is throttled for another {} seconds",
+                    throttle.proxy_display_name, throttle.retry_after_secs
+                );
+                defer_upstream_account_refresh_attempt(
+                    &state.pool,
+                    row.id,
+                    operation,
+                    source,
+                    throttle.retry_after_secs,
+                    &reason_message,
+                )
+                .await?;
+                record_oauth_maintenance_throttled(
+                    state,
+                    row.id,
+                    source,
+                    if row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
+                        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+                    } else {
+                        row.status.as_str()
+                    },
+                    throttle,
+                )
+                .await?;
+                return Ok(OAuthUsageRefreshOutcome::Deferred {
+                    proxy_snapshot: Some(AccountMaintenanceProxySnapshot {
+                        proxy_key: throttle.proxy_key.clone(),
+                        proxy_display_name: throttle.proxy_display_name.clone(),
+                        proxy_egress_ip: throttle.proxy_egress_ip.clone(),
+                    }),
+                });
+            }
             let (code, message) = classify_refresh_error(&err.to_string(), operation);
             return record_usage_refresh_failure(
                 state,
@@ -1268,6 +1341,7 @@ pub(crate) async fn sync_oauth_account(
                 .await?;
             }
         }
+        OAuthUsageRefreshOutcome::Deferred { .. } => {}
     }
     Ok(())
 }
@@ -1275,7 +1349,7 @@ pub(crate) async fn sync_oauth_account(
 pub(crate) async fn record_oauth_maintenance_throttled(
     state: &AppState,
     account_id: i64,
-    sync_source: &'static str,
+    sync_source: &str,
     next_status: &str,
     throttle: &AccountMaintenanceEgressThrottleError,
 ) -> Result<()> {
@@ -1406,25 +1480,6 @@ pub(crate) async fn persist_usage_snapshot(
     retention_days: u64,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
-    let latest = load_latest_usage_sample(pool, account_id).await?;
-    let primary = snapshot.primary.clone().or_else(|| {
-        latest.as_ref().and_then(|sample| {
-            Some(NormalizedUsageWindow {
-                used_percent: sample.primary_used_percent?,
-                window_duration_mins: sample.primary_window_minutes?,
-                resets_at: sample.primary_resets_at.clone(),
-            })
-        })
-    });
-    let secondary = snapshot.secondary.clone().or_else(|| {
-        latest.as_ref().and_then(|sample| {
-            Some(NormalizedUsageWindow {
-                used_percent: sample.secondary_used_percent?,
-                window_duration_mins: sample.secondary_window_minutes?,
-                resets_at: sample.secondary_resets_at.clone(),
-            })
-        })
-    });
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_limit_samples (
@@ -1445,12 +1500,32 @@ pub(crate) async fn persist_usage_snapshot(
             .clone()
             .or_else(|| effective_plan_type.map(str::to_string)),
     )
-    .bind(primary.as_ref().map(|value| value.used_percent))
-    .bind(primary.as_ref().map(|value| value.window_duration_mins))
-    .bind(primary.as_ref().and_then(|value| value.resets_at.clone()))
-    .bind(secondary.as_ref().map(|value| value.used_percent))
-    .bind(secondary.as_ref().map(|value| value.window_duration_mins))
-    .bind(secondary.as_ref().and_then(|value| value.resets_at.clone()))
+    .bind(snapshot.primary.as_ref().map(|value| value.used_percent))
+    .bind(
+        snapshot
+            .primary
+            .as_ref()
+            .map(|value| value.window_duration_mins),
+    )
+    .bind(
+        snapshot
+            .primary
+            .as_ref()
+            .and_then(|value| value.resets_at.clone()),
+    )
+    .bind(snapshot.secondary.as_ref().map(|value| value.used_percent))
+    .bind(
+        snapshot
+            .secondary
+            .as_ref()
+            .map(|value| value.window_duration_mins),
+    )
+    .bind(
+        snapshot
+            .secondary
+            .as_ref()
+            .and_then(|value| value.resets_at.clone()),
+    )
     .bind(
         snapshot
             .credits
