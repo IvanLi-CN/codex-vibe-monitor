@@ -275,6 +275,7 @@ pub(crate) async fn load_maintenance_candidates(
             account.cooldown_until,
             account.temporary_route_failure_streak_started_at,
             account.token_expires_at,
+            account.last_refreshed_at,
             (
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
@@ -360,6 +361,7 @@ pub(crate) async fn load_maintenance_candidate(
             account.cooldown_until,
             account.temporary_route_failure_streak_started_at,
             account.token_expires_at,
+            account.last_refreshed_at,
             (
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
@@ -430,11 +432,30 @@ pub(crate) fn maintenance_refresh_due(
     refresh_lead_time: Duration,
     now: DateTime<Utc>,
 ) -> bool {
-    candidate
-        .token_expires_at
-        .as_deref()
+    oauth_refresh_due(
+        candidate.token_expires_at.as_deref(),
+        candidate.last_refreshed_at.as_deref(),
+        refresh_lead_time,
+        now,
+    )
+}
+
+pub(crate) fn oauth_refresh_due(
+    token_expires_at: Option<&str>,
+    last_refreshed_at: Option<&str>,
+    refresh_lead_time: Duration,
+    now: DateTime<Utc>,
+) -> bool {
+    if let Some(expires_at) = token_expires_at.and_then(parse_rfc3339_utc) {
+        return expires_at <= now + ChronoDuration::seconds(refresh_lead_time.as_secs() as i64);
+    }
+
+    last_refreshed_at
         .and_then(parse_rfc3339_utc)
-        .map(|expires| expires <= now + ChronoDuration::seconds(refresh_lead_time.as_secs() as i64))
+        .map(|refreshed_at| {
+            now.signed_duration_since(refreshed_at).num_seconds()
+                >= UPSTREAM_ACCOUNT_REFRESH_FALLBACK_INTERVAL_SECS as i64
+        })
         .unwrap_or(true)
 }
 
@@ -672,6 +693,23 @@ pub(crate) fn maintenance_interval_for_tier(
     }
 }
 
+pub(crate) fn maintenance_interval_for_candidate(
+    candidate: &MaintenanceCandidateRow,
+    tier: MaintenanceTier,
+    settings: PoolRoutingMaintenanceSettings,
+    refresh_lead_time: Duration,
+    now: DateTime<Utc>,
+) -> u64 {
+    if maintenance_refresh_due(candidate, refresh_lead_time, now)
+        || !maintenance_candidate_has_complete_usage(candidate)
+        || maintenance_candidate_is_high_frequency(candidate, now)
+    {
+        MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS
+    } else {
+        maintenance_interval_for_tier(tier, settings)
+    }
+}
+
 pub(crate) fn maintenance_window_reset_due(
     candidate: &MaintenanceCandidateRow,
     resets_at: Option<&str>,
@@ -702,6 +740,7 @@ pub(crate) fn maintenance_plan_is_due(
     candidate: &MaintenanceCandidateRow,
     tier: MaintenanceTier,
     settings: PoolRoutingMaintenanceSettings,
+    refresh_lead_time: Duration,
     now: DateTime<Utc>,
 ) -> bool {
     if maintenance_reset_due(candidate, now) {
@@ -712,7 +751,7 @@ pub(crate) fn maintenance_plan_is_due(
     }
     maintenance_interval_is_due(
         candidate,
-        maintenance_interval_for_tier(tier, settings),
+        maintenance_interval_for_candidate(candidate, tier, settings, refresh_lead_time, now),
         now,
     )
 }
@@ -744,6 +783,7 @@ pub(crate) async fn load_maintenance_candidates_ranked_before(
                 account.cooldown_until,
                 account.temporary_route_failure_streak_started_at,
                 account.token_expires_at,
+                account.last_refreshed_at,
                 (
                     SELECT sample.primary_used_percent
                     FROM pool_upstream_account_limit_samples sample
@@ -846,12 +886,14 @@ pub(crate) async fn current_maintenance_interval_for_queued_high_frequency_candi
 ) -> Result<u64> {
     let routing = load_pool_routing_settings(&state.pool).await?;
     let settings = resolve_pool_routing_maintenance_settings(&routing, &state.config);
-    if maintenance_candidate_force_priority(
+    if maintenance_refresh_due(
         candidate,
         state.config.upstream_accounts_refresh_lead_time,
         now,
-    ) {
-        return Ok(settings.primary_sync_interval_secs);
+    ) || !maintenance_candidate_has_complete_usage(candidate)
+        || maintenance_candidate_is_high_frequency(candidate, now)
+    {
+        return Ok(MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS);
     }
     if !maintenance_candidate_is_available(candidate) {
         return Ok(settings.secondary_sync_interval_secs);
@@ -895,9 +937,15 @@ pub(crate) async fn execute_queued_maintenance_sync(
     let Some(candidate) = load_maintenance_candidate(&state.pool, id).await? else {
         return Ok(None);
     };
-    let interval_secs = if matches!(plan.tier, MaintenanceTier::HighFrequency)
-        && !maintenance_candidate_is_high_frequency(&candidate, now)
+    let interval_secs = if maintenance_refresh_due(
+        &candidate,
+        state.config.upstream_accounts_refresh_lead_time,
+        now,
+    ) || !maintenance_candidate_has_complete_usage(&candidate)
+        || maintenance_candidate_is_high_frequency(&candidate, now)
     {
+        MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS
+    } else if matches!(plan.tier, MaintenanceTier::HighFrequency) {
         current_maintenance_interval_for_queued_high_frequency_candidate(state, &candidate, now)
             .await?
     } else {
@@ -946,20 +994,44 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
     let mut plans = Vec::new();
     let mut available_priority_slots_used = 0usize;
     for candidate in forced_priority {
-        if maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now) {
+        if maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::Priority,
+            settings,
+            refresh_lead_time,
+            now,
+        ) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier: MaintenanceTier::Priority,
-                sync_interval_secs: settings.primary_sync_interval_secs,
+                sync_interval_secs: maintenance_interval_for_candidate(
+                    &candidate,
+                    MaintenanceTier::Priority,
+                    settings,
+                    refresh_lead_time,
+                    now,
+                ),
             });
         }
     }
     for candidate in high_frequency {
-        if maintenance_plan_is_due(&candidate, MaintenanceTier::HighFrequency, settings, now) {
+        if maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::HighFrequency,
+            settings,
+            refresh_lead_time,
+            now,
+        ) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier: MaintenanceTier::HighFrequency,
-                sync_interval_secs: MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
+                sync_interval_secs: maintenance_interval_for_candidate(
+                    &candidate,
+                    MaintenanceTier::HighFrequency,
+                    settings,
+                    refresh_lead_time,
+                    now,
+                ),
             });
         }
     }
@@ -980,20 +1052,38 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
         if counts_toward_priority_slot {
             available_priority_slots_used += 1;
         }
-        if maintenance_plan_is_due(&candidate, tier, settings, now) {
+        if maintenance_plan_is_due(&candidate, tier, settings, refresh_lead_time, now) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier,
-                sync_interval_secs: maintenance_interval_for_tier(tier, settings),
+                sync_interval_secs: maintenance_interval_for_candidate(
+                    &candidate,
+                    tier,
+                    settings,
+                    refresh_lead_time,
+                    now,
+                ),
             });
         }
     }
     for candidate in secondary {
-        if maintenance_plan_is_due(&candidate, MaintenanceTier::Secondary, settings, now) {
+        if maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::Secondary,
+            settings,
+            refresh_lead_time,
+            now,
+        ) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier: MaintenanceTier::Secondary,
-                sync_interval_secs: settings.secondary_sync_interval_secs,
+                sync_interval_secs: maintenance_interval_for_candidate(
+                    &candidate,
+                    MaintenanceTier::Secondary,
+                    settings,
+                    refresh_lead_time,
+                    now,
+                ),
             });
         }
     }

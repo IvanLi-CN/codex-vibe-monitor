@@ -3935,6 +3935,7 @@ fn maintenance_candidates(
         cooldown_until: None,
         temporary_route_failure_streak_started_at: None,
         token_expires_at: token_expires_at.map(ToOwned::to_owned),
+        last_refreshed_at: None,
         primary_used_percent,
         primary_resets_at: None,
         secondary_used_percent,
@@ -4037,8 +4038,8 @@ fn resolve_due_maintenance_dispatch_plans_prioritizes_forced_accounts_and_overfl
     assert_eq!(plan_map.get(&1), Some(&(MaintenanceTier::Priority, 300)));
     assert_eq!(plan_map.get(&2), Some(&(MaintenanceTier::Secondary, 1800)));
     assert_eq!(plan_map.get(&4), Some(&(MaintenanceTier::Priority, 300)));
-    assert_eq!(plan_map.get(&5), Some(&(MaintenanceTier::Priority, 300)));
-    assert_eq!(plan_map.get(&6), Some(&(MaintenanceTier::Priority, 300)));
+    assert_eq!(plan_map.get(&5), Some(&(MaintenanceTier::Priority, 60)));
+    assert_eq!(plan_map.get(&6), Some(&(MaintenanceTier::Priority, 60)));
     assert!(!plan_map.contains_key(&3));
 }
 
@@ -4069,7 +4070,13 @@ fn maintenance_plan_is_not_due_during_upstream_rejected_cooldown() {
     candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
 
     assert!(
-        !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+        !maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::Priority,
+            settings,
+            Duration::from_secs(5 * 60),
+            now,
+        ),
         "active upstream-rejected cooldown should suppress maintenance scheduling"
     );
 }
@@ -4102,7 +4109,13 @@ fn maintenance_plan_prefers_explicit_upstream_rejected_cooldown_until() {
     candidate.cooldown_until = Some("2026-04-13T17:00:00Z".to_string());
 
     assert!(
-        !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+        !maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::Priority,
+            settings,
+            Duration::from_secs(5 * 60),
+            now,
+        ),
         "explicit cooldown_until should be the canonical maintenance suppression signal"
     );
 }
@@ -4135,7 +4148,13 @@ fn maintenance_plan_is_due_when_reset_window_passes_even_during_upstream_rejecte
     candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
 
     assert!(
-        maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+        maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::Priority,
+            settings,
+            Duration::from_secs(5 * 60),
+            now,
+        ),
         "reset-due accounts should bypass the temporary upstream-rejected cooldown"
     );
 }
@@ -4167,7 +4186,13 @@ fn maintenance_plan_ignores_wrapped_upstream_auth_errors_for_cooldown_blocking()
     candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH.to_string());
 
     assert!(
-        maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+        maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::Priority,
+            settings,
+            Duration::from_secs(5 * 60),
+            now,
+        ),
         "wrapped upstream auth errors should not enter the maintenance cooldown path"
     );
 }
@@ -4254,7 +4279,13 @@ fn maintenance_plan_is_due_for_call_driven_upstream_rejected_errors() {
     candidate.last_error = Some("deactivated_workspace".to_string());
 
     assert!(
-        maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+        maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::Priority,
+            settings,
+            Duration::from_secs(5 * 60),
+            now,
+        ),
         "ordinary routed 402s should still allow maintenance to retry promptly"
     );
 }
@@ -4290,13 +4321,22 @@ fn maintenance_plan_is_due_for_generic_403_upstream_rejected_text() {
     );
 
     assert!(
-        maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+        maintenance_plan_is_due(
+            &candidate,
+            MaintenanceTier::Priority,
+            settings,
+            Duration::from_secs(5 * 60),
+            now,
+        ),
         "generic 403 text that happens to mention upstream rejected should not trigger the 402-only maintenance cooldown"
     );
 }
 
 #[test]
-fn resolve_due_maintenance_dispatch_plans_keeps_refresh_due_accounts_on_primary_cadence() {
+fn resolve_due_maintenance_dispatch_plans_schedules_refresh_due_accounts_on_one_minute_cadence() {
+    assert_eq!(DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS, 5 * 60);
+    assert_eq!(UPSTREAM_ACCOUNT_MAINTENANCE_TICK_SECS, 60);
+
     let now = Utc
         .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
         .single()
@@ -4313,19 +4353,74 @@ fn resolve_due_maintenance_dispatch_plans_keeps_refresh_due_accounts_on_primary_
             UPSTREAM_ACCOUNT_STATUS_ACTIVE,
             Some("2026-03-23T11:59:00Z"),
             None,
-            Some("2026-03-23T12:10:00Z"),
+            Some("2026-03-23T12:05:00Z"),
             Some(6.0),
             Some(6.0),
         )],
         settings,
-        Duration::from_secs(15 * 60),
+        Duration::from_secs(5 * 60),
+        now,
+    );
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].tier, MaintenanceTier::Priority);
+    assert_eq!(plans[0].sync_interval_secs, 60);
+}
+
+#[test]
+fn resolve_due_maintenance_dispatch_plans_does_not_refresh_before_five_minute_window() {
+    let now = Utc
+        .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+        .single()
+        .expect("valid time");
+    let settings = PoolRoutingMaintenanceSettings {
+        primary_sync_interval_secs: 300,
+        secondary_sync_interval_secs: 1800,
+        priority_available_account_cap: 100,
+    };
+
+    let plans = resolve_due_maintenance_dispatch_plans(
+        vec![maintenance_candidates(
+            70,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:59:00Z"),
+            None,
+            Some("2026-03-23T12:06:00Z"),
+            Some(6.0),
+            Some(6.0),
+        )],
+        settings,
+        Duration::from_secs(DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS),
         now,
     );
 
     assert!(
         plans.is_empty(),
-        "refresh-due accounts should stay on the configured primary cadence until the interval elapses"
+        "accounts outside the five-minute refresh window should keep the normal sync cadence"
     );
+}
+
+#[test]
+fn maintenance_refresh_due_uses_eight_day_fallback_without_parseable_expiration() {
+    let now = Utc
+        .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+        .single()
+        .expect("valid time");
+    let refresh_lead_time = Duration::from_secs(DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS);
+    let mut candidate = maintenance_candidates(
+        71,
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+        Some("2026-03-23T11:59:00Z"),
+        None,
+        None,
+        Some(6.0),
+        Some(6.0),
+    );
+    candidate.last_refreshed_at = Some("2026-03-15T11:59:59Z".to_string());
+    assert!(maintenance_refresh_due(&candidate, refresh_lead_time, now));
+
+    candidate.last_refreshed_at = Some("2026-03-15T12:00:01Z".to_string());
+    assert!(!maintenance_refresh_due(&candidate, refresh_lead_time, now));
 }
 
 #[test]
@@ -4353,7 +4448,7 @@ fn resolve_due_maintenance_dispatch_plans_routes_working_accounts_to_high_freque
     let plans = resolve_due_maintenance_dispatch_plans(
         vec![candidate],
         settings,
-        Duration::from_secs(15 * 60),
+        Duration::from_secs(5 * 60),
         now,
     );
 
@@ -4387,7 +4482,7 @@ fn resolve_due_maintenance_dispatch_plans_keeps_working_refresh_due_accounts_hig
     let plans = resolve_due_maintenance_dispatch_plans(
         vec![candidate],
         settings,
-        Duration::from_secs(15 * 60),
+        Duration::from_secs(5 * 60),
         now,
     );
 
@@ -4424,7 +4519,7 @@ fn resolve_due_maintenance_dispatch_plans_routes_degraded_accounts_to_high_frequ
     let plans = resolve_due_maintenance_dispatch_plans(
         vec![candidate],
         settings,
-        Duration::from_secs(15 * 60),
+        Duration::from_secs(5 * 60),
         now,
     );
 

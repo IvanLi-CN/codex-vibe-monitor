@@ -662,16 +662,12 @@ pub(crate) async fn prepare_pool_account_with_scopes(
             },
         ))),
         StoredCredentials::Oauth(mut value) => {
-            let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
-            let refresh_due = expires_at
-                .map(|expires| {
-                    expires
-                        <= Utc::now()
-                            + ChronoDuration::seconds(
-                                state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
-                            )
-                })
-                .unwrap_or(true);
+            let refresh_due = oauth_refresh_due(
+                row.token_expires_at.as_deref(),
+                row.last_refreshed_at.as_deref(),
+                state.config.upstream_accounts_refresh_lead_time,
+                Utc::now(),
+            );
             let deferred_status =
                 if row.status.trim().is_empty() || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
                     UPSTREAM_ACCOUNT_STATUS_ACTIVE

@@ -260,6 +260,7 @@ pub(crate) struct MaintenanceCandidateRow {
     pub(crate) cooldown_until: Option<String>,
     pub(crate) temporary_route_failure_streak_started_at: Option<String>,
     pub(crate) token_expires_at: Option<String>,
+    pub(crate) last_refreshed_at: Option<String>,
     pub(crate) primary_used_percent: Option<f64>,
     pub(crate) primary_resets_at: Option<String>,
     pub(crate) secondary_used_percent: Option<f64>,

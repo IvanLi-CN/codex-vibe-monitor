@@ -447,16 +447,12 @@ pub(crate) async fn sync_oauth_account(
         bail!("unexpected credential kind for OAuth account")
     };
 
-    let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
-    let refresh_due = expires_at
-        .map(|expires| {
-            expires
-                <= now
-                    + ChronoDuration::seconds(
-                        state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
-                    )
-        })
-        .unwrap_or(true);
+    let refresh_due = oauth_refresh_due(
+        row.token_expires_at.as_deref(),
+        row.last_refreshed_at.as_deref(),
+        state.config.upstream_accounts_refresh_lead_time,
+        now,
+    );
     let usage_scope = match resolve_account_forward_proxy_scope_for_sync(state, row, None).await {
         Ok(scope) => scope,
         Err(err) if is_group_node_shunt_unassigned_message(&err.to_string()) => {
