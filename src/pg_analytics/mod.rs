@@ -373,6 +373,7 @@ struct SourceChangeState {
     retained_from_change_id: i64,
     capacity: i64,
     invalidation_pending: i64,
+    historical_replay_required: i64,
 }
 
 #[derive(Debug, Clone, Copy, FromRow)]
@@ -426,6 +427,7 @@ struct AnalyticsSourceStatus {
     retention_bound_bytes: i64,
     capacity: i64,
     invalidation_pending: bool,
+    historical_replay_required: bool,
     coverage_generation: Option<i64>,
     covered_through_change_id: Option<i64>,
     coverage_revision_acknowledged: Option<i64>,
@@ -599,6 +601,7 @@ fn source_coverage_reaches_checkpoint(
 ) -> bool {
     source.state.generation == state.generation
         && source.state.invalidation_pending == 0
+        && source.state.historical_replay_required == 0
         && source.coverage.is_some_and(|coverage| {
             coverage.generation == state.generation
                 && coverage.covered_through_change_id == state.consumer_checkpoint
@@ -785,7 +788,7 @@ async fn load_source_context(
     let state = sqlx::query_as::<_, SourceChangeState>(
         r#"
         SELECT generation, coverage_revision, retained_from_change_id, capacity,
-               invalidation_pending
+               invalidation_pending, historical_replay_required
         FROM analytics_change_state
         WHERE id = 1
         "#,
@@ -844,6 +847,7 @@ fn source_status(source: &SourceContext) -> AnalyticsSourceStatus {
         retention_bound_bytes: ANALYTICS_SOURCE_RETENTION_BOUND_BYTES,
         capacity: source.state.capacity,
         invalidation_pending: source.state.invalidation_pending != 0,
+        historical_replay_required: source.state.historical_replay_required != 0,
         coverage_generation: source.coverage.map(|coverage| coverage.generation),
         covered_through_change_id: source
             .coverage
@@ -1224,6 +1228,18 @@ async fn delete_analytics_fact(
     Ok(())
 }
 
+fn coverage_event_is_live_mirror(change: &SourceChangeRow) -> bool {
+    serde_json::from_str::<Value>(&change.fact_json)
+        .ok()
+        .and_then(|value| value.get("summarySourceKind").cloned())
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .is_some_and(|kind| kind == "live_mirror")
+}
+
+fn coverage_event_requires_replay(change: &SourceChangeRow) -> bool {
+    change.source == "codex_invocations" && !coverage_event_is_live_mirror(change)
+}
+
 async fn apply_replica_change(
     connection: &mut sqlx::postgres::PgConnection,
     change: &SourceChangeRow,
@@ -1250,7 +1266,14 @@ async fn apply_replica_change(
                 .context("invocation tombstone is missing source row id")?;
             delete_analytics_fact(connection, &change.source, source_row_id).await?;
         }
-        ("upsert", _) | ("coverage", _) => {}
+        ("upsert", _) => {}
+        ("coverage", _) if !coverage_event_requires_replay(change) => {}
+        ("coverage", entity_kind) => {
+            bail!(
+                "historical analytics archive coverage change {entity_kind} at {} requires archive replay",
+                change.change_id
+            );
+        }
         (event_kind, entity_kind) => {
             bail!(
                 "unsupported analytics source change kind {event_kind}/{entity_kind} at {}",
@@ -1535,8 +1558,10 @@ async fn bootstrap_replica(
     execute_postgres_schema(pool).await?;
     verify_replica_schema(pool).await?;
     let source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-    if source_has_historical_invocation_archives(source_pool).await? {
-        let detail = "SQLite invocation archives exist; bootstrap cannot prove historical analytics coverage without replaying those archives";
+    if source_before.state.historical_replay_required != 0
+        || source_has_historical_invocation_archives(source_pool).await?
+    {
+        let detail = "SQLite historical invocation coverage requires archive replay before PostgreSQL analytics bootstrap can declare complete history";
         mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
         return Err(anyhow!(detail));
     }
@@ -1629,6 +1654,11 @@ async fn resume_replica(
 
     for _ in 0..ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN {
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+        if source.state.historical_replay_required != 0 {
+            let detail = "SQLite historical invocation coverage requires archive replay before the analytics replica can advance";
+            mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
+            return Err(anyhow!(detail));
+        }
         let lag_bytes = load_source_lag_bytes(source_pool, state.consumer_checkpoint).await?;
         if source_retention_exhausted(&state, &source)
             && !replica_can_recover_pending_generation_ack(&state, &source)
@@ -1870,6 +1900,11 @@ async fn verify_replica(
     }
     if source.state.invalidation_pending != 0 {
         errors.push("source generation still has pending invalidation".to_string());
+    }
+    if source.state.historical_replay_required != 0 {
+        errors.push(
+            "source has historical invocation coverage that requires archive replay".to_string(),
+        );
     }
     match source.coverage {
         Some(coverage)
@@ -2263,6 +2298,7 @@ mod tests {
                 retained_from_change_id: 11,
                 capacity: 10_000,
                 invalidation_pending: 0,
+                historical_replay_required: 0,
             },
             latest_change_id: 12,
             retained_bytes: 128,
@@ -2320,6 +2356,7 @@ mod tests {
                 retained_from_change_id: 1,
                 capacity: 10_000,
                 invalidation_pending: 0,
+                historical_replay_required: 0,
             },
             latest_change_id: 7,
             retained_bytes: 128,
@@ -2347,6 +2384,11 @@ mod tests {
             &acknowledged_source
         ));
         acknowledged_source.coverage = None;
+        assert!(!replica_service_eligible_for_source(
+            &state,
+            &acknowledged_source
+        ));
+        acknowledged_source.state.historical_replay_required = 1;
         assert!(!replica_service_eligible_for_source(
             &state,
             &acknowledged_source
@@ -2380,6 +2422,7 @@ mod tests {
                 retained_from_change_id: 1,
                 capacity: 10_000,
                 invalidation_pending: 0,
+                historical_replay_required: 0,
             },
             latest_change_id: 9,
             retained_bytes: 128,
@@ -2439,12 +2482,12 @@ mod tests {
             occurred_at_epoch_ms: 1,
             stats_date: "2026-10-31".to_string(),
             source: " source ".to_string(),
-            model: Some(format!("  {long_model}  ")),
-            status: Some(" completed ".to_string()),
+            model: Some(format!("  {long_model}\0  ")),
+            status: Some(" completed \0".to_string()),
             failure_kind: Some(" failure ".to_string()),
             failure_class: Some(" class ".to_string()),
             payload: Some(
-                r#"{"requestModel":"  request-model  ","upstreamAccountName":"  account  "}"#
+                r#"{"requestModel":"  request\u0000model  ","upstreamAccountName":"  account  "}"#
                     .to_string(),
             ),
             ..Default::default()
@@ -2455,7 +2498,7 @@ mod tests {
         assert_eq!(fact.source, "source");
         assert_eq!(fact.invoke_id, "invoke-42");
         assert_eq!(fact.model.as_deref(), Some(expected_model.as_str()));
-        assert_eq!(fact.request_model.as_deref(), Some("request-model"));
+        assert_eq!(fact.request_model.as_deref(), Some("requestmodel"));
         assert_eq!(fact.upstream_account_name.as_deref(), Some("account"));
         assert_eq!(fact.status.as_deref(), Some("completed"));
         assert_eq!(fact.failure_kind.as_deref(), Some("failure"));

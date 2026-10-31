@@ -13,6 +13,7 @@ struct AnalyticsChangeStateRow {
     retained_from_change_id: i64,
     capacity: i64,
     invalidation_pending: i64,
+    historical_replay_required: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -148,6 +149,7 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
             retained_from_change_id INTEGER NOT NULL DEFAULT 1,
             capacity INTEGER NOT NULL DEFAULT 10000 CHECK(capacity > 0),
             invalidation_pending INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_pending IN (0, 1)),
+            historical_replay_required INTEGER NOT NULL DEFAULT 0 CHECK(historical_replay_required IN (0, 1)),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -155,6 +157,21 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure analytics_change_state table")?;
+
+    let state_columns = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('analytics_change_state') WHERE name = 'historical_replay_required')",
+    )
+    .fetch_one(pool)
+    .await
+    .context("failed to inspect analytics change state columns")?;
+    if state_columns == 0 {
+        sqlx::query(
+            "ALTER TABLE analytics_change_state ADD COLUMN historical_replay_required INTEGER NOT NULL DEFAULT 1 CHECK(historical_replay_required IN (0, 1))",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add analytics change historical replay state")?;
+    }
 
     sqlx::query(
         r#"
@@ -198,7 +215,8 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
 }
 
 fn bounded_text(value: Option<&str>) -> Option<String> {
-    let value = value?.trim();
+    let value = value?.replace('\0', "");
+    let value = value.trim();
     if value.is_empty() {
         return None;
     }
@@ -211,7 +229,8 @@ fn bounded_text(value: Option<&str>) -> Option<String> {
 }
 
 fn bounded_required_text(value: &str, label: &str) -> Result<String> {
-    let value = value.trim();
+    let normalized = value.replace('\0', "");
+    let value = normalized.trim();
     if value.is_empty() {
         bail!("analytics change {label} must not be empty");
     }
@@ -222,7 +241,8 @@ fn bounded_required_text(value: &str, label: &str) -> Result<String> {
 }
 
 fn bounded_entity_key(value: &str) -> Result<String> {
-    let value = value.trim();
+    let normalized = value.replace('\0', "");
+    let value = normalized.trim();
     if value.is_empty() {
         bail!("analytics change entity key must not be empty");
     }
@@ -297,7 +317,8 @@ fn success_like_status(status: Option<&str>) -> bool {
 async fn load_analytics_change_state(tx: &mut SqliteConnection) -> Result<AnalyticsChangeStateRow> {
     sqlx::query_as::<_, AnalyticsChangeStateRow>(
         r#"
-        SELECT generation, coverage_revision, retained_from_change_id, capacity, invalidation_pending
+        SELECT generation, coverage_revision, retained_from_change_id, capacity,
+               invalidation_pending, historical_replay_required
         FROM analytics_change_state
         WHERE id = 1
         "#,
@@ -825,7 +846,7 @@ pub(crate) async fn append_archive_coverage_for_file_tx(
         "summarySourceKind": bounded_text(Some(&row.summary_source_kind)),
     })
     .to_string();
-    append_analytics_change_tx(
+    let receipt = append_analytics_change_tx(
         tx,
         AnalyticsChangeInput {
             event_kind: "coverage",
@@ -840,7 +861,16 @@ pub(crate) async fn append_archive_coverage_for_file_tx(
             fact_json: &fact_json,
         },
     )
-    .await
+    .await?;
+    if row.dataset == "codex_invocations" && row.summary_source_kind != "live_mirror" {
+        sqlx::query(
+            "UPDATE analytics_change_state SET historical_replay_required = 1, updated_at = datetime('now') WHERE id = 1",
+        )
+        .execute(&mut *tx)
+        .await
+        .context("failed to persist analytics historical replay requirement")?;
+    }
+    Ok(receipt)
 }
 
 pub(crate) async fn claim_analytics_change_coverage(
@@ -1215,6 +1245,36 @@ mod tests {
         let fact: Value = serde_json::from_str(&fact_json).expect("parse invocation fact");
         assert_eq!(fact["status"], "success");
         assert!(!fact_json.contains("raw_response"));
+    }
+
+    #[tokio::test]
+    async fn invocation_archive_coverage_requires_historical_replay() {
+        let pool = test_pool().await;
+        sqlx::query(
+            "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, summary_source_kind) VALUES ('codex_invocations', '2026-10', '/tmp/archive-invocations.gz', 'hash', 1, 'completed', 'unknown')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert invocation archive fixture");
+
+        let mut tx = pool
+            .begin()
+            .await
+            .expect("begin archive coverage transaction");
+        append_archive_coverage_for_file_tx(tx.as_mut(), "/tmp/archive-invocations.gz")
+            .await
+            .expect("append invocation archive coverage event");
+        tx.commit()
+            .await
+            .expect("commit archive coverage transaction");
+
+        let replay_required: i64 = sqlx::query_scalar(
+            "SELECT historical_replay_required FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load historical replay requirement");
+        assert_eq!(replay_required, 1);
     }
 
     #[tokio::test]
