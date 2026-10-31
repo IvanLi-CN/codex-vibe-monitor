@@ -2423,6 +2423,7 @@ async fn bootstrap_replica(
             };
         }
     }
+    drop(connection);
     result?;
     load_status_report(pool, source_pool).await
 }
