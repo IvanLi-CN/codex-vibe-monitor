@@ -99,6 +99,11 @@ pub(crate) async fn set_test_oauth_codex_upstream_base_url(url: Url) {
 
 #[cfg(test)]
 pub(crate) async fn reset_test_oauth_codex_upstream_base_url() {
+    reset_test_oauth_codex_upstream_base_url_now();
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_oauth_codex_upstream_base_url_now() {
     *TEST_OAUTH_CODEX_UPSTREAM_BASE_URL
         .lock()
         .expect("lock test oauth codex upstream base url") = None;

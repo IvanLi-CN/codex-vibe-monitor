@@ -191,6 +191,13 @@ pub(crate) async fn load_forward_proxy_subscription_snapshot(
         }
         return Ok(Vec::new());
     };
+    if normalize_subscription_entries(snapshot.subscription_urls.clone())
+        != snapshot.subscription_urls
+        || normalize_proxy_url_entries(snapshot.proxy_urls.clone()) != snapshot.proxy_urls
+    {
+        warn!("ignoring non-normalized forward proxy subscription snapshot");
+        return Ok(Vec::new());
+    }
     let current_subscription_urls = normalize_subscription_entries(subscription_urls.to_vec());
     if snapshot.subscription_urls != current_subscription_urls {
         return Ok(Vec::new());
@@ -2457,6 +2464,7 @@ pub(crate) async fn put_forward_proxy_settings(
 
     let next: ForwardProxySettings = payload.into();
     let _update_guard = state.forward_proxy_settings_update_lock.lock().await;
+    let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
 
     let (
         previous_settings,
@@ -2514,6 +2522,7 @@ pub(crate) async fn put_forward_proxy_settings(
             "failed to sync forward proxy routes after settings update"
         );
     }
+    drop(_refresh_guard);
     if let Err(err) = refresh_forward_proxy_subscriptions(
         state.clone(),
         true,
@@ -2588,22 +2597,34 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
     )
     .await;
 
-    if let Err(err) = refresh_result {
-        let detail = sanitize_forward_proxy_error_detail(&err);
-        observation.finish_with_status_and_reason("failed", Some(&detail));
-        if let Some(run) = task_run.as_ref() {
-            finish_system_task_run_batched(
-                state.as_ref(),
-                run,
-                SystemTaskStatus::Failed,
-                Some("forward proxy manual refresh failed".to_string()),
-                Some(detail.clone()),
-            )
-            .await;
+    let mut partial_refresh_detail = None;
+    match refresh_result {
+        Ok(()) => observation.finish_with_status("success"),
+        Err(err)
+            if err
+                .to_string()
+                .starts_with(FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX) =>
+        {
+            let detail = sanitize_forward_proxy_error_detail(&err);
+            observation.finish_with_status_and_reason("skipped", Some("partial_refresh"));
+            partial_refresh_detail = Some(detail);
         }
-        return Err((StatusCode::BAD_GATEWAY, detail));
+        Err(err) => {
+            let detail = sanitize_forward_proxy_error_detail(&err);
+            observation.finish_with_status_and_reason("failed", Some(&detail));
+            if let Some(run) = task_run.as_ref() {
+                finish_system_task_run_batched(
+                    state.as_ref(),
+                    run,
+                    SystemTaskStatus::Failed,
+                    Some("forward proxy manual refresh failed".to_string()),
+                    Some(detail.clone()),
+                )
+                .await;
+            }
+            return Err((StatusCode::BAD_GATEWAY, detail));
+        }
     }
-    observation.finish_with_status("success");
 
     let after_subscription_keys = {
         let manager = state.forward_proxy.lock().await;
@@ -2617,18 +2638,26 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         .difference(&before_subscription_keys)
         .count();
     if let Some(run) = task_run.as_ref() {
-        finish_system_task_run_batched(
-            state.as_ref(),
-            run,
-            SystemTaskStatus::Success,
-            Some(format!(
-                "forward proxy manual refresh completed: subscriptions={} added_nodes={}",
-                after_subscription_keys.len(),
-                added_node_count
-            )),
-            None,
-        )
-        .await;
+        let (status, summary, detail) = match partial_refresh_detail.as_ref() {
+            Some(detail) => (
+                SystemTaskStatus::Skipped,
+                "forward proxy manual refresh retained the previous result".to_string(),
+                Some(detail.clone()),
+            ),
+            None => (
+                SystemTaskStatus::Success,
+                format!(
+                    "forward proxy manual refresh completed: subscriptions={} added_nodes={}",
+                    after_subscription_keys.len(),
+                    added_node_count
+                ),
+                None,
+            ),
+        };
+        finish_system_task_run_batched(state.as_ref(), run, status, Some(summary), detail).await;
+    }
+    if let Some(detail) = partial_refresh_detail {
+        return Err((StatusCode::BAD_GATEWAY, detail));
     }
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref())
         .await

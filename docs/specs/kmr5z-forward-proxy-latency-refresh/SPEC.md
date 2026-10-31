@@ -43,6 +43,10 @@
 
 ### REQ-KMR5Z-001 Latency Feedback
 
+- `REQ-KMR5Z-LATENCY-TEST`: 节点测速 MUST 保持既有预算、目标可达性和渐进结果契约。
+- `REQ-KMR5Z-SUBSCRIPTION-RECOVERY`: 订阅节点快照 MUST 在匹配源配置时于启动恢复，并在完整刷新成功前保留上次成功结果。
+- `REQ-KMR5Z-REFRESH-CONTRACT`: 订阅刷新 MUST 保持既有 HTTP 响应字段契约；部分失败只能保留旧结果并标记内部任务为 `skipped`，完整空结果 MUST 清空节点。
+
 - 节点表必须新增“延迟”列，内容为可点击 badge/button。
 - 未测状态显示 `测试`；测试中显示当前轮次进度；有结果显示整数毫秒；五轮全失败显示 `--` 或“超时”。
 - 单节点测速最多执行 5 轮，每轮预算 5 秒，整体预算 15 秒。
@@ -60,6 +64,10 @@
 ### REQ-KMR5Z-003 Subscription Refresh
 
 - 手动刷新订阅必须强制绕过订阅刷新间隔。
+- 启动时必须优先恢复与当前订阅源配置匹配的上次成功节点快照，并在接收请求前同步这些节点的代理路由。
+- 订阅刷新只有在所有已配置来源都成功获取后才可替换节点快照；全部或部分来源失败时，保留上次成功节点。
+- 所有来源成功但解析结果为空时，必须立即清空活动节点和持久化快照。
+- 修改或删除订阅源时，必须清除旧配置对应的快照，不能在之后重新添加时复用旧节点。
 
 ### REQ-KMR5Z-004 Restart Recovery
 
@@ -103,7 +111,9 @@
 - 单节点整体 15 秒预算耗尽后，返回已完成样本；无有效样本时显示超时。
 - 批量测试中单个节点失败不影响其他节点继续测试。
 - 启动恢复快照时，若其订阅源列表与当前设置不一致，则忽略快照并继续使用当前手动代理配置。
+- 启动恢复快照时，若 JSON 无法解析、订阅源不匹配，或快照包含非法/非规范化的订阅节点 URL，则整体忽略快照，不恢复其中的部分节点。
 - 订阅刷新出现任一来源错误时，本轮结果不完整，不得清除或部分替换上次成功的节点快照。
+- 手动刷新遇到部分来源失败时，继续沿用既有 HTTP 状态和响应字段契约；只在内部任务观测中标记为 `skipped`，并保留上次成功结果。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -121,11 +131,29 @@
 
 ## Verification
 
-### VER-KMR5Z-001 Latency and Refresh Interface
+- Given Settings 页有多个 forward proxy 节点，When 用户点击“测试全部”，Then 每个节点先完成第 1 轮后才进入第 2 轮。
+- Given 某节点第 1 轮有有效耗时，When 该轮结束，Then UI 立即显示当前均值。
+- Given 某节点后续轮次继续成功，When 新样本到达，Then UI 显示更新后的整数毫秒均值。
+- Given 某节点 5 轮全部失败，When 测试结束，Then UI 显示 `--` 或“超时”。
+- Given 某节点 `egressIp` 与 OAuth `/models` 成功但 Codex `/responses` 超时，When 测试进度到达前端，Then UI 显示异常并展示 `codexResponses` 失败原因，而不是显示正常延迟。
+- Given Codex `/responses` 返回 `405`，When 后端记录该目标结果，Then 该目标视为可达并可贡献成功样本。
+- Given 用户点击刷新订阅，When 后端成功解析订阅，Then Settings 页节点列表包含刷新后的节点。
+- Given 上次成功刷新已保存节点且订阅源配置未变，When 服务重启但订阅源暂时不可用，Then 服务开始处理请求前恢复并路由上次成功的节点。
+- Given 多个订阅源中任一来源刷新失败，When 本轮刷新结束，Then 活动节点与持久化快照均保留本轮前的上次成功结果。
+- Given 手动刷新中部分订阅源失败，When 请求完成，Then 响应仍使用既有状态和字段，内部刷新任务标记为 `skipped`，且不报告替换出的新节点。
+- Given 启动快照 JSON 可解析但包含非法或非规范化节点 URL，When 服务尝试恢复，Then 整个快照被忽略，不恢复剩余合法节点。
+- Given 所有订阅源均成功返回但解析结果为空，When 本轮刷新结束，Then 活动节点和持久化快照立即变为空。
+- Given 用户删除或修改订阅源，When 设置保存成功，Then 旧订阅源的节点快照被清除，不会因重新添加相同地址而恢复。
 
-- Method: backend unit/integration tests and Settings page Storybook interaction coverage.
-- covers: REQ-KMR5Z-001, REQ-KMR5Z-002, REQ-KMR5Z-003, REQ-KMR5Z-008
-- Pass condition: probe rounds respect budgets and breadth-first scheduling; health failures remain visible; manual subscription refresh bypasses its interval and updates the Settings node list.
+### VER-KMR5Z-BACKEND
+
+- Method: backend unit and integration regressions for latency probing, OAuth proxy precedence, subscription restart recovery, refresh retention, source invalidation, and schema compatibility.
+- covers: `REQ-KMR5Z-LATENCY-TEST`, `REQ-KMR5Z-SUBSCRIPTION-RECOVERY`, `REQ-KMR5Z-REFRESH-CONTRACT`
+
+### VER-KMR5Z-FRONTEND
+
+- Method: Settings page unit, Storybook, and build checks for latency and subscription refresh states.
+- covers: `REQ-KMR5Z-LATENCY-TEST`, `REQ-KMR5Z-REFRESH-CONTRACT`
 
 ### VER-KMR5Z-002 Durable Subscription Recovery
 
@@ -205,7 +233,13 @@ None
 
 ![Settings forward proxy mobile window order](./assets/settings-forward-proxy-window-order-mobile.png)
 
-## References
+## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
+
+- 风险：批量测速节点很多时会维持较长 SSE 连接；实现必须在每轮预算内释放已超时请求。
+- 假设：Direct 节点参与测试，作为当前机器直连基线。
+- 假设：OAuth 上游无凭据响应仍可用于网络可达性与延迟诊断，实际 HTTP 状态会返回给 UI。
+
+## 参考（References）
 
 - `src/forward_proxy/`
 - `web/src/pages/Settings.tsx`

@@ -1,10 +1,113 @@
 use super::*;
 
+pub(crate) const FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX: &str =
+    "partial forward proxy subscription refresh:";
+
+#[cfg(test)]
+type ForwardProxySubscriptionRefreshLockAttemptHook =
+    std::sync::Mutex<Option<(usize, oneshot::Sender<()>)>>;
+
+#[cfg(test)]
+type ForwardProxySubscriptionRefreshLockAcquiredHook =
+    std::sync::Mutex<Option<(usize, Arc<AtomicBool>, Arc<AtomicBool>)>>;
+
+#[cfg(test)]
+fn forward_proxy_subscription_refresh_lock_attempt_hook()
+-> &'static ForwardProxySubscriptionRefreshLockAttemptHook {
+    static HOOK: std::sync::OnceLock<ForwardProxySubscriptionRefreshLockAttemptHook> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn forward_proxy_subscription_refresh_lock_acquired_hook()
+-> &'static ForwardProxySubscriptionRefreshLockAcquiredHook {
+    static HOOK: std::sync::OnceLock<ForwardProxySubscriptionRefreshLockAcquiredHook> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(crate) fn install_forward_proxy_subscription_refresh_lock_attempt_hook(
+    state: &Arc<AppState>,
+    sender: oneshot::Sender<()>,
+) {
+    *forward_proxy_subscription_refresh_lock_attempt_hook()
+        .lock()
+        .expect("forward proxy refresh test hook lock") =
+        Some((Arc::as_ptr(state) as usize, sender));
+}
+
+#[cfg(test)]
+pub(crate) fn install_forward_proxy_subscription_refresh_lock_acquired_hook(
+    state: &Arc<AppState>,
+    active_fetch: Arc<AtomicBool>,
+    acquired_while_active: Arc<AtomicBool>,
+) {
+    *forward_proxy_subscription_refresh_lock_acquired_hook()
+        .lock()
+        .expect("forward proxy refresh acquired hook lock") = Some((
+        Arc::as_ptr(state) as usize,
+        active_fetch,
+        acquired_while_active,
+    ));
+}
+
+#[cfg(test)]
+fn notify_forward_proxy_subscription_refresh_lock_attempt(state: &Arc<AppState>) {
+    let state_id = Arc::as_ptr(state) as usize;
+    let sender = {
+        let mut hook = forward_proxy_subscription_refresh_lock_attempt_hook()
+            .lock()
+            .expect("forward proxy refresh test hook lock");
+        if hook
+            .as_ref()
+            .is_some_and(|(hook_state_id, _)| *hook_state_id == state_id)
+        {
+            hook.take().map(|(_, sender)| sender)
+        } else {
+            None
+        }
+    };
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+}
+
+#[cfg(test)]
+fn notify_forward_proxy_subscription_refresh_lock_acquired(state: &Arc<AppState>) {
+    let state_id = Arc::as_ptr(state) as usize;
+    let hook = {
+        let mut hook = forward_proxy_subscription_refresh_lock_acquired_hook()
+            .lock()
+            .expect("forward proxy refresh acquired hook lock");
+        if hook
+            .as_ref()
+            .is_some_and(|(hook_state_id, _, _)| *hook_state_id == state_id)
+        {
+            hook.take()
+        } else {
+            None
+        }
+    };
+    if let Some((_, active_fetch, acquired_while_active)) = hook
+        && active_fetch.load(Ordering::SeqCst)
+    {
+        acquired_while_active.store(true, Ordering::SeqCst);
+    }
+}
+
 pub(crate) async fn refresh_forward_proxy_subscriptions(
     state: Arc<AppState>,
     force: bool,
     known_subscription_keys_override: Option<HashSet<String>>,
 ) -> Result<()> {
+    // Keep each fetch-and-apply cycle ordered so a slower older response cannot overwrite a newer snapshot.
+    #[cfg(test)]
+    notify_forward_proxy_subscription_refresh_lock_attempt(&state);
+    let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
+    #[cfg(test)]
+    notify_forward_proxy_subscription_refresh_lock_acquired(&state);
     let (subscription_urls, interval_secs, last_refresh_at) = {
         let manager = state.forward_proxy.lock().await;
         (
@@ -74,7 +177,14 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         bail!("all forward proxy subscriptions failed to refresh");
     }
     if successful_subscription_count != subscription_urls.len() {
-        bail!("one or more forward proxy subscriptions failed to refresh");
+        warn!(
+            successful_subscription_count,
+            subscription_count = subscription_urls.len(),
+            "retaining the last successful forward proxy subscription refresh after a partial failure"
+        );
+        bail!(
+            "{FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX} one or more forward proxy subscriptions failed to refresh"
+        );
     }
     if state.shutdown.is_cancelled() {
         crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
@@ -82,7 +192,6 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         return Ok(());
     }
 
-    let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
     let mut manager = state.forward_proxy.lock().await;
     if state.shutdown.is_cancelled() {
         crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);

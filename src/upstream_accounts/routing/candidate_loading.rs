@@ -625,6 +625,19 @@ pub(crate) fn conversation_forward_proxy_scope(
     })
 }
 
+pub(crate) fn explicit_forward_proxy_scope(
+    row: &UpstreamAccountRow,
+    override_policy: Option<&ConversationRoutingOverride>,
+) -> Option<ForwardProxyRouteScope> {
+    conversation_forward_proxy_scope(override_policy).or_else(|| {
+        if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+            Some(transit_account_forward_proxy_scope(row))
+        } else {
+            account_bound_forward_proxy_scope(row)
+        }
+    })
+}
+
 pub(crate) async fn prepare_pool_account_with_scopes(
     state: &AppState,
     row: &UpstreamAccountRow,
@@ -955,29 +968,21 @@ pub(crate) async fn prepare_pool_account(
     node_shunt_assignments: &UpstreamAccountNodeShuntAssignments,
     conversation_override: Option<&ConversationRoutingOverride>,
 ) -> Result<Option<PoolResolvedAccount>> {
-    let conversation_proxy_scope = conversation_forward_proxy_scope(conversation_override);
-    let account_proxy_scope = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        Some(transit_account_forward_proxy_scope(row))
-    } else {
-        account_bound_forward_proxy_scope(row)
-    };
+    let explicit_proxy_scope = explicit_forward_proxy_scope(row, conversation_override);
     let refresh_proxy_scope =
-        conversation_proxy_scope
+        explicit_proxy_scope
             .clone()
-            .unwrap_or(account_proxy_scope.clone().unwrap_or(
-                required_account_forward_proxy_scope(
-                    row.group_name.as_deref(),
-                    group_metadata.bound_proxy_keys.clone(),
-                )?,
-            ));
-    let forward_proxy_scope = conversation_proxy_scope.unwrap_or(account_proxy_scope.unwrap_or(
-        resolve_account_forward_proxy_scope_from_assignments(
+            .unwrap_or(required_account_forward_proxy_scope(
+                row.group_name.as_deref(),
+                group_metadata.bound_proxy_keys.clone(),
+            )?);
+    let forward_proxy_scope =
+        explicit_proxy_scope.unwrap_or(resolve_account_forward_proxy_scope_from_assignments(
             row.id,
             row.group_name.as_deref(),
             &group_metadata,
             node_shunt_assignments,
-        )?,
-    ));
+        )?);
     prepare_pool_account_with_scopes(
         state,
         row,
