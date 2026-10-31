@@ -42,13 +42,24 @@ pub(crate) async fn fetch_timeseries_query(
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let bucket_selection = resolve_timeseries_bucket_selection(
         &params,
         &range_window,
         state.config.invocation_max_days,
     )?;
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return fetch_timeseries_from_postgres(
+            state,
+            reporting_tz,
+            source_scope,
+            range_window,
+            bucket_selection,
+            params.upstream_account_id,
+        )
+        .await;
+    }
+    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     if let Some(upstream_account_id) = params.upstream_account_id {
         return fetch_timeseries_for_account(
             state,
@@ -1026,6 +1037,141 @@ pub(crate) async fn fetch_timeseries_for_account(
     )
 }
 
+fn timeseries_record_classification(
+    success_like: bool,
+    status: Option<String>,
+    failure_kind: Option<String>,
+    failure_class: Option<String>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    if success_like {
+        (Some("success".to_string()), None, None)
+    } else {
+        (status, failure_kind, failure_class)
+    }
+}
+
+fn analytics_fact_to_timeseries_record(fact: AnalyticsFact) -> InvocationAggregateRecord {
+    let success_like = analytics_fact_is_success_like(&fact);
+    let (status, failure_kind, failure_class) = timeseries_record_classification(
+        success_like,
+        fact.status,
+        fact.failure_kind,
+        fact.failure_class,
+    );
+    InvocationAggregateRecord {
+        id: fact.source_row_id,
+        invoke_id: fact.invoke_id,
+        occurred_at: fact.occurred_at,
+        status,
+        total_tokens: fact.total_tokens,
+        input_tokens: fact.input_tokens,
+        output_tokens: fact.output_tokens,
+        cache_input_tokens: fact.cache_input_tokens,
+        reasoning_tokens: fact.reasoning_tokens,
+        cost: fact.cost,
+        error_message: None,
+        failure_kind,
+        failure_class,
+        is_actionable: fact.is_actionable.map(i64::from),
+        live_phase: None,
+        t_total_ms: fact.t_total_ms,
+        t_req_read_ms: fact.t_req_read_ms,
+        t_req_parse_ms: fact.t_req_parse_ms,
+        t_upstream_connect_ms: fact.t_upstream_connect_ms,
+        t_upstream_ttfb_ms: fact.t_upstream_ttfb_ms,
+        first_token_ms: fact.first_token_ms,
+        t_upstream_stream_ms: fact.t_upstream_stream_ms,
+        t_resp_parse_ms: fact.t_resp_parse_ms,
+        t_persist_ms: None,
+    }
+}
+
+async fn fetch_timeseries_from_postgres(
+    state: Arc<AppState>,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    range_window: RangeWindow,
+    bucket_selection: TimeseriesBucketSelection,
+    upstream_account_id: Option<i64>,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let start_dt = range_window.start;
+    let end_dt = range_window.end;
+    let bucket_seconds = bucket_selection.bucket_seconds;
+    let fact_window = query_invocation_facts(
+        &state.pg_analytics,
+        source_scope,
+        upstream_account_id,
+        Some((start_dt, end_dt)),
+        None,
+        false,
+    )
+    .await
+    .map_err(AnalyticsReadError::into_api_error)?;
+    let records = fact_window
+        .facts
+        .into_iter()
+        .map(analytics_fact_to_timeseries_record)
+        .collect::<Vec<_>>();
+    let db_runtime_records = collect_in_flight_aggregate_records(&records);
+    let mut aggregates = BTreeMap::<i64, BucketAggregate>::new();
+    for record in &records {
+        let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
+            continue;
+        };
+        if occurred < start_dt || occurred >= end_dt {
+            continue;
+        }
+        let bucket_epoch =
+            align_reporting_bucket_epoch(occurred.timestamp(), bucket_seconds, reporting_tz)?;
+        add_exact_record_to_timeseries_aggregate(
+            aggregates.entry(bucket_epoch).or_default(),
+            record,
+        );
+    }
+    let (fill_start_epoch, fill_end_epoch) = fill_timeseries_buckets(
+        &mut aggregates,
+        start_dt,
+        end_dt,
+        bucket_seconds,
+        reporting_tz,
+    )?;
+    overlay_runtime_timeseries_in_flight(
+        state.as_ref(),
+        &mut aggregates,
+        source_scope,
+        upstream_account_id,
+        start_dt,
+        end_dt,
+        bucket_seconds,
+        reporting_tz,
+        &db_runtime_records,
+    )?;
+    debug!(
+        route = "timeseries_http_or_topic",
+        builder = "postgres_analytics_facts",
+        response_source = "postgres_facts",
+        snapshot_id = fact_window.snapshot_id,
+        raw_row_count = records.len(),
+        "built timeseries from the PostgreSQL analytics read path"
+    );
+    build_timeseries_response(
+        start_dt,
+        end_dt,
+        bucket_seconds,
+        fact_window.snapshot_id,
+        bucket_selection,
+        aggregates,
+        fill_start_epoch,
+        fill_end_epoch,
+        reporting_tz,
+    )
+    .map(|Json(mut response)| {
+        response.range_start = format_utc_iso(start_dt);
+        response.range_end = format_utc_iso(end_dt);
+        Json(response)
+    })
+}
+
 pub(crate) struct TimeseriesHourlyRollupBaseline {
     pub(crate) snapshot_id: i64,
     pub(crate) aggregates: BTreeMap<i64, BucketAggregate>,
@@ -1379,4 +1525,22 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         fill_end_epoch,
         reporting_tz,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn successful_legacy_facts_do_not_reintroduce_failure_metadata() {
+        let (status, failure_kind, failure_class) = timeseries_record_classification(
+            true,
+            Some("warning_success".to_string()),
+            Some("downstream_closed".to_string()),
+            Some("client_abort".to_string()),
+        );
+        assert_eq!(status.as_deref(), Some("success"));
+        assert_eq!(failure_kind, None);
+        assert_eq!(failure_class, None);
+    }
 }

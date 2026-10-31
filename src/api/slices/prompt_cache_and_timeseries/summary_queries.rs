@@ -1,6 +1,26 @@
 use super::*;
 use anyhow::anyhow;
 
+pub(crate) async fn query_postgres_summary_facts(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    limit: Option<i64>,
+    newest_first: bool,
+) -> Result<AnalyticsFactWindow, ApiError> {
+    query_invocation_facts(
+        &state.pg_analytics,
+        source_scope,
+        upstream_account_id,
+        range,
+        limit,
+        newest_first,
+    )
+    .await
+    .map_err(AnalyticsReadError::into_api_error)
+}
+
 pub(crate) async fn query_hourly_backed_summary_since_with_config(
     pool: &Pool<Sqlite>,
     invocation_max_days: u64,

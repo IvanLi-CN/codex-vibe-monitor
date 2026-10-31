@@ -1715,6 +1715,9 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+            return;
+        }
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         loop {
             if crate::maintenance_store::legacy_worker_should_skip("timeseries_minute_projection")

@@ -123,6 +123,9 @@ pub(crate) async fn hydrate_summary_snapshots_with_deadline(
     state: &AppState,
     deadline: Duration,
 ) -> Result<()> {
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return Ok(());
+    }
     refresh_summary_snapshots_with_deadline(
         state,
         SummaryProjectionBuildMode::Bootstrap,
@@ -133,6 +136,9 @@ pub(crate) async fn hydrate_summary_snapshots_with_deadline(
 }
 
 pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return Ok(());
+    }
     if state.subscription_hub.summary_projection().await.is_none() {
         // A cold retry has no exact historical coverage proof to reuse. Keep the first
         // publication on the Bootstrap deadline instead of downgrading it to the shorter
@@ -373,6 +379,9 @@ impl SummaryCoverageRecoverySupervisor {
         reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
         runtime: &mut CompactedSourceRecoveryRuntime,
     ) -> Result<SummaryCoverageRecoveryNextTurn> {
+        if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+            return Ok(SummaryCoverageRecoveryNextTurn::Idle);
+        }
         let Ok(_singleflight) = state.subscription_hub.try_lock_summary_coverage_recovery() else {
             return Ok(SummaryCoverageRecoveryNextTurn::Idle);
         };
@@ -782,6 +791,9 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
     startup_priority: crate::db_pressure::DbBackgroundPriorityReservation,
 ) {
     crate::observability::contention::spawn_performance(state.observability.clone(), async move {
+        if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+            return;
+        }
         if crate::maintenance_store::legacy_worker_should_skip("summary_coverage_recovery").await {
             return;
         }
@@ -4716,6 +4728,9 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     state: &AppState,
     mode: SummaryProjectionBuildMode,
 ) -> Result<()> {
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return Ok(());
+    }
     if matches!(mode, SummaryProjectionBuildMode::AllTime) {
         return SummaryCoverageRecoverySupervisor::run(state).await;
     }
