@@ -1580,6 +1580,12 @@ pub(crate) fn extract_error_message(body: &str) -> String {
                     .and_then(|value| value.get("message"))
                     .and_then(value_as_string)
             })
+            .or_else(|| {
+                value
+                    .get("error")
+                    .and_then(|value| value.get("code"))
+                    .and_then(value_as_string)
+            })
             .or_else(|| value.get("error").and_then(value_as_string))
     {
         return message;

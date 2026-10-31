@@ -735,13 +735,13 @@ pub(crate) async fn prepare_pool_account_with_scopes(
             let value = latest_value;
 
             Ok(Some(build_pool_resolved_account(
-                row,
+                &latest_row,
                 effective_rule,
                 &group_metadata,
                 PoolResolvedAccountBuildContext {
                     auth: PoolResolvedAuth::Oauth {
                         access_token: value.access_token,
-                        chatgpt_account_id: row.chatgpt_account_id.clone(),
+                        chatgpt_account_id: latest_row.chatgpt_account_id.clone(),
                     },
                     upstream_base_url,
                     forward_proxy_scope,

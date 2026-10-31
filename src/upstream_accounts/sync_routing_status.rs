@@ -1684,6 +1684,8 @@ pub(crate) fn message_mentions_http_status(message: &str, status: StatusCode) ->
         format!("{code_text}:"),
         format!("status {code_text}"),
         format!("status code {code_text}"),
+        format!("{code_text}，"),
+        format!("{code_text}："),
         format!(" {code_text} "),
     ]
     .iter()

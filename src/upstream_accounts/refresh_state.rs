@@ -282,6 +282,7 @@ pub(crate) async fn schedule_upstream_account_refresh_retry(
     source: &str,
     error_code: &str,
     error_message: &str,
+    expected_encrypted_credentials: Option<&str>,
 ) -> Result<()> {
     let previous = load_refresh_state_row(pool, account_id, operation).await?;
     if previous
@@ -290,7 +291,9 @@ pub(crate) async fn schedule_upstream_account_refresh_retry(
     {
         return Ok(());
     }
-    let now = format_utc_iso(Utc::now());
+    let next_attempt_at = format_utc_iso(
+        Utc::now() + ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS),
+    );
     info!(
         account_id,
         operation, source, error_code, "upstream account refresh retry scheduled"
@@ -308,15 +311,22 @@ pub(crate) async fn schedule_upstream_account_refresh_retry(
             error_code = excluded.error_code,
             error_message = excluded.error_message,
             updated_at = excluded.updated_at
+        WHERE ?8 IS NULL OR EXISTS (
+            SELECT 1
+            FROM pool_upstream_accounts account
+            WHERE account.id = excluded.account_id
+              AND account.encrypted_credentials = ?8
+        )
         "#,
     )
     .bind(account_id)
     .bind(operation)
     .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING)
-    .bind(&now)
+    .bind(&next_attempt_at)
     .bind(source)
     .bind(error_code)
     .bind(error_message)
+    .bind(expected_encrypted_credentials)
     .execute(pool)
     .await?;
     Ok(())
@@ -445,10 +455,11 @@ pub(crate) fn classify_refresh_error(error: &str, operation: &str) -> (String, S
     let refresh_token_context = lower.contains("refresh token") || lower.contains("refresh_token");
     if lower.contains("invalid_grant")
         || (operation == UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS
-            && refresh_token_context
-            && (lower.contains("invalid")
-                || lower.contains("revoked")
-                || lower.contains("expired")))
+            && (lower.contains("invalid_token")
+                || (refresh_token_context
+                    && (lower.contains("invalid")
+                        || lower.contains("revoked")
+                        || lower.contains("expired")))))
     {
         return (
             "refresh_token_invalid".to_string(),

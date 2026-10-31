@@ -2515,8 +2515,8 @@ function accountEvents() {
       ];
     });
   const maintenanceActions: Array<readonly [string, string, number]> = [
-    ["sync_succeeded", "success", 30],
-    ["usage_snapshot_updated", "success", 60],
+    ["credential_refresh_succeeded", "success", 30],
+    ["usage_windows_refresh_succeeded", "success", 60],
     ["forward_proxy_assigned", "success", 120],
     ["routing_rule_updated", "success", 180],
     ["forward_proxy_health_checked", "success", 240],
@@ -5021,7 +5021,7 @@ function demoUpstreamAccountRefreshPayload(account: DemoAccount) {
       nextAttemptAt: credentialNeedsReauth
         ? null
         : new Date(Date.parse(credentialSuccessAt) + 8 * 24 * 60 * 60_000).toISOString(),
-      source: manualCredentialRefreshAt ? "manual_credential_refresh" : "maintenance",
+      source: manualCredentialRefreshAt ? "credential_refresh" : "maintenance",
       errorCode: credentialNeedsReauth ? "invalid_grant" : null,
       errorMessage: credentialNeedsReauth ? "上游拒绝 Refresh Token，需要重新授权。" : null,
     },
@@ -5030,7 +5030,7 @@ function demoUpstreamAccountRefreshPayload(account: DemoAccount) {
       lastAttemptAt: usageAttemptAt,
       lastSuccessAt: usagePartial ? demoModelRouteTimestamp(15) : usageAttemptAt,
       nextAttemptAt: nextUsageAttemptAt,
-      source: demoManualUsageRefreshAt.has(account.id) ? "manual_usage_refresh" : "maintenance",
+      source: demoManualUsageRefreshAt.has(account.id) ? "usage_windows_refresh" : "maintenance",
       errorCode: usageErrorCode,
       errorMessage: usageErrorMessage,
     },
@@ -5042,8 +5042,7 @@ function demoUpstreamAccountRefreshPayload(account: DemoAccount) {
         id: 9100 + account.id * 10 + index,
         occurredAt,
         action: failed ? "credential_reauth_required" : "credential_refresh_succeeded",
-        source:
-          index === 0 && manualCredentialRefreshAt ? "manual_credential_refresh" : "maintenance",
+        source: index === 0 && manualCredentialRefreshAt ? "credential_refresh" : "maintenance",
         result: failed ? "failed" : "success",
         reasonCode: failed ? "invalid_grant" : "token_refreshed",
         reasonMessage: failed ? "上游拒绝 Refresh Token，需要重新授权。" : "凭据已更新。",
@@ -6141,7 +6140,7 @@ export async function handleDemoRequest(request: Request) {
     if (group) items = items.filter((item) => item.accountGroupName?.toLowerCase().includes(group));
     if (proxyKey) items = items.filter((item) => item.forwardProxyKey === proxyKey);
     if (result) items = items.filter((item) => item.result === result);
-    if (action) items = items.filter((item) => item.action === action);
+    if (action) items = items.filter((item) => item.action.startsWith(action));
     if (kind) {
       const accountIds = new Set(
         demoAccounts()

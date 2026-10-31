@@ -45,7 +45,7 @@ describe("demo MSW handlers", () => {
       credentialRefresh?: { source?: string };
       usageWindowRefresh?: { source?: string };
     };
-    expect(payload.credentialRefresh?.source).toBe("manual_credential_refresh");
+    expect(payload.credentialRefresh?.source).toBe("credential_refresh");
     expect(payload.usageWindowRefresh?.source).toBe("maintenance");
   });
 

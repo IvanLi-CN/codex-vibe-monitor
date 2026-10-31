@@ -16,6 +16,10 @@ import type {
   UpdateUpstreamAccountPayload,
   UpstreamAccountListResponse,
 } from "../../lib/api";
+import type {
+  UpstreamAccountRefreshRecord,
+  UpstreamAccountRefreshStatus,
+} from "../../lib/api/core-upstream";
 import { applyRoutingRulePatchToEffectiveRule } from "../../lib/routingRulePatches";
 import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
 import GroupsPage from "../../pages/account-pool/Groups";
@@ -94,6 +98,39 @@ function stripActualUsageFromRosterWindow<T extends { actualUsage?: unknown } | 
     ...window,
     actualUsage: null,
   } as T;
+}
+
+function storyRefreshStatus(
+  previous: UpstreamAccountRefreshStatus | undefined,
+  source: string,
+): UpstreamAccountRefreshStatus {
+  return {
+    state: "succeeded",
+    lastAttemptAt: now,
+    lastSuccessAt: now,
+    nextAttemptAt: previous?.nextAttemptAt ?? null,
+    source,
+    errorCode: null,
+    errorMessage: null,
+  };
+}
+
+function storyRefreshRecord(
+  history: UpstreamAccountRefreshRecord[] | undefined,
+  action: string,
+  source: string,
+): UpstreamAccountRefreshRecord {
+  const nextId = Math.max(0, ...(history ?? []).map((record) => record.id)) + 1;
+  return {
+    id: nextId,
+    occurredAt: now,
+    action,
+    source,
+    result: "success",
+    reasonCode: "refresh_ok",
+    reasonMessage: null,
+    httpStatus: null,
+  };
 }
 
 function buildStoryWindowActualUsage(accountId: number, multiplier: number) {
@@ -530,7 +567,7 @@ export function StorybookUpstreamAccountsMock({
             return false;
           if (proxyKeyFilter && !proxyText.includes(proxyKeyFilter)) return false;
           if (resultFilter && (event.result ?? "").toLowerCase() !== resultFilter) return false;
-          if (actionFilter && event.action !== actionFilter) return false;
+          if (actionFilter && !event.action.startsWith(actionFilter)) return false;
           if (kindFilter) {
             const account = store.accounts.find(
               (candidate) => candidate.displayName === event.accountDisplayName,
@@ -994,11 +1031,17 @@ export function StorybookUpstreamAccountsMock({
         if (detail.kind !== "oauth_codex") {
           return jsonResponse({ message: "OAuth account not found" }, 404);
         }
+        const history = detail.credentialRefreshHistory ?? [];
         const updated = {
           ...detail,
           lastRefreshedAt: now,
           lastError: null,
           lastErrorAt: null,
+          credentialRefresh: storyRefreshStatus(detail.credentialRefresh, "credential_refresh"),
+          credentialRefreshHistory: [
+            storyRefreshRecord(history, "credential_refresh_succeeded", "credential_refresh"),
+            ...history,
+          ].slice(0, 5),
         };
         store.details[accountId] = updated;
         store.accounts = store.accounts.map((item) =>
@@ -1023,6 +1066,10 @@ export function StorybookUpstreamAccountsMock({
           lastSuccessfulSyncAt: now,
           lastError: null,
           lastErrorAt: null,
+          usageWindowRefresh: storyRefreshStatus(
+            detail.usageWindowRefresh,
+            "usage_windows_refresh",
+          ),
         };
         store.details[accountId] = updated;
         store.accounts = store.accounts.map((item) =>

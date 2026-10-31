@@ -4012,8 +4012,10 @@ fn maintenance_candidates(
         token_expires_at: token_expires_at.map(ToOwned::to_owned),
         credential_refresh_state: token_expires_at
             .map(|_| UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED.to_string()),
+        credential_refresh_last_attempt_at: None,
         credential_refresh_next_attempt_at,
         usage_window_refresh_state: None,
+        usage_window_refresh_last_attempt_at: None,
         usage_window_refresh_next_attempt_at: None,
         primary_used_percent,
         primary_resets_at: None,
@@ -4023,6 +4025,35 @@ fn maintenance_candidates(
         credits_unlimited: None,
         credits_balance: None,
     }
+}
+
+#[test]
+fn interrupted_refresh_retries_after_one_minute() {
+    let now = Utc
+        .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+        .single()
+        .expect("valid time");
+    let refresh_lead_time = Duration::from_secs(15 * 60);
+    let mut candidate = maintenance_candidates(
+        1,
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+        None,
+        None,
+        Some("2026-04-23T12:00:00Z"),
+        Some(8.0),
+        Some(8.0),
+    );
+    candidate.credential_refresh_state =
+        Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING.to_string());
+    candidate.credential_refresh_last_attempt_at = Some(format_utc_iso(
+        now - ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS + 1),
+    ));
+    assert!(maintenance_refresh_due(&candidate, refresh_lead_time, now));
+
+    candidate.credential_refresh_last_attempt_at = Some(format_utc_iso(
+        now - ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS - 1),
+    ));
+    assert!(!maintenance_refresh_due(&candidate, refresh_lead_time, now));
 }
 
 #[test]

@@ -2437,7 +2437,7 @@ pub(crate) async fn persist_oauth_callback_inner(
     .await
     .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
-    complete_upstream_account_refresh_success(
+    if let Err(err) = complete_upstream_account_refresh_success(
         &state.pool,
         account_id,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -2445,7 +2445,13 @@ pub(crate) async fn persist_oauth_callback_inner(
         credential_refresh_next_attempt_at.as_deref(),
     )
     .await
-    .map_err(internal_error_tuple)?;
+    {
+        warn!(
+            account_id,
+            error = %err,
+            "OAuth callback committed but credential refresh observability update failed"
+        );
+    }
     Ok(account_id)
 }
 
@@ -2558,7 +2564,7 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     .await
     .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
-    complete_upstream_account_refresh_success(
+    if let Err(err) = complete_upstream_account_refresh_success(
         &state.pool,
         resolved_account_id,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -2566,7 +2572,14 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
         credential_refresh_next_attempt_at.as_deref(),
     )
     .await
-    .map_err(internal_error_tuple)?;
+    {
+        warn!(
+            account_id = resolved_account_id,
+            error = %err,
+            "OAuth identity overwrite committed but credential refresh observability update failed"
+        );
+    }
+    drop(_credential_refresh_guard);
     if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
         warn!(account_id, error = %err, "OAuth identity overwrite confirmed but initial sync failed");
     }

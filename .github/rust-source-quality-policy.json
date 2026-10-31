@@ -399,7 +399,7 @@
     {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
       "role": "production",
-      "line_budget": 4982,
+      "line_budget": 5037,
       "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
     },
     {
@@ -411,7 +411,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
       "role": "test_helper",
-      "line_budget": 7370,
+      "line_budget": 7401,
       "next_module_workstream": "Split upstream maintenance scheduler/schema fixtures by account plans, routing, and persistence."
     },
     {
@@ -429,7 +429,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
       "role": "test_helper",
-      "line_budget": 8354,
+      "line_budget": 8359,
       "next_module_workstream": "Split upstream sync cooldown/capability fixtures by recovery, classification, and maintenance."
     }
   ],

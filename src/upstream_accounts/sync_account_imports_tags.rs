@@ -495,6 +495,7 @@ async fn record_usage_refresh_failure(
             UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
             "access_token_rejected",
             "额度接口拒绝当前 Access Token，下一轮独立凭据刷新将重试。",
+            row.encrypted_credentials.as_deref(),
         )
         .await?;
     }
@@ -827,6 +828,8 @@ pub(crate) async fn refresh_oauth_usage_windows(
     row: &UpstreamAccountRow,
     source: &str,
 ) -> Result<OAuthUsageRefreshOutcome> {
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(row.id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
     let operation = UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS;
     begin_upstream_account_refresh_attempt(&state.pool, row.id, operation, source).await?;
     let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
@@ -1148,6 +1151,28 @@ pub(crate) async fn refresh_upstream_account_credentials_by_id(
         &refresh_scope,
     )
     .await?;
+    let latest_row = load_upstream_account_row(&state.pool, id)
+        .await?
+        .ok_or_else(|| anyhow!("account disappeared during manual credential refresh"))?;
+    let credential_status = load_upstream_account_refresh_status(
+        &state.pool,
+        id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await?;
+    if credential_status.state == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH {
+        set_account_status(
+            &state.pool,
+            id,
+            UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+            Some("OAuth 凭据刷新需要重新授权。"),
+        )
+        .await?;
+    } else if credential_status.state == UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
+        && latest_row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+    {
+        set_account_status(&state.pool, id, UPSTREAM_ACCOUNT_STATUS_ACTIVE, None).await?;
+    }
     load_upstream_account_detail_with_actual_usage(state, id).await
 }
 
@@ -1331,15 +1356,33 @@ pub(crate) async fn sync_oauth_account(
                 .filter(|status| !error.contains(&format!("HTTP {}", status.as_u16())))
                 .map(|status| format!("上游返回 HTTP {}: {error}", status.as_u16()))
                 .unwrap_or(error);
-            record_classified_account_sync_failure_with_proxy_snapshot(
-                &state.pool,
-                &latest_row,
-                deferred_status,
-                sync_source,
-                &classified_error,
-                proxy_snapshot.as_ref(),
-            )
-            .await?;
+            if let Some(status @ (StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)) = http_status {
+                record_account_sync_failure_with_proxy_snapshot(
+                    &state.pool,
+                    latest_row.id,
+                    deferred_status,
+                    sync_source,
+                    deferred_status,
+                    &classified_error,
+                    UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR,
+                    Some(status),
+                    PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
+                    latest_row.last_route_failure_kind.as_deref(),
+                    false,
+                    proxy_snapshot.as_ref(),
+                )
+                .await?;
+            } else {
+                record_classified_account_sync_failure_with_proxy_snapshot(
+                    &state.pool,
+                    &latest_row,
+                    deferred_status,
+                    sync_source,
+                    &classified_error,
+                    proxy_snapshot.as_ref(),
+                )
+                .await?;
+            }
             if credential_reauth_required {
                 set_account_status(
                     &state.pool,
@@ -1574,6 +1617,16 @@ pub(crate) async fn apply_imported_oauth_probe_result(
     account_id: i64,
     probe: &ImportedOauthProbeOutcome,
 ) -> Result<Option<String>> {
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
+    apply_imported_oauth_probe_result_locked(state, account_id, probe).await
+}
+
+async fn apply_imported_oauth_probe_result_locked(
+    state: &AppState,
+    account_id: i64,
+    probe: &ImportedOauthProbeOutcome,
+) -> Result<Option<String>> {
     if let Some(snapshot) = probe.usage_snapshot.as_ref() {
         let before = load_upstream_account_row(&state.pool, account_id).await?;
         let now = Utc::now();
@@ -1630,6 +1683,8 @@ pub(crate) async fn persist_imported_oauth_existing_inner(
     account_id: i64,
     probe: ImportedOauthProbeOutcome,
 ) -> Result<Option<String>, (StatusCode, String)> {
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
     let existing_row = load_upstream_account_row(&state.pool, account_id)
         .await
         .map_err(internal_error_tuple)?
@@ -1713,7 +1768,7 @@ pub(crate) async fn persist_imported_oauth_existing_inner(
     tx.commit().await.map_err(internal_error_tuple)?;
 
     let post_import_warning =
-        match apply_imported_oauth_probe_result(state, account_id, &probe).await {
+        match apply_imported_oauth_probe_result_locked(state, account_id, &probe).await {
             Ok(warning) => warning,
             Err(err) => {
                 warn!(

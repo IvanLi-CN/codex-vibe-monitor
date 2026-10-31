@@ -16,6 +16,11 @@ fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
     );
     assert_eq!(credential_code, "refresh_token_invalid");
+    let (invalid_token_code, _) = classify_refresh_error(
+        r#"OAuth token endpoint returned 400: {"error":"invalid_token"}"#,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    );
+    assert_eq!(invalid_token_code, "refresh_token_invalid");
     let (infrastructure_code, _) = classify_refresh_error(
         "TLS certificate has expired while connecting to the token endpoint",
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -5858,7 +5863,7 @@ async fn oauth_sync_usage_auth_failure_retries_without_refreshing_credentials() 
         after.last_action_reason_code.as_deref(),
         Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, None);
+    assert_eq!(after.last_action_http_status, Some(401));
     assert_eq!(
         after.last_error.as_deref(),
         Some("上游返回 HTTP 401，等待下一分钟重试。")
@@ -6030,7 +6035,7 @@ async fn oauth_sync_usage_failure_does_not_retry_with_token_refresh() {
         after.last_action_reason_code.as_deref(),
         Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, None);
+    assert_eq!(after.last_action_http_status, Some(401));
     assert_eq!(
         after.last_error.as_deref(),
         Some("上游返回 HTTP 401，等待下一分钟重试。")
@@ -6083,7 +6088,7 @@ async fn oauth_sync_usage_failure_does_not_retry_with_token_refresh() {
             .recent_actions
             .first()
             .and_then(|event| event.http_status),
-        None
+        Some(401)
     );
     assert_eq!(
         detail.usage_window_refresh.error_code.as_deref(),
@@ -6178,7 +6183,7 @@ async fn oauth_sync_usage_failure_preserves_quota_marker_without_token_refresh()
         after.last_action_reason_code.as_deref(),
         Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, None);
+    assert_eq!(after.last_action_http_status, Some(401));
     assert_eq!(
         after.last_error.as_deref(),
         Some("上游返回 HTTP 401，等待下一分钟重试。")
@@ -6275,7 +6280,7 @@ async fn oauth_sync_usage_failure_preserves_quota_marker_without_refresh_attempt
         after.last_action_reason_code.as_deref(),
         Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, None);
+    assert_eq!(after.last_action_http_status, Some(401));
     assert_eq!(
         after.last_error.as_deref(),
         Some("上游返回 HTTP 401，等待下一分钟重试。")

@@ -2680,7 +2680,7 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const handleSync = useCallback(
     async (source: UpstreamAccountSummary) => {
-      if (hasBusyAccountAction(busyAction, source.id)) return;
+      if (!writesEnabled || hasBusyAccountAction(busyAction, source.id)) return;
       setActionError((current) => {
         const nextMessages = { ...current.accountMessages };
         delete nextMessages[source.id];
@@ -2710,12 +2710,12 @@ function SharedUpstreamAccountDetailDrawerInner({
         });
       }
     },
-    [busyAction, handleNotFoundClose, runSync, runUsageRefresh],
+    [busyAction, handleNotFoundClose, runSync, runUsageRefresh, writesEnabled],
   );
 
   const handleCredentialRefresh = useCallback(
     async (source: UpstreamAccountSummary) => {
-      if (hasBusyAccountAction(busyAction, source.id)) return;
+      if (!writesEnabled || hasBusyAccountAction(busyAction, source.id)) return;
       setActionError((current) => {
         const nextMessages = { ...current.accountMessages };
         delete nextMessages[source.id];
@@ -2745,7 +2745,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         });
       }
     },
-    [busyAction, handleNotFoundClose, runCredentialRefresh],
+    [busyAction, handleNotFoundClose, runCredentialRefresh, writesEnabled],
   );
 
   const handleToggleEnabled = useCallback(
@@ -4436,7 +4436,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                             size="sm"
                             variant="outline"
                             onClick={() => void handleSync(selectedDetail)}
-                            disabled={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                            disabled={
+                              hasBusyAccountAction(busyAction, selectedDetail.id) || !writesEnabled
+                            }
                           >
                             {t("accountPool.upstreamAccounts.refresh.retry")}
                           </Button>
@@ -4459,7 +4461,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                             size="sm"
                             variant="outline"
                             onClick={() => void handleCredentialRefresh(selectedDetail)}
-                            disabled={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                            disabled={
+                              hasBusyAccountAction(busyAction, selectedDetail.id) || !writesEnabled
+                            }
                           >
                             {t("accountPool.upstreamAccounts.refresh.retryCredentials")}
                           </Button>
@@ -4525,7 +4529,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                                     size="sm"
                                     variant="outline"
                                     onClick={() => void handleCredentialRefresh(selectedDetail)}
-                                    disabled={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                                    disabled={
+                                      hasBusyAccountAction(busyAction, selectedDetail.id) ||
+                                      !writesEnabled
+                                    }
                                     data-testid="account-credential-refresh-button"
                                   >
                                     {isBusyAction(
@@ -4588,7 +4595,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                                     size="sm"
                                     variant="outline"
                                     onClick={() => void handleSync(selectedDetail)}
-                                    disabled={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                                    disabled={
+                                      hasBusyAccountAction(busyAction, selectedDetail.id) ||
+                                      !writesEnabled
+                                    }
                                     data-testid="account-sync-button"
                                   >
                                     {isBusyAction(busyAction, "sync", selectedDetail.id) ? (

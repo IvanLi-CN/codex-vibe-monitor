@@ -282,6 +282,12 @@ pub(crate) async fn load_maintenance_candidates(
                   AND refresh_state.operation = 'credentials'
             ) AS credential_refresh_state,
             (
+                SELECT last_attempt_at
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'credentials'
+            ) AS credential_refresh_last_attempt_at,
+            (
                 SELECT next_attempt_at
                 FROM pool_upstream_account_refresh_state refresh_state
                 WHERE refresh_state.account_id = account.id
@@ -293,6 +299,12 @@ pub(crate) async fn load_maintenance_candidates(
                 WHERE refresh_state.account_id = account.id
                   AND refresh_state.operation = 'usage_windows'
             ) AS usage_window_refresh_state,
+            (
+                SELECT last_attempt_at
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'usage_windows'
+            ) AS usage_window_refresh_last_attempt_at,
             (
                 SELECT next_attempt_at
                 FROM pool_upstream_account_refresh_state refresh_state
@@ -391,6 +403,12 @@ pub(crate) async fn load_maintenance_candidate(
                   AND refresh_state.operation = 'credentials'
             ) AS credential_refresh_state,
             (
+                SELECT last_attempt_at
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'credentials'
+            ) AS credential_refresh_last_attempt_at,
+            (
                 SELECT next_attempt_at
                 FROM pool_upstream_account_refresh_state refresh_state
                 WHERE refresh_state.account_id = account.id
@@ -402,6 +420,12 @@ pub(crate) async fn load_maintenance_candidate(
                 WHERE refresh_state.account_id = account.id
                   AND refresh_state.operation = 'usage_windows'
             ) AS usage_window_refresh_state,
+            (
+                SELECT last_attempt_at
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'usage_windows'
+            ) AS usage_window_refresh_last_attempt_at,
             (
                 SELECT next_attempt_at
                 FROM pool_upstream_account_refresh_state refresh_state
@@ -479,8 +503,16 @@ pub(crate) fn maintenance_refresh_due(
     now: DateTime<Utc>,
 ) -> bool {
     match candidate.credential_refresh_state.as_deref() {
-        Some(UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH)
-        | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING) => false,
+        Some(UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH) => false,
+        Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING) => candidate
+            .credential_refresh_last_attempt_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .map(|attempt| {
+                attempt + ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS)
+                    <= now
+            })
+            .unwrap_or(true),
         Some(
             UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
             | UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
@@ -589,22 +621,27 @@ pub(crate) fn maintenance_candidate_force_priority(
 fn maintenance_refresh_retry_due(
     state: Option<&str>,
     next_attempt_at: Option<&str>,
+    last_attempt_at: Option<&str>,
     now: DateTime<Utc>,
 ) -> bool {
-    if !matches!(
-        state,
+    match state {
         Some(
             UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
-                | UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL
-                | UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR
-        )
-    ) {
-        return false;
+            | UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL
+            | UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR,
+        ) => next_attempt_at
+            .and_then(parse_rfc3339_utc)
+            .map(|next| next <= now)
+            .unwrap_or(true),
+        Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING) => last_attempt_at
+            .and_then(parse_rfc3339_utc)
+            .map(|attempt| {
+                attempt + ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS)
+                    <= now
+            })
+            .unwrap_or(true),
+        _ => false,
     }
-    next_attempt_at
-        .and_then(parse_rfc3339_utc)
-        .map(|next| next <= now)
-        .unwrap_or(true)
 }
 
 fn maintenance_candidate_fast_retry_due(
@@ -614,10 +651,12 @@ fn maintenance_candidate_fast_retry_due(
     maintenance_refresh_retry_due(
         candidate.credential_refresh_state.as_deref(),
         candidate.credential_refresh_next_attempt_at.as_deref(),
+        candidate.credential_refresh_last_attempt_at.as_deref(),
         now,
     ) || maintenance_refresh_retry_due(
         candidate.usage_window_refresh_state.as_deref(),
         candidate.usage_window_refresh_next_attempt_at.as_deref(),
+        candidate.usage_window_refresh_last_attempt_at.as_deref(),
         now,
     ) || (!maintenance_candidate_has_complete_usage(candidate)
         && match candidate.usage_window_refresh_state.as_deref() {
@@ -628,8 +667,16 @@ fn maintenance_candidate_fast_retry_due(
                 .as_deref()
                 .and_then(parse_rfc3339_utc)
                 .is_none_or(|next| next <= now),
-            Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
-            | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH) => false,
+            Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING) => candidate
+                .usage_window_refresh_last_attempt_at
+                .as_deref()
+                .and_then(parse_rfc3339_utc)
+                .map(|attempt| {
+                    attempt + ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS)
+                        <= now
+                })
+                .unwrap_or(true),
+            Some(UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH) => false,
             _ => true,
         })
 }
@@ -876,6 +923,12 @@ pub(crate) async fn load_maintenance_candidates_ranked_before(
                       AND refresh_state.operation = 'credentials'
                 ) AS credential_refresh_state,
                 (
+                    SELECT last_attempt_at
+                    FROM pool_upstream_account_refresh_state refresh_state
+                    WHERE refresh_state.account_id = account.id
+                      AND refresh_state.operation = 'credentials'
+                ) AS credential_refresh_last_attempt_at,
+                (
                     SELECT next_attempt_at
                     FROM pool_upstream_account_refresh_state refresh_state
                     WHERE refresh_state.account_id = account.id
@@ -887,6 +940,12 @@ pub(crate) async fn load_maintenance_candidates_ranked_before(
                     WHERE refresh_state.account_id = account.id
                       AND refresh_state.operation = 'usage_windows'
                 ) AS usage_window_refresh_state,
+                (
+                    SELECT last_attempt_at
+                    FROM pool_upstream_account_refresh_state refresh_state
+                    WHERE refresh_state.account_id = account.id
+                      AND refresh_state.operation = 'usage_windows'
+                ) AS usage_window_refresh_last_attempt_at,
                 (
                     SELECT next_attempt_at
                     FROM pool_upstream_account_refresh_state refresh_state
