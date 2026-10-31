@@ -175,6 +175,27 @@ pub(crate) async fn load_window_actual_usage_rows_from_analytics(
         .collect()
 }
 
+pub(crate) async fn apply_pg_window_usage(
+    state: &AppState,
+    items: &mut [UpstreamAccountSummary],
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+    query_start: DateTime<Utc>,
+    query_end: DateTime<Utc>,
+) -> Result<()> {
+    let account_ids = plans.keys().copied().collect::<Vec<_>>();
+    let rows = load_window_actual_usage_rows_from_analytics(
+        state.pg_analytics.as_ref(),
+        &account_ids,
+        query_start,
+        query_end,
+    )
+    .await
+    .map_err(|error| anyhow!(error))?;
+    let usage = fold_account_window_usage_rows(rows, plans);
+    apply_window_actual_usage_to_summaries(items, &usage);
+    Ok(())
+}
+
 pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
