@@ -38,7 +38,7 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER: &str = "https://auth.op
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_USAGE_BASE_URL: &str = "https://chatgpt.com/backend-api";
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS: u64 = 10 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 5 * 60;
-pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 15 * 60;
+pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 5 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SECONDARY_SYNC_INTERVAL_SECS: u64 = 30 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_PRIORITY_AVAILABLE_ACCOUNT_CAP: usize = 100;
@@ -92,12 +92,38 @@ pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE: &str = "sync_har
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED: &str = "sync_recovery_blocked";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED: &str = "account_updated";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_SUCCEEDED: &str =
+    "credential_refresh_succeeded";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_FAILED: &str =
+    "credential_refresh_failed";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REAUTH_REQUIRED: &str =
+    "credential_reauth_required";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_SUCCEEDED: &str =
+    "usage_windows_refresh_succeeded";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_PARTIAL: &str =
+    "usage_windows_refresh_partial";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_FAILED: &str =
+    "usage_windows_refresh_failed";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL: &str = "call";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL: &str = "sync_manual";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE: &str = "sync_maintenance";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_POST_CREATE: &str = "sync_post_create";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT: &str = "oauth_import";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK: &str = "oauth_callback";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_CREDENTIAL_REFRESH: &str = "credential_refresh";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH: &str =
+    "usage_windows_refresh";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS: &str = "credentials";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS: &str = "usage_windows";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_STATE_IDLE: &str = "idle";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING: &str = "refreshing";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED: &str = "succeeded";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING: &str = "retrying";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL: &str = "partial";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH: &str = "needs_reauth";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR: &str = "error";
+pub(crate) const UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS: i64 = 60;
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
@@ -203,6 +229,8 @@ pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
     pub(crate) route_facts: Mutex<Option<Arc<RuntimeRouteFacts>>>,
     pub(crate) account_ops: AccountOpCoordinator,
+    pub(crate) credential_refresh_locks:
+        Arc<std::sync::Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>>,
     pub(crate) validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
     pub(crate) bulk_sync_jobs: Arc<Mutex<HashMap<String, Arc<BulkUpstreamAccountSyncJob>>>>,
     pub(crate) bulk_sync_creation: Arc<Mutex<()>>,
@@ -215,6 +243,8 @@ pub(crate) enum AccountCommand {
     ExternalOauthUpsert,
     DeleteAccount,
     ManualSync,
+    ManualCredentialRefresh,
+    ManualUsageRefresh,
     MaintenanceSync,
     PersistOauthCallback,
     PersistImportedOauth,
@@ -580,6 +610,60 @@ impl AccountOpCoordinator {
             AccountSubmitOutcome::Deduped => {
                 Err(anyhow!("manual sync was unexpectedly deduplicated"))
             }
+        })
+    }
+
+    pub(crate) async fn run_manual_usage_refresh(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+    ) -> Result<UpstreamAccountDetail, anyhow::Error> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::ManualUsageRefresh,
+            false,
+            move |state, id| async move {
+                refresh_upstream_account_usage_by_id(state.as_ref(), id).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_anyhow)
+        .and_then(|outcome| match outcome {
+            AccountSubmitOutcome::Completed(Some(detail)) => Ok(detail),
+            AccountSubmitOutcome::Completed(None) => {
+                Err(anyhow!("manual usage refresh returned no detail"))
+            }
+            AccountSubmitOutcome::Deduped => Err(anyhow!(
+                "manual usage refresh was unexpectedly deduplicated"
+            )),
+        })
+    }
+
+    pub(crate) async fn run_manual_credential_refresh(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+    ) -> Result<UpstreamAccountDetail, anyhow::Error> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::ManualCredentialRefresh,
+            false,
+            move |state, id| async move {
+                refresh_upstream_account_credentials_by_id(state.as_ref(), id).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_anyhow)
+        .and_then(|outcome| match outcome {
+            AccountSubmitOutcome::Completed(Some(detail)) => Ok(detail),
+            AccountSubmitOutcome::Completed(None) => {
+                Err(anyhow!("manual credential refresh returned no detail"))
+            }
+            AccountSubmitOutcome::Deduped => Err(anyhow!(
+                "manual credential refresh was unexpectedly deduplicated"
+            )),
         })
     }
 
@@ -1018,6 +1102,7 @@ pub(crate) struct ListUpstreamAccountActionEventsQuery {
     pub(crate) account: Option<String>,
     pub(crate) group: Option<String>,
     pub(crate) proxy_key: Option<String>,
+    pub(crate) action: Option<String>,
     pub(crate) result: Option<String>,
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
@@ -1856,6 +1941,9 @@ pub(crate) struct UpstreamAccountDetail {
     pub(crate) chatgpt_user_id: Option<String>,
     pub(crate) verified_email: Option<String>,
     pub(crate) last_refreshed_at: Option<String>,
+    pub(crate) credential_refresh: UpstreamAccountRefreshStatus,
+    pub(crate) usage_window_refresh: UpstreamAccountRefreshStatus,
+    pub(crate) credential_refresh_history: Vec<UpstreamAccountRefreshRecord>,
     pub(crate) history: Vec<UpstreamAccountHistoryPoint>,
     pub(crate) recent_actions: Vec<UpstreamAccountActionEvent>,
     pub(crate) model_mappings: Vec<ModelMapping>,
@@ -1863,6 +1951,31 @@ pub(crate) struct UpstreamAccountDetail {
     pub(crate) model_routing_states: Vec<ModelRoutingState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) routing_state_version: Option<RoutingStateVersion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountRefreshStatus {
+    pub(crate) state: String,
+    pub(crate) last_attempt_at: Option<String>,
+    pub(crate) last_success_at: Option<String>,
+    pub(crate) next_attempt_at: Option<String>,
+    pub(crate) source: Option<String>,
+    pub(crate) error_code: Option<String>,
+    pub(crate) error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountRefreshRecord {
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) action: String,
+    pub(crate) source: String,
+    pub(crate) result: Option<String>,
+    pub(crate) reason_code: Option<String>,
+    pub(crate) reason_message: Option<String>,
+    pub(crate) http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize)]

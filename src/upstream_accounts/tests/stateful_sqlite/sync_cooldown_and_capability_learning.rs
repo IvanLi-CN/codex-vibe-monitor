@@ -4,6 +4,28 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 #[test]
+fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
+    let (usage_code, _) = classify_refresh_error(
+        "usage endpoint returned 401: access token revoked",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    );
+    assert_ne!(usage_code, "refresh_token_invalid");
+
+    let (credential_code, _) = classify_refresh_error(
+        "OAuth token endpoint returned 400: refresh token revoked",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    );
+    assert_eq!(credential_code, "refresh_token_invalid");
+    let (infrastructure_code, _) = classify_refresh_error(
+        "TLS certificate has expired while connecting to the token endpoint",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    );
+    assert_ne!(infrastructure_code, "refresh_token_invalid");
+    assert!(!is_explicit_reauth_error_message("access token expired"));
+    assert!(is_explicit_reauth_error_message("refresh token expired"));
+}
+
+#[test]
 fn explicit_model_failure_recognizes_standard_not_found_and_rate_limit_shapes() {
     assert!(is_explicit_model_failure(
         StatusCode::NOT_FOUND,
@@ -4271,6 +4293,13 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
         &format_utc_iso(Utc::now() - ChronoDuration::minutes(5)),
     )
     .await;
+    set_test_account_access_token(
+        &state.pool,
+        crypto_key,
+        account_id,
+        test_access_token_expiring_at(Utc::now() - ChronoDuration::minutes(5)),
+    )
+    .await;
 
     let row = load_upstream_account_row(&state.pool, account_id)
         .await
@@ -4312,6 +4341,258 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
         Some("proxy-refreshed-refresh-token")
     );
 
+    server.abort();
+}
+
+#[tokio::test]
+async fn manual_usage_refresh_updates_windows_without_refreshing_credentials() {
+    let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
+        spawn_sequenced_oauth_sync_server(
+            vec![(
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 12,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        },
+                        "secondaryWindow": {
+                            "usedPercent": 18,
+                            "windowDurationMins": 10080,
+                            "resetsAt": 1771927200
+                        }
+                    }
+                }),
+            )],
+            json!({
+                "access_token": "must-not-be-requested",
+                "refresh_token": "must-not-be-requested",
+                "id_token": test_id_token(
+                    "manual-usage@example.com",
+                    Some("org_manual_usage"),
+                    Some("user_manual_usage"),
+                    Some("team"),
+                ),
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }),
+        )
+        .await;
+    let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Manual Usage OAuth",
+        "manual-usage@example.com",
+        "org_manual_usage",
+        "user_manual_usage",
+    )
+    .await;
+    let before = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load account before usage refresh")
+        .expect("account exists before usage refresh");
+    let before_credentials = before
+        .encrypted_credentials
+        .clone()
+        .expect("encrypted credentials before usage refresh");
+
+    state
+        .upstream_accounts
+        .account_ops
+        .run_manual_usage_refresh(state.clone(), account_id)
+        .await
+        .expect("manual usage refresh should complete");
+
+    let after = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load account after usage refresh")
+        .expect("account exists after usage refresh");
+    assert_eq!(
+        after.encrypted_credentials.as_deref(),
+        Some(before_credentials.as_str()),
+        "usage refresh must not rewrite OAuth credentials"
+    );
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
+
+    let usage_status = load_upstream_account_refresh_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    )
+    .await
+    .expect("load usage refresh state");
+    assert_eq!(usage_status.state, UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED);
+    assert!(usage_status.last_success_at.is_some());
+    let credential_status = load_upstream_account_refresh_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await
+    .expect("load credential refresh state");
+    assert_eq!(credential_status.state, UPSTREAM_ACCOUNT_REFRESH_STATE_IDLE);
+
+    let actions: Vec<(String, String)> = sqlx::query_as(
+        "SELECT action, source FROM pool_upstream_account_events WHERE account_id = ?1 ORDER BY id DESC",
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load usage refresh actions");
+    assert_eq!(
+        actions.first(),
+        Some(&(
+            UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_SUCCEEDED.to_string(),
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH.to_string(),
+        ))
+    );
+    assert!(actions.iter().all(|(action, _)| {
+        action != UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_SUCCEEDED
+            && action != UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_FAILED
+            && action != UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REAUTH_REQUIRED
+    }));
+    server.abort();
+}
+
+#[tokio::test]
+async fn manual_credential_refresh_updates_credentials_without_refreshing_usage() {
+    let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
+        spawn_sequenced_oauth_sync_server(
+            vec![],
+            json!({
+                "access_token": "manual-credential-access-token",
+                "refresh_token": "manual-credential-rotated-refresh-token",
+                "id_token": test_id_token(
+                    "manual-credential@example.com",
+                    Some("org_manual_credential"),
+                    Some("user_manual_credential"),
+                    Some("team"),
+                ),
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }),
+        )
+        .await;
+    let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Manual Credential OAuth",
+        "manual-credential@example.com",
+        "org_manual_credential",
+        "user_manual_credential",
+    )
+    .await;
+    let before = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load account before credential refresh")
+        .expect("account exists before credential refresh");
+    let before_credentials = before
+        .encrypted_credentials
+        .clone()
+        .expect("encrypted credentials before credential refresh");
+
+    state
+        .upstream_accounts
+        .account_ops
+        .run_manual_credential_refresh(state.clone(), account_id)
+        .await
+        .expect("manual credential refresh should complete");
+
+    let after = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load account after credential refresh")
+        .expect("account exists after credential refresh");
+    assert_ne!(
+        after.encrypted_credentials.as_deref(),
+        Some(before_credentials.as_str()),
+        "credential refresh must persist the new OAuth credentials"
+    );
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 0);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+
+    let decrypted = decrypt_credentials(
+        crypto_key,
+        after
+            .encrypted_credentials
+            .as_deref()
+            .expect("encrypted credentials after credential refresh"),
+    )
+    .expect("decrypt refreshed credentials");
+    let StoredCredentials::Oauth(credentials) = decrypted else {
+        panic!("unexpected credential kind after manual credential refresh")
+    };
+    assert_eq!(credentials.access_token, "manual-credential-access-token");
+    assert_eq!(
+        credentials.refresh_token.as_deref(),
+        Some("manual-credential-rotated-refresh-token")
+    );
+
+    let credential_status = load_upstream_account_refresh_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await
+    .expect("load credential refresh state");
+    assert_eq!(
+        credential_status.state,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
+    );
+    assert!(credential_status.last_success_at.is_some());
+    let next_attempt_at = credential_status
+        .next_attempt_at
+        .as_deref()
+        .and_then(parse_rfc3339_utc)
+        .expect("opaque access token should use expires_in for next refresh");
+    let now = Utc::now();
+    assert!(
+        next_attempt_at > now + ChronoDuration::minutes(30)
+            && next_attempt_at < now + ChronoDuration::hours(2),
+        "opaque access token refresh should follow expires_in instead of the eight-day fallback: {next_attempt_at}"
+    );
+    let usage_status = load_upstream_account_refresh_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    )
+    .await
+    .expect("load usage refresh state");
+    assert_eq!(usage_status.state, UPSTREAM_ACCOUNT_REFRESH_STATE_IDLE);
+
+    let actions: Vec<(String, String)> = sqlx::query_as(
+        "SELECT action, source FROM pool_upstream_account_events WHERE account_id = ?1 ORDER BY id DESC",
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load credential refresh actions");
+    assert_eq!(
+        actions.first(),
+        Some(&(
+            UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_SUCCEEDED.to_string(),
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_CREDENTIAL_REFRESH.to_string()
+        ))
+    );
+    assert!(actions.iter().all(|(action, _)| {
+        action != UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_SUCCEEDED
+            && action != UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_PARTIAL
+            && action != UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_FAILED
+    }));
     server.abort();
 }
 
@@ -4420,6 +4701,11 @@ async fn manual_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_n
                     "usedPercent": 42,
                     "windowDurationMins": 300,
                     "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
                 }
             }
         }),
@@ -4541,6 +4827,11 @@ async fn maintenance_sync_allows_group_node_shunt_unassigned_account_to_probe_bo
                     "usedPercent": 42,
                     "windowDurationMins": 300,
                     "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
                 }
             }
         }),
@@ -4645,6 +4936,11 @@ async fn bulk_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_nod
                     "usedPercent": 42,
                     "windowDurationMins": 300,
                     "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
                 }
             }
         }),
@@ -5233,7 +5529,6 @@ async fn oauth_sync_keeps_quota_exhausted_accounts_blocked_until_snapshot_recove
         .await
         .expect("load oauth row")
         .expect("oauth row exists");
-
     sync_oauth_account(&state, &row, SyncCause::Manual)
         .await
         .expect("sync oauth account");
@@ -5419,6 +5714,11 @@ async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers()
                     "usedPercent": 42,
                     "windowDurationMins": 300,
                     "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
                 }
             }
         }),
@@ -5473,7 +5773,7 @@ async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers()
 }
 
 #[tokio::test]
-async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_syncing() {
+async fn oauth_sync_usage_auth_failure_retries_without_refreshing_credentials() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
             spawn_sequenced_oauth_sync_server(
                 vec![
@@ -5527,6 +5827,17 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         .await
         .expect("load oauth row")
         .expect("oauth row exists");
+    let original_access_token = match decrypt_credentials(
+        crypto_key,
+        row.encrypted_credentials
+            .as_deref()
+            .expect("encrypted oauth credentials"),
+    )
+    .expect("decrypt original credentials")
+    {
+        StoredCredentials::Oauth(credentials) => credentials.access_token,
+        StoredCredentials::ApiKey(_) => panic!("expected OAuth credentials"),
+    };
 
     sync_oauth_account(&state, &row, SyncCause::Maintenance)
         .await
@@ -5536,7 +5847,7 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         .await
         .expect("load oauth row after retry failure")
         .expect("oauth row exists after retry failure");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
     assert!(after.last_synced_at.is_some());
     assert!(after.last_successful_sync_at.is_none());
     assert_eq!(
@@ -5545,14 +5856,12 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
     );
     assert_eq!(
         after.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, Some(403));
+    assert_eq!(after.last_action_http_status, None);
     assert_eq!(
         after.last_error.as_deref(),
-        Some(
-            "usage endpoint returned 403 Forbidden: Authentication token has been invalidated, please sign in again"
-        )
+        Some("上游返回 HTTP 401，等待下一分钟重试。")
     );
     assert!(after.last_action_at.is_some());
 
@@ -5567,11 +5876,8 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
     let StoredCredentials::Oauth(credentials) = decrypted else {
         panic!("unexpected credential kind after refresh")
     };
-    assert_eq!(credentials.access_token, "refreshed-access-token");
-    assert_eq!(
-        credentials.refresh_token.as_deref(),
-        Some("refresh-token-rotated")
-    );
+    assert_eq!(credentials.access_token, original_access_token);
+    assert_eq!(credentials.refresh_token.as_deref(), Some("refresh-token"));
 
     let summary = build_summary_from_row(
         &after,
@@ -5582,9 +5888,15 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         0,
         Utc::now(),
     );
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert_eq!(
+        summary.display_status,
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+    );
+    assert_eq!(
+        summary.health_status,
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+    );
     assert_eq!(
         summary.work_status,
         UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
@@ -5597,7 +5909,7 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         .expect("detail export exists");
     assert_eq!(
         detail.summary.display_status,
-        UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
     );
     assert_eq!(
         detail.summary.work_status,
@@ -5616,15 +5928,28 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
             .recent_actions
             .first()
             .and_then(|event| event.reason_code.as_deref()),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        detail.usage_window_refresh.error_code.as_deref(),
+        Some("upstream_http_401")
+    );
+    assert_eq!(
+        detail.credential_refresh.state,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
+    );
+    assert_eq!(
+        detail.credential_refresh.error_code.as_deref(),
+        Some("access_token_rejected")
+    );
+    assert!(detail.credential_refresh.next_attempt_at.is_some());
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
 #[tokio::test]
-async fn oauth_sync_retry_after_refresh_records_non_auth_terminal_failure_without_stale_syncing() {
+async fn oauth_sync_usage_failure_does_not_retry_with_token_refresh() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
         spawn_sequenced_oauth_sync_server(
             vec![
@@ -5703,12 +6028,12 @@ async fn oauth_sync_retry_after_refresh_records_non_auth_terminal_failure_withou
     );
     assert_eq!(
         after.last_action_reason_code.as_deref(),
-        Some("upstream_http_5xx")
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, Some(502));
+    assert_eq!(after.last_action_http_status, None);
     assert_eq!(
         after.last_error.as_deref(),
-        Some("usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable")
+        Some("上游返回 HTTP 401，等待下一分钟重试。")
     );
     assert!(after.last_action_at.is_some());
     assert_eq!(
@@ -5758,15 +6083,19 @@ async fn oauth_sync_retry_after_refresh_records_non_auth_terminal_failure_withou
             .recent_actions
             .first()
             .and_then(|event| event.http_status),
-        Some(502)
+        None
     );
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        detail.usage_window_refresh.error_code.as_deref(),
+        Some("upstream_http_401")
+    );
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
 #[tokio::test]
-async fn oauth_sync_retry_after_refresh_preserves_quota_marker_from_current_db_state() {
+async fn oauth_sync_usage_failure_preserves_quota_marker_without_token_refresh() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
         spawn_sequenced_oauth_sync_server(
             vec![
@@ -5847,59 +6176,44 @@ async fn oauth_sync_retry_after_refresh_preserves_quota_marker_from_current_db_s
     );
     assert_eq!(
         after.last_action_reason_code.as_deref(),
-        Some("upstream_http_5xx")
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, Some(502));
+    assert_eq!(after.last_action_http_status, None);
     assert_eq!(
         after.last_error.as_deref(),
-        Some("usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable")
+        Some("上游返回 HTTP 401，等待下一分钟重试。")
     );
     assert!(after.last_action_at.is_some());
     assert_eq!(
         after.last_route_failure_kind.as_deref(),
         Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
     );
-    assert_eq!(after.last_route_failure_at, after.last_error_at);
-
-    let summary = build_summary_from_row(
-        &after,
-        None,
-        after.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(
-        summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
-    );
-    assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+    assert!(after.last_route_failure_at.is_some());
 
     let detail = load_upstream_account_detail(&state.pool, account_id)
         .await
         .expect("load detail export")
         .expect("detail export exists");
     assert_eq!(
-        detail.summary.display_status,
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        detail.usage_window_refresh.error_code.as_deref(),
+        Some("upstream_http_401")
     );
     assert_eq!(
-        detail.summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        detail.credential_refresh.state,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
     );
-    assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
-
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        detail.credential_refresh.error_code.as_deref(),
+        Some("access_token_rejected")
+    );
+    assert!(detail.credential_refresh.next_attempt_at.is_some());
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
 #[tokio::test]
-async fn oauth_sync_refresh_failure_preserves_quota_marker_from_current_db_state() {
+async fn oauth_sync_usage_failure_preserves_quota_marker_without_refresh_attempt() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
         spawn_sequenced_oauth_sync_server(
             vec![(
@@ -5962,52 +6276,36 @@ async fn oauth_sync_refresh_failure_preserves_quota_marker_from_current_db_state
         Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
     assert_eq!(after.last_action_http_status, None);
-    assert!(
-        after
-            .last_error
-            .as_deref()
-            .is_some_and(|message| message.contains("failed to decode OAuth token response"))
+    assert_eq!(
+        after.last_error.as_deref(),
+        Some("上游返回 HTTP 401，等待下一分钟重试。")
     );
     assert_eq!(
         after.last_route_failure_kind.as_deref(),
         Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
     );
-    assert_eq!(after.last_route_failure_at, after.last_error_at);
-
-    let summary = build_summary_from_row(
-        &after,
-        None,
-        after.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(
-        summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
-    );
-    assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+    assert!(after.last_route_failure_at.is_some());
 
     let detail = load_upstream_account_detail(&state.pool, account_id)
         .await
         .expect("load detail export")
         .expect("detail export exists");
     assert_eq!(
-        detail.summary.display_status,
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        detail.usage_window_refresh.error_code.as_deref(),
+        Some("upstream_http_401")
     );
     assert_eq!(
-        detail.summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        detail.credential_refresh.state,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
     );
-    assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+    assert_eq!(
+        detail.credential_refresh.error_code.as_deref(),
+        Some("access_token_rejected")
+    );
+    assert!(detail.credential_refresh.next_attempt_at.is_some());
 
     assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
@@ -6073,7 +6371,7 @@ async fn oauth_sync_direct_fetch_failure_preserves_quota_marker_from_current_db_
         after
             .last_error
             .as_deref()
-            .is_some_and(|message| message.contains("502 Bad Gateway"))
+            .is_some_and(|message| message.contains("上游返回 502"))
     );
     assert_eq!(
         after.last_route_failure_kind.as_deref(),

@@ -1974,6 +1974,46 @@ pub(crate) async fn sync_upstream_account(
     Ok(Json(detail))
 }
 
+pub(crate) async fn refresh_upstream_account_usage(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_manual_usage_refresh(state.clone(), id)
+        .await
+        .map_err(request_runtime_error_tuple)?;
+    Ok(Json(detail))
+}
+
+pub(crate) async fn refresh_upstream_account_credentials(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_manual_credential_refresh(state.clone(), id)
+        .await
+        .map_err(request_runtime_error_tuple)?;
+    Ok(Json(detail))
+}
+
 pub(crate) async fn handle_oauth_callback(
     state: Arc<AppState>,
     query: OauthCallbackQuery,
@@ -2204,7 +2244,13 @@ pub(crate) async fn persist_existing_oauth_callback_inner(
     state: &AppState,
     input: PersistOauthCallbackInput,
 ) -> Result<i64, (StatusCode, String)> {
-    let account_id = persist_oauth_callback_inner(state, input).await?;
+    let account_id = if let Some(account_id) = input.session.account_id {
+        let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
+        let _credential_refresh_guard = credential_refresh_lock.lock().await;
+        persist_oauth_callback_inner(state, input).await?
+    } else {
+        persist_oauth_callback_inner(state, input).await?
+    };
     if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
         warn!(account_id, error = %err, "OAuth callback updated account but initial sync failed");
     }
@@ -2235,6 +2281,15 @@ pub(crate) async fn persist_oauth_callback_inner(
     state: &AppState,
     input: PersistOauthCallbackInput,
 ) -> Result<i64, (StatusCode, String)> {
+    let credential_refresh_next_attempt_at =
+        parse_rfc3339_utc(&input.token_expires_at).map(|expires| {
+            format_utc_iso(
+                expires
+                    - ChronoDuration::seconds(
+                        state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                    ),
+            )
+        });
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -2382,6 +2437,15 @@ pub(crate) async fn persist_oauth_callback_inner(
     .await
     .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
+    complete_upstream_account_refresh_success(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
+        credential_refresh_next_attempt_at.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     Ok(account_id)
 }
 
@@ -2389,6 +2453,13 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     state: &AppState,
     login_id: &str,
 ) -> Result<i64, (StatusCode, String)> {
+    let account_id = load_login_session_by_login_id(&state.pool, login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .and_then(|session| session.account_id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -2429,6 +2500,14 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
             "login session is missing pending token expiry".to_string(),
         )
     })?;
+    let credential_refresh_next_attempt_at = parse_rfc3339_utc(&token_expires_at).map(|expires| {
+        format_utc_iso(
+            expires
+                - ChronoDuration::seconds(
+                    state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                ),
+        )
+    });
     let claims = ChatgptJwtClaims {
         email: session.pending_verified_email.clone(),
         chatgpt_plan_type: session.pending_plan_type.clone(),
@@ -2479,6 +2558,15 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     .await
     .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
+    complete_upstream_account_refresh_success(
+        &state.pool,
+        resolved_account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
+        credential_refresh_next_attempt_at.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
         warn!(account_id, error = %err, "OAuth identity overwrite confirmed but initial sync failed");
     }

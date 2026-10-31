@@ -58,6 +58,8 @@ const DEMO_LITELLM_SOURCE_QUOTES = JSON.parse(
       []) as unknown[],
   ),
 ) as unknown[];
+const demoManualUsageRefreshAt = new Map<number, string>();
+const demoManualCredentialRefreshAt = new Map<number, string>();
 
 function cloneDemoLiteLlmSourceQuotes() {
   return JSON.parse(JSON.stringify(DEMO_LITELLM_SOURCE_QUOTES)) as unknown[];
@@ -2813,6 +2815,8 @@ const DEMO_DEFAULT_ENABLED_TASKS = new Set([
 export function resetDemoManagedTaskState(): void {
   managedTaskOverrides.clear();
   managedTaskRuns.clear();
+  demoManualUsageRefreshAt.clear();
+  demoManualCredentialRefreshAt.clear();
   nextManagedTaskRunId = 100;
   demoModel.setPromptCacheMaterializationEnabled(true);
 }
@@ -4991,6 +4995,88 @@ function demoPromptCacheMaterializationStatus() {
   };
 }
 
+function demoUpstreamAccountRefreshPayload(account: DemoAccount) {
+  if (account.kind !== "oauth_codex") return {};
+
+  const credentialNeedsReauth = account.healthStatus === "needs_reauth";
+  const manualCredentialRefreshAt = demoManualCredentialRefreshAt.get(account.id);
+  const credentialAttemptAt =
+    manualCredentialRefreshAt ?? demoModelRouteTimestamp(credentialNeedsReauth ? 6 : 8);
+  const credentialSuccessAt = credentialNeedsReauth
+    ? demoModelRouteTimestamp(180)
+    : credentialAttemptAt;
+  const usageAttemptAt = demoManualUsageRefreshAt.get(account.id) ?? demoModelRouteTimestamp(5);
+  const usagePartial = account.id === 104 && !demoManualUsageRefreshAt.has(account.id);
+  const usageErrorCode = usagePartial ? "secondary_window_parse_failed" : null;
+  const usageErrorMessage = usagePartial ? "次要额度窗口响应解析失败，保留上一次值。" : null;
+  const nextUsageAttemptAt = new Date(
+    Date.parse(usageAttemptAt) + (usagePartial ? 60_000 : 300_000),
+  ).toISOString();
+
+  return {
+    credentialRefresh: {
+      state: credentialNeedsReauth ? "needs_reauth" : "succeeded",
+      lastAttemptAt: credentialAttemptAt,
+      lastSuccessAt: credentialSuccessAt,
+      nextAttemptAt: credentialNeedsReauth
+        ? null
+        : new Date(Date.parse(credentialSuccessAt) + 8 * 24 * 60 * 60_000).toISOString(),
+      source: manualCredentialRefreshAt ? "manual_credential_refresh" : "maintenance",
+      errorCode: credentialNeedsReauth ? "invalid_grant" : null,
+      errorMessage: credentialNeedsReauth ? "上游拒绝 Refresh Token，需要重新授权。" : null,
+    },
+    usageWindowRefresh: {
+      state: usagePartial ? "partial" : "succeeded",
+      lastAttemptAt: usageAttemptAt,
+      lastSuccessAt: usagePartial ? demoModelRouteTimestamp(15) : usageAttemptAt,
+      nextAttemptAt: nextUsageAttemptAt,
+      source: demoManualUsageRefreshAt.has(account.id) ? "manual_usage_refresh" : "maintenance",
+      errorCode: usageErrorCode,
+      errorMessage: usageErrorMessage,
+    },
+    credentialRefreshHistory: Array.from({ length: 5 }, (_, index) => {
+      const failed = credentialNeedsReauth && index === 0;
+      const occurredAt =
+        index === 0 ? credentialAttemptAt : demoModelRouteTimestamp(30 + index * 180);
+      return {
+        id: 9100 + account.id * 10 + index,
+        occurredAt,
+        action: failed ? "credential_reauth_required" : "credential_refresh_succeeded",
+        source:
+          index === 0 && manualCredentialRefreshAt ? "manual_credential_refresh" : "maintenance",
+        result: failed ? "failed" : "success",
+        reasonCode: failed ? "invalid_grant" : "token_refreshed",
+        reasonMessage: failed ? "上游拒绝 Refresh Token，需要重新授权。" : "凭据已更新。",
+        httpStatus: failed ? 400 : null,
+      };
+    }),
+  };
+}
+
+function demoUpstreamAccountDetail(account: DemoAccount) {
+  return {
+    ...account,
+    note: `Demo fixture for ${account.displayName}.`,
+    upstreamBaseUrl: "https://api.openai.com",
+    chatgptUserId: account.chatgptAccountId ? `user-${account.id}` : null,
+    verifiedEmail: account.email,
+    lastRefreshedAt: account.lastSyncedAt,
+    ...demoUpstreamAccountRefreshPayload(account),
+    history: Array.from({ length: 8 }, (_, index) => ({
+      capturedAt: `2026-07-${String(index + 3).padStart(2, "0")}T08:00:00Z`,
+      primaryUsedPercent: Math.min(94, (account.primaryWindow?.usedPercent ?? 0) + index * 3),
+      secondaryUsedPercent: account.secondaryWindow
+        ? Math.min(94, account.secondaryWindow.usedPercent + index * 2)
+        : null,
+      creditsBalance: account.credits?.balance ?? null,
+    })),
+    recentActions: accountEvents()
+      .filter((event) => event.accountDisplayName === account.displayName)
+      .slice(0, 4),
+    modelRoutingStates: account.kind === "api_key_codex" ? demoModelRoutingStates(account.id) : [],
+  };
+}
+
 export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
@@ -6049,11 +6135,13 @@ export async function handleDemoRequest(request: Request) {
     const group = url.searchParams.get("group")?.toLowerCase();
     const proxyKey = url.searchParams.get("proxyKey");
     const result = url.searchParams.get("result");
+    const action = url.searchParams.get("action");
     if (account)
       items = items.filter((item) => item.accountDisplayName?.toLowerCase().includes(account));
     if (group) items = items.filter((item) => item.accountGroupName?.toLowerCase().includes(group));
     if (proxyKey) items = items.filter((item) => item.forwardProxyKey === proxyKey);
     if (result) items = items.filter((item) => item.result === result);
+    if (action) items = items.filter((item) => item.action === action);
     if (kind) {
       const accountIds = new Set(
         demoAccounts()
@@ -6239,26 +6327,7 @@ export async function handleDemoRequest(request: Request) {
   if (/^\/api\/pool\/upstream-accounts\/\d+$/.test(pathname) && request.method === "GET") {
     const accountId = Number(pathname.split("/").at(-1));
     const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
-    return json({
-      ...account,
-      note: `Demo fixture for ${account.displayName}.`,
-      upstreamBaseUrl: "https://api.openai.com",
-      chatgptUserId: account.chatgptAccountId ? `user-${account.id}` : null,
-      verifiedEmail: account.email,
-      lastRefreshedAt: account.lastSyncedAt,
-      history: Array.from({ length: 8 }, (_, index) => ({
-        capturedAt: `2026-07-${String(index + 3).padStart(2, "0")}T08:00:00Z`,
-        primaryUsedPercent: Math.min(94, (account.primaryWindow?.usedPercent ?? 0) + index * 3),
-        secondaryUsedPercent: account.secondaryWindow
-          ? Math.min(94, account.secondaryWindow.usedPercent + index * 2)
-          : null,
-        creditsBalance: account.credits?.balance ?? null,
-      })),
-      recentActions: accountEvents()
-        .filter((event) => event.accountDisplayName === account.displayName)
-        .slice(0, 4),
-      modelRoutingStates: account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : [],
-    });
+    return json(demoUpstreamAccountDetail(account));
   }
 
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -6272,6 +6341,40 @@ export async function handleDemoRequest(request: Request) {
       return json(demoModel.updateSettings(pathname, body));
     if (pathname === "/api/pool/upstream-accounts")
       return json(demoModel.createAccount(), { status: 201 });
+    const syncMatch = pathname.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sync$/);
+    if (syncMatch) {
+      const accountId = Number(syncMatch[1]);
+      const account = demoAccounts().find((item) => item.id === accountId);
+      if (!account) return json({ error: "Upstream account not found" }, { status: 404 });
+      demoModel.record(`模拟同步账号 ${accountId}`);
+      return json(demoUpstreamAccountDetail(account));
+    }
+    const credentialRefreshMatch = pathname.match(
+      /^\/api\/pool\/upstream-accounts\/(\d+)\/credentials\/refresh$/,
+    );
+    if (credentialRefreshMatch) {
+      const accountId = Number(credentialRefreshMatch[1]);
+      const account = demoAccounts().find((item) => item.id === accountId);
+      if (account?.kind !== "oauth_codex") {
+        return json({ error: "OAuth account not found" }, { status: 404 });
+      }
+      demoManualCredentialRefreshAt.set(accountId, demoNow());
+      demoModel.record(`模拟刷新账号 ${accountId} 的 Token`);
+      return json(demoUpstreamAccountDetail(account));
+    }
+    const usageRefreshMatch = pathname.match(
+      /^\/api\/pool\/upstream-accounts\/(\d+)\/usage\/refresh$/,
+    );
+    if (usageRefreshMatch) {
+      const accountId = Number(usageRefreshMatch[1]);
+      const account = demoAccounts().find((item) => item.id === accountId);
+      if (account?.kind !== "oauth_codex") {
+        return json({ error: "OAuth account not found" }, { status: 404 });
+      }
+      demoManualUsageRefreshAt.set(accountId, demoNow());
+      demoModel.record(`模拟更新账号 ${accountId} 的额度窗口`);
+      return json(demoUpstreamAccountDetail(account));
+    }
     if (/^\/api\/pool\/upstream-accounts\/\d+\/model-routing\/reset$/.test(pathname)) {
       const accountId = Number(pathname.split("/").at(-3));
       const model =

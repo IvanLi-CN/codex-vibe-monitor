@@ -809,6 +809,36 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_account_events", "runtime_event_key").await?;
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_upstream_account_events_runtime_key ON pool_upstream_account_events(runtime_event_key) WHERE runtime_event_key IS NOT NULL")
         .execute(pool).await.context("ensure runtime route audit idempotence")?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_account_refresh_state (
+            account_id INTEGER NOT NULL,
+            operation TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'idle',
+            last_attempt_at TEXT,
+            last_success_at TEXT,
+            next_attempt_at TEXT,
+            source TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (account_id, operation),
+            FOREIGN KEY(account_id) REFERENCES pool_upstream_accounts(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_refresh_state table existence")?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_refresh_state_due
+        ON pool_upstream_account_refresh_state (operation, next_attempt_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_refresh_state_due")?;
     let upstream_account_event_columns: std::collections::HashSet<String> =
         sqlx::query("PRAGMA table_xinfo('pool_upstream_account_events')")
             .fetch_all(pool)

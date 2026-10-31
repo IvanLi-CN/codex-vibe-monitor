@@ -276,6 +276,30 @@ pub(crate) async fn load_maintenance_candidates(
             account.temporary_route_failure_streak_started_at,
             account.token_expires_at,
             (
+                SELECT state
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'credentials'
+            ) AS credential_refresh_state,
+            (
+                SELECT next_attempt_at
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'credentials'
+            ) AS credential_refresh_next_attempt_at,
+            (
+                SELECT state
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'usage_windows'
+            ) AS usage_window_refresh_state,
+            (
+                SELECT next_attempt_at
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'usage_windows'
+            ) AS usage_window_refresh_next_attempt_at,
+            (
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
@@ -361,6 +385,30 @@ pub(crate) async fn load_maintenance_candidate(
             account.temporary_route_failure_streak_started_at,
             account.token_expires_at,
             (
+                SELECT state
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'credentials'
+            ) AS credential_refresh_state,
+            (
+                SELECT next_attempt_at
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'credentials'
+            ) AS credential_refresh_next_attempt_at,
+            (
+                SELECT state
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'usage_windows'
+            ) AS usage_window_refresh_state,
+            (
+                SELECT next_attempt_at
+                FROM pool_upstream_account_refresh_state refresh_state
+                WHERE refresh_state.account_id = account.id
+                  AND refresh_state.operation = 'usage_windows'
+            ) AS usage_window_refresh_next_attempt_at,
+            (
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
@@ -430,12 +478,29 @@ pub(crate) fn maintenance_refresh_due(
     refresh_lead_time: Duration,
     now: DateTime<Utc>,
 ) -> bool {
-    candidate
-        .token_expires_at
-        .as_deref()
-        .and_then(parse_rfc3339_utc)
-        .map(|expires| expires <= now + ChronoDuration::seconds(refresh_lead_time.as_secs() as i64))
-        .unwrap_or(true)
+    match candidate.credential_refresh_state.as_deref() {
+        Some(UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH)
+        | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING) => false,
+        Some(
+            UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
+            | UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
+            | UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL
+            | UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR,
+        ) => candidate
+            .credential_refresh_next_attempt_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .map(|next| next <= now)
+            .unwrap_or(true),
+        Some(UPSTREAM_ACCOUNT_REFRESH_STATE_IDLE) => true,
+        None => candidate
+            .token_expires_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .map(|expires_at| expires_at <= now + refresh_lead_time)
+            .unwrap_or(true),
+        Some(_) => true,
+    }
 }
 
 pub(crate) fn maintenance_candidate_has_complete_usage(
@@ -519,6 +584,54 @@ pub(crate) fn maintenance_candidate_force_priority(
     candidate.status == UPSTREAM_ACCOUNT_STATUS_ERROR
         || maintenance_refresh_due(candidate, refresh_lead_time, now)
         || !maintenance_candidate_has_complete_usage(candidate)
+}
+
+fn maintenance_refresh_retry_due(
+    state: Option<&str>,
+    next_attempt_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    if !matches!(
+        state,
+        Some(
+            UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
+                | UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL
+                | UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR
+        )
+    ) {
+        return false;
+    }
+    next_attempt_at
+        .and_then(parse_rfc3339_utc)
+        .map(|next| next <= now)
+        .unwrap_or(true)
+}
+
+fn maintenance_candidate_fast_retry_due(
+    candidate: &MaintenanceCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_refresh_retry_due(
+        candidate.credential_refresh_state.as_deref(),
+        candidate.credential_refresh_next_attempt_at.as_deref(),
+        now,
+    ) || maintenance_refresh_retry_due(
+        candidate.usage_window_refresh_state.as_deref(),
+        candidate.usage_window_refresh_next_attempt_at.as_deref(),
+        now,
+    ) || (!maintenance_candidate_has_complete_usage(candidate)
+        && match candidate.usage_window_refresh_state.as_deref() {
+            Some(UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING)
+            | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL)
+            | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR) => candidate
+                .usage_window_refresh_next_attempt_at
+                .as_deref()
+                .and_then(parse_rfc3339_utc)
+                .is_none_or(|next| next <= now),
+            Some(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
+            | Some(UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH) => false,
+            _ => true,
+        })
 }
 
 fn maintenance_candidate_has_active_upstream_rejected_cooldown(
@@ -704,11 +817,23 @@ pub(crate) fn maintenance_plan_is_due(
     settings: PoolRoutingMaintenanceSettings,
     now: DateTime<Utc>,
 ) -> bool {
+    maintenance_plan_is_due_with_refresh_lead(candidate, tier, settings, now)
+}
+
+fn maintenance_plan_is_due_with_refresh_lead(
+    candidate: &MaintenanceCandidateRow,
+    tier: MaintenanceTier,
+    settings: PoolRoutingMaintenanceSettings,
+    now: DateTime<Utc>,
+) -> bool {
     if maintenance_reset_due(candidate, now) {
         return true;
     }
     if maintenance_candidate_blocks_upstream_rejected_cooldown(candidate, now) {
         return false;
+    }
+    if maintenance_candidate_fast_retry_due(candidate, now) {
+        return true;
     }
     maintenance_interval_is_due(
         candidate,
@@ -744,6 +869,30 @@ pub(crate) async fn load_maintenance_candidates_ranked_before(
                 account.cooldown_until,
                 account.temporary_route_failure_streak_started_at,
                 account.token_expires_at,
+                (
+                    SELECT state
+                    FROM pool_upstream_account_refresh_state refresh_state
+                    WHERE refresh_state.account_id = account.id
+                      AND refresh_state.operation = 'credentials'
+                ) AS credential_refresh_state,
+                (
+                    SELECT next_attempt_at
+                    FROM pool_upstream_account_refresh_state refresh_state
+                    WHERE refresh_state.account_id = account.id
+                      AND refresh_state.operation = 'credentials'
+                ) AS credential_refresh_next_attempt_at,
+                (
+                    SELECT state
+                    FROM pool_upstream_account_refresh_state refresh_state
+                    WHERE refresh_state.account_id = account.id
+                      AND refresh_state.operation = 'usage_windows'
+                ) AS usage_window_refresh_state,
+                (
+                    SELECT next_attempt_at
+                    FROM pool_upstream_account_refresh_state refresh_state
+                    WHERE refresh_state.account_id = account.id
+                      AND refresh_state.operation = 'usage_windows'
+                ) AS usage_window_refresh_next_attempt_at,
                 (
                     SELECT sample.primary_used_percent
                     FROM pool_upstream_account_limit_samples sample
@@ -906,7 +1055,9 @@ pub(crate) async fn execute_queued_maintenance_sync(
     if maintenance_candidate_blocks_upstream_rejected_cooldown(&candidate, now) {
         return Ok(None);
     }
+    let fast_retry_due = maintenance_candidate_fast_retry_due(&candidate, now);
     if !maintenance_reset_due(&candidate, now)
+        && !fast_retry_due
         && !maintenance_interval_is_due(&candidate, interval_secs, now)
     {
         return Ok(None);
@@ -946,7 +1097,12 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
     let mut plans = Vec::new();
     let mut available_priority_slots_used = 0usize;
     for candidate in forced_priority {
-        if maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now) {
+        if maintenance_plan_is_due_with_refresh_lead(
+            &candidate,
+            MaintenanceTier::Priority,
+            settings,
+            now,
+        ) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier: MaintenanceTier::Priority,
@@ -955,7 +1111,12 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
         }
     }
     for candidate in high_frequency {
-        if maintenance_plan_is_due(&candidate, MaintenanceTier::HighFrequency, settings, now) {
+        if maintenance_plan_is_due_with_refresh_lead(
+            &candidate,
+            MaintenanceTier::HighFrequency,
+            settings,
+            now,
+        ) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier: MaintenanceTier::HighFrequency,
@@ -980,7 +1141,7 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
         if counts_toward_priority_slot {
             available_priority_slots_used += 1;
         }
-        if maintenance_plan_is_due(&candidate, tier, settings, now) {
+        if maintenance_plan_is_due_with_refresh_lead(&candidate, tier, settings, now) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier,
@@ -989,7 +1150,12 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
         }
     }
     for candidate in secondary {
-        if maintenance_plan_is_due(&candidate, MaintenanceTier::Secondary, settings, now) {
+        if maintenance_plan_is_due_with_refresh_lead(
+            &candidate,
+            MaintenanceTier::Secondary,
+            settings,
+            now,
+        ) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier: MaintenanceTier::Secondary,

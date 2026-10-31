@@ -1414,6 +1414,8 @@ pub(crate) fn derive_upstream_account_action_result(
         UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED
             | UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED
             | UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED
+            | UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_SUCCEEDED
+            | UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_SUCCEEDED
     ) {
         return "success";
     }
@@ -1642,7 +1644,7 @@ pub(crate) async fn record_status_change_suppressed_event_with_proxy_snapshot(
 pub(crate) async fn record_account_maintenance_deferred(
     pool: &Pool<Sqlite>,
     account_id: i64,
-    source: &'static str,
+    source: &str,
     reason_message: &str,
     occurred_at: &str,
     forward_proxy_key: Option<&str>,

@@ -35,6 +35,20 @@ describe("demo MSW handlers", () => {
     await expect(response.json()).resolves.toEqual({ backend: "0.2.0", frontend: "0.2.0" });
   });
 
+  it("keeps manual Token refresh separate from manual usage-window update", async () => {
+    const response = await fetch(
+      "http://demo.invalid/api/pool/upstream-accounts/101/credentials/refresh",
+      { method: "POST" },
+    );
+    expect(response.ok).toBe(true);
+    const payload = (await response.json()) as {
+      credentialRefresh?: { source?: string };
+      usageWindowRefresh?: { source?: string };
+    };
+    expect(payload.credentialRefresh?.source).toBe("manual_credential_refresh");
+    expect(payload.usageWindowRefresh?.source).toBe("maintenance");
+  });
+
   it("persists prompt-cache materialization control in the demo memory model", async () => {
     const initial = await fetch("http://demo.invalid/api/system/prompt-cache/materialization");
     expect(await initial.json()).toMatchObject({ enabled: true, queuePending: 7 });
@@ -653,13 +667,15 @@ describe("demo MSW handlers", () => {
     expect(located.records).toHaveLength(1);
     expect(located.records[0]?.invokeId).toBe(selectedRecord?.invokeId);
 
-    const [detailResponse, attemptsResponse, accountResponse] = await Promise.all([
-      fetch(`http://demo.invalid/api/invocations/${selectedRecord?.id}/detail`),
-      fetch(`http://demo.invalid/api/invocations/${selectedRecord?.invokeId}/pool-attempts`),
-      fetch(
-        `http://demo.invalid/api/pool/upstream-accounts/${selectedRecord?.upstreamAccountId}?includeRecentActions=true`,
-      ),
-    ]);
+    const [detailResponse, attemptsResponse, accountResponse, oauthAccountResponse] =
+      await Promise.all([
+        fetch(`http://demo.invalid/api/invocations/${selectedRecord?.id}/detail`),
+        fetch(`http://demo.invalid/api/invocations/${selectedRecord?.invokeId}/pool-attempts`),
+        fetch(
+          `http://demo.invalid/api/pool/upstream-accounts/${selectedRecord?.upstreamAccountId}?includeRecentActions=true`,
+        ),
+        fetch("http://demo.invalid/api/pool/upstream-accounts/101?includeRecentActions=true"),
+      ]);
     const detail = (await detailResponse.json()) as {
       id: number;
       abnormalResponseBody: { available: boolean };
@@ -673,6 +689,11 @@ describe("demo MSW handlers", () => {
       history: unknown[];
       recentActions: unknown[];
     };
+    const oauthAccount = (await oauthAccountResponse.json()) as {
+      credentialRefresh: { state: string; lastSuccessAt: string | null };
+      usageWindowRefresh: { state: string; nextAttemptAt: string | null };
+      credentialRefreshHistory: unknown[];
+    };
 
     expect(detail.id).toBe(selectedRecord?.id);
     expect(attempts[0]).toMatchObject({
@@ -682,6 +703,11 @@ describe("demo MSW handlers", () => {
     expect(account.id).toBe(selectedRecord?.upstreamAccountId);
     expect(account.history).toHaveLength(8);
     expect(account.recentActions.length).toBeGreaterThan(0);
+    expect(oauthAccount.credentialRefresh).toMatchObject({ state: "succeeded" });
+    expect(oauthAccount.credentialRefresh.lastSuccessAt).toEqual(expect.any(String));
+    expect(oauthAccount.usageWindowRefresh).toMatchObject({ state: "succeeded" });
+    expect(oauthAccount.usageWindowRefresh.nextAttemptAt).toEqual(expect.any(String));
+    expect(oauthAccount.credentialRefreshHistory).toHaveLength(5);
   });
 
   it("serves the complete managed task registry in the demo", async () => {

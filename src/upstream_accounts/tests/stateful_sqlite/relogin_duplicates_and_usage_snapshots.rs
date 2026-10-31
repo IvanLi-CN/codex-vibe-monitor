@@ -54,6 +54,20 @@ async fn update_oauth_login_session_rejects_completed_relogin_repairs() {
         }),
     )
     .expect("encrypt oauth credentials");
+    record_upstream_account_refresh_failure(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        "test",
+        "refresh token revoked",
+        "refresh_token_invalid",
+        "Refresh Token 已失效，需要重新授权。",
+        false,
+        Some(StatusCode::BAD_REQUEST),
+    )
+    .await
+    .expect("seed stale reauthorization state");
+
     let completed_account_id = persist_oauth_callback_inner(
         state.as_ref(),
         PersistOauthCallbackInput {
@@ -70,6 +84,19 @@ async fn update_oauth_login_session_rejects_completed_relogin_repairs() {
     .await
     .expect("persist relogin callback");
     assert_eq!(completed_account_id, account_id);
+
+    let refresh_status = load_upstream_account_refresh_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await
+    .expect("load callback refresh state");
+    assert_eq!(
+        refresh_status.state,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
+    );
+    assert_eq!(refresh_status.source.as_deref(), Some("oauth_callback"));
 
     let completed_session = load_login_session_by_login_id(&state.pool, &relogin.login_id)
         .await
@@ -1810,6 +1837,53 @@ async fn persist_usage_snapshot_uses_explicit_effective_plan_type() {
     .await
     .expect("load sample plan type");
     assert_eq!(stored_plan_type.as_deref(), Some("pro"));
+}
+
+#[tokio::test]
+async fn persist_usage_snapshot_preserves_missing_window_from_latest_sample() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Partial Usage OAuth").await;
+    let first_snapshot = NormalizedUsageSnapshot {
+        plan_type: Some("team".to_string()),
+        limit_id: "codex".to_string(),
+        limit_name: Some("Codex".to_string()),
+        primary: Some(NormalizedUsageWindow {
+            used_percent: 18.0,
+            window_duration_mins: 300,
+            resets_at: Some("2026-03-17T14:00:00Z".to_string()),
+        }),
+        secondary: Some(NormalizedUsageWindow {
+            used_percent: 42.0,
+            window_duration_mins: 10_080,
+            resets_at: Some("2026-03-18T00:00:00Z".to_string()),
+        }),
+        credits: None,
+    };
+    persist_usage_snapshot(&pool, account_id, Some("team"), &first_snapshot, 30)
+        .await
+        .expect("persist complete usage snapshot");
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+
+    let partial_snapshot = NormalizedUsageSnapshot {
+        primary: Some(NormalizedUsageWindow {
+            used_percent: 24.0,
+            window_duration_mins: 300,
+            resets_at: Some("2026-03-17T15:00:00Z".to_string()),
+        }),
+        secondary: None,
+        ..first_snapshot
+    };
+    persist_usage_snapshot(&pool, account_id, Some("team"), &partial_snapshot, 30)
+        .await
+        .expect("persist partial usage snapshot");
+
+    let latest = load_latest_usage_sample(&pool, account_id)
+        .await
+        .expect("load latest usage sample")
+        .expect("latest usage sample exists");
+    assert_eq!(latest.primary_used_percent, Some(24.0));
+    assert_eq!(latest.secondary_used_percent, Some(42.0));
+    assert_eq!(latest.secondary_window_minutes, Some(10_080));
 }
 
 #[tokio::test]

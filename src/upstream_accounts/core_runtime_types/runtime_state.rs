@@ -23,6 +23,7 @@ impl UpstreamAccountsRuntime {
             crypto_key,
             route_facts: Mutex::new(None),
             account_ops: AccountOpCoordinator::default(),
+            credential_refresh_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_creation: Arc::new(Mutex::new(())),
@@ -31,6 +32,17 @@ impl UpstreamAccountsRuntime {
 
     pub(crate) fn writes_enabled(&self) -> bool {
         self.crypto_key.is_some()
+    }
+
+    pub(crate) fn credential_refresh_lock(&self, account_id: i64) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .credential_refresh_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(account_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub(crate) fn require_crypto_key(&self) -> Result<&[u8; 32], (StatusCode, String)> {
@@ -60,6 +72,7 @@ impl UpstreamAccountsRuntime {
             crypto_key: Some(derive_secret_key("test-upstream-account-secret")),
             route_facts: Mutex::new(None),
             account_ops: AccountOpCoordinator::new(maintenance_parallelism),
+            credential_refresh_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_creation: Arc::new(Mutex::new(())),

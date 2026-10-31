@@ -643,11 +643,21 @@ function AccountDetailSkeleton() {
   );
 }
 
-function DetailField({ label, value }: { label: string; value: ReactNode }) {
+function FlatDetailField({
+  label,
+  value,
+  className,
+}: {
+  label: string;
+  value: ReactNode;
+  className?: string;
+}) {
   return (
-    <div className="metric-cell">
-      <p className="metric-label">{label}</p>
-      <div className="mt-2 text-sm text-base-content/80">{value ?? "—"}</div>
+    <div className={cn("min-w-0 border-b border-base-300/60 py-2", className)}>
+      <dt className="text-xs font-medium text-base-content/60">{label}</dt>
+      <dd className="mt-0.5 break-words text-sm font-medium leading-5 text-base-content/85">
+        {value ?? "—"}
+      </dd>
     </div>
   );
 }
@@ -1121,6 +1131,8 @@ function SharedUpstreamAccountDetailDrawerInner({
     loadDetail,
     saveAccount,
     runSync,
+    runCredentialRefresh,
+    runUsageRefresh,
     removeAccount,
     saveGroupNote,
     deleteGroupNote,
@@ -2030,6 +2042,17 @@ function SharedUpstreamAccountDetailDrawerInner({
     selectedDetail?.lastError ?? selected?.lastError,
   );
   const selectedRecentActions = selectedDetail?.recentActions ?? [];
+  const usageWindowRefresh = selectedDetail?.usageWindowRefresh;
+  const usageWindowRefreshNeedsAttention =
+    usageWindowRefresh?.state === "retrying" ||
+    usageWindowRefresh?.state === "partial" ||
+    usageWindowRefresh?.state === "error";
+  const credentialRefresh = selectedDetail?.credentialRefresh;
+  const credentialRefreshNeedsAttention =
+    credentialRefresh?.state === "retrying" ||
+    credentialRefresh?.state === "partial" ||
+    credentialRefresh?.state === "error" ||
+    credentialRefresh?.state === "needs_reauth";
   const modelRoutingStates = selectedDetail?.modelRoutingStates ?? [];
   const resetModelRouting = useCallback(
     async (model: string) => {
@@ -2133,6 +2156,12 @@ function SharedUpstreamAccountDetailDrawerInner({
     t(`accountPool.upstreamAccounts.healthStatus.${status}`);
   const accountSyncStateLabel = (status: string) =>
     t(`accountPool.upstreamAccounts.syncState.${status}`);
+  const refreshStateLabel = (status?: string | null) => {
+    const normalized = status?.trim() || "idle";
+    const key = `accountPool.upstreamAccounts.refresh.state.${normalized}`;
+    const translated = t(key);
+    return translated === key ? t("accountPool.upstreamAccounts.refresh.state.error") : translated;
+  };
   const accountActionLabel = (action?: string | null) => {
     if (!action) return null;
     const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
@@ -2663,7 +2692,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         return { ...current, accountActions: nextActions };
       });
       try {
-        await runSync(source.id);
+        await (source.kind === "oauth_codex" ? runUsageRefresh(source.id) : runSync(source.id));
       } catch (err) {
         if (handleNotFoundClose(source.id, err)) return;
         setActionError((current) => ({
@@ -2681,7 +2710,42 @@ function SharedUpstreamAccountDetailDrawerInner({
         });
       }
     },
-    [busyAction, handleNotFoundClose, runSync],
+    [busyAction, handleNotFoundClose, runSync, runUsageRefresh],
+  );
+
+  const handleCredentialRefresh = useCallback(
+    async (source: UpstreamAccountSummary) => {
+      if (hasBusyAccountAction(busyAction, source.id)) return;
+      setActionError((current) => {
+        const nextMessages = { ...current.accountMessages };
+        delete nextMessages[source.id];
+        return { ...current, accountMessages: nextMessages };
+      });
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions);
+        nextActions.add(createBusyActionKey("credentialRefresh", source.id));
+        return { ...current, accountActions: nextActions };
+      });
+      try {
+        await runCredentialRefresh(source.id);
+      } catch (err) {
+        if (handleNotFoundClose(source.id, err)) return;
+        setActionError((current) => ({
+          ...current,
+          accountMessages: {
+            ...current.accountMessages,
+            [source.id]: err instanceof Error ? err.message : String(err),
+          },
+        }));
+      } finally {
+        setBusyAction((current) => {
+          const nextActions = new Set(current.accountActions);
+          nextActions.delete(createBusyActionKey("credentialRefresh", source.id));
+          return { ...current, accountActions: nextActions };
+        });
+      }
+    },
+    [busyAction, handleNotFoundClose, runCredentialRefresh],
   );
 
   const handleToggleEnabled = useCallback(
@@ -2894,25 +2958,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                       aria-label={t("accountPool.upstreamAccounts.actions.enable")}
                     />
                   </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => void handleSync(selected)}
-                    disabled={hasBusyAccountAction(busyAction, selected.id)}
-                    data-testid="account-sync-button"
-                  >
-                    {isBusyAction(busyAction, "sync", selected.id) ? (
-                      <Spinner size="sm" className="mr-2" />
-                    ) : (
-                      <AppIcon
-                        name="timer-refresh-outline"
-                        className="mr-2 h-4 w-4"
-                        aria-hidden
-                        data-icon-name="timer-refresh-outline"
-                      />
-                    )}
-                    {t("accountPool.upstreamAccounts.actions.syncNow")}
-                  </Button>
                   {selected.kind === "oauth_codex" ? (
                     <Button
                       type="button"
@@ -2926,6 +2971,21 @@ function SharedUpstreamAccountDetailDrawerInner({
                         <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />
                       )}
                       {t("accountPool.upstreamAccounts.actions.relogin")}
+                    </Button>
+                  ) : null}
+                  {selected.kind === "api_key_codex" ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void handleSync(selected)}
+                      disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
+                    >
+                      {isBusyAction(busyAction, "sync", selected.id) ? (
+                        <Spinner size="sm" className="mr-2" />
+                      ) : (
+                        <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
+                      )}
+                      {t("accountPool.upstreamAccounts.actions.syncNow")}
                     </Button>
                   ) : null}
                   {isCompactViewport ? (
@@ -4359,19 +4419,65 @@ function SharedUpstreamAccountDetailDrawerInner({
                           <span>{t(selectedRecoveryHint.titleKey)}</span>
                         </Alert>
                       ) : null}
-                      <div className="grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
-                        <DetailField
+                      {usageWindowRefreshNeedsAttention ? (
+                        <Alert variant="error" className="items-center py-2 text-sm">
+                          <AppIcon name="alert-outline" className="h-4 w-4 shrink-0" aria-hidden />
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium">
+                              {t("accountPool.upstreamAccounts.refresh.failureTitle")}
+                            </p>
+                            <p className="mt-0.5 text-xs text-base-content/70">
+                              {usageWindowRefresh?.errorMessage ??
+                                t("accountPool.upstreamAccounts.refresh.retry")}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleSync(selectedDetail)}
+                            disabled={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                          >
+                            {t("accountPool.upstreamAccounts.refresh.retry")}
+                          </Button>
+                        </Alert>
+                      ) : null}
+                      {credentialRefreshNeedsAttention ? (
+                        <Alert variant="error" className="items-center py-2 text-sm">
+                          <AppIcon name="alert-outline" className="h-4 w-4 shrink-0" aria-hidden />
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium">
+                              {t("accountPool.upstreamAccounts.refresh.credentialsFailureTitle")}
+                            </p>
+                            <p className="mt-0.5 text-xs text-base-content/70">
+                              {credentialRefresh?.errorMessage ??
+                                t("accountPool.upstreamAccounts.refresh.retry")}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleCredentialRefresh(selectedDetail)}
+                            disabled={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                          >
+                            {t("accountPool.upstreamAccounts.refresh.retryCredentials")}
+                          </Button>
+                        </Alert>
+                      ) : null}
+                      <dl className="grid gap-x-4 border-y border-base-300/60 sm:grid-cols-2 xl:grid-cols-4">
+                        <FlatDetailField
                           label={t("accountPool.upstreamAccounts.latestAction.title")}
                           value={
                             accountActionLabel(selectedDetail.lastAction) ??
                             t("accountPool.upstreamAccounts.latestAction.empty")
                           }
                         />
-                        <DetailField
+                        <FlatDetailField
                           label={t("accountPool.upstreamAccounts.latestAction.fields.occurredAt")}
                           value={formatDateTime(selectedDetail.lastActionAt)}
                         />
-                        <DetailField
+                        <FlatDetailField
                           label={t("accountPool.upstreamAccounts.fields.credits")}
                           value={
                             selectedDetail.credits?.balance
@@ -4381,11 +4487,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 : t("accountPool.upstreamAccounts.unavailable")
                           }
                         />
-                        <DetailField
+                        <FlatDetailField
                           label={t("accountPool.upstreamAccounts.fields.lastSyncedAt")}
                           value={formatDateTime(selectedDetail.lastSyncedAt)}
                         />
-                      </div>
+                      </dl>
                       <details className="group border-t border-base-300/70 pt-2">
                         <summary className="cursor-pointer text-xs font-medium text-base-content/75 marker:content-none">
                           <span className="inline-flex items-center gap-1.5">
@@ -4394,19 +4500,198 @@ function SharedUpstreamAccountDetailDrawerInner({
                               className="h-4 w-4 transition-transform group-open:rotate-90"
                               aria-hidden
                             />
-                            {t("accountPool.upstreamAccounts.healthDetails")}
+                            {t("accountPool.upstreamAccounts.refresh.details")}
                           </span>
                         </summary>
-                        <div className="mt-3 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
-                          <DetailField
-                            label={t("accountPool.upstreamAccounts.fields.lastRefreshedAt")}
-                            value={formatDateTime(selectedDetail.lastRefreshedAt)}
-                          />
-                          <DetailField
+                        {selectedDetail.kind === "oauth_codex" ? (
+                          <div className="mt-2 divide-y divide-base-300/70">
+                            <section className="space-y-2 py-3 first:pt-0">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <h3 className="text-sm font-semibold">
+                                  {t("accountPool.upstreamAccounts.refresh.credentialsGroup")}
+                                </h3>
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                  <Chip
+                                    tone={
+                                      credentialRefresh?.state === "succeeded"
+                                        ? "success"
+                                        : "secondary"
+                                    }
+                                  >
+                                    {refreshStateLabel(credentialRefresh?.state)}
+                                  </Chip>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => void handleCredentialRefresh(selectedDetail)}
+                                    disabled={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                                    data-testid="account-credential-refresh-button"
+                                  >
+                                    {isBusyAction(
+                                      busyAction,
+                                      "credentialRefresh",
+                                      selectedDetail.id,
+                                    ) ? (
+                                      <Spinner size="sm" className="mr-2" />
+                                    ) : (
+                                      <AppIcon
+                                        name="refresh"
+                                        className="mr-2 h-4 w-4"
+                                        aria-hidden
+                                        data-icon-name="refresh"
+                                      />
+                                    )}
+                                    {t("accountPool.upstreamAccounts.actions.refreshCredentials")}
+                                  </Button>
+                                </div>
+                              </div>
+                              <dl className="grid gap-x-5 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                                <FlatDetailField
+                                  label={t("accountPool.upstreamAccounts.refresh.lastAttempt")}
+                                  value={formatDateTime(credentialRefresh?.lastAttemptAt)}
+                                />
+                                <FlatDetailField
+                                  label={t("accountPool.upstreamAccounts.refresh.lastSuccess")}
+                                  value={formatDateTime(credentialRefresh?.lastSuccessAt)}
+                                />
+                                <FlatDetailField
+                                  label={t("accountPool.upstreamAccounts.refresh.nextAttempt")}
+                                  value={formatDateTime(credentialRefresh?.nextAttemptAt)}
+                                />
+                                <FlatDetailField
+                                  label={t("accountPool.upstreamAccounts.refresh.credentialsError")}
+                                  value={
+                                    credentialRefresh?.errorMessage ??
+                                    t("accountPool.upstreamAccounts.noError")
+                                  }
+                                />
+                              </dl>
+                            </section>
+                            <section className="space-y-2 py-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <h3 className="text-sm font-semibold">
+                                  {t("accountPool.upstreamAccounts.refresh.usageGroup")}
+                                </h3>
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                  <Chip
+                                    tone={
+                                      usageWindowRefresh?.state === "succeeded"
+                                        ? "success"
+                                        : "secondary"
+                                    }
+                                  >
+                                    {refreshStateLabel(usageWindowRefresh?.state)}
+                                  </Chip>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => void handleSync(selectedDetail)}
+                                    disabled={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                                    data-testid="account-sync-button"
+                                  >
+                                    {isBusyAction(busyAction, "sync", selectedDetail.id) ? (
+                                      <Spinner size="sm" className="mr-2" />
+                                    ) : (
+                                      <AppIcon
+                                        name="refresh"
+                                        className="mr-2 h-4 w-4"
+                                        aria-hidden
+                                        data-icon-name="refresh"
+                                      />
+                                    )}
+                                    {t("accountPool.upstreamAccounts.actions.refreshUsage")}
+                                  </Button>
+                                </div>
+                              </div>
+                              <dl className="grid gap-x-5 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                                <FlatDetailField
+                                  label={t("accountPool.upstreamAccounts.refresh.lastAttempt")}
+                                  value={formatDateTime(usageWindowRefresh?.lastAttemptAt)}
+                                />
+                                <FlatDetailField
+                                  label={t("accountPool.upstreamAccounts.refresh.lastSuccess")}
+                                  value={formatDateTime(usageWindowRefresh?.lastSuccessAt)}
+                                />
+                                <FlatDetailField
+                                  label={t("accountPool.upstreamAccounts.refresh.nextAttempt")}
+                                  value={formatDateTime(usageWindowRefresh?.nextAttemptAt)}
+                                />
+                                <FlatDetailField
+                                  label={t("accountPool.upstreamAccounts.refresh.usageError")}
+                                  value={
+                                    usageWindowRefresh?.errorMessage ??
+                                    t("accountPool.upstreamAccounts.noError")
+                                  }
+                                />
+                              </dl>
+                            </section>
+                            <details className="group border-t border-base-300/70 py-2.5">
+                              <summary className="cursor-pointer text-xs font-medium text-base-content/75 marker:content-none">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <AppIcon
+                                    name="chevron-right"
+                                    className="h-4 w-4 transition-transform group-open:rotate-90"
+                                    aria-hidden
+                                  />
+                                  {t("accountPool.upstreamAccounts.refresh.history")}
+                                </span>
+                              </summary>
+                              {(selectedDetail.credentialRefreshHistory ?? []).length === 0 ? (
+                                <p className="mt-2 text-xs text-base-content/60">
+                                  {t("accountPool.upstreamAccounts.refresh.empty")}
+                                </p>
+                              ) : (
+                                <div className="mt-1.5 divide-y divide-base-300/60 border-y border-base-300/60">
+                                  {(selectedDetail.credentialRefreshHistory ?? []).map((record) => (
+                                    <div
+                                      key={record.id}
+                                      className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-xs"
+                                    >
+                                      <Chip
+                                        tone={record.result === "success" ? "success" : "secondary"}
+                                      >
+                                        {refreshStateLabel(
+                                          record.result === "success" ? "succeeded" : "error",
+                                        )}
+                                      </Chip>
+                                      <span>{formatDateTime(record.occurredAt)}</span>
+                                      {record.reasonCode ? (
+                                        <span className="text-base-content/65">
+                                          {record.reasonCode}
+                                        </span>
+                                      ) : null}
+                                      {record.reasonMessage ? (
+                                        <span className="min-w-0 break-words text-base-content/65">
+                                          {record.reasonMessage}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </details>
+                          </div>
+                        ) : null}
+                      </details>
+                      <details className="group border-t border-base-300/70 pt-2">
+                        <summary className="cursor-pointer text-xs font-medium text-base-content/75 marker:content-none">
+                          <span className="inline-flex items-center gap-1.5">
+                            <AppIcon
+                              name="chevron-right"
+                              className="h-4 w-4 transition-transform group-open:rotate-90"
+                              aria-hidden
+                            />
+                            {t("accountPool.upstreamAccounts.refresh.otherDiagnostics")}
+                          </span>
+                        </summary>
+                        <dl className="mt-2 grid gap-x-5 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                          <FlatDetailField
                             label={t("accountPool.upstreamAccounts.fields.tokenExpiresAt")}
                             value={formatDateTime(selectedDetail.tokenExpiresAt)}
                           />
-                          <DetailField
+                          <FlatDetailField
                             label={t("accountPool.upstreamAccounts.fields.compactSupport")}
                             value={
                               selectedDetail.compactSupport?.status === "supported"
@@ -4418,18 +4703,18 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   : t("accountPool.upstreamAccounts.compactSupport.status.unknown")
                             }
                           />
-                          <DetailField
+                          <FlatDetailField
                             label={t("accountPool.upstreamAccounts.fields.compactObservedAt")}
                             value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
                           />
-                          <DetailField
+                          <FlatDetailField
                             label={t("accountPool.upstreamAccounts.latestAction.fields.reason")}
                             value={
                               accountActionReasonLabel(selectedDetail.lastActionReasonCode) ??
                               t("accountPool.upstreamAccounts.latestAction.unknown")
                             }
                           />
-                          <DetailField
+                          <FlatDetailField
                             label={t("accountPool.upstreamAccounts.latestAction.fields.httpStatus")}
                             value={
                               Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
@@ -4437,7 +4722,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 : t("accountPool.upstreamAccounts.unavailable")
                             }
                           />
-                          <DetailField
+                          <FlatDetailField
                             label={t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}
                             value={
                               selectedDetail.lastActionInvokeId ? (
@@ -4449,7 +4734,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                               )
                             }
                           />
-                          <DetailField
+                          <FlatDetailField
                             label={t("accountPool.upstreamAccounts.latestAction.fields.message")}
                             value={
                               selectedDetail.lastActionReasonMessage ??
@@ -4457,7 +4742,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                               t("accountPool.upstreamAccounts.noError")
                             }
                           />
-                          <DetailField
+                          <FlatDetailField
                             label={t("accountPool.upstreamAccounts.fields.compactReason")}
                             value={
                               selectedDetail.compactSupport?.reason ??
@@ -4466,17 +4751,17 @@ function SharedUpstreamAccountDetailDrawerInner({
                               t("accountPool.upstreamAccounts.noError")
                             }
                           />
-                          {selectedRecoveryHint ? (
-                            <div className="md:col-span-2 xl:col-span-4">
-                              <p className="font-medium text-warning">
-                                {t(selectedRecoveryHint.titleKey)}
-                              </p>
-                              <p className="mt-1 text-sm leading-5 text-base-content/75">
-                                {t(selectedRecoveryHint.bodyKey)}
-                              </p>
-                            </div>
-                          ) : null}
-                        </div>
+                        </dl>
+                        {selectedRecoveryHint ? (
+                          <div className="mt-3 border-t border-base-300/70 pt-3">
+                            <p className="font-medium text-warning">
+                              {t(selectedRecoveryHint.titleKey)}
+                            </p>
+                            <p className="mt-1 text-sm leading-5 text-base-content/75">
+                              {t(selectedRecoveryHint.bodyKey)}
+                            </p>
+                          </div>
+                        ) : null}
                       </details>
                     </CardContent>
                   </Card>

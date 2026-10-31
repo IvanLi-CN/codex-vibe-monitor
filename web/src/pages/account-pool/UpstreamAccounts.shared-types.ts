@@ -42,7 +42,13 @@ export type ActionErrorState = {
   accountMessages: Record<number, string>;
 };
 
-export type AccountBusyActionType = "save" | "sync" | "toggle" | "relogin" | "delete";
+export type AccountBusyActionType =
+  | "save"
+  | "sync"
+  | "credentialRefresh"
+  | "toggle"
+  | "relogin"
+  | "delete";
 
 export type BusyActionState = {
   routing: boolean;

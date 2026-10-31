@@ -2259,6 +2259,13 @@ async fn resolver_preserves_sticky_account_when_cut_out_is_forbidden_by_tag_poli
     .execute(&state.pool)
     .await
     .expect("expire sticky account token");
+    set_test_account_access_token(
+        &state.pool,
+        crypto_key,
+        sticky_account,
+        test_access_token_expiring_at(Utc::now() - ChronoDuration::minutes(5)),
+    )
+    .await;
     let lock_tag = insert_test_tag(
         &state.pool,
         "sticky-cut-out-forbidden",

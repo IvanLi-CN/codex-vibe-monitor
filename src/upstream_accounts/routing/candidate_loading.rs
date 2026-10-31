@@ -674,230 +674,65 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                 oauth_request_compression_algorithm: root_request_compression.oauth_algorithm,
             },
         ))),
-        StoredCredentials::Oauth(mut value) => {
-            let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
-            let refresh_due = expires_at
-                .map(|expires| {
-                    expires
-                        <= Utc::now()
-                            + ChronoDuration::seconds(
-                                state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
-                            )
-                })
-                .unwrap_or(true);
-            let deferred_status =
-                if row.status.trim().is_empty() || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
-                    UPSTREAM_ACCOUNT_STATUS_ACTIVE
-                } else {
-                    row.status.as_str()
-                };
-            if refresh_due && let Some(refresh_token) = oauth_refresh_token(&value) {
-                match refresh_oauth_tokens_for_required_scope(
-                    state,
-                    &refresh_proxy_scope,
-                    refresh_token,
+        StoredCredentials::Oauth(_) => {
+            refresh_oauth_credentials_if_due_with_source(
+                state,
+                row,
+                UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                &refresh_proxy_scope,
+            )
+            .await?;
+            let latest_row = load_upstream_account_row(&state.pool, row.id)
+                .await?
+                .ok_or_else(|| anyhow!("account disappeared during request credential refresh"))?;
+            let credential_status = load_upstream_account_refresh_status(
+                &state.pool,
+                row.id,
+                UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            )
+            .await?;
+            if credential_status.state == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH {
+                set_account_status(
+                    &state.pool,
+                    row.id,
+                    UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+                    Some("OAuth 凭据刷新需要重新授权。"),
                 )
-                .await
-                {
-                    Ok(response) => {
-                        let token_expires_at = apply_oauth_token_response(&mut value, response);
-                        persist_oauth_credentials(
-                            &state.pool,
-                            row.id,
-                            crypto_key,
-                            &value,
-                            &token_expires_at,
-                        )
-                        .await?;
-                    }
-                    Err(err)
-                        if err
-                            .downcast_ref::<AccountMaintenanceEgressThrottleError>()
-                            .is_some() =>
-                    {
-                        let throttle = err
-                            .downcast_ref::<AccountMaintenanceEgressThrottleError>()
-                            .expect("checked throttle error");
-                        let reason_message = format!(
-                            "maintenance egress via {} is throttled for another {} seconds",
-                            throttle.proxy_display_name, throttle.retry_after_secs
-                        );
-                        let now_iso = format_utc_iso(Utc::now());
-                        record_account_maintenance_deferred(
-                            &state.pool,
-                            row.id,
-                            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-                            &reason_message,
-                            &now_iso,
-                            Some(&throttle.proxy_key),
-                            Some(&throttle.proxy_display_name),
-                            throttle.proxy_egress_ip.as_deref(),
-                        )
-                        .await?;
-                        set_account_status(&state.pool, row.id, deferred_status, None).await?;
-                        return Ok(None);
-                    }
-                    Err(err) if is_reauth_error(&err) => {
-                        let err_text = err.to_string();
-                        let now_iso = format_utc_iso_millis(Utc::now());
-                        let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
-                        if !account_status_change_reason_is_enabled(
-                            &state.pool,
-                            row.id,
-                            UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
-                        )
-                        .await?
-                        {
-                            record_status_change_suppressed_event_with_proxy_snapshot(
-                                &state.pool,
-                                row.id,
-                                UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
-                                UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
-                                &err_text,
-                                None,
-                                Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH),
-                                None,
-                                None,
-                                &now_iso,
-                                proxy_snapshot.as_ref(),
-                            )
-                            .await?;
-                            return Ok(None);
-                        }
-                        sqlx::query(
-                            r#"
-                            UPDATE pool_upstream_accounts
-                            SET status = ?2,
-                                last_error = ?3,
-                                last_error_at = ?4,
-                                last_route_failure_at = ?4,
-                                last_route_failure_kind = ?5,
-                                cooldown_until = NULL,
-                                consecutive_route_failures = consecutive_route_failures + 1,
-                                temporary_route_failure_streak_started_at = NULL,
-                                updated_at = ?4
-                            WHERE id = ?1
-                            "#,
-                        )
-                        .bind(row.id)
-                        .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
-                        .bind(&err_text)
-                        .bind(&now_iso)
-                        .bind(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
-                        .execute(&state.pool)
-                        .await?;
-                        record_upstream_account_action_with_proxy_snapshot(
-                            &state.pool,
-                            row.id,
-                            UpstreamAccountActionPayload {
-                                action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
-                                source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
-                                reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED),
-                                reason_message: Some(&err_text),
-                                http_status: None,
-                                failure_kind: Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH),
-                                invoke_id: None,
-                                sticky_key: None,
-                                occurred_at: &now_iso,
-                            },
-                            proxy_snapshot.as_ref(),
-                        )
-                        .await?;
-                        return Ok(None);
-                    }
-                    Err(err) => {
-                        let err_text = err.to_string();
-                        let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
-                        let (disposition, reason_code, next_status, http_status, failure_kind) =
-                            classify_sync_failure(&row.kind, &err_text);
-                        match disposition {
-                            UpstreamAccountFailureDisposition::HardUnavailable => {
-                                let now_iso = format_utc_iso_millis(Utc::now());
-                                if !account_status_change_reason_is_enabled(
-                                    &state.pool,
-                                    row.id,
-                                    reason_code,
-                                )
-                                .await?
-                                {
-                                    record_status_change_suppressed_event_with_proxy_snapshot(
-                                        &state.pool,
-                                        row.id,
-                                        UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
-                                        reason_code,
-                                        &err_text,
-                                        http_status,
-                                        Some(failure_kind),
-                                        None,
-                                        None,
-                                        &now_iso,
-                                        proxy_snapshot.as_ref(),
-                                    )
-                                    .await?;
-                                    return Ok(None);
-                                }
-                                sqlx::query(
-                                    r#"
-                                    UPDATE pool_upstream_accounts
-                                    SET status = ?2,
-                                        last_error = ?3,
-                                        last_error_at = ?4,
-                                        last_route_failure_at = ?4,
-                                        last_route_failure_kind = ?5,
-                                        cooldown_until = NULL,
-                                        consecutive_route_failures = consecutive_route_failures + 1,
-                                        temporary_route_failure_streak_started_at = NULL,
-                                        updated_at = ?4
-                                    WHERE id = ?1
-                                    "#,
-                                )
-                                .bind(row.id)
-                                .bind(next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR))
-                                .bind(&err_text)
-                                .bind(&now_iso)
-                                .bind(failure_kind)
-                                .execute(&state.pool)
-                                .await?;
-                                record_upstream_account_action_with_proxy_snapshot(
-                                    &state.pool,
-                                    row.id,
-                                    UpstreamAccountActionPayload {
-                                        action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
-                                        source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
-                                        reason_code: Some(reason_code),
-                                        reason_message: Some(&err_text),
-                                        http_status,
-                                        failure_kind: Some(failure_kind),
-                                        invoke_id: None,
-                                        sticky_key: None,
-                                        occurred_at: &now_iso,
-                                    },
-                                    proxy_snapshot.as_ref(),
-                                )
-                                .await?;
-                            }
-                            UpstreamAccountFailureDisposition::RateLimited
-                            | UpstreamAccountFailureDisposition::Retryable => {
-                                apply_pool_route_cooldown_failure(
-                                    &state.pool,
-                                    row.id,
-                                    UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-                                    None,
-                                    &err_text,
-                                    failure_kind,
-                                    reason_code,
-                                    http_status.unwrap_or(StatusCode::BAD_GATEWAY),
-                                    5,
-                                    None,
-                                    None,
-                                )
-                                .await?;
-                            }
-                        }
-                        return Ok(None);
-                    }
-                }
+                .await?;
+                return Ok(None);
             }
+            let latest_credentials = decrypt_credentials(
+                crypto_key,
+                latest_row
+                    .encrypted_credentials
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("missing encrypted OAuth credentials"))?,
+            )?;
+            let StoredCredentials::Oauth(latest_value) = latest_credentials else {
+                bail!("unexpected credential kind for OAuth account")
+            };
+            let access_token_expired = parse_access_token_expiry(&latest_value.access_token)
+                .or_else(|| {
+                    latest_row
+                        .token_expires_at
+                        .as_deref()
+                        .and_then(parse_rfc3339_utc)
+                })
+                .map(|expires_at| expires_at <= Utc::now())
+                .unwrap_or(true);
+            let refresh_retry_pending = matches!(
+                credential_status.state.as_str(),
+                UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING
+                    | UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
+                    | UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL
+                    | UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR
+            );
+            let access_token_rejected =
+                credential_status.error_code.as_deref() == Some("access_token_rejected");
+            if access_token_rejected || (refresh_retry_pending && access_token_expired) {
+                return Ok(None);
+            }
+            let value = latest_value;
 
             Ok(Some(build_pool_resolved_account(
                 row,
@@ -1086,6 +921,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_used_percent IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_used_percent,
@@ -1093,6 +929,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.secondary_window_minutes
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_window_minutes IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_window_minutes,
@@ -1100,6 +937,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.secondary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_resets_at IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_resets_at,
@@ -1107,6 +945,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_used_percent IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_used_percent,
@@ -1114,6 +953,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.primary_window_minutes
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_window_minutes IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_window_minutes,
@@ -1121,6 +961,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.primary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_resets_at IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_resets_at,
@@ -1207,6 +1048,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_used_percent IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_used_percent,
@@ -1214,6 +1056,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.secondary_window_minutes
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_window_minutes IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_window_minutes,
@@ -1221,6 +1064,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.secondary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_resets_at IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_resets_at,
@@ -1228,6 +1072,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_used_percent IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_used_percent,
@@ -1235,6 +1080,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.primary_window_minutes
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_window_minutes IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_window_minutes,
@@ -1242,6 +1088,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.primary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_resets_at IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_resets_at,
