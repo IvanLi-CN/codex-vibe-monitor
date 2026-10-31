@@ -390,6 +390,18 @@ struct SourceContext {
     coverage: Option<SourceCoverage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SourceAckRecoveryPlan {
+    AlreadyCovered,
+    FullGeneration,
+    Range {
+        from_change_id: i64,
+        through_change_id: i64,
+    },
+    Rebuild(String),
+    Inconsistent(String),
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct SourceChangeRow {
     change_id: i64,
@@ -528,19 +540,99 @@ fn replica_service_eligible_for_latest_change(
     replica_service_eligible(state) && state.consumer_checkpoint == latest_change_id
 }
 
+fn source_coverage_reaches_checkpoint(
+    state: &AnalyticsReplicaState,
+    source: &SourceContext,
+) -> bool {
+    source.state.generation == state.generation
+        && source.state.invalidation_pending == 0
+        && source.coverage.is_some_and(|coverage| {
+            coverage.generation == state.generation
+                && coverage.covered_through_change_id == state.consumer_checkpoint
+        })
+}
+
+fn replica_service_eligible_for_source(
+    state: &AnalyticsReplicaState,
+    source: &SourceContext,
+) -> bool {
+    replica_baseline_ready(state)
+        && replica_service_eligible_for_latest_change(state, source.latest_change_id)
+        && source_coverage_reaches_checkpoint(state, source)
+}
+
 fn replica_baseline_ready(state: &AnalyticsReplicaState) -> bool {
     state.generation > 0
         && state.baseline_generation == state.generation
         && state.baseline_change_id <= state.consumer_checkpoint
 }
 
-fn pending_source_ack_range(state: &AnalyticsReplicaState) -> Option<(i64, i64)> {
-    (state.source_acknowledged_through < state.consumer_checkpoint).then(|| {
-        (
-            state.source_acknowledged_through.saturating_add(1),
-            state.consumer_checkpoint,
-        )
-    })
+fn source_ack_recovery_plan(
+    state: &AnalyticsReplicaState,
+    source: &SourceContext,
+) -> SourceAckRecoveryPlan {
+    if state.source_acknowledged_through > state.consumer_checkpoint {
+        return SourceAckRecoveryPlan::Inconsistent(format!(
+            "analytics replica source acknowledgement {} is ahead of target checkpoint {}",
+            state.source_acknowledged_through, state.consumer_checkpoint
+        ));
+    }
+    if state.consumer_checkpoint > source.latest_change_id {
+        return SourceAckRecoveryPlan::Inconsistent(format!(
+            "analytics replica target checkpoint {} is ahead of source latest change {}",
+            state.consumer_checkpoint, source.latest_change_id
+        ));
+    }
+
+    if let Some(coverage) = source.coverage {
+        if coverage.generation == source.state.generation {
+            if coverage.covered_through_change_id > state.consumer_checkpoint {
+                return SourceAckRecoveryPlan::Inconsistent(format!(
+                    "source coverage {} is ahead of target checkpoint {}",
+                    coverage.covered_through_change_id, state.consumer_checkpoint
+                ));
+            }
+            if coverage.covered_through_change_id == state.consumer_checkpoint {
+                return SourceAckRecoveryPlan::AlreadyCovered;
+            }
+            if state.consumer_checkpoint == source.latest_change_id {
+                return SourceAckRecoveryPlan::FullGeneration;
+            }
+            let from_change_id = coverage.covered_through_change_id.saturating_add(1);
+            if from_change_id < source.state.retained_from_change_id {
+                return SourceAckRecoveryPlan::Rebuild(format!(
+                    "source coverage through {} predates retained source journal boundary {}; run explicit bootstrap",
+                    coverage.covered_through_change_id, source.state.retained_from_change_id
+                ));
+            }
+            return SourceAckRecoveryPlan::Range {
+                from_change_id,
+                through_change_id: state.consumer_checkpoint,
+            };
+        }
+        if state.consumer_checkpoint == source.latest_change_id {
+            return SourceAckRecoveryPlan::FullGeneration;
+        }
+        return SourceAckRecoveryPlan::Rebuild(format!(
+            "source coverage belongs to generation {}, expected {}; run explicit bootstrap",
+            coverage.generation, source.state.generation
+        ));
+    }
+
+    if state.consumer_checkpoint == source.latest_change_id {
+        return SourceAckRecoveryPlan::FullGeneration;
+    }
+    let from_change_id = source.state.retained_from_change_id;
+    if from_change_id > state.consumer_checkpoint.saturating_add(1) {
+        return SourceAckRecoveryPlan::Rebuild(format!(
+            "source journal retained from change {}, beyond target checkpoint {}; run explicit bootstrap",
+            from_change_id, state.consumer_checkpoint
+        ));
+    }
+    SourceAckRecoveryPlan::Range {
+        from_change_id,
+        through_change_id: state.consumer_checkpoint,
+    }
 }
 
 fn bounded_batch_end(encoded_sizes: &[usize], start: usize) -> Result<usize> {
@@ -1335,8 +1427,7 @@ async fn load_status_report(
     let service_eligible = state
         .as_mut()
         .map(|current_state| {
-            let eligible =
-                replica_service_eligible_for_latest_change(current_state, source.latest_change_id);
+            let eligible = replica_service_eligible_for_source(current_state, &source);
             current_state.service_eligible = eligible;
             eligible
         })
@@ -1449,7 +1540,10 @@ async fn resume_replica(
     if state.status == "paused" {
         // A paused replica is resumed by the same bounded drain below.
     } else if state.status == "blocked"
-        && !matches!(state.last_error_code.as_deref(), Some("source_ack_failed"))
+        && !matches!(
+            state.last_error_code.as_deref(),
+            Some("source_ack_failed") | Some("target_apply_failed") | Some("worker_batch_limit")
+        )
     {
         bail!(
             "analytics replica is blocked with {}: {}",
@@ -1480,40 +1574,78 @@ async fn resume_replica(
             mark_replica_invalidated(pool, detail.clone()).await?;
             return Err(anyhow!(detail));
         }
-        if state.source_acknowledged_through > state.consumer_checkpoint {
-            let detail = format!(
-                "analytics replica source acknowledgement {} is ahead of target checkpoint {}",
-                state.source_acknowledged_through, state.consumer_checkpoint
-            );
-            mark_replica_blocked(pool, "state_inconsistent", detail.clone()).await?;
-            return Err(anyhow!(detail));
-        }
-        if state.consumer_checkpoint > source.latest_change_id {
-            let detail = format!(
-                "analytics replica target checkpoint {} is ahead of source latest change {}",
-                state.consumer_checkpoint, source.latest_change_id
-            );
-            mark_replica_blocked(pool, "state_inconsistent", detail.clone()).await?;
-            return Err(anyhow!(detail));
-        }
-        if let Some((from_change_id, through_change_id)) = pending_source_ack_range(&state) {
-            if let Err(error) =
-                acknowledge_source_batch(source_pool, &source, from_change_id, through_change_id)
+        match source_ack_recovery_plan(&state, &source) {
+            SourceAckRecoveryPlan::AlreadyCovered => {
+                if state.source_acknowledged_through < state.consumer_checkpoint {
+                    set_replica_acknowledged(
+                        pool,
+                        state.consumer_checkpoint,
+                        state.consumer_checkpoint >= source.latest_change_id,
+                    )
                     .await
-            {
-                let detail = error.to_string();
-                mark_replica_blocked(pool, "source_ack_failed", detail.clone()).await?;
+                    .context(
+                        "failed to persist the recovered analytics replica source acknowledgement",
+                    )?;
+                    state = load_replica_state(pool).await?;
+                    continue;
+                }
+            }
+            SourceAckRecoveryPlan::FullGeneration => {
+                if let Err(error) =
+                    crate::analytics_changes::acknowledge_analytics_change_generation(
+                        source_pool,
+                        ANALYTICS_REPLICA_ID,
+                        source.state.generation,
+                        source.latest_change_id,
+                    )
+                    .await
+                {
+                    let detail = error.to_string();
+                    mark_replica_blocked(pool, "source_ack_failed", detail.clone()).await?;
+                    return Err(anyhow!(detail));
+                }
+                set_replica_acknowledged(pool, source.latest_change_id, true)
+                    .await
+                    .context(
+                        "failed to persist the recovered analytics replica generation acknowledgement",
+                    )?;
+                state = load_replica_state(pool).await?;
+                continue;
+            }
+            SourceAckRecoveryPlan::Range {
+                from_change_id,
+                through_change_id,
+            } => {
+                if let Err(error) = acknowledge_source_batch(
+                    source_pool,
+                    &source,
+                    from_change_id,
+                    through_change_id,
+                )
+                .await
+                {
+                    let detail = error.to_string();
+                    mark_replica_blocked(pool, "source_ack_failed", detail.clone()).await?;
+                    return Err(anyhow!(detail));
+                }
+                set_replica_acknowledged(
+                    pool,
+                    through_change_id,
+                    through_change_id >= source.latest_change_id,
+                )
+                .await
+                .context("failed to persist recovered analytics replica source acknowledgement")?;
+                state = load_replica_state(pool).await?;
+                continue;
+            }
+            SourceAckRecoveryPlan::Rebuild(detail) => {
+                mark_replica_invalidated(pool, detail.clone()).await?;
                 return Err(anyhow!(detail));
             }
-            set_replica_acknowledged(
-                pool,
-                through_change_id,
-                through_change_id >= source.latest_change_id,
-            )
-            .await
-            .context("failed to persist recovered analytics replica source acknowledgement")?;
-            state = load_replica_state(pool).await?;
-            continue;
+            SourceAckRecoveryPlan::Inconsistent(detail) => {
+                mark_replica_blocked(pool, "state_inconsistent", detail.clone()).await?;
+                return Err(anyhow!(detail));
+            }
         }
         let from_change_id = state.consumer_checkpoint.saturating_add(1);
         let rows = load_source_changes(source_pool, state.consumer_checkpoint).await?;
@@ -1680,8 +1812,7 @@ async fn verify_replica(
         )),
         None => errors.push("source acknowledgement row is missing".to_string()),
     }
-    let service_eligible =
-        replica_service_eligible_for_latest_change(&state, source.latest_change_id);
+    let service_eligible = replica_service_eligible_for_source(&state, &source);
     if !service_eligible {
         errors.push("replica is not service eligible for the current source watermark".to_string());
     }
@@ -2095,6 +2226,23 @@ mod tests {
             updated_at: String::new(),
         };
         assert!(!replica_service_eligible(&state));
+        let source = SourceContext {
+            state: SourceChangeState {
+                generation: 1,
+                coverage_revision: 8,
+                retained_from_change_id: 1,
+                capacity: 10_000,
+                invalidation_pending: 0,
+            },
+            latest_change_id: 7,
+            retained_bytes: 128,
+            coverage: Some(SourceCoverage {
+                generation: 1,
+                covered_through_change_id: 4,
+                coverage_revision: 8,
+            }),
+        };
+        assert!(!replica_service_eligible_for_source(&state, &source));
 
         state.status = "caught_up".to_string();
         state.source_acknowledged_through = 7;
@@ -2102,6 +2250,20 @@ mod tests {
         assert!(replica_service_eligible(&state));
         assert!(replica_service_eligible_for_latest_change(&state, 7));
         assert!(!replica_service_eligible_for_latest_change(&state, 8));
+        let mut acknowledged_source = source.clone();
+        acknowledged_source.coverage = Some(SourceCoverage {
+            covered_through_change_id: 7,
+            ..source.coverage.expect("coverage fixture")
+        });
+        assert!(replica_service_eligible_for_source(
+            &state,
+            &acknowledged_source
+        ));
+        acknowledged_source.coverage = None;
+        assert!(!replica_service_eligible_for_source(
+            &state,
+            &acknowledged_source
+        ));
     }
 
     #[test]
@@ -2124,12 +2286,59 @@ mod tests {
         };
 
         assert!(replica_baseline_ready(&state));
-        assert_eq!(pending_source_ack_range(&state), Some((5, 7)));
+        let source = SourceContext {
+            state: SourceChangeState {
+                generation: 2,
+                coverage_revision: 9,
+                retained_from_change_id: 1,
+                capacity: 10_000,
+                invalidation_pending: 0,
+            },
+            latest_change_id: 9,
+            retained_bytes: 128,
+            coverage: Some(SourceCoverage {
+                generation: 2,
+                covered_through_change_id: 4,
+                coverage_revision: 9,
+            }),
+        };
+        assert_eq!(
+            source_ack_recovery_plan(&state, &source),
+            SourceAckRecoveryPlan::Range {
+                from_change_id: 5,
+                through_change_id: 7,
+            }
+        );
+        let mut covered_source = source.clone();
+        covered_source.coverage = Some(SourceCoverage {
+            covered_through_change_id: 7,
+            ..source.coverage.expect("coverage fixture")
+        });
+        assert_eq!(
+            source_ack_recovery_plan(&state, &covered_source),
+            SourceAckRecoveryPlan::AlreadyCovered
+        );
+        let mut complete_source = source.clone();
+        complete_source.latest_change_id = state.consumer_checkpoint;
+        complete_source.coverage = None;
+        assert_eq!(
+            source_ack_recovery_plan(&state, &complete_source),
+            SourceAckRecoveryPlan::FullGeneration
+        );
+        let mut retention_gap_source = source.clone();
+        retention_gap_source.state.retained_from_change_id = 6;
+        assert!(matches!(
+            source_ack_recovery_plan(&state, &retention_gap_source),
+            SourceAckRecoveryPlan::Rebuild(_)
+        ));
 
         state.baseline_generation = 1;
         assert!(!replica_baseline_ready(&state));
         state.baseline_generation = 2;
         state.source_acknowledged_through = 7;
-        assert_eq!(pending_source_ack_range(&state), None);
+        assert!(matches!(
+            source_ack_recovery_plan(&state, &covered_source),
+            SourceAckRecoveryPlan::AlreadyCovered
+        ));
     }
 }
