@@ -45,13 +45,15 @@ const config: StorybookConfig = {
   ],
   addons: ["@storybook/addon-a11y", "@storybook/addon-docs", "@storybook/addon-vitest"],
   framework: "@storybook/react-vite",
-  viteFinal: async (baseConfig) => {
+  viteFinal: async (baseConfig, { configType }) => {
     const merged = mergeConfig(
       removePwaPlugins(baseConfig),
       removePwaPlugins(createAppViteConfig("storybook")),
     );
     return {
       ...merged,
+      // Storybook is copied under an arbitrary site path after its production build.
+      base: configType === "PRODUCTION" ? "./" : merged.base,
       plugins: dedupePluginsByName(merged.plugins),
     };
   },
