@@ -6,6 +6,33 @@ const ANALYTICS_CHANGE_FACT_MAX_BYTES: usize = 64 * 1024;
 const ANALYTICS_CHANGE_ENTITY_KEY_MAX_BYTES: usize = 512;
 const ANALYTICS_CHANGE_TEXT_MAX_CHARS: usize = 256;
 
+// These tables are created after this migration on a fresh database, so only existing rows
+// count as evidence that a legacy analytics projection may outlive the source journal.
+const LEGACY_ANALYTICS_HISTORY_TABLES: &[&str] = &[
+    "hourly_rollup_archive_replay",
+    "invocation_rollup_daily",
+    "invocation_rollup_hourly",
+    "invocation_failure_rollup_hourly",
+    "proxy_perf_stage_hourly",
+    "prompt_cache_rollup_hourly",
+    "prompt_cache_upstream_account_hourly",
+    "upstream_account_usage_hourly",
+    "upstream_account_usage_breakdown_hourly",
+    "upstream_account_stats_hourly",
+    "upstream_account_stats_minute",
+    "long_term_usage_hourly",
+    "long_term_usage_daily",
+    "long_term_stats_repair_queue",
+    "summary_source_change_journal",
+    "summary_source_change_compaction_proof",
+    "summary_archive_snapshot",
+    "summary_archive_snapshot_v2_proof",
+    "summary_coverage_obligation",
+    "summary_compacted_source_recovery_aggregate",
+    "summary_compacted_source_recovery_usage",
+    "summary_compacted_source_recovery_record",
+];
+
 #[derive(Debug, Clone, Copy, FromRow)]
 struct AnalyticsChangeStateRow {
     generation: i64,
@@ -263,7 +290,51 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
                 .await
                 .context("failed to inspect existing analytics changes")?
                 != 0;
-        let source_data_exists = invocation_rows_exist || event_rows_exist;
+        let mut legacy_projection_rows_exist = false;
+        for table_name in LEGACY_ANALYTICS_HISTORY_TABLES {
+            let table_exists = sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{table_name}')"
+            ))
+            .fetch_one(pool)
+            .await
+            .with_context(|| format!("failed to inspect legacy analytics table {table_name}"))?
+                != 0;
+            if table_exists
+                && sqlx::query_scalar::<_, i64>(&format!(
+                    "SELECT EXISTS(SELECT 1 FROM \"{table_name}\")"
+                ))
+                .fetch_one(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to inspect legacy analytics rows in {table_name}")
+                })? != 0
+            {
+                legacy_projection_rows_exist = true;
+                break;
+            }
+        }
+        let invocation_archive_rows_exist = if sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_batches')",
+        )
+        .fetch_one(pool)
+        .await
+        .context("failed to inspect legacy invocation archive metadata")?
+            != 0
+        {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM archive_batches WHERE dataset = 'codex_invocations')",
+            )
+            .fetch_one(pool)
+            .await
+            .context("failed to inspect legacy invocation archive rows")?
+                != 0
+        } else {
+            false
+        };
+        let source_data_exists = invocation_rows_exist
+            || event_rows_exist
+            || legacy_projection_rows_exist
+            || invocation_archive_rows_exist;
         sqlx::query(
             r#"
             UPDATE analytics_change_state
@@ -1319,6 +1390,61 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("load migrated analytics history markers");
+        assert_eq!(markers, (1, 1));
+    }
+
+    #[tokio::test]
+    async fn historical_history_migration_marks_existing_aggregate_data_unknown() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect legacy aggregate history test database");
+        sqlx::query(
+            r#"
+            CREATE TABLE analytics_change_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                generation INTEGER NOT NULL DEFAULT 1,
+                coverage_revision INTEGER NOT NULL DEFAULT 0,
+                retained_from_change_id INTEGER NOT NULL DEFAULT 1,
+                capacity INTEGER NOT NULL DEFAULT 10000,
+                invalidation_pending INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_pending IN (0, 1)),
+                historical_replay_required INTEGER NOT NULL DEFAULT 0 CHECK(historical_replay_required IN (0, 1)),
+                historical_history_unknown INTEGER NOT NULL DEFAULT 0 CHECK(historical_history_unknown IN (0, 1)),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy aggregate history state");
+        sqlx::query("INSERT INTO analytics_change_state (id) VALUES (1)")
+            .execute(&pool)
+            .await
+            .expect("seed legacy aggregate history state");
+        sqlx::query(
+            "CREATE TABLE long_term_usage_daily (stats_date TEXT NOT NULL, dimension TEXT NOT NULL, series_key TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy aggregate table");
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key) VALUES ('2026-10-30', 'overall', 'all')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy aggregate row");
+
+        ensure_analytics_changes_schema(&pool)
+            .await
+            .expect("migrate legacy aggregate history state");
+
+        let markers: (i64, i64) = sqlx::query_as(
+            "SELECT historical_history_unknown, historical_history_initialized FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load migrated aggregate history markers");
         assert_eq!(markers, (1, 1));
     }
 

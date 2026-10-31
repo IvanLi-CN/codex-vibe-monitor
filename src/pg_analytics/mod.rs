@@ -10,6 +10,8 @@ pub(crate) const ANALYTICS_REPLICA_ID: &str = "pg-analytics";
 pub(crate) const ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH: usize = 256;
 pub(crate) const ANALYTICS_REPLICA_MAX_ENCODED_BATCH_BYTES: usize = 1024 * 1024;
 pub(crate) const ANALYTICS_SOURCE_RETENTION_BOUND_BYTES: i64 = 256 * 1024 * 1024;
+const ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES: i64 = 64 * 1024;
+const ANALYTICS_REPLICA_MAX_SOURCE_PAYLOAD_BYTES: i64 = 4 * 1024 * 1024;
 const ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN: usize = 4096;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,11 +471,7 @@ struct SourceInvocationSnapshotRow {
     failure_kind: Option<String>,
     failure_class: Option<String>,
     is_actionable: Option<i64>,
-    request_model: Option<String>,
-    response_model: Option<String>,
-    reasoning_effort: Option<String>,
-    upstream_account_id: Option<String>,
-    upstream_account_name: Option<String>,
+    payload: Option<String>,
     t_total_ms: Option<f64>,
     t_req_read_ms: Option<f64>,
     t_req_parse_ms: Option<f64>,
@@ -482,6 +480,19 @@ struct SourceInvocationSnapshotRow {
     t_upstream_stream_ms: Option<f64>,
     first_token_ms: Option<f64>,
     t_resp_parse_ms: Option<f64>,
+}
+
+#[derive(Debug, FromRow)]
+struct SourceInvocationSnapshotSizeRow {
+    id: i64,
+    invoke_id_bytes: i64,
+    occurred_at_bytes: i64,
+    source_bytes: i64,
+    model_bytes: Option<i64>,
+    status_bytes: Option<i64>,
+    failure_kind_bytes: Option<i64>,
+    failure_class_bytes: Option<i64>,
+    payload_bytes: Option<i64>,
 }
 
 fn snapshot_terminal(status: Option<&str>) -> bool {
@@ -503,6 +514,7 @@ fn snapshot_success_like(status: Option<&str>) -> bool {
 }
 
 fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFact> {
+    let payload = crate::analytics_changes::normalize_analytics_payload(row.payload.as_deref());
     let status = crate::analytics_changes::normalize_analytics_text(row.status.as_deref());
     Ok(AnalyticsFact {
         fact_version: 1,
@@ -519,21 +531,25 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
         occurred_at_epoch_ms: row.occurred_at_epoch_ms,
         stats_date: row.stats_date,
         model: crate::analytics_changes::normalize_analytics_text(row.model.as_deref()),
-        request_model: crate::analytics_changes::normalize_analytics_text(
-            row.request_model.as_deref(),
+        request_model: crate::analytics_changes::normalize_analytics_payload_text(
+            payload.as_ref(),
+            "requestModel",
         ),
-        response_model: crate::analytics_changes::normalize_analytics_text(
-            row.response_model.as_deref(),
+        response_model: crate::analytics_changes::normalize_analytics_payload_text(
+            payload.as_ref(),
+            "responseModel",
         ),
-        reasoning_effort: crate::analytics_changes::normalize_analytics_text(
-            row.reasoning_effort.as_deref(),
+        reasoning_effort: crate::analytics_changes::normalize_analytics_payload_text(
+            payload.as_ref(),
+            "reasoningEffort",
         ),
-        upstream_account_id: row
-            .upstream_account_id
-            .as_deref()
-            .and_then(|value| value.trim().parse().ok()),
-        upstream_account_name: crate::analytics_changes::normalize_analytics_text(
-            row.upstream_account_name.as_deref(),
+        upstream_account_id: crate::analytics_changes::normalize_analytics_payload_i64(
+            payload.as_ref(),
+            "upstreamAccountId",
+        ),
+        upstream_account_name: crate::analytics_changes::normalize_analytics_payload_text(
+            payload.as_ref(),
+            "upstreamAccountName",
         ),
         status: status.clone(),
         success_like: snapshot_success_like(status.as_deref()),
@@ -1059,34 +1075,98 @@ async fn load_source_changes(
     .context("failed to load the bounded analytics source batch")
 }
 
+fn ensure_snapshot_source_field_size(
+    row_id: i64,
+    field: &str,
+    size: Option<i64>,
+    max_bytes: i64,
+) -> Result<()> {
+    if let Some(size) = size
+        && size > max_bytes
+    {
+        bail!(
+            "oversized analytics replica source field {field} on row {row_id}: {size} bytes exceeds {max_bytes}-byte bound"
+        );
+    }
+    Ok(())
+}
+
+async fn preflight_source_invocation_snapshot_page(
+    source_connection: &mut SqliteConnection,
+    after_id: i64,
+) -> Result<()> {
+    let rows = sqlx::query_as::<_, SourceInvocationSnapshotSizeRow>(
+        r#"
+        SELECT
+            id,
+            length(CAST(invoke_id AS BLOB)) AS invoke_id_bytes,
+            length(CAST(occurred_at AS BLOB)) AS occurred_at_bytes,
+            length(CAST(source AS BLOB)) AS source_bytes,
+            length(CAST(model AS BLOB)) AS model_bytes,
+            length(CAST(status AS BLOB)) AS status_bytes,
+            length(CAST(failure_kind AS BLOB)) AS failure_kind_bytes,
+            length(CAST(failure_class AS BLOB)) AS failure_class_bytes,
+            length(CAST(payload AS BLOB)) AS payload_bytes
+        FROM codex_invocations
+        WHERE id > ?1
+        ORDER BY id
+        LIMIT ?2
+        "#,
+    )
+    .bind(after_id)
+    .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
+    .fetch_all(&mut *source_connection)
+    .await
+    .context("failed to preflight a bounded SQLite analytics baseline page")?;
+
+    for row in rows {
+        for (field, size) in [
+            ("invoke_id", Some(row.invoke_id_bytes)),
+            ("occurred_at", Some(row.occurred_at_bytes)),
+            ("source", Some(row.source_bytes)),
+            ("model", row.model_bytes),
+            ("status", row.status_bytes),
+            ("failure_kind", row.failure_kind_bytes),
+            ("failure_class", row.failure_class_bytes),
+        ] {
+            ensure_snapshot_source_field_size(
+                row.id,
+                field,
+                size,
+                ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES,
+            )?;
+        }
+        ensure_snapshot_source_field_size(
+            row.id,
+            "payload",
+            row.payload_bytes,
+            ANALYTICS_REPLICA_MAX_SOURCE_PAYLOAD_BYTES,
+        )?;
+    }
+    Ok(())
+}
+
 async fn load_source_invocation_snapshot_page(
     source_connection: &mut SqliteConnection,
     after_id: i64,
 ) -> Result<Vec<AnalyticsFact>> {
-    // Keep source pages bounded while retaining one character beyond the shared 256-character limit.
-    // NUL-bearing SQLite text must take the raw-text branch because SQLite text functions treat NUL
-    // as a terminator; Rust then removes NULs and applies the shared character bound.
-    let rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(
+    // Preflight bounds the raw values before SQLx materializes them. The raw row is then streamed
+    // one at a time so NUL-bearing text follows the same Rust normalization as incremental facts.
+    preflight_source_invocation_snapshot_page(source_connection, after_id).await?;
+
+    let mut rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(
         r#"
         SELECT
             id,
-            CASE WHEN instr(CAST(invoke_id AS BLOB), X'00') > 0
-                 THEN CAST(invoke_id AS TEXT)
-                 ELSE substr(invoke_id, 1, 257) END AS invoke_id,
-            CASE WHEN instr(CAST(occurred_at AS BLOB), X'00') > 0
-                 THEN CAST(occurred_at AS TEXT)
-                 ELSE substr(occurred_at, 1, 257) END AS occurred_at,
+            invoke_id,
+            occurred_at,
             CAST(COALESCE(ROUND((julianday(
                 occurred_at,
                 CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
             ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
             substr(occurred_at, 1, 10) AS stats_date,
-            CASE WHEN instr(CAST(source AS BLOB), X'00') > 0
-                 THEN CAST(source AS TEXT)
-                 ELSE substr(source, 1, 257) END AS source,
-            CASE WHEN instr(CAST(model AS BLOB), X'00') > 0
-                 THEN CAST(model AS TEXT)
-                 ELSE substr(model, 1, 257) END AS model,
+            source,
+            model,
             input_tokens,
             output_tokens,
             cache_input_tokens,
@@ -1098,45 +1178,11 @@ async fn load_source_invocation_snapshot_page(
             cost_cache_read,
             cost_output,
             cost_reasoning,
-            CASE WHEN instr(CAST(status AS BLOB), X'00') > 0
-                 THEN CAST(status AS TEXT)
-                 ELSE substr(status, 1, 257) END AS status,
-            CASE WHEN instr(CAST(failure_kind AS BLOB), X'00') > 0
-                 THEN CAST(failure_kind AS TEXT)
-                 ELSE substr(failure_kind, 1, 257) END AS failure_kind,
-            CASE WHEN instr(CAST(failure_class AS BLOB), X'00') > 0
-                 THEN CAST(failure_class AS TEXT)
-                 ELSE substr(failure_class, 1, 257) END AS failure_class,
+            status,
+            failure_kind,
+            failure_class,
             is_actionable,
-            CASE WHEN json_valid(payload) AND json_type(payload, '$.requestModel') = 'text'
-                 THEN CASE WHEN instr(CAST(json_extract(payload, '$.requestModel') AS BLOB), X'00') > 0
-                           THEN CAST(json_extract(payload, '$.requestModel') AS TEXT)
-                           ELSE substr(json_extract(payload, '$.requestModel'), 1, 257) END END
-                 AS request_model,
-            CASE WHEN json_valid(payload) AND json_type(payload, '$.responseModel') = 'text'
-                 THEN CASE WHEN instr(CAST(json_extract(payload, '$.responseModel') AS BLOB), X'00') > 0
-                           THEN CAST(json_extract(payload, '$.responseModel') AS TEXT)
-                           ELSE substr(json_extract(payload, '$.responseModel'), 1, 257) END END
-                 AS response_model,
-            CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text'
-                 THEN CASE WHEN instr(CAST(json_extract(payload, '$.reasoningEffort') AS BLOB), X'00') > 0
-                           THEN CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)
-                           ELSE substr(json_extract(payload, '$.reasoningEffort'), 1, 257) END END
-                 AS reasoning_effort,
-            CASE WHEN json_valid(payload)
-                      AND json_type(payload, '$.upstreamAccountId') IN ('integer', 'text')
-                 THEN CASE
-                     WHEN length(CAST(json_extract(payload, '$.upstreamAccountId') AS BLOB)) > 257
-                         OR instr(CAST(json_extract(payload, '$.upstreamAccountId') AS BLOB), X'00') > 0
-                         THEN char(0)
-                     ELSE substr(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT), 1, 257)
-                 END
-            END AS upstream_account_id,
-            CASE WHEN json_valid(payload) AND json_type(payload, '$.upstreamAccountName') = 'text'
-                 THEN CASE WHEN instr(CAST(json_extract(payload, '$.upstreamAccountName') AS BLOB), X'00') > 0
-                           THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)
-                           ELSE substr(json_extract(payload, '$.upstreamAccountName'), 1, 257) END END
-                 AS upstream_account_name,
+            payload,
             t_total_ms,
             t_req_read_ms,
             t_req_parse_ms,
@@ -1153,11 +1199,17 @@ async fn load_source_invocation_snapshot_page(
     )
     .bind(after_id)
     .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
-    .fetch_all(&mut *source_connection)
-    .await
-    .context("failed to load a bounded SQLite analytics baseline page")?;
+    .fetch(&mut *source_connection);
 
-    rows.into_iter().map(snapshot_row_to_fact).collect()
+    let mut facts = Vec::new();
+    while let Some(row) = rows
+        .try_next()
+        .await
+        .context("failed to stream a bounded SQLite analytics baseline page")?
+    {
+        facts.push(snapshot_row_to_fact(row)?);
+    }
+    Ok(facts)
 }
 
 async fn upsert_analytics_fact(
@@ -1642,7 +1694,7 @@ async fn bootstrap_replica(
     clear_replica_target(pool, source_before.state.generation).await?;
     if let Err(error) = snapshot_invocations_into_target(source_pool, pool).await {
         let detail = error.to_string();
-        let error_code = if detail.contains("oversized analytics replica fact") {
+        let error_code = if detail.contains("oversized analytics replica") {
             "oversized_fact"
         } else {
             "snapshot_failed"
@@ -2581,9 +2633,10 @@ mod tests {
             status: Some(" completed \0".to_string()),
             failure_kind: Some(" failure ".to_string()),
             failure_class: Some(" class ".to_string()),
-            request_model: Some("  request\0model  ".to_string()),
-            upstream_account_id: Some("42".to_string()),
-            upstream_account_name: Some("  account  ".to_string()),
+            payload: Some(
+                r#"{"requestModel":"  request\u0000model  ","upstreamAccountId":"42","upstreamAccountName":"  account  "}"#
+                    .to_string(),
+            ),
             ..Default::default()
         })
         .expect("snapshot row should normalize into a fact");
@@ -2601,12 +2654,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_page_sql_projection_preserves_nul_normalization_contract() {
+    async fn snapshot_page_uses_shared_rust_normalization_and_bounds_raw_text() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
-            .expect("connect snapshot SQL projection test database");
+            .expect("connect snapshot normalization test database");
         sqlx::query(
             r#"
             CREATE TABLE codex_invocations (
@@ -2644,7 +2697,7 @@ mod tests {
         )
         .execute(&pool)
         .await
-        .expect("create snapshot SQL projection table");
+        .expect("create snapshot normalization table");
         sqlx::query(
             "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model, payload) VALUES (1, ?1, ?2, ?3, CAST(X'6162006364' AS TEXT), ?4)",
         )
@@ -2654,19 +2707,54 @@ mod tests {
         .bind(r#"{"requestModel":"request\u0000model","upstreamAccountName":"account\u0000name","upstreamAccountId":"4\u00002"}"#)
         .execute(&pool)
         .await
-        .expect("insert NUL snapshot SQL projection row");
+            .expect("insert NUL snapshot normalization row");
 
         let mut connection = pool
             .acquire()
             .await
-            .expect("acquire snapshot SQL projection connection");
+            .expect("acquire snapshot normalization connection");
         let facts = load_source_invocation_snapshot_page(connection.as_mut(), 0)
             .await
-            .expect("load snapshot SQL projection row");
+            .expect("load snapshot normalization row");
         let fact = facts.into_iter().next().expect("snapshot fact");
         assert_eq!(fact.model.as_deref(), Some("abcd"));
         assert_eq!(fact.request_model.as_deref(), Some("requestmodel"));
         assert_eq!(fact.upstream_account_name.as_deref(), Some("accountname"));
         assert_eq!(fact.upstream_account_id, None);
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (2, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
+        )
+        .bind("x".repeat((ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES + 1) as usize))
+        .execute(connection.as_mut())
+        .await
+        .expect("insert oversized snapshot normalization row");
+        let error = load_source_invocation_snapshot_page(connection.as_mut(), 0)
+            .await
+            .expect_err("oversized raw source text must fail before materialization");
+        assert!(
+            error
+                .to_string()
+                .contains("oversized analytics replica source field model")
+        );
+    }
+
+    #[test]
+    fn snapshot_payload_uses_shared_json_duplicate_and_numeric_normalization() {
+        let fact = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 43,
+            invoke_id: "invoke-43".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            payload: Some(
+                r#"{"requestModel":"first","requestModel":"second","upstreamAccountId":"   42   "}"#
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+        .expect("snapshot payload should normalize through the shared JSON path");
+        assert_eq!(fact.request_model.as_deref(), Some("second"));
+        assert_eq!(fact.upstream_account_id, Some(42));
     }
 }
