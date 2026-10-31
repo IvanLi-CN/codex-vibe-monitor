@@ -11,6 +11,7 @@
 - OAuth live-candidate 之前只按会话或分组 scope 准备最终请求，遗漏了账号级绑定；现改为复用既有 `conversation > account > group` 代理继承契约，并保留 API-key 的 transit scope。
 - 刷新任务的互斥范围扩展到整个抓取与应用周期，并用受控慢源回归验证旧响应不能覆盖后续刷新结果；OAuth 回归同时覆盖过期 token 的账号级代理刷新。
 - 快照恢复进一步收紧为“全量规范化且全部可解析”才接受，避免损坏 JSON 中的单个非法节点被静默丢弃后形成不完整恢复；部分刷新继续保留既有手动 HTTP 响应契约，并将不完整结果记录为内部 `skipped` 任务。
+- 停机中断导致配置回滚时，旧设置与旧节点快照必须原子恢复；数据库回滚事务失败则保留最后提交的运行配置，避免 manager 与 SQLite 分裂。
 
 ## Key Reasons / Replacements
 

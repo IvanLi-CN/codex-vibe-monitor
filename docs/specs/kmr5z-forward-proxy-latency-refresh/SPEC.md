@@ -8,7 +8,7 @@
 - 订阅节点可能在后台周期刷新前发生变化，用户需要在设置页手动强制刷新订阅并立刻看到新增节点。
 - 单节点测速与批量测速需要渐进反馈，避免用户等待全部节点、全部轮次结束后才知道可用节点。
 
-## 目标 / 非目标
+### Goals and Non-goals
 
 ### Goals
 
@@ -24,7 +24,7 @@
 - 不做后台常驻巡检；测速只由用户点击触发。
 - 不把失败或超时样本折算成固定大延迟。
 
-## 范围（Scope）
+### Scope
 
 ### In scope
 
@@ -41,7 +41,7 @@
 
 ## Requirements
 
-### MUST
+### REQ-KMR5Z-001 Latency Feedback
 
 - `REQ-KMR5Z-LATENCY-TEST`: 节点测速 MUST 保持既有预算、目标可达性和渐进结果契约。
 - `REQ-KMR5Z-SUBSCRIPTION-RECOVERY`: 订阅节点快照 MUST 在匹配源配置时于启动恢复，并在完整刷新成功前保留上次成功结果。
@@ -52,22 +52,47 @@
 - 单节点测速最多执行 5 轮，每轮预算 5 秒，整体预算 15 秒。
 - 批量测试必须广度优先，不能让单个节点连续跑完 5 轮后才测试下一个节点。
 - 均值只使用成功样本，算法为 `round(sum(successLatencyMs) / successCount)`。
+
+### REQ-KMR5Z-002 Probe Health
+
 - 每轮测试包含出站 IP、OAuth `/models` 上游和 Codex `/responses` 上游三个目标；三个目标全部可达才算该轮健康。
 - 出站 IP 请求使用 `https://api.ipify.org?format=json`。
 - OAuth 上游请求使用 `GET {oauth_codex_upstream_base_url()}/models`。
 - Codex responses 上游请求使用 `GET {oauth_codex_upstream_base_url()}/responses`；`405`、`401`、`403`、`404` 和其他 `<500` HTTP 状态均视为 endpoint reachable，transport error、超时和 `>=500` 视为不可达。
 - 任一目标不可达时，节点进度必须报告异常目标与错误原因；成功延迟样本只能用于展示统计，不能把节点最终状态改成正常。
+
+### REQ-KMR5Z-003 Subscription Refresh
+
 - 手动刷新订阅必须强制绕过订阅刷新间隔。
 - 启动时必须优先恢复与当前订阅源配置匹配的上次成功节点快照，并在接收请求前同步这些节点的代理路由。
 - 订阅刷新只有在所有已配置来源都成功获取后才可替换节点快照；全部或部分来源失败时，保留上次成功节点。
 - 所有来源成功但解析结果为空时，必须立即清空活动节点和持久化快照。
 - 修改或删除订阅源时，必须清除旧配置对应的快照，不能在之后重新添加时复用旧节点。
 
-### SHOULD
+### REQ-KMR5Z-004 Restart Recovery
+
+- 启动时必须优先恢复与当前订阅源配置匹配的上次成功节点快照，并在接收请求前同步这些节点的代理路由。
+- 启动恢复快照时，若其订阅源列表与当前设置不一致，则忽略快照并继续使用当前手动代理配置。
+
+### REQ-KMR5Z-005 Refresh Result Semantics
+
+- 订阅刷新只有在所有已配置来源都成功获取后才可替换节点快照；全部或部分来源失败时，保留上次成功节点。
+- 所有来源成功但解析结果为空时，必须立即清空活动节点和持久化快照。
+
+### REQ-KMR5Z-006 Subscription Source Invalidation
+
+- 修改或删除订阅源时，必须清除旧配置对应的快照，不能在之后重新添加时复用旧节点。
+
+### REQ-KMR5Z-007 Interrupted Settings Rollback
+
+- 设置更新后的路由同步被停机中断且数据库回滚成功时，必须在同一事务中恢复旧设置与匹配的旧快照；若回滚事务失败，manager 必须保持与数据库中最后提交的设置一致并返回内部错误。
+
+### REQ-KMR5Z-008 Subscription Settings Presentation
+
+- 订阅刷新成功后，必须返回刷新后的节点设置与新增节点数量；Settings 页应使用该设置更新节点列表。
 
 - 延迟 badge 的 tooltip 应显示有效样本数、已完成轮次、出站 IP 状态、OAuth `/models` 状态、Codex `/responses` 状态和失败摘要。
 - 测速成功时应刷新出站 IP 元数据；OAuth 上游探测应写入 probe attempt。
-- 订阅刷新完成后 Settings 页应刷新节点列表。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
@@ -104,7 +129,7 @@
 
 - None
 
-## 验收标准（Acceptance Criteria）
+## Verification
 
 - Given Settings 页有多个 forward proxy 节点，When 用户点击“测试全部”，Then 每个节点先完成第 1 轮后才进入第 2 轮。
 - Given 某节点第 1 轮有有效耗时，When 该轮结束，Then UI 立即显示当前均值。
@@ -120,8 +145,6 @@
 - Given 所有订阅源均成功返回但解析结果为空，When 本轮刷新结束，Then 活动节点和持久化快照立即变为空。
 - Given 用户删除或修改订阅源，When 设置保存成功，Then 旧订阅源的节点快照被清除，不会因重新添加相同地址而恢复。
 
-## Verification
-
 ### VER-KMR5Z-BACKEND
 
 - Method: backend unit and integration regressions for latency probing, OAuth proxy precedence, subscription restart recovery, refresh retention, source invalidation, and schema compatibility.
@@ -132,25 +155,21 @@
 - Method: Settings page unit, Storybook, and build checks for latency and subscription refresh states.
 - covers: `REQ-KMR5Z-LATENCY-TEST`, `REQ-KMR5Z-REFRESH-CONTRACT`
 
-### Testing
+### VER-KMR5Z-002 Durable Subscription Recovery
 
-- Unit tests: 均值计算、全失败、部分失败、`/responses` 不可达异常判定、`405` 可达判定、预算裁剪、广度优先调度。
-- Integration tests: 订阅刷新强制执行、单节点测速写入 metadata/attempt。
-- E2E tests: 不适用。
+- Method: SQLite-backed restart, refresh, source invalidation, and interrupted-settings rollback regression tests.
+- covers: REQ-KMR5Z-004, REQ-KMR5Z-005, REQ-KMR5Z-006, REQ-KMR5Z-007
+- Pass condition: startup restores only a source-matched snapshot before requests; incomplete refresh retains the last success; successful empty refresh clears it; source changes invalidate it; shutdown rollback restores old settings and snapshot atomically or leaves runtime and database aligned with the last committed settings.
 
-### UI / Storybook
+### VER-KMR5Z-003 Repository Quality
 
-- Stories to add/update: Settings page forward proxy latency and subscription refresh states.
-- Docs pages / state galleries to add/update: 使用现有 SettingsPage story docs/autodocs。
-- `play` / interaction coverage to add/update: 点击延迟 badge 与刷新订阅。
-- Visual regression baseline changes: Settings 页 forward proxy 卡片。
+- Method: Rust formatting and focused Rust regression tests; web unit tests and build for Settings page changes.
+- covers: REQ-KMR5Z-001, REQ-KMR5Z-002, REQ-KMR5Z-003, REQ-KMR5Z-004, REQ-KMR5Z-005, REQ-KMR5Z-006, REQ-KMR5Z-007, REQ-KMR5Z-008
+- Pass condition: applicable formatting, backend, web unit, and web build checks pass.
 
-### Quality checks
+## Related ADRs
 
-- `cargo fmt --check`
-- `cargo test`
-- `cd web && bun run test`
-- `cd web && bun run build`
+None
 
 ## Visual Evidence
 
@@ -213,10 +232,6 @@
   evidence_note: 验证 Settings 页 forward proxy 移动卡片的窗口小格已按 `7 天 / 1 天 / 1 小时 / 15 分钟 / 1 分钟` 展示。
 
 ![Settings forward proxy mobile window order](./assets/settings-forward-proxy-window-order-mobile.png)
-
-## Related ADRs
-
-None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

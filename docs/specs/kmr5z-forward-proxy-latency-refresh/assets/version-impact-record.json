@@ -3,7 +3,7 @@
   "kind": "version-impact-record",
   "status": "candidate-evidence-pending-current-ci-review",
   "change": {
-    "description": "Restore persisted forward proxy subscription nodes on restart, retain the last complete result across failed refreshes, and repair OAuth account-level proxy precedence.",
+    "description": "Restore persisted forward proxy subscription nodes on restart, retain the last complete result across failed refreshes, atomically restore subscription state after interrupted settings updates, and repair OAuth account-level proxy precedence.",
     "release_unit_description": "Forward proxy subscription recovery and OAuth route precedence.",
     "affected_contracts": ["public-api", "persistent-state"]
   },

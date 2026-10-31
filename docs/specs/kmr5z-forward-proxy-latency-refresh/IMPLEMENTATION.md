@@ -22,6 +22,7 @@
 - SQLite 增量迁移为 `forward_proxy_settings` 增加快照列，并用触发器确保旧版本修改订阅源时同步清除快照。
 - OAuth live-candidate 路由现在复用 `conversation > account > group` 代理 scope 解析；账号显式代理列表继续是硬约束，API-key 透传 scope 保持原有语义。回归覆盖见 `tests::stateful_sqlite::oauth_route_support_and_binding`。
 - OAuth 过期 token 的刷新和最终 live send 由同一账号绑定代理承载，回归同时断言 token endpoint 只经账号节点、分组节点未被使用以及最终请求使用新 token。
+- 停机中断设置更新时，旧设置和对应的订阅节点快照在一个 SQLite 事务中恢复；若该事务失败，manager 保持与最后提交的数据库设置一致。
 
 ## Remaining Gaps
 
@@ -33,6 +34,8 @@
 - Current OAuth routing regression: `cargo test tests::stateful_sqlite::oauth_route_support_and_binding -- --nocapture --test-threads=1` passed (10 passed, 0 failed), including account precedence, conversation override, token refresh, final send, and local CONNECT observations.
 - Current Xray restart regression: `cargo test tests::lightweight::time_ranges_and_proxy_display::restarted_xray_subscription_snapshot_recreates_local_route -- --nocapture --test-threads=1` passed (1 passed, 0 failed).
 - Current source and documentation checks: `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, `git diff --check`, source-quality policy checks, JSON parsing for both migration records, and the Spec drift detector are required for candidate convergence.
+- Current subscription recovery regression also covers atomic settings rollback when shutdown interrupts route synchronization.
+- Current source and documentation checks: `cargo fmt --all -- --check`, `git diff --check`, dprint for this Spec set, JSON parsing for both migration records, and the Spec drift detector passed.
 - `cargo fmt --check`: passed
 - `cargo test manual_latency -- --test-threads=1`: passed
 - `cargo test`: passed
