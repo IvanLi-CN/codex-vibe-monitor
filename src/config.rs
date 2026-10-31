@@ -306,7 +306,11 @@ pub(crate) struct AnalyticsReplicaCliArgs {
 #[derive(Subcommand, Debug, Clone, Copy)]
 pub(crate) enum AnalyticsReplicaCommand {
     /// Rebuild the private replica from a consistent SQLite source snapshot.
-    Bootstrap,
+    Bootstrap {
+        /// Explicitly accept that pre-journal historical coverage cannot be proven.
+        #[arg(long, default_value_t = false)]
+        acknowledge_unverified_history: bool,
+    },
     /// Show durable replica and source-retention state.
     Status,
     /// Pause the replica worker and remove service eligibility.

@@ -374,6 +374,7 @@ struct SourceChangeState {
     capacity: i64,
     invalidation_pending: i64,
     historical_replay_required: i64,
+    historical_history_unknown: i64,
 }
 
 #[derive(Debug, Clone, Copy, FromRow)]
@@ -428,6 +429,7 @@ struct AnalyticsSourceStatus {
     capacity: i64,
     invalidation_pending: bool,
     historical_replay_required: bool,
+    historical_history_unknown: bool,
     coverage_generation: Option<i64>,
     covered_through_change_id: Option<i64>,
     coverage_revision_acknowledged: Option<i64>,
@@ -467,7 +469,11 @@ struct SourceInvocationSnapshotRow {
     failure_kind: Option<String>,
     failure_class: Option<String>,
     is_actionable: Option<i64>,
-    payload: Option<String>,
+    request_model: Option<String>,
+    response_model: Option<String>,
+    reasoning_effort: Option<String>,
+    upstream_account_id: Option<String>,
+    upstream_account_name: Option<String>,
     t_total_ms: Option<f64>,
     t_req_read_ms: Option<f64>,
     t_req_parse_ms: Option<f64>,
@@ -476,18 +482,6 @@ struct SourceInvocationSnapshotRow {
     t_upstream_stream_ms: Option<f64>,
     first_token_ms: Option<f64>,
     t_resp_parse_ms: Option<f64>,
-}
-
-fn snapshot_payload(payload: Option<&str>) -> Option<Value> {
-    crate::analytics_changes::normalize_analytics_payload(payload)
-}
-
-fn snapshot_text(payload: Option<&Value>, key: &str) -> Option<String> {
-    crate::analytics_changes::normalize_analytics_payload_text(payload, key)
-}
-
-fn snapshot_i64(payload: Option<&Value>, key: &str) -> Option<i64> {
-    crate::analytics_changes::normalize_analytics_payload_i64(payload, key)
 }
 
 fn snapshot_terminal(status: Option<&str>) -> bool {
@@ -509,7 +503,6 @@ fn snapshot_success_like(status: Option<&str>) -> bool {
 }
 
 fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFact> {
-    let payload = snapshot_payload(row.payload.as_deref());
     let status = crate::analytics_changes::normalize_analytics_text(row.status.as_deref());
     Ok(AnalyticsFact {
         fact_version: 1,
@@ -519,15 +512,29 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
             &row.invoke_id,
             "invoke_id",
         )?,
-        occurred_at: row.occurred_at,
+        occurred_at: crate::analytics_changes::normalize_analytics_required_text(
+            &row.occurred_at,
+            "occurred_at",
+        )?,
         occurred_at_epoch_ms: row.occurred_at_epoch_ms,
         stats_date: row.stats_date,
         model: crate::analytics_changes::normalize_analytics_text(row.model.as_deref()),
-        request_model: snapshot_text(payload.as_ref(), "requestModel"),
-        response_model: snapshot_text(payload.as_ref(), "responseModel"),
-        reasoning_effort: snapshot_text(payload.as_ref(), "reasoningEffort"),
-        upstream_account_id: snapshot_i64(payload.as_ref(), "upstreamAccountId"),
-        upstream_account_name: snapshot_text(payload.as_ref(), "upstreamAccountName"),
+        request_model: crate::analytics_changes::normalize_analytics_text(
+            row.request_model.as_deref(),
+        ),
+        response_model: crate::analytics_changes::normalize_analytics_text(
+            row.response_model.as_deref(),
+        ),
+        reasoning_effort: crate::analytics_changes::normalize_analytics_text(
+            row.reasoning_effort.as_deref(),
+        ),
+        upstream_account_id: row
+            .upstream_account_id
+            .as_deref()
+            .and_then(|value| value.trim().parse().ok()),
+        upstream_account_name: crate::analytics_changes::normalize_analytics_text(
+            row.upstream_account_name.as_deref(),
+        ),
         status: status.clone(),
         success_like: snapshot_success_like(status.as_deref()),
         terminal: snapshot_terminal(status.as_deref()),
@@ -602,6 +609,7 @@ fn source_coverage_reaches_checkpoint(
     source.state.generation == state.generation
         && source.state.invalidation_pending == 0
         && source.state.historical_replay_required == 0
+        && source.state.historical_history_unknown == 0
         && source.coverage.is_some_and(|coverage| {
             coverage.generation == state.generation
                 && coverage.covered_through_change_id == state.consumer_checkpoint
@@ -788,7 +796,7 @@ async fn load_source_context(
     let state = sqlx::query_as::<_, SourceChangeState>(
         r#"
         SELECT generation, coverage_revision, retained_from_change_id, capacity,
-               invalidation_pending, historical_replay_required
+               invalidation_pending, historical_replay_required, historical_history_unknown
         FROM analytics_change_state
         WHERE id = 1
         "#,
@@ -848,6 +856,7 @@ fn source_status(source: &SourceContext) -> AnalyticsSourceStatus {
         capacity: source.state.capacity,
         invalidation_pending: source.state.invalidation_pending != 0,
         historical_replay_required: source.state.historical_replay_required != 0,
+        historical_history_unknown: source.state.historical_history_unknown != 0,
         coverage_generation: source.coverage.map(|coverage| coverage.generation),
         covered_through_change_id: source
             .coverage
@@ -1054,19 +1063,20 @@ async fn load_source_invocation_snapshot_page(
     source_connection: &mut SqliteConnection,
     after_id: i64,
 ) -> Result<Vec<AnalyticsFact>> {
+    // Keep source pages bounded while retaining one character beyond the shared 256-character limit.
     let rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(
         r#"
         SELECT
             id,
-            invoke_id,
-            occurred_at,
+            substr(invoke_id, 1, 257) AS invoke_id,
+            substr(occurred_at, 1, 257) AS occurred_at,
             CAST(COALESCE(ROUND((julianday(
                 occurred_at,
                 CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
             ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
             substr(occurred_at, 1, 10) AS stats_date,
-            source,
-            model,
+            substr(source, 1, 257) AS source,
+            substr(model, 1, 257) AS model,
             input_tokens,
             output_tokens,
             cache_input_tokens,
@@ -1078,11 +1088,23 @@ async fn load_source_invocation_snapshot_page(
             cost_cache_read,
             cost_output,
             cost_reasoning,
-            status,
-            failure_kind,
-            failure_class,
+            substr(status, 1, 257) AS status,
+            substr(failure_kind, 1, 257) AS failure_kind,
+            substr(failure_class, 1, 257) AS failure_class,
             is_actionable,
-            payload,
+            CASE WHEN json_valid(payload) AND json_type(payload, '$.requestModel') = 'text'
+                 THEN substr(json_extract(payload, '$.requestModel'), 1, 257) END AS request_model,
+            CASE WHEN json_valid(payload) AND json_type(payload, '$.responseModel') = 'text'
+                 THEN substr(json_extract(payload, '$.responseModel'), 1, 257) END AS response_model,
+            CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text'
+                 THEN substr(json_extract(payload, '$.reasoningEffort'), 1, 257) END AS reasoning_effort,
+            CASE WHEN json_valid(payload)
+                      AND json_type(payload, '$.upstreamAccountId') IN ('integer', 'text')
+                 THEN substr(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT), 1, 257) END
+                 AS upstream_account_id,
+            CASE WHEN json_valid(payload) AND json_type(payload, '$.upstreamAccountName') = 'text'
+                 THEN substr(json_extract(payload, '$.upstreamAccountName'), 1, 257) END
+                 AS upstream_account_name,
             t_total_ms,
             t_req_read_ms,
             t_req_parse_ms,
@@ -1551,19 +1573,39 @@ async fn source_has_historical_invocation_archives(source_pool: &Pool<Sqlite>) -
     .map(|exists| exists != 0)
 }
 
+async fn acknowledge_unverified_legacy_history(source_pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "UPDATE analytics_change_state SET historical_history_unknown = 0, updated_at = datetime('now') WHERE id = 1 AND historical_history_unknown <> 0",
+    )
+    .execute(source_pool)
+    .await
+    .context("failed to acknowledge unverified legacy analytics history")?;
+    Ok(())
+}
+
 async fn bootstrap_replica(
     source_pool: &Pool<Sqlite>,
     pool: &sqlx::PgPool,
+    acknowledge_unverified_history: bool,
 ) -> Result<AnalyticsReplicaStatusReport> {
     execute_postgres_schema(pool).await?;
     verify_replica_schema(pool).await?;
-    let source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+    let mut source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     if source_before.state.historical_replay_required != 0
         || source_has_historical_invocation_archives(source_pool).await?
     {
         let detail = "SQLite historical invocation coverage requires archive replay before PostgreSQL analytics bootstrap can declare complete history";
         mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
         return Err(anyhow!(detail));
+    }
+    if source_before.state.historical_history_unknown != 0 {
+        if !acknowledge_unverified_history {
+            let detail = "SQLite historical coverage predates the analytics source journal and cannot be proven complete; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
+            mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
+            return Err(anyhow!(detail));
+        }
+        acknowledge_unverified_legacy_history(source_pool).await?;
+        source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     }
     clear_replica_target(pool, source_before.state.generation).await?;
     if let Err(error) = snapshot_invocations_into_target(source_pool, pool).await {
@@ -1656,6 +1698,11 @@ async fn resume_replica(
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
         if source.state.historical_replay_required != 0 {
             let detail = "SQLite historical invocation coverage requires archive replay before the analytics replica can advance";
+            mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
+            return Err(anyhow!(detail));
+        }
+        if source.state.historical_history_unknown != 0 {
+            let detail = "SQLite historical coverage predates the analytics source journal; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
             mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
             return Err(anyhow!(detail));
         }
@@ -1906,6 +1953,12 @@ async fn verify_replica(
             "source has historical invocation coverage that requires archive replay".to_string(),
         );
     }
+    if source.state.historical_history_unknown != 0 {
+        errors.push(
+            "source historical coverage predates the analytics source journal and is unverified"
+                .to_string(),
+        );
+    }
     match source.coverage {
         Some(coverage)
             if coverage.generation == state.generation
@@ -1951,8 +2004,15 @@ pub(crate) async fn pg_analytics_replica_control(
 ) -> Result<()> {
     let postgres = PgAnalyticsPool::connect_raw(config).await?;
     match command {
-        AnalyticsReplicaCommand::Bootstrap => {
-            let report = bootstrap_replica(source_pool, postgres.inner()).await?;
+        AnalyticsReplicaCommand::Bootstrap {
+            acknowledge_unverified_history,
+        } => {
+            let report = bootstrap_replica(
+                source_pool,
+                postgres.inner(),
+                acknowledge_unverified_history,
+            )
+            .await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         AnalyticsReplicaCommand::Status => {
@@ -2299,6 +2359,7 @@ mod tests {
                 capacity: 10_000,
                 invalidation_pending: 0,
                 historical_replay_required: 0,
+                historical_history_unknown: 0,
             },
             latest_change_id: 12,
             retained_bytes: 128,
@@ -2357,6 +2418,7 @@ mod tests {
                 capacity: 10_000,
                 invalidation_pending: 0,
                 historical_replay_required: 0,
+                historical_history_unknown: 0,
             },
             latest_change_id: 7,
             retained_bytes: 128,
@@ -2423,6 +2485,7 @@ mod tests {
                 capacity: 10_000,
                 invalidation_pending: 0,
                 historical_replay_required: 0,
+                historical_history_unknown: 0,
             },
             latest_change_id: 9,
             retained_bytes: 128,
@@ -2486,10 +2549,9 @@ mod tests {
             status: Some(" completed \0".to_string()),
             failure_kind: Some(" failure ".to_string()),
             failure_class: Some(" class ".to_string()),
-            payload: Some(
-                r#"{"requestModel":"  request\u0000model  ","upstreamAccountName":"  account  "}"#
-                    .to_string(),
-            ),
+            request_model: Some("  request\0model  ".to_string()),
+            upstream_account_id: Some("42".to_string()),
+            upstream_account_name: Some("  account  ".to_string()),
             ..Default::default()
         })
         .expect("snapshot row should normalize into a fact");
@@ -2499,6 +2561,7 @@ mod tests {
         assert_eq!(fact.invoke_id, "invoke-42");
         assert_eq!(fact.model.as_deref(), Some(expected_model.as_str()));
         assert_eq!(fact.request_model.as_deref(), Some("requestmodel"));
+        assert_eq!(fact.upstream_account_id, Some(42));
         assert_eq!(fact.upstream_account_name.as_deref(), Some("account"));
         assert_eq!(fact.status.as_deref(), Some("completed"));
         assert_eq!(fact.failure_kind.as_deref(), Some("failure"));

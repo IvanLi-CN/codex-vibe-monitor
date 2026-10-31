@@ -324,6 +324,14 @@ pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
                 continue;
             }
 
+            let mut tx = pool.begin().await.map_err(|error| {
+                anyhow::Error::new(crate::BackfillPartialFailure {
+                    source: error.into(),
+                    next_cursor_id: committed_cursor_id,
+                    scanned: committed_scanned,
+                    updated: committed_updated,
+                })
+            })?;
             let affected = sqlx::query(
                 r#"
                 UPDATE codex_invocations
@@ -349,7 +357,7 @@ pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
             .bind(&service_tier)
             .bind(candidate.id)
             .bind(should_mark_stream_backfill.then_some(SERVICE_TIER_STREAM_BACKFILL_VERSION))
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|error| {
                 anyhow::Error::new(crate::BackfillPartialFailure {
@@ -360,6 +368,29 @@ pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
                 })
             })?
             .rows_affected();
+            if affected > 0 {
+                crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                    tx.as_mut(),
+                    candidate.id,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow::Error::new(crate::BackfillPartialFailure {
+                        source: error,
+                        next_cursor_id: committed_cursor_id,
+                        scanned: committed_scanned,
+                        updated: committed_updated,
+                    })
+                })?;
+            }
+            tx.commit().await.map_err(|error| {
+                anyhow::Error::new(crate::BackfillPartialFailure {
+                    source: error.into(),
+                    next_cursor_id: committed_cursor_id,
+                    scanned: committed_scanned,
+                    updated: committed_updated,
+                })
+            })?;
             summary.updated += affected;
             committed_updated = summary.updated;
             committed_cursor_id = candidate.id;
@@ -792,6 +823,21 @@ pub(crate) async fn backfill_failure_classification_from_cursor(
             }
         }
         if !updated_ids.is_empty() {
+            for id in &updated_ids {
+                crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                    tx.as_mut(),
+                    *id,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow::Error::new(crate::BackfillPartialFailure {
+                        source: error,
+                        next_cursor_id: committed_cursor_id,
+                        scanned: committed_scanned,
+                        updated: committed_updated,
+                    })
+                })?;
+            }
             recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids)
                 .await
                 .map_err(|error| {
