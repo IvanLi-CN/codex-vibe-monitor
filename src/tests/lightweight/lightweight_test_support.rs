@@ -1,5 +1,4 @@
 use super::*;
-
 pub(crate) fn test_runtime_path(name: &str) -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
