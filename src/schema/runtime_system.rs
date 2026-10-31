@@ -326,6 +326,7 @@ pub(super) async fn ensure_runtime_system_schema(pool: &Pool<Sqlite>) -> Result<
             id INTEGER PRIMARY KEY CHECK (id = 1),
             proxy_urls_json TEXT NOT NULL DEFAULT '[]',
             subscription_urls_json TEXT NOT NULL DEFAULT '[]',
+            subscription_snapshot_json TEXT NOT NULL DEFAULT '{}',
             subscription_update_interval_secs INTEGER NOT NULL DEFAULT 3600,
             insert_direct INTEGER NOT NULL DEFAULT 1,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -335,6 +336,32 @@ pub(super) async fn ensure_runtime_system_schema(pool: &Pool<Sqlite>) -> Result<
     .execute(pool)
     .await
     .context("failed to ensure forward_proxy_settings table existence")?;
+
+    ensure_column_with_definition(
+        pool,
+        "forward_proxy_settings",
+        "subscription_snapshot_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
+    .await
+    .context("failed to ensure forward_proxy_settings.subscription_snapshot_json")?;
+
+    sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_forward_proxy_settings_clear_subscription_snapshot
+        AFTER UPDATE OF subscription_urls_json ON forward_proxy_settings
+        FOR EACH ROW
+        WHEN NEW.subscription_urls_json IS NOT OLD.subscription_urls_json
+        BEGIN
+            UPDATE forward_proxy_settings
+            SET subscription_snapshot_json = '{}'
+            WHERE id = NEW.id;
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure forward proxy subscription snapshot invalidation trigger")?;
 
     sqlx::query(
         r#"
