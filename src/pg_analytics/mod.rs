@@ -521,6 +521,28 @@ fn replica_service_eligible(state: &AnalyticsReplicaState) -> bool {
         && state.consumer_checkpoint == state.source_acknowledged_through
 }
 
+fn replica_service_eligible_for_latest_change(
+    state: &AnalyticsReplicaState,
+    latest_change_id: i64,
+) -> bool {
+    replica_service_eligible(state) && state.consumer_checkpoint == latest_change_id
+}
+
+fn replica_baseline_ready(state: &AnalyticsReplicaState) -> bool {
+    state.generation > 0
+        && state.baseline_generation == state.generation
+        && state.baseline_change_id <= state.consumer_checkpoint
+}
+
+fn pending_source_ack_range(state: &AnalyticsReplicaState) -> Option<(i64, i64)> {
+    (state.source_acknowledged_through < state.consumer_checkpoint).then(|| {
+        (
+            state.source_acknowledged_through.saturating_add(1),
+            state.consumer_checkpoint,
+        )
+    })
+}
+
 fn bounded_batch_end(encoded_sizes: &[usize], start: usize) -> Result<usize> {
     if start >= encoded_sizes.len() {
         return Ok(start);
@@ -1311,8 +1333,13 @@ async fn load_status_report(
         state = Some(load_replica_state(pool).await?);
     }
     let service_eligible = state
-        .as_ref()
-        .map(replica_service_eligible)
+        .as_mut()
+        .map(|current_state| {
+            let eligible =
+                replica_service_eligible_for_latest_change(current_state, source.latest_change_id);
+            current_state.service_eligible = eligible;
+            eligible
+        })
         .unwrap_or(false);
     Ok(AnalyticsReplicaStatusReport {
         schema_ready: all_relations_ready,
@@ -1411,6 +1438,14 @@ async fn resume_replica(
         state.status != "invalidated",
         "analytics replica generation is invalidated; run explicit bootstrap before resume"
     );
+    anyhow::ensure!(
+        state.status != "bootstrapping",
+        "analytics replica baseline is incomplete; run explicit bootstrap before resume"
+    );
+    anyhow::ensure!(
+        replica_baseline_ready(&state),
+        "analytics replica baseline is not established; run explicit bootstrap before resume"
+    );
     if state.status == "paused" {
         // A paused replica is resumed by the same bounded drain below.
     } else if state.status == "blocked"
@@ -1444,6 +1479,41 @@ async fn resume_replica(
             );
             mark_replica_invalidated(pool, detail.clone()).await?;
             return Err(anyhow!(detail));
+        }
+        if state.source_acknowledged_through > state.consumer_checkpoint {
+            let detail = format!(
+                "analytics replica source acknowledgement {} is ahead of target checkpoint {}",
+                state.source_acknowledged_through, state.consumer_checkpoint
+            );
+            mark_replica_blocked(pool, "state_inconsistent", detail.clone()).await?;
+            return Err(anyhow!(detail));
+        }
+        if state.consumer_checkpoint > source.latest_change_id {
+            let detail = format!(
+                "analytics replica target checkpoint {} is ahead of source latest change {}",
+                state.consumer_checkpoint, source.latest_change_id
+            );
+            mark_replica_blocked(pool, "state_inconsistent", detail.clone()).await?;
+            return Err(anyhow!(detail));
+        }
+        if let Some((from_change_id, through_change_id)) = pending_source_ack_range(&state) {
+            if let Err(error) =
+                acknowledge_source_batch(source_pool, &source, from_change_id, through_change_id)
+                    .await
+            {
+                let detail = error.to_string();
+                mark_replica_blocked(pool, "source_ack_failed", detail.clone()).await?;
+                return Err(anyhow!(detail));
+            }
+            set_replica_acknowledged(
+                pool,
+                through_change_id,
+                through_change_id >= source.latest_change_id,
+            )
+            .await
+            .context("failed to persist recovered analytics replica source acknowledgement")?;
+            state = load_replica_state(pool).await?;
+            continue;
         }
         let from_change_id = state.consumer_checkpoint.saturating_add(1);
         let rows = load_source_changes(source_pool, state.consumer_checkpoint).await?;
@@ -1531,6 +1601,23 @@ async fn pause_replica(
         state.status != "invalidated",
         "analytics replica generation is invalidated; run explicit bootstrap before pause"
     );
+    match state.status.as_str() {
+        "running" | "paused" | "caught_up" => {}
+        "bootstrapping" => {
+            bail!("analytics replica baseline is incomplete; run explicit bootstrap before pause")
+        }
+        "blocked" => {
+            bail!(
+                "analytics replica is blocked with {}; resume or run explicit bootstrap before pause",
+                state.last_error_code.as_deref().unwrap_or("unknown")
+            )
+        }
+        status => bail!("analytics replica cannot be paused from status {status}"),
+    }
+    anyhow::ensure!(
+        replica_baseline_ready(&state),
+        "analytics replica baseline is not established; run explicit bootstrap before pause"
+    );
     mark_replica_state(pool, "paused", false, None, None, "preparing").await?;
     load_status_report(pool, source_pool).await
 }
@@ -1544,6 +1631,12 @@ async fn verify_replica(
     let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     let mut errors = Vec::new();
     let lag_bytes = load_source_lag_bytes(source_pool, state.consumer_checkpoint).await?;
+    if state.status == "bootstrapping" {
+        errors.push("replica baseline is incomplete; run explicit bootstrap".to_string());
+    }
+    if !replica_baseline_ready(&state) {
+        errors.push("replica baseline state is not established".to_string());
+    }
     if state.status != "unbootstrapped"
         && (source_retention_exhausted(&state, &source)
             || unconsumed_source_bytes_exceed_retention_bound(lag_bytes))
@@ -1559,13 +1652,16 @@ async fn verify_replica(
     if state.status != "caught_up" {
         errors.push(format!("replica status is {}", state.status));
     }
-    if !state.service_eligible {
-        errors.push("replica is not service eligible".to_string());
-    }
     if state.consumer_checkpoint != state.source_acknowledged_through {
         errors.push(format!(
             "target checkpoint {} differs from source acknowledgement {}",
             state.consumer_checkpoint, state.source_acknowledged_through
+        ));
+    }
+    if state.consumer_checkpoint != source.latest_change_id {
+        errors.push(format!(
+            "target checkpoint {} differs from current source latest change {}",
+            state.consumer_checkpoint, source.latest_change_id
         ));
     }
     if source.state.invalidation_pending != 0 {
@@ -1584,11 +1680,19 @@ async fn verify_replica(
         )),
         None => errors.push("source acknowledgement row is missing".to_string()),
     }
+    let service_eligible =
+        replica_service_eligible_for_latest_change(&state, source.latest_change_id);
+    if !service_eligible {
+        errors.push("replica is not service eligible for the current source watermark".to_string());
+    }
     let report = AnalyticsReplicaStatusReport {
         schema_ready: true,
         replica_id: ANALYTICS_REPLICA_ID.to_string(),
-        service_eligible: replica_service_eligible(&state),
-        state: Some(state),
+        service_eligible,
+        state: Some(AnalyticsReplicaState {
+            service_eligible,
+            ..state
+        }),
         source: Some(source_status(&source)),
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1996,5 +2100,36 @@ mod tests {
         state.source_acknowledged_through = 7;
         state.service_eligible = true;
         assert!(replica_service_eligible(&state));
+        assert!(replica_service_eligible_for_latest_change(&state, 7));
+        assert!(!replica_service_eligible_for_latest_change(&state, 8));
+    }
+
+    #[test]
+    fn baseline_and_source_ack_recovery_ranges_are_explicit() {
+        let mut state = AnalyticsReplicaState {
+            replica_id: ANALYTICS_REPLICA_ID.to_string(),
+            status: "running".to_string(),
+            generation: 2,
+            baseline_generation: 2,
+            baseline_change_id: 4,
+            coverage_generation: 2,
+            coverage_revision: 9,
+            coverage_watermark: 7,
+            consumer_checkpoint: 7,
+            source_acknowledged_through: 4,
+            service_eligible: false,
+            last_error_code: None,
+            last_error_detail: None,
+            updated_at: String::new(),
+        };
+
+        assert!(replica_baseline_ready(&state));
+        assert_eq!(pending_source_ack_range(&state), Some((5, 7)));
+
+        state.baseline_generation = 1;
+        assert!(!replica_baseline_ready(&state));
+        state.baseline_generation = 2;
+        state.source_acknowledged_through = 7;
+        assert_eq!(pending_source_ack_range(&state), None);
     }
 }
