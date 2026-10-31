@@ -27,6 +27,9 @@ pub(crate) async fn load_parallel_work_projection_baseline_at(
     params: ParallelWorkStatsQuery,
     now: DateTime<Utc>,
 ) -> Result<ParallelWorkProjectionBaseline, ApiError> {
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return load_parallel_work_projection_baseline_at_postgres(state, params, now).await;
+    }
     let mut connection = state.pool.acquire().await?;
     load_parallel_work_projection_baseline_at_on_connection(state, params, now, &mut connection)
         .await
@@ -38,6 +41,9 @@ pub(crate) async fn load_parallel_work_projection_baseline_at_on_connection(
     now: DateTime<Utc>,
     connection: &mut SqliteConnection,
 ) -> Result<ParallelWorkProjectionBaseline, ApiError> {
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return load_parallel_work_projection_baseline_at_postgres(state, params, now).await;
+    }
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let upstream_account_id = params.upstream_account_id;
@@ -199,6 +205,222 @@ pub(crate) async fn load_parallel_work_projection_baseline_at_on_connection(
         conversations,
     )?;
 
+    Ok(ParallelWorkProjectionBaseline {
+        response: ParallelWorkStatsResponse {
+            current: current.clone(),
+            minute7d: current.clone(),
+            hour30d: current.clone(),
+            day_all: current,
+        },
+        bucket_keys,
+        active_minute_stats,
+    })
+}
+
+async fn query_parallel_work_key_sets_from_postgres(
+    state: &Arc<AppState>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<BTreeMap<i64, HashSet<String>>, ApiError> {
+    let rows = query_parallel_work_key_rows(
+        state.pg_analytics.as_ref(),
+        range_start,
+        range_end,
+        source_scope == InvocationSourceScope::ProxyOnly,
+        upstream_account_id,
+    )
+    .await
+    .map_err(AnalyticsReadError::into_api_error)?;
+    let mut bucket_keys = BTreeMap::<i64, HashSet<String>>::new();
+    for row in rows {
+        let occurred_at = Utc
+            .timestamp_millis_opt(row.occurred_at_epoch_ms)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid PostgreSQL parallel-work timestamp")))?;
+        let bucket_start_epoch =
+            align_reporting_bucket_epoch(occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
+        bucket_keys
+            .entry(bucket_start_epoch)
+            .or_default()
+            .insert(row.key_digest);
+    }
+    Ok(bucket_keys)
+}
+
+async fn query_parallel_work_conversations_from_postgres(
+    state: &Arc<AppState>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<Vec<ParallelWorkConversation>, ApiError> {
+    let rows = query_parallel_work_conversation_rows(
+        state.pg_analytics.as_ref(),
+        range_start,
+        range_end,
+        source_scope == InvocationSourceScope::ProxyOnly,
+        upstream_account_id,
+    )
+    .await
+    .map_err(AnalyticsReadError::into_api_error)?;
+    let mut conversations = Vec::with_capacity(rows.len());
+    for row in rows {
+        let first_occurred_at = Utc
+            .timestamp_millis_opt(row.first_occurred_at_epoch_ms)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid PostgreSQL conversation start")))?;
+        let last_occurred_at = Utc
+            .timestamp_millis_opt(row.last_occurred_at_epoch_ms)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid PostgreSQL conversation end")))?;
+        let start_epoch = align_reporting_bucket_epoch(
+            first_occurred_at.timestamp(),
+            bucket_seconds,
+            reporting_tz,
+        )?;
+        let end_bucket_epoch = align_reporting_bucket_epoch(
+            last_occurred_at.timestamp(),
+            bucket_seconds,
+            reporting_tz,
+        )?;
+        let end_epoch =
+            next_reporting_bucket_epoch(end_bucket_epoch, bucket_seconds, reporting_tz)?;
+        let start = Utc.timestamp_opt(start_epoch, 0).single().ok_or_else(|| {
+            ApiError::from(anyhow!("invalid PostgreSQL conversation start bucket"))
+        })?;
+        let end = Utc
+            .timestamp_opt(end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid PostgreSQL conversation end bucket")))?;
+        conversations.push(ParallelWorkConversation {
+            // PostgreSQL stores only the privacy-preserving digest, which is a stable opaque id.
+            conversation_id: row.key_digest,
+            start: format_utc_iso(start),
+            end: format_utc_iso(end),
+            request_count: row.request_count,
+        });
+    }
+    Ok(conversations)
+}
+
+async fn load_parallel_work_projection_baseline_at_postgres(
+    state: &Arc<AppState>,
+    params: ParallelWorkStatsQuery,
+    now: DateTime<Utc>,
+) -> Result<ParallelWorkProjectionBaseline, ApiError> {
+    let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let upstream_account_id = params.upstream_account_id;
+    let requested_range_window =
+        resolve_range_window_at(&params.range, requested_reporting_tz, now)?;
+    let bucket_params = TimeseriesQuery {
+        range: params.range.clone(),
+        bucket: params.bucket.clone(),
+        settlement_hour: None,
+        time_zone: params.time_zone.clone(),
+        upstream_account_id,
+    };
+    let bucket_selection = resolve_timeseries_bucket_selection(
+        &bucket_params,
+        &requested_range_window,
+        state.config.invocation_max_days,
+    )?;
+    let bucket_seconds = bucket_selection.bucket_seconds;
+    let (reporting_tz, time_zone_fallback) = if bucket_seconds >= 3_600 {
+        resolve_parallel_work_rollup_reporting_tz(requested_reporting_tz, &requested_range_window)
+    } else {
+        (requested_reporting_tz, false)
+    };
+    let range_window = if time_zone_fallback {
+        resolve_range_window_at(&params.range, reporting_tz, now)?
+    } else {
+        requested_range_window
+    };
+    let fill_start_epoch =
+        align_reporting_bucket_epoch(range_window.start.timestamp(), bucket_seconds, reporting_tz)?;
+    let fill_end_epoch =
+        resolve_timeseries_fill_end_epoch(range_window.end, bucket_seconds, reporting_tz)?;
+    let fill_start = Utc
+        .timestamp_opt(fill_start_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work PG fill start epoch")))?;
+    let fill_end = Utc
+        .timestamp_opt(fill_end_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work PG fill end epoch")))?;
+
+    let bucket_keys = query_parallel_work_key_sets_from_postgres(
+        state,
+        range_window.start,
+        range_window.end,
+        bucket_seconds,
+        reporting_tz,
+        source_scope,
+        upstream_account_id,
+    )
+    .await?;
+    let current_counts = bucket_keys
+        .iter()
+        .map(|(bucket_start_epoch, keys)| (*bucket_start_epoch, keys.len() as i64))
+        .collect::<BTreeMap<_, _>>();
+    let conversations = if range_window.duration <= ChronoDuration::hours(24) {
+        query_parallel_work_conversations_from_postgres(
+            state,
+            range_window.start,
+            range_window.end,
+            bucket_seconds,
+            reporting_tz,
+            source_scope,
+            upstream_account_id,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+
+    let complete_start_epoch = first_complete_minute_epoch(range_window.start);
+    let complete_end_epoch = end_of_complete_minutes_epoch(range_window.end);
+    let active_minute_stats = if complete_start_epoch >= complete_end_epoch {
+        ParallelWorkActiveMinuteStats::empty_available()
+    } else {
+        let complete_start = Utc
+            .timestamp_opt(complete_start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work PG minute start")))?;
+        let complete_end = Utc
+            .timestamp_opt(complete_end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work PG minute end")))?;
+        ParallelWorkActiveMinuteStats::from_key_sets(
+            query_parallel_work_key_sets_from_postgres(
+                state,
+                complete_start,
+                complete_end,
+                60,
+                chrono_tz::UTC,
+                source_scope,
+                upstream_account_id,
+            )
+            .await?,
+        )
+    };
+    let current = build_parallel_work_window_response(
+        fill_start,
+        fill_end,
+        bucket_seconds,
+        reporting_tz,
+        &current_counts,
+        active_minute_stats,
+        reporting_tz,
+        time_zone_fallback,
+        conversations,
+    )?;
     Ok(ParallelWorkProjectionBaseline {
         response: ParallelWorkStatsResponse {
             current: current.clone(),

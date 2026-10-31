@@ -142,6 +142,39 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
         .map_err(Into::into)
 }
 
+pub(crate) async fn load_window_actual_usage_rows_from_analytics(
+    runtime: &PgAnalyticsRuntime,
+    account_ids: &[i64],
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+) -> AnalyticsReadResult<Vec<AccountWindowUsageRow>> {
+    query_account_window_usage(runtime, account_ids, start_at, end_at)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let occurred_at = Utc
+                .timestamp_millis_opt(row.occurred_at_epoch_ms)
+                .single()
+                .ok_or_else(|| {
+                    AnalyticsReadError::Internal(anyhow!(
+                        "invalid PostgreSQL analytics occurred_at_epoch_ms for source row {}",
+                        row.source_row_id
+                    ))
+                })?;
+            Ok(AccountWindowUsageRow {
+                id: row.source_row_id,
+                occurred_at: format_naive(occurred_at.with_timezone(&Shanghai).naive_local()),
+                upstream_account_id: row.upstream_account_id,
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cache_input_tokens: row.cache_input_tokens,
+                total_tokens: row.total_tokens,
+                cost: row.cost,
+            })
+        })
+        .collect()
+}
+
 pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],

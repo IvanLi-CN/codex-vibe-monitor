@@ -4208,6 +4208,19 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
     if account_ids.is_empty() {
         return Ok(());
     }
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        let rows = load_window_actual_usage_rows_from_analytics(
+            state.pg_analytics.as_ref(),
+            &account_ids,
+            query_start,
+            query_end,
+        )
+        .await
+        .map_err(|error| anyhow!(error))?;
+        let usage = fold_account_window_usage_rows(rows, &plans);
+        apply_window_actual_usage_to_summaries(items, &usage);
+        return Ok(());
+    }
     let has_live_invocations = sqlite_table_exists(&state.pool, "codex_invocations").await?;
     let has_minute_stats_rollups =
         sqlite_table_exists(&state.pool, "upstream_account_stats_minute").await?;
