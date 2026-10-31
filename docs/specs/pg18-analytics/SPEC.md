@@ -6,7 +6,7 @@
 
 - Context: 长期统计需要一个可以独立预置、校验和逐步承接查询的 PostgreSQL analytics 边界，同时不能改变现有 SQLite 状态读取、TerminalJournal、Summary freshness 或 retention 语义。
 - In scope: 后端选择配置、连接串脱敏、有界连接池、schema/只读事务校验、规范化 analytics fact、rollup 和 query interface，以及 unavailable 语义。
-- Out of scope: 业务写入迁移、历史数据复制/回填实现、SQLite schema 修改、自动 schema 部署、生产部署、前端切换和压力/吞吐性能结论。
+- Out of scope: 业务写入迁移、自动历史数据复制/回填、SQLite schema 修改、自动 schema 部署、生产部署、前端切换和压力/吞吐性能结论。显式、有界的 PostgreSQL replica bootstrap 重建属于兼容性合同的一部分。
 
 ## Terms and Interfaces
 
@@ -47,6 +47,14 @@
 - The optional PostgreSQL foundation MUST preserve existing SQLite long-term stats, TerminalJournal, Summary freshness, retention, raw-safety, and unavailable contracts.
 - No existing SQLite table or business write path may depend on PostgreSQL availability for this foundation.
 
+### REQ-PG18-006
+
+- The PostgreSQL analytics replica state MUST persist `fact_date_semantics_version`; a fresh schema MUST initialize the current version as `2`, while a schema missing the compatibility column MUST fail closed until an explicit bootstrap provisions it and rebuilds the bounded target snapshot.
+- Replica service eligibility MUST require the current fact-date semantics version, a completed baseline, and matching target/source checkpoints. Legacy fact rows MUST NOT become service eligible under the corrected semantics without an explicit bootstrap rebuild.
+- Explicit bootstrap MUST clear target facts, applied-change state, parallel-work keys, and the target checkpoint before rebuilding with the current fact-date semantics. The rebuild MUST be serialized by a PostgreSQL session advisory lock held on the same connection as the target writes, including when the configured pool has one connection, and MUST release that connection before the final status report.
+- Legacy-semantics invalidation MUST compare the observed semantic version, status, source generation, and checkpoint before writing invalidated state, then reload the current state. It MUST NOT overwrite a state that has advanced through bootstrap or another compatible transition.
+- `AnalyticsFactV1` identity and journal event version `1` MUST remain unchanged. This compatibility contract MUST NOT perform automatic historical backfill or alter Summary All, public query responses, or direct rollups.
+
 ## Verification
 
 ### VER-PG18-001
@@ -78,6 +86,12 @@
 - Method: existing backend compile and targeted compatibility tests with analytics disabled.
 - covers: `REQ-PG18-005`
 - Pass condition: the existing SQLite state construction and long-term code compile and targeted checks pass with `PgAnalyticsRuntime::disabled()`.
+
+### VER-PG18-006
+
+- Method: deterministic PostgreSQL schema SQL, catalog-inspection, state-eligibility, compare-and-swap, advisory-lock, and bounded fact-ingestion contract checks.
+- covers: `REQ-PG18-006`
+- Pass condition: version `2` is required for eligibility; missing/legacy state fails closed; explicit bootstrap cleanup and checkpoint reset are represented; catalog inspection is compatible with the least-privilege role; bootstrap serialization and single-connection release are explicit; stale invalidation cannot overwrite advanced state; fact and journal version `1` identity remains unchanged; no automatic historical backfill or query/rollup surface changes are introduced.
 
 ## Related ADRs
 

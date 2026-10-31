@@ -767,7 +767,10 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
                 occurred_at,
                 CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
             ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
-            substr(occurred_at, 1, 10) AS stats_date,
+            date(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+8 hours' ELSE '+0 hours' END
+            ) AS stats_date,
             source,
             model,
             input_tokens,
@@ -1339,6 +1342,73 @@ mod tests {
             .expect("count change rows");
         assert_eq!(source_count, 0);
         assert_eq!(event_count, 0);
+    }
+
+    #[tokio::test]
+    async fn invocation_upsert_uses_asia_shanghai_fact_date_at_utc_boundary() {
+        let pool = test_pool().await;
+        for (invoke_id, occurred_at, expected_stats_date) in [
+            (
+                "fact-date-before-boundary",
+                "2026-10-30T15:59:59Z",
+                "2026-10-30",
+            ),
+            (
+                "fact-date-at-boundary",
+                "2026-10-30T16:00:00Z",
+                "2026-10-31",
+            ),
+            (
+                "fact-date-naive-shanghai",
+                "2026-10-31 00:00:00",
+                "2026-10-31",
+            ),
+        ] {
+            let row_id = sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, raw_response) VALUES (?1, ?2, 'proxy', 'success', '{}')",
+            )
+            .bind(invoke_id)
+            .bind(occurred_at)
+            .execute(&pool)
+            .await
+            .expect("insert fact-date boundary invocation")
+            .last_insert_rowid();
+
+            let mut tx = pool
+                .begin()
+                .await
+                .expect("begin fact-date boundary transaction");
+            append_invocation_upsert_for_row_tx(tx.as_mut(), row_id)
+                .await
+                .expect("append fact-date boundary invocation event");
+            tx.commit()
+                .await
+                .expect("commit fact-date boundary transaction");
+
+            let (event_kind, entity_kind, entity_key, event_occurred_at, fact_json): (
+                String,
+                String,
+                String,
+                String,
+                String,
+            ) = sqlx::query_as(
+                "SELECT event_kind, entity_kind, entity_key, occurred_at, fact_json FROM analytics_change_events WHERE source_row_id = ?1",
+            )
+            .bind(row_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load fact-date boundary invocation event");
+            assert_eq!(event_kind, "upsert");
+            assert_eq!(entity_kind, "invocation");
+            assert_eq!(entity_key, format!("invocation:proxy:{row_id}"));
+            assert_eq!(event_occurred_at, occurred_at);
+
+            let fact: Value =
+                serde_json::from_str(&fact_json).expect("parse fact-date boundary invocation fact");
+            assert_eq!(fact["factVersion"], 1);
+            assert_eq!(fact["sourceRowId"], row_id);
+            assert_eq!(fact["statsDate"], expected_stats_date);
+        }
     }
 
     #[tokio::test]
