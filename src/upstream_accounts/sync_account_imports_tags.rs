@@ -485,6 +485,19 @@ async fn record_usage_refresh_failure(
         http_status,
     )
     .await?;
+    if http_status
+        .is_some_and(|status| matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN))
+    {
+        schedule_upstream_account_refresh_retry(
+            &state.pool,
+            row.id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
+            "access_token_rejected",
+            "额度接口拒绝当前 Access Token，下一轮独立凭据刷新将重试。",
+        )
+        .await?;
+    }
     Ok(OAuthUsageRefreshOutcome::Failed {
         error: error_message.to_string(),
         http_status,
@@ -565,7 +578,10 @@ async fn refresh_oauth_credentials_with_source(
             StoredCredentials::ApiKey(_) => None,
         })
         .or_else(|| row.token_expires_at.as_deref().and_then(parse_rfc3339_utc));
+    let access_token_rejected =
+        credential_status.error_code.as_deref() == Some("access_token_rejected");
     let refresh_due = force
+        || access_token_rejected
         || if let Some(expires) = token_expiry {
             expires
                 <= now
@@ -1253,7 +1269,7 @@ pub(crate) async fn sync_oauth_account(
         }
         OAuthUsageRefreshOutcome::Partial {
             snapshot,
-            proxy_snapshot,
+            proxy_snapshot: _,
         } => {
             if credential_reauth_required {
                 set_account_status(
@@ -1300,34 +1316,27 @@ pub(crate) async fn sync_oauth_account(
                     .await?;
                 }
             } else {
-                mark_account_sync_success_with_proxy_snapshot(
-                    &state.pool,
-                    row.id,
-                    sync_source,
-                    if should_clear_route_failure_state_after_sync_success(&latest_row) {
-                        SyncSuccessRouteState::ClearFailureState
-                    } else {
-                        SyncSuccessRouteState::PreserveFailureState
-                    },
-                    proxy_snapshot.as_ref(),
-                )
-                .await?;
+                set_account_status(&state.pool, row.id, deferred_status, None).await?;
             }
         }
         OAuthUsageRefreshOutcome::Failed {
             error,
+            http_status,
             proxy_snapshot,
-            ..
         } => {
             let latest_row = load_upstream_account_row(&state.pool, row.id)
                 .await?
                 .ok_or_else(|| anyhow!("account disappeared after usage refresh failure"))?;
+            let classified_error = http_status
+                .filter(|status| !error.contains(&format!("HTTP {}", status.as_u16())))
+                .map(|status| format!("上游返回 HTTP {}: {error}", status.as_u16()))
+                .unwrap_or(error);
             record_classified_account_sync_failure_with_proxy_snapshot(
                 &state.pool,
                 &latest_row,
                 deferred_status,
                 sync_source,
-                &error,
+                &classified_error,
                 proxy_snapshot.as_ref(),
             )
             .await?;
@@ -1480,6 +1489,25 @@ pub(crate) async fn persist_usage_snapshot(
     retention_days: u64,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let latest = load_latest_usage_sample(pool, account_id).await?;
+    let primary = snapshot.primary.clone().or_else(|| {
+        latest.as_ref().and_then(|sample| {
+            Some(NormalizedUsageWindow {
+                used_percent: sample.primary_used_percent?,
+                window_duration_mins: sample.primary_window_minutes?,
+                resets_at: sample.primary_resets_at.clone(),
+            })
+        })
+    });
+    let secondary = snapshot.secondary.clone().or_else(|| {
+        latest.as_ref().and_then(|sample| {
+            Some(NormalizedUsageWindow {
+                used_percent: sample.secondary_used_percent?,
+                window_duration_mins: sample.secondary_window_minutes?,
+                resets_at: sample.secondary_resets_at.clone(),
+            })
+        })
+    });
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_limit_samples (
@@ -1500,32 +1528,12 @@ pub(crate) async fn persist_usage_snapshot(
             .clone()
             .or_else(|| effective_plan_type.map(str::to_string)),
     )
-    .bind(snapshot.primary.as_ref().map(|value| value.used_percent))
-    .bind(
-        snapshot
-            .primary
-            .as_ref()
-            .map(|value| value.window_duration_mins),
-    )
-    .bind(
-        snapshot
-            .primary
-            .as_ref()
-            .and_then(|value| value.resets_at.clone()),
-    )
-    .bind(snapshot.secondary.as_ref().map(|value| value.used_percent))
-    .bind(
-        snapshot
-            .secondary
-            .as_ref()
-            .map(|value| value.window_duration_mins),
-    )
-    .bind(
-        snapshot
-            .secondary
-            .as_ref()
-            .and_then(|value| value.resets_at.clone()),
-    )
+    .bind(primary.as_ref().map(|value| value.used_percent))
+    .bind(primary.as_ref().map(|value| value.window_duration_mins))
+    .bind(primary.as_ref().and_then(|value| value.resets_at.clone()))
+    .bind(secondary.as_ref().map(|value| value.used_percent))
+    .bind(secondary.as_ref().map(|value| value.window_duration_mins))
+    .bind(secondary.as_ref().and_then(|value| value.resets_at.clone()))
     .bind(
         snapshot
             .credits

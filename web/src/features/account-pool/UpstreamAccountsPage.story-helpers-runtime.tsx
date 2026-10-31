@@ -514,6 +514,7 @@ export function StorybookUpstreamAccountsMock({
         const proxyKeyFilter = parsedUrl.searchParams.get("proxyKey")?.trim().toLowerCase() || "";
         const resultFilter = parsedUrl.searchParams.get("result")?.trim().toLowerCase() || "";
         const kindFilter = parsedUrl.searchParams.get("kind")?.trim() || "";
+        const actionFilter = parsedUrl.searchParams.get("action")?.trim() || "";
         const rawPageSize = Number(parsedUrl.searchParams.get("pageSize") || 20);
         const requestedPageSize =
           Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20;
@@ -529,6 +530,7 @@ export function StorybookUpstreamAccountsMock({
             return false;
           if (proxyKeyFilter && !proxyText.includes(proxyKeyFilter)) return false;
           if (resultFilter && (event.result ?? "").toLowerCase() !== resultFilter) return false;
+          if (actionFilter && event.action !== actionFilter) return false;
           if (kindFilter) {
             const account = store.accounts.find(
               (candidate) => candidate.displayName === event.accountDisplayName,
@@ -980,6 +982,53 @@ export function StorybookUpstreamAccountsMock({
         };
         store.sessions[session.loginId] = session;
         return jsonResponse(clone(session), 201);
+      }
+
+      const credentialRefreshMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/credentials\/refresh$/,
+      );
+      if (credentialRefreshMatch && method === "POST") {
+        const accountId = Number(credentialRefreshMatch[1]);
+        const detail = store.details[accountId];
+        if (!detail) return jsonResponse({ message: "missing mock account" }, 404);
+        if (detail.kind !== "oauth_codex") {
+          return jsonResponse({ message: "OAuth account not found" }, 404);
+        }
+        const updated = {
+          ...detail,
+          lastRefreshedAt: now,
+          lastError: null,
+          lastErrorAt: null,
+        };
+        store.details[accountId] = updated;
+        store.accounts = store.accounts.map((item) =>
+          item.id === accountId ? toSummary(updated) : item,
+        );
+        return jsonResponse(clone(updated));
+      }
+
+      const usageRefreshMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/usage\/refresh$/,
+      );
+      if (usageRefreshMatch && method === "POST") {
+        const accountId = Number(usageRefreshMatch[1]);
+        const detail = store.details[accountId];
+        if (!detail) return jsonResponse({ message: "missing mock account" }, 404);
+        if (detail.kind !== "oauth_codex") {
+          return jsonResponse({ message: "OAuth account not found" }, 404);
+        }
+        const updated = {
+          ...syncLocalWindows(detail),
+          lastSyncedAt: now,
+          lastSuccessfulSyncAt: now,
+          lastError: null,
+          lastErrorAt: null,
+        };
+        store.details[accountId] = updated;
+        store.accounts = store.accounts.map((item) =>
+          item.id === accountId ? toSummary(updated) : item,
+        );
+        return jsonResponse(clone(updated));
       }
 
       const syncMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sync$/);

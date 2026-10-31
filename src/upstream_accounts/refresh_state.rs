@@ -275,13 +275,60 @@ pub(crate) async fn defer_upstream_account_refresh_attempt(
     Ok(())
 }
 
+pub(crate) async fn schedule_upstream_account_refresh_retry(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    source: &str,
+    error_code: &str,
+    error_message: &str,
+) -> Result<()> {
+    let previous = load_refresh_state_row(pool, account_id, operation).await?;
+    if previous
+        .as_ref()
+        .is_some_and(|state| state.state == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH)
+    {
+        return Ok(());
+    }
+    let now = format_utc_iso(Utc::now());
+    info!(
+        account_id,
+        operation, source, error_code, "upstream account refresh retry scheduled"
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_refresh_state (
+            account_id, operation, state, next_attempt_at,
+            source, error_code, error_message, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?4)
+        ON CONFLICT(account_id, operation) DO UPDATE SET
+            state = excluded.state,
+            next_attempt_at = excluded.next_attempt_at,
+            source = excluded.source,
+            error_code = excluded.error_code,
+            error_message = excluded.error_message,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(account_id)
+    .bind(operation)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING)
+    .bind(&now)
+    .bind(source)
+    .bind(error_code)
+    .bind(error_message)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn record_upstream_account_refresh_failure(
     pool: &Pool<Sqlite>,
     account_id: i64,
     operation: &str,
     source: &str,
-    error: &str,
+    _error: &str,
     error_code: &str,
     error_message: &str,
     partial: bool,
@@ -289,10 +336,10 @@ pub(crate) async fn record_upstream_account_refresh_failure(
 ) -> Result<()> {
     let previous = load_refresh_state_row(pool, account_id, operation).await?;
     let is_reauth = operation == UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS
-        && (matches!(
+        && matches!(
             error_code,
             "refresh_token_invalid" | "refresh_token_missing" | "reauth_required"
-        ) || is_reauth_error(&anyhow!("{error}")));
+        );
     let state = if is_reauth {
         UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
     } else if partial {
@@ -395,11 +442,13 @@ pub(crate) async fn record_upstream_account_refresh_failure(
 
 pub(crate) fn classify_refresh_error(error: &str, operation: &str) -> (String, String) {
     let lower = error.to_ascii_lowercase();
+    let refresh_token_context = lower.contains("refresh token") || lower.contains("refresh_token");
     if lower.contains("invalid_grant")
         || (operation == UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS
-            && (lower.contains("revoked")
-                || lower.contains("expired")
-                || lower.contains("refresh token") && lower.contains("invalid")))
+            && refresh_token_context
+            && (lower.contains("invalid")
+                || lower.contains("revoked")
+                || lower.contains("expired")))
     {
         return (
             "refresh_token_invalid".to_string(),

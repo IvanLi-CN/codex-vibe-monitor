@@ -6135,11 +6135,13 @@ export async function handleDemoRequest(request: Request) {
     const group = url.searchParams.get("group")?.toLowerCase();
     const proxyKey = url.searchParams.get("proxyKey");
     const result = url.searchParams.get("result");
+    const action = url.searchParams.get("action");
     if (account)
       items = items.filter((item) => item.accountDisplayName?.toLowerCase().includes(account));
     if (group) items = items.filter((item) => item.accountGroupName?.toLowerCase().includes(group));
     if (proxyKey) items = items.filter((item) => item.forwardProxyKey === proxyKey);
     if (result) items = items.filter((item) => item.result === result);
+    if (action) items = items.filter((item) => item.action === action);
     if (kind) {
       const accountIds = new Set(
         demoAccounts()
@@ -6339,6 +6341,14 @@ export async function handleDemoRequest(request: Request) {
       return json(demoModel.updateSettings(pathname, body));
     if (pathname === "/api/pool/upstream-accounts")
       return json(demoModel.createAccount(), { status: 201 });
+    const syncMatch = pathname.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sync$/);
+    if (syncMatch) {
+      const accountId = Number(syncMatch[1]);
+      const account = demoAccounts().find((item) => item.id === accountId);
+      if (!account) return json({ error: "Upstream account not found" }, { status: 404 });
+      demoModel.record(`模拟同步账号 ${accountId}`);
+      return json(demoUpstreamAccountDetail(account));
+    }
     const credentialRefreshMatch = pathname.match(
       /^\/api\/pool\/upstream-accounts\/(\d+)\/credentials\/refresh$/,
     );

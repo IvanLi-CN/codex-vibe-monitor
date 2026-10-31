@@ -109,6 +109,7 @@ pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL: &str = "sync_manual
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE: &str = "sync_maintenance";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_POST_CREATE: &str = "sync_post_create";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT: &str = "oauth_import";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK: &str = "oauth_callback";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_CREDENTIAL_REFRESH: &str = "credential_refresh";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH: &str =

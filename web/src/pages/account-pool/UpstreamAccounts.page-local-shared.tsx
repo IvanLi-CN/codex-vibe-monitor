@@ -1130,6 +1130,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     selectAccount,
     loadDetail,
     saveAccount,
+    runSync,
     runCredentialRefresh,
     runUsageRefresh,
     removeAccount,
@@ -2691,7 +2692,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         return { ...current, accountActions: nextActions };
       });
       try {
-        await runUsageRefresh(source.id);
+        await (source.kind === "oauth_codex" ? runUsageRefresh(source.id) : runSync(source.id));
       } catch (err) {
         if (handleNotFoundClose(source.id, err)) return;
         setActionError((current) => ({
@@ -2709,7 +2710,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         });
       }
     },
-    [busyAction, handleNotFoundClose, runUsageRefresh],
+    [busyAction, handleNotFoundClose, runSync, runUsageRefresh],
   );
 
   const handleCredentialRefresh = useCallback(
@@ -2970,6 +2971,21 @@ function SharedUpstreamAccountDetailDrawerInner({
                         <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />
                       )}
                       {t("accountPool.upstreamAccounts.actions.relogin")}
+                    </Button>
+                  ) : null}
+                  {selected.kind === "api_key_codex" ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void handleSync(selected)}
+                      disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
+                    >
+                      {isBusyAction(busyAction, "sync", selected.id) ? (
+                        <Spinner size="sm" className="mr-2" />
+                      ) : (
+                        <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
+                      )}
+                      {t("accountPool.upstreamAccounts.actions.syncNow")}
                     </Button>
                   ) : null}
                   {isCompactViewport ? (

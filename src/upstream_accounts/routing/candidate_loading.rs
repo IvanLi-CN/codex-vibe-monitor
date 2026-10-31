@@ -712,6 +712,12 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                 bail!("unexpected credential kind for OAuth account")
             };
             let access_token_expired = parse_access_token_expiry(&latest_value.access_token)
+                .or_else(|| {
+                    latest_row
+                        .token_expires_at
+                        .as_deref()
+                        .and_then(parse_rfc3339_utc)
+                })
                 .map(|expires_at| expires_at <= Utc::now())
                 .unwrap_or(true);
             let refresh_retry_pending = matches!(
@@ -721,7 +727,9 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                     | UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL
                     | UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR
             );
-            if refresh_retry_pending && access_token_expired {
+            let access_token_rejected =
+                credential_status.error_code.as_deref() == Some("access_token_rejected");
+            if access_token_rejected || (refresh_retry_pending && access_token_expired) {
                 return Ok(None);
             }
             let value = latest_value;
@@ -913,6 +921,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_used_percent IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_used_percent,
@@ -920,6 +929,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.secondary_window_minutes
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_window_minutes IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_window_minutes,
@@ -927,6 +937,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.secondary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_resets_at IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_resets_at,
@@ -934,6 +945,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_used_percent IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_used_percent,
@@ -941,6 +953,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.primary_window_minutes
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_window_minutes IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_window_minutes,
@@ -948,6 +961,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.primary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_resets_at IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_resets_at,
@@ -1034,6 +1048,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_used_percent IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_used_percent,
@@ -1041,6 +1056,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.secondary_window_minutes
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_window_minutes IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_window_minutes,
@@ -1048,6 +1064,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.secondary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.secondary_resets_at IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS secondary_resets_at,
@@ -1055,6 +1072,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_used_percent IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_used_percent,
@@ -1062,6 +1080,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.primary_window_minutes
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_window_minutes IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_window_minutes,
@@ -1069,6 +1088,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.primary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
+                  AND sample.primary_resets_at IS NOT NULL
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_resets_at,

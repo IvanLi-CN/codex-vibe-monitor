@@ -16,6 +16,11 @@ fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
     );
     assert_eq!(credential_code, "refresh_token_invalid");
+    let (infrastructure_code, _) = classify_refresh_error(
+        "TLS certificate has expired while connecting to the token endpoint",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    );
+    assert_ne!(infrastructure_code, "refresh_token_invalid");
     assert!(!is_explicit_reauth_error_message("access token expired"));
     assert!(is_explicit_reauth_error_message("refresh token expired"));
 }
@@ -4696,6 +4701,11 @@ async fn manual_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_n
                     "usedPercent": 42,
                     "windowDurationMins": 300,
                     "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
                 }
             }
         }),
@@ -4817,6 +4827,11 @@ async fn maintenance_sync_allows_group_node_shunt_unassigned_account_to_probe_bo
                     "usedPercent": 42,
                     "windowDurationMins": 300,
                     "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
                 }
             }
         }),
@@ -4921,6 +4936,11 @@ async fn bulk_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_nod
                     "usedPercent": 42,
                     "windowDurationMins": 300,
                     "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
                 }
             }
         }),
@@ -5694,6 +5714,11 @@ async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers()
                     "usedPercent": 42,
                     "windowDurationMins": 300,
                     "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
                 }
             }
         }),
@@ -5911,8 +5936,13 @@ async fn oauth_sync_usage_auth_failure_retries_without_refreshing_credentials() 
     );
     assert_eq!(
         detail.credential_refresh.state,
-        UPSTREAM_ACCOUNT_REFRESH_STATE_IDLE
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
     );
+    assert_eq!(
+        detail.credential_refresh.error_code.as_deref(),
+        Some("access_token_rejected")
+    );
+    assert!(detail.credential_refresh.next_attempt_at.is_some());
     assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
     assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
@@ -6170,8 +6200,13 @@ async fn oauth_sync_usage_failure_preserves_quota_marker_without_token_refresh()
     );
     assert_eq!(
         detail.credential_refresh.state,
-        UPSTREAM_ACCOUNT_REFRESH_STATE_IDLE
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
     );
+    assert_eq!(
+        detail.credential_refresh.error_code.as_deref(),
+        Some("access_token_rejected")
+    );
+    assert!(detail.credential_refresh.next_attempt_at.is_some());
     assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
     assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
@@ -6261,8 +6296,13 @@ async fn oauth_sync_usage_failure_preserves_quota_marker_without_refresh_attempt
     );
     assert_eq!(
         detail.credential_refresh.state,
-        UPSTREAM_ACCOUNT_REFRESH_STATE_IDLE
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
     );
+    assert_eq!(
+        detail.credential_refresh.error_code.as_deref(),
+        Some("access_token_rejected")
+    );
+    assert!(detail.credential_refresh.next_attempt_at.is_some());
 
     assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
     assert_eq!(token_requests.load(Ordering::SeqCst), 0);
