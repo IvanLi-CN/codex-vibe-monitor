@@ -145,11 +145,20 @@ Run this sequence only under an owner-approved change window. Do not skip ahead 
      cvm_analytics.analytics_facts,
      cvm_analytics.analytics_parallel_work_keys
      TO cvm_analytics_maintenance;
+   -- PostgreSQL needs the MERGE/ON CONFLICT keys and tombstone predicates to be readable.
+   -- These identity-only grants do not permit reading fact content or metrics.
+   GRANT SELECT (source, source_row_id) ON TABLE
+     cvm_analytics.analytics_facts,
+     cvm_analytics.analytics_parallel_work_keys
+     TO cvm_analytics_maintenance;
    GRANT SELECT, UPDATE ON TABLE
      cvm_analytics.analytics_replica_state,
      cvm_analytics.analytics_state
      TO cvm_analytics_maintenance;
    GRANT INSERT, DELETE ON TABLE
+     cvm_analytics.analytics_replica_applied_changes
+     TO cvm_analytics_maintenance;
+   GRANT SELECT (change_id) ON TABLE
      cvm_analytics.analytics_replica_applied_changes
      TO cvm_analytics_maintenance;
    GRANT USAGE ON SEQUENCE

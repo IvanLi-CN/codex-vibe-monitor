@@ -24,7 +24,7 @@
 - `POSTGRES_MAX_CONNECTIONS` MUST default to `5` and MUST reject zero or values outside the supported integer range.
 - Selecting `postgres` MUST require `POSTGRES_DATABASE_URL`; invalid values MUST fail closed without exposing the URL.
 - PostgreSQL replica control commands MUST use a separate `POSTGRES_ANALYTICS_MAINTENANCE_URL`; they MUST fail closed when it is absent, when it is identical to the runtime URL, or when both URLs name the same PostgreSQL login role. They MUST NOT use the runtime application URL for target writes.
-- The maintenance role MUST receive only the reviewed bounded grants: fact and parallel-work tables permit insert/update/delete without fact reads, replica and projection state permit select/update without insert/delete, applied changes permit insert/delete, and the facts sequence permits usage only. Neither application nor maintenance role may execute schema DDL.
+- The maintenance role MUST receive only the reviewed bounded grants: fact and parallel-work tables permit insert/update/delete plus column-level select on `source` and `source_row_id` for `MERGE` match keys and tombstone predicates, without fact-content or metric reads; replica and projection state permit select/update without insert/delete; applied changes permit insert/delete plus column-level select on `change_id` for its idempotency key; and the facts sequence permits usage only. Neither application nor maintenance role may execute schema DDL.
 
 ### REQ-PG18-002
 
@@ -93,7 +93,7 @@
 
 - Method: deterministic PostgreSQL schema SQL, catalog-inspection, state-eligibility, compare-and-swap, advisory-lock, and bounded fact-ingestion contract checks, plus an explicitly provisioned PostgreSQL fixture test for role separation and target reset.
 - covers: `REQ-PG18-006`
-- Pass condition: version `2` is required for eligibility; missing/legacy state fails closed; the shared legacy-visible eligibility flag remains false for v2 state; schema-owner DDL is separate from maintenance DML; the maintenance grant split denies fact reads and state insert/delete; explicit bootstrap cleanup and checkpoint reset are represented; catalog inspection is compatible with the least-privilege role; bootstrap serialization, cancellation-safe connection closure, and single-connection release are explicit; stale invalidation cannot overwrite advanced state; fact and journal version `1` identity remains unchanged; no automatic historical backfill or query/rollup surface changes are introduced.
+- Pass condition: version `2` is required for eligibility; missing/legacy state fails closed; the shared legacy-visible eligibility flag remains false for v2 state; schema-owner DDL is separate from maintenance DML; the maintenance grant split permits only identity-column reads needed by conflict/tombstone DML, denies fact-content/metric reads and state insert/delete, and denies rollup DML; explicit bootstrap cleanup and checkpoint reset are represented; catalog inspection is compatible with the least-privilege role; bootstrap serialization, cancellation-safe connection closure, and single-connection release are explicit; stale invalidation cannot overwrite advanced state; fact and journal version `1` identity remains unchanged; no automatic historical backfill or query/rollup surface changes are introduced.
 
 ## Related ADRs
 

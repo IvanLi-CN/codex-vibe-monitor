@@ -36,7 +36,7 @@
 
 - A future task must implement the fact ingestion/backfill adapter from existing SQLite/TerminalJournal sources.
 - A future task must implement concrete `AnalyticsReadStore` query methods and wire only the intended read surfaces to the selected backend.
-- The ignored `pg_analytics::tests::postgres_analytics_fixture_verifies_role_separation_and_bounded_reset` test requires a disposable PostgreSQL fixture with owner, app, and maintenance URLs; it verifies role separation, catalog visibility, advisory-lock contention, and bounded target reset when explicitly provisioned.
+- The ignored `pg_analytics::tests::postgres_analytics_fixture_verifies_role_separation_and_bounded_reset` test requires a disposable PostgreSQL fixture with owner, app, and maintenance URLs; when explicitly provisioned, it verifies role separation, catalog visibility, identity-only maintenance reads, production fact/key/applied-change DML (including conflict and tombstone paths), advisory-lock contention, and bounded target reset.
 
 ## Related Changes
 

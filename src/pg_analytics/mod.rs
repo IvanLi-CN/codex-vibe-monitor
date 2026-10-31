@@ -1860,9 +1860,25 @@ async fn upsert_analytics_fact(
     connection: &mut sqlx::postgres::PgConnection,
     fact: &AnalyticsFact,
 ) -> Result<()> {
+    // ON CONFLICT DO UPDATE requires SELECT on every EXCLUDED column in PostgreSQL. MERGE keeps
+    // the maintenance role's read surface limited to the source identity match columns.
     sqlx::query(
         r#"
-        INSERT INTO cvm_analytics.analytics_facts (
+        MERGE INTO cvm_analytics.analytics_facts AS target
+        USING (
+            VALUES (
+                $1::smallint, $2::text, $3::bigint, $4::text,
+                to_timestamp($5::double precision / 1000.0), $5::bigint, $6::date,
+                $7::text, $8::text, $9::text, $10::text, $11::bigint, $12::text,
+                $13::text, $14::boolean, $15::boolean, $16::text, $17::text,
+                $18::boolean, $19::bigint, $20::bigint, $21::bigint, $22::bigint,
+                $23::bigint, $24::double precision, $25::double precision,
+                $26::double precision, $27::double precision, $28::double precision,
+                $29::double precision, $30::double precision, $31::double precision,
+                $32::double precision, $33::double precision, $34::double precision,
+                $35::double precision, $36::double precision, $37::double precision
+            )
+        ) AS incoming(
             fact_version, source, source_row_id, invoke_id, occurred_at,
             occurred_at_epoch_ms, stats_date, model, request_model, response_model,
             reasoning_effort, upstream_account_id, upstream_account_name, status,
@@ -1873,50 +1889,70 @@ async fn upsert_analytics_fact(
             t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms,
             first_token_ms, t_resp_parse_ms
         )
-        VALUES (
-            $1, $2, $3, $4,
-            to_timestamp($5::double precision / 1000.0), $5, $6::date, $7, $8, $9,
-            $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-            $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
-            $34, $35, $36, $37
+        ON target.source = incoming.source
+           AND target.source_row_id = incoming.source_row_id
+        WHEN MATCHED THEN UPDATE SET
+            fact_version = incoming.fact_version,
+            invoke_id = incoming.invoke_id,
+            occurred_at = incoming.occurred_at,
+            occurred_at_epoch_ms = incoming.occurred_at_epoch_ms,
+            stats_date = incoming.stats_date,
+            model = incoming.model,
+            request_model = incoming.request_model,
+            response_model = incoming.response_model,
+            reasoning_effort = incoming.reasoning_effort,
+            upstream_account_id = incoming.upstream_account_id,
+            upstream_account_name = incoming.upstream_account_name,
+            status = incoming.status,
+            success_like = incoming.success_like,
+            terminal = incoming.terminal,
+            failure_kind = incoming.failure_kind,
+            failure_class = incoming.failure_class,
+            is_actionable = incoming.is_actionable,
+            input_tokens = incoming.input_tokens,
+            output_tokens = incoming.output_tokens,
+            cache_input_tokens = incoming.cache_input_tokens,
+            reasoning_tokens = incoming.reasoning_tokens,
+            total_tokens = incoming.total_tokens,
+            cost = incoming.cost,
+            cost_input = incoming.cost_input,
+            cost_cache_write = incoming.cost_cache_write,
+            cost_cache_read = incoming.cost_cache_read,
+            cost_output = incoming.cost_output,
+            cost_reasoning = incoming.cost_reasoning,
+            t_total_ms = incoming.t_total_ms,
+            t_req_read_ms = incoming.t_req_read_ms,
+            t_req_parse_ms = incoming.t_req_parse_ms,
+            t_upstream_connect_ms = incoming.t_upstream_connect_ms,
+            t_upstream_ttfb_ms = incoming.t_upstream_ttfb_ms,
+            t_upstream_stream_ms = incoming.t_upstream_stream_ms,
+            first_token_ms = incoming.first_token_ms,
+            t_resp_parse_ms = incoming.t_resp_parse_ms
+        WHEN NOT MATCHED THEN INSERT (
+            fact_version, source, source_row_id, invoke_id, occurred_at,
+            occurred_at_epoch_ms, stats_date, model, request_model, response_model,
+            reasoning_effort, upstream_account_id, upstream_account_name, status,
+            success_like, terminal, failure_kind, failure_class, is_actionable,
+            input_tokens, output_tokens, cache_input_tokens, reasoning_tokens,
+            total_tokens, cost, cost_input, cost_cache_write, cost_cache_read,
+            cost_output, cost_reasoning, t_total_ms, t_req_read_ms, t_req_parse_ms,
+            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms,
+            first_token_ms, t_resp_parse_ms
+        ) VALUES (
+            incoming.fact_version, incoming.source, incoming.source_row_id, incoming.invoke_id,
+            incoming.occurred_at, incoming.occurred_at_epoch_ms, incoming.stats_date,
+            incoming.model, incoming.request_model, incoming.response_model,
+            incoming.reasoning_effort, incoming.upstream_account_id,
+            incoming.upstream_account_name, incoming.status, incoming.success_like,
+            incoming.terminal, incoming.failure_kind, incoming.failure_class,
+            incoming.is_actionable, incoming.input_tokens, incoming.output_tokens,
+            incoming.cache_input_tokens, incoming.reasoning_tokens, incoming.total_tokens,
+            incoming.cost, incoming.cost_input, incoming.cost_cache_write,
+            incoming.cost_cache_read, incoming.cost_output, incoming.cost_reasoning,
+            incoming.t_total_ms, incoming.t_req_read_ms, incoming.t_req_parse_ms,
+            incoming.t_upstream_connect_ms, incoming.t_upstream_ttfb_ms,
+            incoming.t_upstream_stream_ms, incoming.first_token_ms, incoming.t_resp_parse_ms
         )
-        ON CONFLICT (source, source_row_id) DO UPDATE SET
-            fact_version = EXCLUDED.fact_version,
-            invoke_id = EXCLUDED.invoke_id,
-            occurred_at = EXCLUDED.occurred_at,
-            occurred_at_epoch_ms = EXCLUDED.occurred_at_epoch_ms,
-            stats_date = EXCLUDED.stats_date,
-            model = EXCLUDED.model,
-            request_model = EXCLUDED.request_model,
-            response_model = EXCLUDED.response_model,
-            reasoning_effort = EXCLUDED.reasoning_effort,
-            upstream_account_id = EXCLUDED.upstream_account_id,
-            upstream_account_name = EXCLUDED.upstream_account_name,
-            status = EXCLUDED.status,
-            success_like = EXCLUDED.success_like,
-            terminal = EXCLUDED.terminal,
-            failure_kind = EXCLUDED.failure_kind,
-            failure_class = EXCLUDED.failure_class,
-            is_actionable = EXCLUDED.is_actionable,
-            input_tokens = EXCLUDED.input_tokens,
-            output_tokens = EXCLUDED.output_tokens,
-            cache_input_tokens = EXCLUDED.cache_input_tokens,
-            reasoning_tokens = EXCLUDED.reasoning_tokens,
-            total_tokens = EXCLUDED.total_tokens,
-            cost = EXCLUDED.cost,
-            cost_input = EXCLUDED.cost_input,
-            cost_cache_write = EXCLUDED.cost_cache_write,
-            cost_cache_read = EXCLUDED.cost_cache_read,
-            cost_output = EXCLUDED.cost_output,
-            cost_reasoning = EXCLUDED.cost_reasoning,
-            t_total_ms = EXCLUDED.t_total_ms,
-            t_req_read_ms = EXCLUDED.t_req_read_ms,
-            t_req_parse_ms = EXCLUDED.t_req_parse_ms,
-            t_upstream_connect_ms = EXCLUDED.t_upstream_connect_ms,
-            t_upstream_ttfb_ms = EXCLUDED.t_upstream_ttfb_ms,
-            t_upstream_stream_ms = EXCLUDED.t_upstream_stream_ms,
-            first_token_ms = EXCLUDED.first_token_ms,
-            t_resp_parse_ms = EXCLUDED.t_resp_parse_ms
         "#,
     )
     .bind(fact.fact_version)
@@ -1989,16 +2025,25 @@ async fn replace_parallel_work_key(
             key.source == source && key.source_row_id == source_row_id,
             "parallel-work key identity disagrees with source change"
         );
+        // Keep conflict matching on identity columns without granting reads on the key payload.
         sqlx::query(
             r#"
-            INSERT INTO cvm_analytics.analytics_parallel_work_keys (
+            MERGE INTO cvm_analytics.analytics_parallel_work_keys AS target
+            USING (
+                VALUES ($1::text, $2::bigint, $3::bigint, $4::text, $5::bigint)
+            ) AS incoming(source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id)
+            ON target.source = incoming.source
+               AND target.source_row_id = incoming.source_row_id
+            WHEN MATCHED THEN UPDATE SET
+                occurred_at_epoch_ms = incoming.occurred_at_epoch_ms,
+                key_digest = incoming.key_digest,
+                upstream_account_id = incoming.upstream_account_id
+            WHEN NOT MATCHED THEN INSERT (
                 source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id
+            ) VALUES (
+                incoming.source, incoming.source_row_id, incoming.occurred_at_epoch_ms,
+                incoming.key_digest, incoming.upstream_account_id
             )
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (source, source_row_id) DO UPDATE SET
-                occurred_at_epoch_ms = EXCLUDED.occurred_at_epoch_ms,
-                key_digest = EXCLUDED.key_digest,
-                upstream_account_id = EXCLUDED.upstream_account_id
             "#,
         )
         .bind(&key.source)
@@ -3748,8 +3793,10 @@ mod tests {
             for statement in [
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
                 "GRANT INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
+                "GRANT SELECT (source, source_row_id) ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
                 "GRANT SELECT, UPDATE ON TABLE cvm_analytics.analytics_replica_state, cvm_analytics.analytics_state TO cvm_analytics_maintenance",
                 "GRANT INSERT, DELETE ON TABLE cvm_analytics.analytics_replica_applied_changes TO cvm_analytics_maintenance",
+                "GRANT SELECT (change_id) ON TABLE cvm_analytics.analytics_replica_applied_changes TO cvm_analytics_maintenance",
                 "GRANT USAGE ON SEQUENCE cvm_analytics.analytics_facts_fact_id_seq TO cvm_analytics_maintenance",
             ] {
                 sqlx::query(statement)
@@ -3806,12 +3853,21 @@ mod tests {
             "maintenance role unexpectedly retained unrelated rollup DML privilege"
         );
         let maintenance_fact_read =
-            sqlx::query("SELECT COUNT(*) FROM cvm_analytics.analytics_facts")
+            sqlx::query("SELECT invoke_id FROM cvm_analytics.analytics_facts LIMIT 1")
                 .execute(&mut *maintenance)
                 .await;
         anyhow::ensure!(
             maintenance_fact_read.is_err(),
-            "maintenance role unexpectedly retained analytics fact read privilege"
+            "maintenance role unexpectedly retained analytics fact-content read privilege"
+        );
+        let maintenance_identity_read = sqlx::query(
+            "SELECT source, source_row_id FROM cvm_analytics.analytics_facts LIMIT 1",
+        )
+        .fetch_optional(&mut *maintenance)
+        .await;
+        anyhow::ensure!(
+            maintenance_identity_read.is_ok(),
+            "maintenance role could not read the identity columns required by replica DML"
         );
         let replica_state_insert: bool = sqlx::query_scalar(
             "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_replica_state', 'INSERT')",
@@ -3841,35 +3897,69 @@ mod tests {
             !analytics_state_insert && !analytics_state_delete,
             "maintenance role retained unnecessary analytics-state INSERT/DELETE privileges"
         );
-        sqlx::query(
-            r#"
-            INSERT INTO cvm_analytics.analytics_facts (
-                fact_version, source, source_row_id, invoke_id, occurred_at,
-                occurred_at_epoch_ms, stats_date, success_like, terminal
-            ) VALUES (1, 'fixture', 1, 'fixture-1', to_timestamp(0), 0, '1970-01-01', TRUE, TRUE)
-            "#,
+        let fact = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 1,
+            invoke_id: "fixture-1".to_string(),
+            occurred_at: "1970-01-01T00:00:00Z".to_string(),
+            occurred_at_epoch_ms: 0,
+            stats_date: "1970-01-01".to_string(),
+            source: "fixture".to_string(),
+            ..Default::default()
+        })?;
+        upsert_analytics_fact(&mut maintenance, &fact).await?;
+        let mut corrected_fact = fact.clone();
+        corrected_fact.invoke_id = "fixture-1-corrected".to_string();
+        upsert_analytics_fact(&mut maintenance, &corrected_fact).await?;
+
+        let key = AnalyticsParallelWorkKey {
+            source: fact.source.clone(),
+            source_row_id: fact.source_row_id,
+            occurred_at_epoch_ms: fact.occurred_at_epoch_ms,
+            key_digest: "sha256:fixture".to_string(),
+            upstream_account_id: None,
+        };
+        replace_parallel_work_key(&mut maintenance, &key.source, key.source_row_id, Some(&key))
+            .await?;
+        let mut corrected_key = key.clone();
+        corrected_key.key_digest = "sha256:fixture-corrected".to_string();
+        replace_parallel_work_key(
+            &mut maintenance,
+            &corrected_key.source,
+            corrected_key.source_row_id,
+            Some(&corrected_key),
         )
-        .execute(&mut *maintenance)
         .await?;
-        sqlx::query(
-            r#"
-            INSERT INTO cvm_analytics.analytics_parallel_work_keys (
-                source, source_row_id, occurred_at_epoch_ms, key_digest
-            ) VALUES ('fixture', 1, 0, 'sha256:fixture')
-            "#,
+        delete_analytics_fact(&mut maintenance, &corrected_fact.source, corrected_fact.source_row_id)
+            .await?;
+        replace_parallel_work_key(
+            &mut maintenance,
+            &corrected_key.source,
+            corrected_key.source_row_id,
+            None,
         )
-        .execute(&mut *maintenance)
         .await?;
-        sqlx::query(
-            r#"
-            INSERT INTO cvm_analytics.analytics_replica_applied_changes (
-                change_id, generation, coverage_revision, event_kind, entity_kind,
-                source, source_row_id, entity_key, fact_bytes
-            ) VALUES (1, 1, 1, 'upsert', 'invocation', 'fixture', 1, 'fixture-1', 1)
-            "#,
+        upsert_analytics_fact(&mut maintenance, &corrected_fact).await?;
+        replace_parallel_work_key(
+            &mut maintenance,
+            &corrected_key.source,
+            corrected_key.source_row_id,
+            Some(&corrected_key),
         )
-        .execute(&mut *maintenance)
         .await?;
+
+        let change = SourceChangeRow {
+            change_id: 1,
+            event_kind: "upsert".to_string(),
+            entity_kind: "invocation".to_string(),
+            source: "fixture".to_string(),
+            source_row_id: Some(1),
+            entity_key: "fixture-1".to_string(),
+            generation: 1,
+            coverage_revision: 1,
+            fact_json: "{}".to_string(),
+        };
+        record_applied_change(&mut maintenance, &change).await?;
+        record_applied_change(&mut maintenance, &change).await?;
         sqlx::query(
             r#"
             UPDATE cvm_analytics.analytics_replica_state
