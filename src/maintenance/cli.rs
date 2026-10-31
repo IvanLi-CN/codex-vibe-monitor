@@ -8,6 +8,9 @@ pub(crate) async fn run_cli_command(
     let raw_path_fallback_root = config.database_path.parent();
     match command {
         CliCommand::Maintenance(args) => match &args.command {
+            MaintenanceCommand::AnalyticsReplica(_) => {
+                bail!("analytics replica controls must select their explicit runtime route")
+            }
             MaintenanceCommand::PreparePerformanceIndexes(_)
             | MaintenanceCommand::InvocationIdentityCleanup(_)
             | MaintenanceCommand::RawOrphanSweep(_)
@@ -127,6 +130,47 @@ pub(crate) fn selected_owned_maintenance(cli: &CliArgs) -> Result<Option<(&'stat
         })) => Some(("task_run_history_cleanup", options.dry_run)),
         _ => None,
     })
+}
+
+pub(crate) fn selected_analytics_replica_command(
+    cli: &CliArgs,
+) -> Option<&AnalyticsReplicaCommand> {
+    match cli.command.as_ref() {
+        Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::AnalyticsReplica(args),
+        })) => Some(&args.command),
+        _ => None,
+    }
+}
+
+pub(crate) async fn run_analytics_replica_cli(
+    config: &AppConfig,
+    command: &AnalyticsReplicaCommand,
+) -> Result<()> {
+    let route = MaintenanceRuntimeLock::route(config, false)?;
+    let MaintenanceRuntimeRoute::Offline(mut runtime_lock) = route else {
+        bail!("analytics replica controls require the service runtime to be stopped");
+    };
+    runtime_lock.publish_role("cli:analytics-replica-v1")?;
+    let options = runtime_lock.sqlite_connect_options(
+        &config.database_path,
+        build_sqlite_connect_options(
+            &config.database_url(),
+            Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+        )?,
+    )?;
+    let source_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .context("analytics replica could not connect to the SQLite source")?;
+    let result = async {
+        ensure_schema(&source_pool).await?;
+        pg_analytics_replica_control(config, &source_pool, *command).await
+    }
+    .await;
+    source_pool.close().await;
+    result
 }
 
 pub(crate) async fn run_owned_maintenance_cli(

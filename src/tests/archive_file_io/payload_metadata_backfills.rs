@@ -425,6 +425,14 @@ async fn backfill_proxy_reasoning_efforts_updates_payload_and_is_idempotent() {
             .expect("query reasoning backfilled payload");
     let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
     assert_eq!(payload_json["reasoningEffort"], "high");
+    let change_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM analytics_change_events WHERE entity_key = 'invocation:proxy:' || (SELECT id FROM codex_invocations WHERE invoke_id = ?1) AND event_kind = 'upsert'",
+    )
+    .bind("proxy-reasoning-backfill-1")
+    .fetch_one(&pool)
+    .await
+    .expect("query reasoning analytics change event");
+    assert_eq!(change_count, 1);
 
     let summary_second = backfill_proxy_reasoning_efforts(&pool, None)
         .await

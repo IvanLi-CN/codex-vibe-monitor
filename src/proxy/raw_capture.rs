@@ -1628,6 +1628,14 @@ pub(crate) async fn persist_proxy_capture_record_tx(
     .execute(&mut *tx)
     .await?;
 
+    if core_write_path == "insert_missing" {
+        crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+            &mut *tx,
+            invocation_id,
+        )
+        .await?;
+    }
+
     let persisted =
         load_persisted_api_invocation_tx(&mut *tx, &record.invoke_id, &record.occurred_at).await?;
 
@@ -1866,6 +1874,13 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                     }
                 }
                 if !updated_ids.is_empty() {
+                    for id in &updated_ids {
+                        crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                            tx.as_mut(),
+                            *id,
+                        )
+                        .await?;
+                    }
                     recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids)
                         .await?;
                 }
@@ -2300,6 +2315,13 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 }
             }
             if !updated_ids.is_empty() {
+                for id in &updated_ids {
+                    crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                        tx.as_mut(),
+                        *id,
+                    )
+                    .await?;
+                }
                 recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
             }
             tx.commit().await?;
