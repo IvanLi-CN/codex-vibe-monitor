@@ -2,9 +2,15 @@ use super::*;
 
 mod schema;
 pub(crate) use schema::*;
+mod projections;
+pub(crate) use projections::{
+    AnalyticsFactWindow, analytics_fact_is_failure, analytics_fact_is_success_like,
+    analytics_status_is_success_like, query_invocation_facts, rebuild_analytics_projection,
+};
 
 const ANALYTICS_UNAVAILABLE_CODE: &str = "analytics_backend_unavailable";
 const POSTGRES_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const ANALYTICS_PROJECTION_MAX_STALENESS: Duration = Duration::from_secs(15);
 const REDACTED_SECRET: &str = "<redacted>";
 pub(crate) const ANALYTICS_REPLICA_ID: &str = "pg-analytics";
 pub(crate) const ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH: usize = 256;
@@ -318,8 +324,13 @@ impl PgAnalyticsRuntime {
                 ),
             )));
         }
-        let projection_status = sqlx::query_scalar::<_, String>(
-            "SELECT status FROM cvm_analytics.analytics_state WHERE id = 1",
+        let projection_state = sqlx::query_as::<_, (String, bool)>(
+            r#"
+            SELECT status,
+                   updated_at >= NOW() - INTERVAL '15 seconds' AS is_fresh
+            FROM cvm_analytics.analytics_state
+            WHERE id = 1
+            "#,
         )
         .fetch_optional(pool.inner())
         .await
@@ -328,12 +339,27 @@ impl PgAnalyticsRuntime {
                 "failed to load PostgreSQL analytics projection state: {error}"
             ))
         })?;
-        if projection_status.as_deref() != Some("ready") {
+        let Some((projection_status, projection_is_fresh)) = projection_state else {
+            return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                AnalyticsBackend::Postgres,
+                "analytics replica projection state is missing",
+            )));
+        };
+        if projection_status != "ready" {
             return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
                 AnalyticsBackend::Postgres,
                 format!(
                     "analytics replica projection is not ready (status={})",
-                    projection_status.as_deref().unwrap_or("missing")
+                    projection_status
+                ),
+            )));
+        }
+        if !projection_is_fresh {
+            return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                AnalyticsBackend::Postgres,
+                format!(
+                    "analytics replica projection is older than {} seconds",
+                    ANALYTICS_PROJECTION_MAX_STALENESS.as_secs()
                 ),
             )));
         }
@@ -732,6 +758,12 @@ struct SourceParallelWorkMetadataRow {
     upstream_account_id: Option<i64>,
 }
 
+#[derive(Debug, Clone)]
+struct SourceInvocationAccountRefresh {
+    invoke_id: String,
+    upstream_account_id: Option<i64>,
+}
+
 async fn load_source_parallel_work_metadata_page(
     source_connection: &mut SqliteConnection,
     after_id: i64,
@@ -775,16 +807,43 @@ async fn load_source_parallel_work_metadata(
         .context("failed to load SQLite parallel-work key metadata")
 }
 
+async fn load_source_invocation_account_by_invoke_id(
+    source_pool: &Pool<Sqlite>,
+    invoke_id: &str,
+) -> Result<Option<SourceInvocationAccountRefresh>> {
+    let upstream_account_id_sql =
+        crate::api::invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT invoke_id, ");
+    query
+        .push(upstream_account_id_sql)
+        .push(" AS upstream_account_id FROM codex_invocations WHERE invoke_id = ")
+        .push_bind(invoke_id)
+        .push(" ORDER BY id DESC LIMIT 1");
+    query
+        .build_query_as::<(String, Option<i64>)>()
+        .fetch_optional(source_pool)
+        .await
+        .context("failed to load SQLite invocation account fallback for an attempt change")
+        .map(|row| {
+            row.map(
+                |(invoke_id, upstream_account_id)| SourceInvocationAccountRefresh {
+                    invoke_id,
+                    upstream_account_id,
+                },
+            )
+        })
+}
+
 fn parallel_work_keys_for_snapshot(
     facts: &[AnalyticsFact],
-    metadata: Vec<SourceParallelWorkMetadataRow>,
+    metadata: &[SourceParallelWorkMetadataRow],
 ) -> Vec<AnalyticsParallelWorkKey> {
     let facts_by_id = facts
         .iter()
         .map(|fact| (fact.source_row_id, fact))
         .collect::<HashMap<_, _>>();
     metadata
-        .into_iter()
+        .iter()
         .filter_map(|row| {
             let fact = facts_by_id.get(&row.id)?;
             Some(AnalyticsParallelWorkKey {
@@ -792,7 +851,7 @@ fn parallel_work_keys_for_snapshot(
                 source_row_id: fact.source_row_id,
                 occurred_at_epoch_ms: fact.occurred_at_epoch_ms,
                 key_digest: parallel_work_key_digest(row.payload.as_deref())?,
-                upstream_account_id: row.upstream_account_id,
+                upstream_account_id: fact.upstream_account_id.or(row.upstream_account_id),
             })
         })
         .collect()
@@ -808,7 +867,7 @@ fn parallel_work_key_for_fact(
         source_row_id: fact.source_row_id,
         occurred_at_epoch_ms: fact.occurred_at_epoch_ms,
         key_digest: parallel_work_key_digest(metadata.payload.as_deref())?,
-        upstream_account_id: metadata.upstream_account_id,
+        upstream_account_id: fact.upstream_account_id.or(metadata.upstream_account_id),
     })
 }
 
@@ -821,13 +880,12 @@ fn snapshot_terminal(status: Option<&str>) -> bool {
     )
 }
 
-fn snapshot_success_like(status: Option<&str>) -> bool {
-    matches!(
-        status
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("success") | Some("succeeded") | Some("completed") | Some("ok")
-    )
+fn snapshot_success_like(
+    status: Option<&str>,
+    failure_kind: Option<&str>,
+    failure_class: Option<&str>,
+) -> bool {
+    analytics_status_is_success_like(status, failure_kind, failure_class)
 }
 
 fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFact> {
@@ -869,7 +927,11 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
             "upstreamAccountName",
         ),
         status: status.clone(),
-        success_like: snapshot_success_like(status.as_deref()),
+        success_like: snapshot_success_like(
+            status.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+        ),
         terminal: snapshot_terminal(status.as_deref()),
         failure_kind: crate::analytics_changes::normalize_analytics_text(
             row.failure_kind.as_deref(),
@@ -1322,6 +1384,12 @@ async fn clear_replica_target(pool: &sqlx::PgPool, generation: i64) -> Result<()
     sqlx::query("DELETE FROM cvm_analytics.analytics_facts")
         .execute(&mut *transaction)
         .await?;
+    sqlx::query("DELETE FROM cvm_analytics.analytics_daily_rollups")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM cvm_analytics.analytics_hourly_rollups")
+        .execute(&mut *transaction)
+        .await?;
     sqlx::query(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
@@ -1654,6 +1722,25 @@ async fn delete_analytics_fact(
     Ok(())
 }
 
+async fn refresh_invocation_account(
+    connection: &mut sqlx::postgres::PgConnection,
+    refresh: &SourceInvocationAccountRefresh,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE cvm_analytics.analytics_facts
+        SET upstream_account_id = $1
+        WHERE source = 'codex_invocations' AND invoke_id = $2
+        "#,
+    )
+    .bind(refresh.upstream_account_id)
+    .bind(&refresh.invoke_id)
+    .execute(connection)
+    .await
+    .context("failed to refresh a PostgreSQL analytics invocation account fallback")?;
+    Ok(())
+}
+
 async fn replace_parallel_work_key(
     connection: &mut sqlx::postgres::PgConnection,
     source: &str,
@@ -1714,10 +1801,12 @@ async fn apply_replica_change(
     connection: &mut sqlx::postgres::PgConnection,
     change: &SourceChangeRow,
     parallel_work_key: Option<&AnalyticsParallelWorkKey>,
+    fallback_upstream_account_id: Option<i64>,
+    invocation_account_refresh: Option<&SourceInvocationAccountRefresh>,
 ) -> Result<()> {
     match (change.event_kind.as_str(), change.entity_kind.as_str()) {
         ("upsert", "invocation") => {
-            let fact =
+            let mut fact =
                 serde_json::from_str::<AnalyticsFact>(&change.fact_json).with_context(|| {
                     format!(
                         "invalid invocation fact at source change {}",
@@ -1729,6 +1818,9 @@ async fn apply_replica_change(
                 "analytics fact identity disagrees with source change {}",
                 change.change_id
             );
+            if fact.upstream_account_id.is_none() {
+                fact.upstream_account_id = fallback_upstream_account_id;
+            }
             upsert_analytics_fact(connection, &fact).await?;
             replace_parallel_work_key(
                 connection,
@@ -1744,6 +1836,11 @@ async fn apply_replica_change(
                 .context("invocation tombstone is missing source row id")?;
             delete_analytics_fact(connection, &change.source, source_row_id).await?;
             replace_parallel_work_key(connection, &change.source, source_row_id, None).await?;
+        }
+        ("upsert", "pool_attempt") => {
+            if let Some(refresh) = invocation_account_refresh {
+                refresh_invocation_account(connection, refresh).await?;
+            }
         }
         ("upsert", _) => {}
         ("coverage", _) if !coverage_event_requires_replay(change) => {}
@@ -1823,8 +1920,36 @@ async fn apply_replica_batch(
         .map(|change| change.change_id)
         .expect("non-empty analytics replica batch");
     let mut parallel_work_keys = HashMap::new();
+    let mut fallback_upstream_account_ids = HashMap::new();
+    let mut invocation_account_refreshes = HashMap::new();
     for change in batch {
-        if change.event_kind != "upsert" || change.entity_kind != "invocation" {
+        if change.event_kind != "upsert" {
+            continue;
+        }
+        if change.entity_kind == "pool_attempt" {
+            let invoke_id = serde_json::from_str::<Value>(&change.fact_json)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("invokeId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .filter(|invoke_id| !invoke_id.trim().is_empty())
+                .with_context(|| {
+                    format!(
+                        "analytics pool attempt change {} is missing invokeId",
+                        change.change_id
+                    )
+                })?;
+            if let Some(refresh) =
+                load_source_invocation_account_by_invoke_id(source_pool, &invoke_id).await?
+            {
+                invocation_account_refreshes.insert(change.change_id, refresh);
+            }
+            continue;
+        }
+        if change.entity_kind != "invocation" {
             continue;
         }
         let source_row_id = change
@@ -1838,16 +1963,66 @@ async fn apply_replica_batch(
                         change.change_id
                     )
                 })?;
-            parallel_work_key_for_fact(
-                &fact,
-                load_source_parallel_work_metadata(source_pool, source_row_id).await?,
-            )
+            let metadata = load_source_parallel_work_metadata(source_pool, source_row_id).await?;
+            let fallback_upstream_account_id = metadata
+                .as_ref()
+                .and_then(|metadata| metadata.upstream_account_id);
+            fallback_upstream_account_ids.insert(change.change_id, fallback_upstream_account_id);
+            parallel_work_key_for_fact(&fact, metadata)
         } else {
             None
         };
         parallel_work_keys.insert(change.change_id, key);
     }
     let mut transaction = pool.begin().await?;
+    let mut projection_buckets = std::collections::HashSet::new();
+    for change in batch {
+        if change.event_kind != "upsert" {
+            if change.event_kind == "tombstone"
+                && change.entity_kind == "invocation"
+                && let Some(source_row_id) = change.source_row_id
+            {
+                projections::collect_projection_buckets_for_fact(
+                    &mut transaction,
+                    &change.source,
+                    source_row_id,
+                    &mut projection_buckets,
+                )
+                .await?;
+            }
+            continue;
+        }
+        if change.entity_kind == "pool_attempt" {
+            if let Some(refresh) = invocation_account_refreshes.get(&change.change_id) {
+                projections::collect_projection_buckets_for_invoke_id(
+                    &mut transaction,
+                    &refresh.invoke_id,
+                    &mut projection_buckets,
+                )
+                .await?;
+            }
+            continue;
+        }
+        if change.entity_kind != "invocation" {
+            continue;
+        }
+        if let Some(source_row_id) = change.source_row_id {
+            projections::collect_projection_buckets_for_fact(
+                &mut transaction,
+                &change.source,
+                source_row_id,
+                &mut projection_buckets,
+            )
+            .await?;
+        }
+        let fact = serde_json::from_str::<AnalyticsFact>(&change.fact_json).with_context(|| {
+            format!(
+                "invalid invocation fact at source change {}",
+                change.change_id
+            )
+        })?;
+        projection_buckets.insert(projections::projection_bucket_for_fact(&fact));
+    }
     for change in batch {
         apply_replica_change(
             &mut transaction,
@@ -1855,10 +2030,17 @@ async fn apply_replica_batch(
             parallel_work_keys
                 .get(&change.change_id)
                 .and_then(Option::as_ref),
+            fallback_upstream_account_ids
+                .get(&change.change_id)
+                .copied()
+                .flatten(),
+            invocation_account_refreshes.get(&change.change_id),
         )
         .await?;
         record_applied_change(&mut transaction, change).await?;
     }
+    projections::refresh_analytics_projection_on_connection(&mut transaction, &projection_buckets)
+        .await?;
     let updated = sqlx::query(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
@@ -2042,7 +2224,8 @@ async fn snapshot_invocations_into_target(
         .context("failed to start the SQLite analytics baseline snapshot")?;
     let mut after_id = 0;
     loop {
-        let facts = load_source_invocation_snapshot_page(&mut source_transaction, after_id).await?;
+        let mut facts =
+            load_source_invocation_snapshot_page(&mut source_transaction, after_id).await?;
         let Some(next_after_id) = facts.last().map(|fact| fact.source_row_id) else {
             break;
         };
@@ -2052,7 +2235,19 @@ async fn snapshot_invocations_into_target(
             next_after_id,
         )
         .await?;
-        let parallel_work_keys = parallel_work_keys_for_snapshot(&facts, metadata);
+        let fallback_account_ids = metadata
+            .iter()
+            .map(|row| (row.id, row.upstream_account_id))
+            .collect::<HashMap<_, _>>();
+        for fact in &mut facts {
+            if fact.upstream_account_id.is_none() {
+                fact.upstream_account_id = fallback_account_ids
+                    .get(&fact.source_row_id)
+                    .copied()
+                    .flatten();
+            }
+        }
+        let parallel_work_keys = parallel_work_keys_for_snapshot(&facts, &metadata);
         snapshot_facts_into_target(pool, &facts, &parallel_work_keys).await?;
         after_id = next_after_id;
     }
@@ -2134,6 +2329,11 @@ async fn bootstrap_replica(
             "snapshot_failed"
         };
         mark_replica_blocked(pool, error_code, detail.clone()).await?;
+        return Err(anyhow!(detail));
+    }
+    if let Err(error) = rebuild_analytics_projection(pool).await {
+        let detail = error.to_string();
+        mark_replica_blocked(pool, "projection_rebuild_failed", detail.clone()).await?;
         return Err(anyhow!(detail));
     }
     let source_after = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;

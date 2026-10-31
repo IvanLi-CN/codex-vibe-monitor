@@ -38,6 +38,7 @@ mod invocation_timing;
 mod invocation_workflow_detail;
 #[cfg(test)]
 mod model_performance_duration_override_tests;
+mod postgres_summary_queries;
 #[cfg(test)]
 #[path = "../../tests/lightweight/statistics_observability.rs"]
 mod statistics_observability;
@@ -141,6 +142,8 @@ pub(crate) use summary_recovery::{
     SummaryDashboardRecoverySnapshot, dashboard_recovery_response_if_ready,
     summary_source_gap_unavailable_error,
 };
+
+use postgres_summary_queries::fetch_summary_from_postgres;
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
@@ -29964,6 +29967,11 @@ pub(crate) async fn load_summary_response_from_query(
     params: &SummaryQuery,
     route: SummaryBuildRoute,
 ) -> Result<StatsResponse, ApiError> {
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return fetch_summary_from_postgres(state, params)
+            .await
+            .map(|Json(response)| response);
+    }
     let default_limit = state.config.list_limit_max as i64;
     let window = parse_summary_window(params, default_limit)?;
     let summary_range_telemetry =
@@ -30176,6 +30184,9 @@ async fn fetch_summary_inner(
     // Parse before touching the hub so invalid requests retain their former 400 contract without
     // creating cache state or touching SQLite/filesystem state.
     validate_summary_projection_window(&params, state.config.list_limit_max as i64)?;
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return fetch_summary_from_postgres(state.as_ref(), &params).await;
+    }
     let all_time = matches!(
         parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?,
