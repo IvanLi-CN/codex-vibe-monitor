@@ -2494,6 +2494,109 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
 
 #[cfg(unix)]
 #[tokio::test]
+async fn restarted_xray_subscription_snapshot_recreates_local_route() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_root = make_temp_test_dir("xray-subscription-restart");
+    let runtime_dir = temp_root.join("runtime");
+    let fake_binary = temp_root.join("fake-xray.sh");
+    fs::write(
+        &fake_binary,
+        r#"#!/bin/sh
+if [ "$2" = "-test" ]; then
+  exit 0
+fi
+port=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["inbounds"][0]["port"])' "$3")
+exec python3 - "$port" <<'PY'
+import socket
+import sys
+
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", int(sys.argv[1])))
+listener.listen()
+while True:
+    connection, _ = listener.accept()
+    connection.close()
+PY
+"#,
+    )
+    .expect("write fake xray binary");
+    let mut permissions = fs::metadata(&fake_binary)
+        .expect("read fake xray binary metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&fake_binary, permissions).expect("make fake xray binary executable");
+
+    let mut config = test_config();
+    config.xray_binary = fake_binary.display().to_string();
+    config.xray_runtime_dir = runtime_dir;
+    let state = test_state_from_config(config, false).await;
+    let subscription_sources = vec!["https://subscription.example/feed".to_string()];
+    let cached_xray_url = normalize_single_proxy_url(
+        "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none",
+    )
+    .expect("normalize cached xray URL");
+    let settings = ForwardProxySettings {
+        subscription_urls: subscription_sources.clone(),
+        ..ForwardProxySettings::default()
+    };
+    save_forward_proxy_settings(&state.pool, settings.clone())
+        .await
+        .expect("save subscription settings");
+    save_forward_proxy_subscription_snapshot(
+        &state.pool,
+        &subscription_sources,
+        std::slice::from_ref(&cached_xray_url),
+    )
+    .await
+    .expect("save cached xray subscription result");
+
+    let restored_settings = load_forward_proxy_settings(&state.pool)
+        .await
+        .expect("load subscription settings");
+    let runtime_rows = load_forward_proxy_runtime_states(&state.pool)
+        .await
+        .expect("load proxy runtime state");
+    let restored_subscription_urls =
+        load_forward_proxy_subscription_snapshot(&state.pool, &restored_settings.subscription_urls)
+            .await
+            .expect("load cached xray subscription result");
+    let mut restarted_manager = ForwardProxyManager::new(restored_settings, runtime_rows);
+    restarted_manager.restore_subscription_urls(restored_subscription_urls);
+    *state.forward_proxy.lock().await = restarted_manager;
+
+    sync_forward_proxy_routes(state.as_ref())
+        .await
+        .expect("restored xray subscription route should start");
+    let proxy_key = normalize_single_proxy_key(&cached_xray_url).expect("normalize xray proxy key");
+    let endpoint = snapshot_active_forward_proxy_endpoints(&*state.forward_proxy.lock().await)
+        .into_iter()
+        .find(|endpoint| endpoint.key == proxy_key)
+        .expect("restored xray endpoint should remain in the manager");
+    assert!(
+        endpoint
+            .endpoint_url
+            .as_ref()
+            .is_some_and(|url| url.scheme() == "socks5h"),
+        "restored xray endpoint should have a local route URL"
+    );
+    assert!(
+        state
+            .xray_supervisor
+            .lock()
+            .await
+            .instances
+            .contains_key(&proxy_key),
+        "restored xray endpoint should have a running supervisor instance"
+    );
+
+    state.xray_supervisor.lock().await.shutdown_all().await;
+    cleanup_temp_test_dir(&temp_root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn xray_supervisor_classifies_rejected_configuration_before_startup() {
     use std::os::unix::fs::PermissionsExt;
 

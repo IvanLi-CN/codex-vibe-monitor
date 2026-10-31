@@ -1164,13 +1164,20 @@ pub(crate) async fn run() -> Result<()> {
         ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config).await?;
         let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
         let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
+        let forward_proxy_subscription_snapshot = load_forward_proxy_subscription_snapshot(
+            &pool,
+            &forward_proxy_settings.subscription_urls,
+        )
+        .await?;
         let forward_proxy_runtime = load_forward_proxy_runtime_states(&pool).await?;
         let oauth_installation_seed = oauth_bridge::load_or_init_oauth_installation_seed(&pool).await?;
-        let forward_proxy = Arc::new(Mutex::new(ForwardProxyManager::with_algo(
+        let mut forward_proxy_manager = ForwardProxyManager::with_algo(
             forward_proxy_settings,
             forward_proxy_runtime,
             config.forward_proxy_algo,
-        )));
+        );
+        forward_proxy_manager.restore_subscription_urls(forward_proxy_subscription_snapshot);
+        let forward_proxy = Arc::new(Mutex::new(forward_proxy_manager));
         let resolved_proxy_raw_dir = config.resolved_proxy_raw_dir();
         fs::create_dir_all(&resolved_proxy_raw_dir).with_context(|| {
             format!(
@@ -4172,6 +4179,41 @@ pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
     }
 }
 
+fn forward_proxy_subscription_refresh_is_partial(result: &Result<()>) -> bool {
+    result.as_ref().err().is_some_and(|error| {
+        error
+            .to_string()
+            .starts_with(FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX)
+    })
+}
+
+fn forward_proxy_subscription_refresh_status(result: &Result<()>) -> SystemTaskStatus {
+    if result.is_ok() {
+        SystemTaskStatus::Success
+    } else if forward_proxy_subscription_refresh_is_partial(result) {
+        SystemTaskStatus::Skipped
+    } else {
+        SystemTaskStatus::Failed
+    }
+}
+
+fn finish_forward_proxy_subscription_refresh_observation(
+    observation: &TaskExecutionObservation,
+    result: &Result<()>,
+) {
+    match result {
+        Ok(()) => observation.finish_with_status("success"),
+        Err(error) if forward_proxy_subscription_refresh_is_partial(result) => {
+            observation.finish_with_status_and_reason("skipped", Some("partial_refresh"));
+            debug!(error = %error, "forward proxy subscription refresh retained the previous result");
+        }
+        Err(error) => {
+            let reason = error.to_string();
+            observation.finish_with_status_and_reason("failed", Some(&reason));
+        }
+    }
+}
+
 pub(crate) fn spawn_forward_proxy_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
@@ -4229,7 +4271,9 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                 ),
             )
             .await;
-            observation.finish_from_result(&refresh_result);
+            let refresh_status = forward_proxy_subscription_refresh_status(&refresh_result);
+            let partial_refresh = refresh_status == SystemTaskStatus::Skipped;
+            finish_forward_proxy_subscription_refresh_observation(&observation, &refresh_result);
             if let Err(err) = refresh_result {
                 let detail = err.to_string();
                 if let Some(run) = startup_run.as_ref() {
@@ -4237,13 +4281,21 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         state.as_ref(),
                         Some(&cancel),
                         run,
-                        SystemTaskStatus::Failed,
-                        Some("forward proxy startup refresh failed".to_string()),
+                        refresh_status,
+                        Some(if partial_refresh {
+                            "forward proxy startup refresh retained the previous result".to_string()
+                        } else {
+                            "forward proxy startup refresh failed".to_string()
+                        }),
                         Some(detail),
                     )
                     .await;
                 }
-                warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+                if partial_refresh {
+                    warn!(error = %err, "forward proxy subscriptions were only partially refreshed at startup");
+                } else {
+                    warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+                }
             } else {
                 if let Some(run) = startup_run.as_ref() {
                     let _ = finish_system_task_run_reliably(
@@ -4310,7 +4362,13 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         refresh_forward_proxy_subscriptions(state.clone(), false, None),
                     )
                     .await;
-                    observation.finish_from_result(&refresh_result);
+                    let refresh_status =
+                        forward_proxy_subscription_refresh_status(&refresh_result);
+                    let partial_refresh = refresh_status == SystemTaskStatus::Skipped;
+                    finish_forward_proxy_subscription_refresh_observation(
+                        &observation,
+                        &refresh_result,
+                    );
                     if let Err(err) = refresh_result {
                         let detail = err.to_string();
                         if let Some(run) = task_run.as_ref() {
@@ -4318,13 +4376,22 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                                 state.as_ref(),
                                 Some(&cancel),
                                 run,
-                                SystemTaskStatus::Failed,
-                                Some("forward proxy interval refresh failed".to_string()),
+                                refresh_status,
+                                Some(if partial_refresh {
+                                    "forward proxy interval refresh retained the previous result"
+                                        .to_string()
+                                } else {
+                                    "forward proxy interval refresh failed".to_string()
+                                }),
                                 Some(detail),
                             )
                             .await;
                         }
-                        warn!(error = %err, "failed to refresh forward proxy subscriptions");
+                        if partial_refresh {
+                            warn!(error = %err, "forward proxy subscriptions were only partially refreshed");
+                        } else {
+                            warn!(error = %err, "failed to refresh forward proxy subscriptions");
+                        }
                     } else {
                         if let Some(run) = task_run.as_ref() {
                             let _ = finish_system_task_run_reliably(
@@ -4424,6 +4491,31 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod forward_proxy_subscription_refresh_status_tests {
+    use super::*;
+
+    #[test]
+    fn partial_refresh_is_skipped_for_startup_and_interval_task_runs() {
+        let partial_result: Result<()> = Err(anyhow!(
+            "{FORWARD_PROXY_PARTIAL_REFRESH_ERROR_PREFIX} source failed"
+        ));
+
+        assert_eq!(
+            forward_proxy_subscription_refresh_status(&partial_result),
+            SystemTaskStatus::Skipped
+        );
+        assert_eq!(
+            forward_proxy_subscription_refresh_status(&Ok(())),
+            SystemTaskStatus::Success
+        );
+        assert_eq!(
+            forward_proxy_subscription_refresh_status(&Err(anyhow!("source unavailable"))),
+            SystemTaskStatus::Failed
+        );
+    }
 }
 
 #[cfg(test)]

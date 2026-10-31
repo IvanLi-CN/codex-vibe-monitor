@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "candidate-evidence-pending-current-ci-review",
+  "migration": {
+    "description": "Persist the last complete forward proxy subscription result and restore it on service startup.",
+    "release_unit_description": "Forward proxy subscription restart recovery.",
+    "version_impact": "patch"
+  },
+  "durable_state": {
+    "description": "The successful parsed proxy URLs and the subscription source list that produced them.",
+    "storage_implementation": "One additive JSON column on the singleton forward_proxy_settings row. Snapshot writes are conditional on the configured source list; a SQLite trigger clears the snapshot whenever that list changes. Shutdown rollback restores settings and the matching snapshot in one transaction.",
+    "source_compatibility_range": {
+      "from_program_versions": "The origin/main schema at bc5258f74e61d976adabe1986e49aee773533df5, before the snapshot column.",
+      "to_program_version": "Candidate branch th/forward-proxy-subscription-recovery; final candidate revision is bound by delivery evidence.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "Add subscription_snapshot_json as TEXT NOT NULL DEFAULT '{}'; the schema initializer is idempotent and does not rewrite existing settings rows.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "ddl-002",
+        "description": "Install a trigger that clears subscription_snapshot_json when subscription_urls_json changes, including writes from an older same-line binary.",
+        "order": 2,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "After every configured subscription source succeeds, replace the snapshot conditionally against the still-current source list. A fully successful empty aggregate writes an empty node list; all-source or partial failures do not write or apply results.",
+        "order": 3,
+        "depends_on": ["ddl-001", "ddl-002"],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "No historical backfill is performed because existing runtime rows intentionally omit complete endpoint URLs for some subscription protocols; an incomplete reconstruction would be unsafe. The first successful post-upgrade refresh establishes the durable snapshot.",
+        "order": 4,
+        "depends_on": ["ddl-001", "ddl-002", "dml-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-001", "ddl-002", "dml-001", "backfill-001"],
+    "progress_signals": [
+      "Presence of the subscription snapshot column and invalidation trigger",
+      "Snapshot source list matches the current subscription settings",
+      "Active subscription node count after startup restore and refresh"
+    ],
+    "pause_points": [
+      "After additive schema installation and before the first subscription refresh",
+      "After each successful complete subscription refresh snapshot write"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "An older same-line binary ignores the additive snapshot column; its subscription source updates fire the retained trigger and clear the snapshot. The old binary does not restore cached nodes itself.",
+    "faulty_release_recovery": "A later compatible binary validates snapshot sources before restore and replaces state only after a complete successful refresh.",
+    "interrupted_settings_update_recovery": "When route synchronization is interrupted by shutdown, the previous settings and snapshot are restored in one SQLite transaction. If that transaction fails, it rolls back as a unit and the manager remains aligned with the last committed database settings.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": [
+        "An existing schema without the column upgrades idempotently and receives the empty default.",
+        "A restarted manager restores a source-matched snapshot before refresh; failed and partial refreshes preserve it.",
+        "A complete successful empty refresh clears active nodes and durable state immediately.",
+        "Changing the source list, including through a legacy-style SQL update, clears the snapshot.",
+        "An interrupted settings update restores the old settings and snapshot atomically, and a failed rollback transaction leaves database and manager state aligned."
+      ]
+    },
+    "minor": {
+      "required_test_evidence": []
+    },
+    "major": {
+      "required_test_evidence": []
+    },
+    "completed_evidence": [
+      "cargo test tests::lightweight::forward_proxy_subscription_and_weights -- --nocapture --test-threads=4: 17 passed, including invalid-endpoint snapshot rejection",
+      "cargo test tests::lightweight::time_ranges_and_proxy_display::restarted_xray_subscription_snapshot_recreates_local_route -- --nocapture --test-threads=1: 1 passed",
+      "cargo test tests::stateful_sqlite::oauth_route_support_and_binding -- --nocapture --test-threads=1: 10 passed, including account-bound OAuth CONNECT observations",
+      "cargo fmt --all -- --check",
+      "git diff --check",
+      "dprint check on the associated Spec, Implementation, and History documents",
+      "spec_drift_check.sh --spec-path docs/specs/kmr5z-forward-proxy-latency-refresh/SPEC.md: Spec同步状态=通过, Spec漂移=不存在"
+    ],
+    "pending_evidence": [
+      "Candidate review and CI evidence bound to the pushed revision"
+    ]
+  }
+}

@@ -149,6 +149,8 @@ Account-level forward-proxy bindings are now a first-class routing override.
 - account update payloads accept `boundProxyKeys`; missing preserves, `null` or `[]` clears to inherit, and non-empty lists are validated against selectable existing binding nodes
 - account summaries/details expose `boundProxyKeys`
 - route resolution uses `conversation > account > group` proxy precedence
+- live-candidate evaluation now shares the explicit scope resolver with account preparation, so OAuth account bindings are applied before node-shunt/group fallback; OAuth token refresh and final send use that account scope, while API-key transit candidates retain their transit scope
+- the dual-CONNECT precedence, conversation override, and token-refresh/final-send regression is covered by `tests::stateful_sqlite::oauth_route_support_and_binding`
 - account proxy lists use a dedicated `account:<id>` runtime scope so the current node remains sticky per account
 - explicit account proxy lists are hard constraints; all-unavailable lists fail through the existing proxy readiness path rather than falling back to group or automatic routing
 - the account detail Routing tab now shows the account proxy editor inline and no longer renders the separate "edit account policy" button

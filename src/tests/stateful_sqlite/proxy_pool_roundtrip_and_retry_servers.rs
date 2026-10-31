@@ -2088,9 +2088,24 @@ pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream_
     (format!("http://{addr}"), attempts, handle)
 }
 
+#[derive(Clone)]
+pub(crate) struct TestHttpConnectProxyObservations {
+    pub(crate) request_count: Arc<AtomicUsize>,
+    pub(crate) connect_count: Arc<AtomicUsize>,
+    pub(crate) request_lines: Arc<StdMutex<Vec<String>>>,
+}
+
 pub(crate) async fn spawn_test_http_connect_proxy(
     target_base: &str,
 ) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    let (proxy_url, observations, handle) =
+        spawn_test_http_connect_proxy_with_observations(target_base).await;
+    (proxy_url, observations.request_count, handle)
+}
+
+pub(crate) async fn spawn_test_http_connect_proxy_with_observations(
+    target_base: &str,
+) -> (String, TestHttpConnectProxyObservations, JoinHandle<()>) {
     let target_url = Url::parse(target_base).expect("valid CONNECT proxy target url");
     let target_host = target_url
         .host_str()
@@ -2101,19 +2116,23 @@ pub(crate) async fn spawn_test_http_connect_proxy(
         .port_or_known_default()
         .expect("CONNECT proxy target should have a port");
     let target_addr = SocketAddr::new(target_host, target_port);
-    let connect_attempts = Arc::new(AtomicUsize::new(0));
+    let observations = TestHttpConnectProxyObservations {
+        request_count: Arc::new(AtomicUsize::new(0)),
+        connect_count: Arc::new(AtomicUsize::new(0)),
+        request_lines: Arc::new(StdMutex::new(Vec::new())),
+    };
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind HTTP CONNECT test proxy");
     let addr = listener.local_addr().expect("HTTP CONNECT test proxy addr");
     let handle = tokio::spawn({
-        let connect_attempts = connect_attempts.clone();
+        let observations = observations.clone();
         async move {
             loop {
                 let Ok((mut client, _)) = listener.accept().await else {
                     break;
                 };
-                let connect_attempts = connect_attempts.clone();
+                let observations = observations.clone();
                 tokio::spawn(async move {
                     let mut request = Vec::with_capacity(256);
                     let mut buffer = [0_u8; 1024];
@@ -2135,25 +2154,64 @@ pub(crate) async fn spawn_test_http_connect_proxy(
                         );
                     }
 
-                    assert!(
-                        String::from_utf8_lossy(&request).starts_with("CONNECT "),
-                        "test proxy should receive an HTTP CONNECT request"
-                    );
+                    let first_line_end = request
+                        .windows(2)
+                        .position(|window| window == b"\r\n")
+                        .expect("HTTP proxy request should include a request line");
+                    let first_line = String::from_utf8_lossy(&request[..first_line_end]);
+                    observations
+                        .request_lines
+                        .lock()
+                        .expect("lock HTTP proxy request lines")
+                        .push(first_line.to_string());
+                    let is_connect_request = request.starts_with(b"CONNECT ");
+                    let forwarded_request = if is_connect_request {
+                        request
+                    } else {
+                        let mut parts = first_line.splitn(3, ' ');
+                        let method = parts.next().expect("HTTP proxy request method");
+                        let target = parts.next().expect("HTTP proxy request target");
+                        let version = parts.next().expect("HTTP proxy request version");
+                        let target_url = Url::parse(target).expect("absolute HTTP proxy target");
+                        let mut origin_form = target_url.path().to_string();
+                        if origin_form.is_empty() {
+                            origin_form.push('/');
+                        }
+                        if let Some(query) = target_url.query() {
+                            origin_form.push('?');
+                            origin_form.push_str(query);
+                        }
+                        let mut rewritten =
+                            format!("{method} {origin_form} {version}\r\n").into_bytes();
+                        rewritten.extend_from_slice(&request[first_line_end + 2..]);
+                        rewritten
+                    };
                     let mut target = TcpStream::connect(target_addr)
                         .await
                         .expect("connect HTTP CONNECT test proxy target");
-                    client
-                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                        .await
-                        .expect("write HTTP CONNECT success response");
-                    connect_attempts.fetch_add(1, Ordering::SeqCst);
+                    if is_connect_request {
+                        client
+                            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                            .await
+                            .expect("write HTTP CONNECT success response");
+                    }
+                    observations.request_count.fetch_add(1, Ordering::SeqCst);
+                    if is_connect_request {
+                        observations.connect_count.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if !is_connect_request {
+                        target
+                            .write_all(&forwarded_request)
+                            .await
+                            .expect("forward HTTP proxy request");
+                    }
                     let _ = tokio::io::copy_bidirectional(&mut client, &mut target).await;
                 });
             }
         }
     });
 
-    (format!("http://{addr}"), connect_attempts, handle)
+    (format!("http://{addr}"), observations, handle)
 }
 
 pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_sequence_upstream(
