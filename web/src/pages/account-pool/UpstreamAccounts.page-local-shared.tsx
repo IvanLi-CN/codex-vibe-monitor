@@ -1930,7 +1930,10 @@ function SharedUpstreamAccountDetailDrawerInner({
         modelMappingAccountIdRef.current = savedAccountId;
         setModelMappingDrafts(nextMappings);
         setModelMappingBaseline(nextMappings);
-        void loadDetail(savedAccountId, { silent: true, includeRecentActions: true });
+        void loadDetail(savedAccountId, {
+          silent: true,
+          includeRecentActions: true,
+        });
       }
     } catch (error) {
       setModelMappingSaveError(error instanceof Error ? error.message : String(error));
@@ -2067,7 +2070,10 @@ function SharedUpstreamAccountDetailDrawerInner({
       setModelRoutingError(null);
       try {
         await resetUpstreamAccountModelRouting(accountId, model);
-        await loadDetail(accountId, { silent: true, includeRecentActions: true });
+        await loadDetail(accountId, {
+          silent: true,
+          includeRecentActions: true,
+        });
       } catch (error) {
         if (selectedIdRef.current === accountId) {
           setModelRoutingError(error instanceof Error ? error.message : String(error));
@@ -4685,7 +4691,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                                       <span>{formatDateTime(record.occurredAt)}</span>
                                       {record.reasonCode ? (
                                         <span className="text-base-content/65">
-                                          {record.reasonCode}
+                                          {accountActionReasonLabel(record.reasonCode) ??
+                                            record.reasonCode}
                                         </span>
                                       ) : null}
                                       {record.reasonMessage ? (

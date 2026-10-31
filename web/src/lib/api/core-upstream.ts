@@ -9,6 +9,7 @@ import type {
 import {
   ensureJsonRequestOk,
   fetchJson,
+  fetchJsonAllowErrorStatus,
   normalizeBlockedBindingDiagnostic,
   normalizeCompactSupportState,
   normalizeFiniteNumber,
@@ -1874,7 +1875,10 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
         catalogErrorPayload &&
         typeof catalogErrorPayload.code === "string" &&
         typeof catalogErrorPayload.message === "string"
-          ? { code: catalogErrorPayload.code, message: catalogErrorPayload.message }
+          ? {
+              code: catalogErrorPayload.code,
+              message: catalogErrorPayload.message,
+            }
           : null,
       stale: catalogPayload.stale === true,
     },
@@ -2968,7 +2972,7 @@ export async function syncUpstreamAccount(accountId: number): Promise<UpstreamAc
 export async function refreshUpstreamAccountUsage(
   accountId: number,
 ): Promise<UpstreamAccountDetail> {
-  const response = await fetchJson<unknown>(
+  const response = await fetchJsonAllowErrorStatus<unknown>(
     `/api/pool/upstream-accounts/${accountId}/usage/refresh`,
     { method: "POST" },
   );
@@ -2978,7 +2982,7 @@ export async function refreshUpstreamAccountUsage(
 export async function refreshUpstreamAccountCredentials(
   accountId: number,
 ): Promise<UpstreamAccountDetail> {
-  const response = await fetchJson<unknown>(
+  const response = await fetchJsonAllowErrorStatus<unknown>(
     `/api/pool/upstream-accounts/${accountId}/credentials/refresh`,
     { method: "POST" },
   );

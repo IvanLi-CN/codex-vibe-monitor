@@ -603,13 +603,16 @@ async fn refresh_oauth_credentials_with_source(
         return Ok(());
     }
 
-    begin_upstream_account_refresh_attempt(
+    if !begin_upstream_account_refresh_attempt(
         &state.pool,
         row.id,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
         source,
     )
-    .await?;
+    .await?
+    {
+        return Ok(());
+    }
 
     let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
         Some(key) => key,
@@ -728,12 +731,25 @@ async fn refresh_oauth_credentials_with_source(
             let stored_token_expires_at = parse_access_token_expiry(&credentials.access_token)
                 .map(format_utc_iso)
                 .unwrap_or_else(|| response_token_expires_at.clone());
-            if let Err(err) = persist_oauth_credentials(
+            let next_attempt_at = access_token_expiry
+                .or_else(|| parse_rfc3339_utc(&response_token_expires_at))
+                .map(|expires| {
+                    format_utc_iso(
+                        expires
+                            - ChronoDuration::seconds(
+                                state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                            ),
+                    )
+                })
+                .or_else(|| Some(format_utc_iso(Utc::now() + ChronoDuration::days(8))));
+            if let Err(err) = persist_oauth_credentials_and_complete_refresh(
                 &state.pool,
                 row.id,
                 crypto_key,
                 &credentials,
                 &stored_token_expires_at,
+                source,
+                next_attempt_at.as_deref(),
             )
             .await
             {
@@ -753,27 +769,7 @@ async fn refresh_oauth_credentials_with_source(
                     None,
                 )
                 .await?;
-                return Ok(());
             }
-            let next_attempt_at = access_token_expiry
-                .or_else(|| parse_rfc3339_utc(&response_token_expires_at))
-                .map(|expires| {
-                    format_utc_iso(
-                        expires
-                            - ChronoDuration::seconds(
-                                state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
-                            ),
-                    )
-                })
-                .or_else(|| Some(format_utc_iso(Utc::now() + ChronoDuration::days(8))));
-            complete_upstream_account_refresh_success(
-                &state.pool,
-                row.id,
-                UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
-                source,
-                next_attempt_at.as_deref(),
-            )
-            .await?;
         }
         Err(err) => {
             if let Some(throttle) = err.downcast_ref::<AccountMaintenanceEgressThrottleError>() {
@@ -837,7 +833,11 @@ pub(crate) async fn refresh_oauth_usage_windows(
         .ok_or_else(|| anyhow!("account disappeared before usage refresh"))?;
     let row = &current_row;
     let operation = UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS;
-    begin_upstream_account_refresh_attempt(&state.pool, row.id, operation, source).await?;
+    if !begin_upstream_account_refresh_attempt(&state.pool, row.id, operation, source).await? {
+        return Ok(OAuthUsageRefreshOutcome::Deferred {
+            proxy_snapshot: None,
+        });
+    }
     let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
         Some(key) => key,
         None => {
@@ -1127,13 +1127,219 @@ pub(crate) async fn refresh_upstream_account_usage_by_id(
     if row.enabled == 0 {
         bail!("disabled accounts cannot refresh usage windows");
     }
-    refresh_oauth_usage_windows(
+    let was_selectable = is_account_selectable_for_fresh_assignment(&row, false, Utc::now());
+    let deferred_status =
+        if row.status.trim().is_empty() || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        } else {
+            row.status.as_str()
+        };
+    let usage_outcome = refresh_oauth_usage_windows(
         state,
         &row,
         UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
     )
     .await?;
+    let credential_reauth_required = load_upstream_account_refresh_status(
+        &state.pool,
+        id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await?
+    .state
+        == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH;
+    apply_manual_usage_refresh_outcome(
+        state,
+        &row,
+        deferred_status,
+        credential_reauth_required,
+        usage_outcome,
+    )
+    .await?;
+    let refreshed_row = load_upstream_account_row(&state.pool, id)
+        .await?
+        .ok_or_else(|| anyhow!("account disappeared after manual usage refresh"))?;
+    if !was_selectable
+        && is_account_selectable_for_fresh_assignment(&refreshed_row, false, Utc::now())
+    {
+        publish_pool_routing_availability(state);
+    }
     load_upstream_account_detail_with_actual_usage(state, id).await
+}
+
+async fn apply_manual_usage_refresh_outcome(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    deferred_status: &str,
+    credential_reauth_required: bool,
+    usage_outcome: OAuthUsageRefreshOutcome,
+) -> Result<()> {
+    match usage_outcome {
+        OAuthUsageRefreshOutcome::Succeeded {
+            snapshot,
+            proxy_snapshot,
+        } => {
+            if credential_reauth_required {
+                set_account_status(
+                    &state.pool,
+                    row.id,
+                    UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+                    Some("OAuth 凭据刷新需要重新授权。"),
+                )
+                .await?;
+            } else if imported_snapshot_is_exhausted(&snapshot) {
+                let latest_row = load_upstream_account_row(&state.pool, row.id)
+                    .await?
+                    .ok_or_else(|| anyhow!("account disappeared after manual usage refresh"))?;
+                if route_failure_kind_is_quota_exhausted(
+                    latest_row.last_route_failure_kind.as_deref(),
+                ) {
+                    record_account_sync_recovery_blocked(
+                        &state.pool,
+                        row.id,
+                        deferred_status,
+                        UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
+                        UPSTREAM_ACCOUNT_STATUS_ERROR,
+                        UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+                        "latest usage snapshot still shows an exhausted upstream usage limit window",
+                        latest_row.last_error.as_deref().or(row.last_error.as_deref()),
+                        latest_row.last_route_failure_kind.as_deref(),
+                    )
+                    .await?;
+                } else {
+                    record_account_sync_hard_unavailable(
+                        &state.pool,
+                        row.id,
+                        deferred_status,
+                        UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
+                        UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
+                        "latest usage snapshot already shows an exhausted upstream usage limit window",
+                        PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED,
+                    )
+                    .await?;
+                }
+            } else {
+                mark_account_operation_success_with_proxy_snapshot(
+                    &state.pool,
+                    row.id,
+                    UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
+                    SyncSuccessRouteState::ClearFailureState,
+                    UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_SUCCEEDED,
+                    "usage_windows_refresh_ok",
+                    proxy_snapshot.as_ref(),
+                )
+                .await?;
+            }
+        }
+        OAuthUsageRefreshOutcome::Partial {
+            snapshot,
+            proxy_snapshot: _,
+        } => {
+            if credential_reauth_required {
+                set_account_status(
+                    &state.pool,
+                    row.id,
+                    UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+                    Some("OAuth 凭据刷新需要重新授权。"),
+                )
+                .await?;
+            } else if imported_snapshot_is_exhausted(&snapshot) {
+                let latest_row = load_upstream_account_row(&state.pool, row.id)
+                    .await?
+                    .ok_or_else(|| anyhow!("account disappeared after partial usage refresh"))?;
+                if route_failure_kind_is_quota_exhausted(
+                    latest_row.last_route_failure_kind.as_deref(),
+                ) {
+                    record_account_sync_recovery_blocked(
+                        &state.pool,
+                        row.id,
+                        deferred_status,
+                        UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
+                        UPSTREAM_ACCOUNT_STATUS_ERROR,
+                        UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+                        "latest usage snapshot still shows an exhausted upstream usage limit window",
+                        latest_row.last_error.as_deref().or(row.last_error.as_deref()),
+                        latest_row.last_route_failure_kind.as_deref(),
+                    )
+                    .await?;
+                } else {
+                    record_account_sync_hard_unavailable(
+                        &state.pool,
+                        row.id,
+                        deferred_status,
+                        UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
+                        UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
+                        "latest usage snapshot already shows an exhausted upstream usage limit window",
+                        PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED,
+                    )
+                    .await?;
+                }
+            } else {
+                set_account_status(&state.pool, row.id, deferred_status, None).await?;
+            }
+        }
+        OAuthUsageRefreshOutcome::Failed {
+            error,
+            http_status,
+            proxy_snapshot,
+        } => {
+            let latest_row = load_upstream_account_row(&state.pool, row.id)
+                .await?
+                .ok_or_else(|| anyhow!("account disappeared after manual usage refresh failure"))?;
+            let classified_error = http_status
+                .filter(|status| !error.contains(&format!("HTTP {}", status.as_u16())))
+                .map(|status| format!("上游返回 HTTP {}: {error}", status.as_u16()))
+                .unwrap_or(error);
+            if let Some(status @ (StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)) = http_status {
+                record_account_sync_failure_with_proxy_snapshot(
+                    &state.pool,
+                    latest_row.id,
+                    deferred_status,
+                    UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
+                    deferred_status,
+                    &classified_error,
+                    UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR,
+                    Some(status),
+                    PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
+                    latest_row.last_route_failure_kind.as_deref(),
+                    false,
+                    proxy_snapshot.as_ref(),
+                )
+                .await?;
+            } else {
+                record_classified_account_sync_failure_with_proxy_snapshot(
+                    &state.pool,
+                    &latest_row,
+                    deferred_status,
+                    UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
+                    &classified_error,
+                    proxy_snapshot.as_ref(),
+                )
+                .await?;
+            }
+            if credential_reauth_required {
+                set_account_status(
+                    &state.pool,
+                    row.id,
+                    UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+                    Some("OAuth 凭据刷新需要重新授权。"),
+                )
+                .await?;
+            }
+        }
+        OAuthUsageRefreshOutcome::Deferred { .. } => {
+            if credential_reauth_required {
+                set_account_status(
+                    &state.pool,
+                    row.id,
+                    UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+                    Some("OAuth 凭据刷新需要重新授权。"),
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn refresh_upstream_account_credentials_by_id(
@@ -1149,6 +1355,7 @@ pub(crate) async fn refresh_upstream_account_credentials_by_id(
     if row.enabled == 0 {
         bail!("disabled accounts cannot refresh credentials");
     }
+    let was_selectable = is_account_selectable_for_fresh_assignment(&row, false, Utc::now());
     let refresh_scope = resolve_account_forward_proxy_scope_for_sync(state, &row, None).await?;
     refresh_oauth_credentials_now_with_source(
         state,
@@ -1178,6 +1385,16 @@ pub(crate) async fn refresh_upstream_account_credentials_by_id(
         && latest_row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
     {
         set_account_status(&state.pool, id, UPSTREAM_ACCOUNT_STATUS_ACTIVE, None).await?;
+    }
+    let refreshed_row = load_upstream_account_row(&state.pool, id)
+        .await?
+        .ok_or_else(|| {
+            anyhow!("account disappeared after manual credential refresh status update")
+        })?;
+    if !was_selectable
+        && is_account_selectable_for_fresh_assignment(&refreshed_row, false, Utc::now())
+    {
+        publish_pool_routing_availability(state);
     }
     load_upstream_account_detail_with_actual_usage(state, id).await
 }
@@ -1399,7 +1616,17 @@ pub(crate) async fn sync_oauth_account(
                 .await?;
             }
         }
-        OAuthUsageRefreshOutcome::Deferred { .. } => {}
+        OAuthUsageRefreshOutcome::Deferred { .. } => {
+            if credential_reauth_required {
+                set_account_status(
+                    &state.pool,
+                    row.id,
+                    UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+                    Some("OAuth 凭据刷新需要重新授权。"),
+                )
+                .await?;
+            }
+        }
     }
     Ok(())
 }
@@ -1426,7 +1653,20 @@ pub(crate) async fn record_oauth_maintenance_throttled(
         throttle.proxy_egress_ip.as_deref(),
     )
     .await?;
-    set_account_status(&state.pool, account_id, next_status, None).await
+    let effective_next_status = if load_upstream_account_refresh_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await?
+    .state
+        == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
+    {
+        UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+    } else {
+        next_status
+    };
+    set_account_status(&state.pool, account_id, effective_next_status, None).await
 }
 
 pub(crate) async fn persist_oauth_credentials(
@@ -1436,8 +1676,74 @@ pub(crate) async fn persist_oauth_credentials(
     credentials: &StoredOauthCredentials,
     token_expires_at: &str,
 ) -> Result<()> {
-    let claims = parse_chatgpt_jwt_claims(&credentials.id_token).unwrap_or_default();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    persist_oauth_credentials_with_executor(
+        &mut tx,
+        account_id,
+        crypto_key,
+        credentials,
+        token_expires_at,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn persist_oauth_credentials_and_complete_refresh(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    crypto_key: &[u8; 32],
+    credentials: &StoredOauthCredentials,
+    token_expires_at: &str,
+    source: &str,
+    next_attempt_at: Option<&str>,
+) -> Result<()> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    persist_oauth_credentials_with_executor(
+        &mut tx,
+        account_id,
+        crypto_key,
+        credentials,
+        token_expires_at,
+    )
+    .await?;
+    complete_upstream_account_refresh_success_state_with_executor(
+        &mut tx,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        source,
+        next_attempt_at,
+    )
+    .await?;
+    tx.commit().await?;
+
+    if let Err(err) = record_upstream_account_refresh_success_event(
+        pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        source,
+    )
+    .await
+    {
+        warn!(
+            account_id,
+            operation = UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            source,
+            error = %err,
+            "OAuth credentials persisted but success history event could not be recorded"
+        );
+    }
+    Ok(())
+}
+
+async fn persist_oauth_credentials_with_executor(
+    tx: &mut Transaction<'_, Sqlite>,
+    account_id: i64,
+    crypto_key: &[u8; 32],
+    credentials: &StoredOauthCredentials,
+    token_expires_at: &str,
+) -> Result<()> {
+    let claims = parse_chatgpt_jwt_claims(&credentials.id_token).unwrap_or_default();
     let Some(row) = load_upstream_account_row_conn(tx.as_mut(), account_id).await? else {
         bail!("account not found");
     };
@@ -1526,7 +1832,6 @@ pub(crate) async fn persist_oauth_credentials(
     })
     .execute(tx.as_mut())
     .await?;
-    tx.commit().await?;
     Ok(())
 }
 

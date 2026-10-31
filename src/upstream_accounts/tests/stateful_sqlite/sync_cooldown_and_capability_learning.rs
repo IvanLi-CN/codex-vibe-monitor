@@ -44,6 +44,55 @@ fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
 }
 
 #[tokio::test]
+async fn refresh_state_claim_prevents_concurrent_attempts_for_one_operation() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Refresh Claim").await;
+
+    assert!(
+        begin_upstream_account_refresh_attempt(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            "sync_maintenance",
+        )
+        .await
+        .expect("first refresh claim")
+    );
+    assert!(
+        !begin_upstream_account_refresh_attempt(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            "sync_maintenance",
+        )
+        .await
+        .expect("second refresh claim")
+    );
+
+    sqlx::query(
+        "UPDATE pool_upstream_account_refresh_state SET last_attempt_at = ?1 WHERE account_id = ?2 AND operation = ?3",
+    )
+    .bind(format_utc_iso(
+        Utc::now() - ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS + 1),
+    ))
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .execute(&pool)
+    .await
+    .expect("age refresh claim");
+    assert!(
+        begin_upstream_account_refresh_attempt(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            "sync_maintenance",
+        )
+        .await
+        .expect("stale refresh claim")
+    );
+}
+
+#[tokio::test]
 async fn credential_refresh_keeps_access_token_rejection_during_transient_retry() {
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Rejected Access Token").await;
@@ -5833,6 +5882,73 @@ async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers()
     assert_eq!(
         after.last_action.as_deref(),
         Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn manual_usage_refresh_reactivates_quota_exhausted_account_once_snapshot_recovers() {
+    let (base_url, server) = spawn_usage_snapshot_server(
+        StatusCode::OK,
+        json!({
+            "planType": "team",
+            "rateLimit": {
+                "primaryWindow": {
+                    "usedPercent": 42,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1771322400
+                },
+                "secondaryWindow": {
+                    "usedPercent": 18,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1771927200
+                }
+            }
+        }),
+    )
+    .await;
+    let state = test_app_state_with_usage_base(&base_url).await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Recovered OAuth Manual Usage",
+        "recovered-manual@example.com",
+        "org_recovered_manual",
+        "user_recovered_manual",
+    )
+    .await;
+    seed_hard_unavailable_route_failure(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        Some(429),
+    )
+    .await;
+
+    state
+        .upstream_accounts
+        .account_ops
+        .run_manual_usage_refresh(state.clone(), account_id)
+        .await
+        .expect("manual usage refresh");
+
+    let after = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load oauth row after manual recovery")
+        .expect("oauth row exists after manual recovery");
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(after.last_error.is_none());
+    assert!(after.last_route_failure_kind.is_none());
+    assert_eq!(
+        after.last_action.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_SUCCEEDED)
     );
     server.abort();
 }

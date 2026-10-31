@@ -1974,11 +1974,41 @@ pub(crate) async fn sync_upstream_account(
     Ok(Json(detail))
 }
 
+fn manual_refresh_response_status(detail: &UpstreamAccountDetail, operation: &str) -> StatusCode {
+    let state = match operation {
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS => detail.credential_refresh.state.as_str(),
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS => {
+            detail.usage_window_refresh.state.as_str()
+        }
+        _ => UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED,
+    };
+    match state {
+        UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH => StatusCode::CONFLICT,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL
+            if operation == UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS =>
+        {
+            StatusCode::MULTI_STATUS
+        }
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
+        | UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR
+        | UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING => StatusCode::BAD_GATEWAY,
+        _ => StatusCode::OK,
+    }
+}
+
+fn manual_refresh_response(detail: UpstreamAccountDetail, operation: &str) -> Response {
+    (
+        manual_refresh_response_status(&detail, operation),
+        Json(detail),
+    )
+        .into_response()
+}
+
 pub(crate) async fn refresh_upstream_account_usage(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
-) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     if !is_same_origin_settings_write(&headers) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -1991,14 +2021,17 @@ pub(crate) async fn refresh_upstream_account_usage(
         .run_manual_usage_refresh(state.clone(), id)
         .await
         .map_err(request_runtime_error_tuple)?;
-    Ok(Json(detail))
+    Ok(manual_refresh_response(
+        detail,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    ))
 }
 
 pub(crate) async fn refresh_upstream_account_credentials(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
-) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     if !is_same_origin_settings_write(&headers) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -2011,7 +2044,10 @@ pub(crate) async fn refresh_upstream_account_credentials(
         .run_manual_credential_refresh(state.clone(), id)
         .await
         .map_err(request_runtime_error_tuple)?;
-    Ok(Json(detail))
+    Ok(manual_refresh_response(
+        detail,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    ))
 }
 
 pub(crate) async fn handle_oauth_callback(
@@ -2436,20 +2472,28 @@ pub(crate) async fn persist_oauth_callback_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
-    tx.commit().await.map_err(internal_error_tuple)?;
-    if let Err(err) = complete_upstream_account_refresh_success(
-        &state.pool,
+    complete_upstream_account_refresh_success_state_with_executor(
+        &mut tx,
         account_id,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
         UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
         credential_refresh_next_attempt_at.as_deref(),
     )
     .await
+    .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
+    if let Err(err) = record_upstream_account_refresh_success_event(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
+    )
+    .await
     {
         warn!(
             account_id,
             error = %err,
-            "OAuth callback committed but credential refresh observability update failed"
+            "OAuth callback committed but credential refresh success history event could not be recorded"
         );
     }
     Ok(account_id)
@@ -2563,20 +2607,28 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
-    tx.commit().await.map_err(internal_error_tuple)?;
-    if let Err(err) = complete_upstream_account_refresh_success(
-        &state.pool,
+    complete_upstream_account_refresh_success_state_with_executor(
+        &mut tx,
         resolved_account_id,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
         UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
         credential_refresh_next_attempt_at.as_deref(),
     )
     .await
+    .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
+    if let Err(err) = record_upstream_account_refresh_success_event(
+        &state.pool,
+        resolved_account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
+    )
+    .await
     {
         warn!(
             account_id = resolved_account_id,
             error = %err,
-            "OAuth identity overwrite committed but credential refresh observability update failed"
+            "OAuth identity overwrite committed but credential refresh success history event could not be recorded"
         );
     }
     drop(_credential_refresh_guard);

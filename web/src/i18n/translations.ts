@@ -1726,6 +1726,36 @@ const baseTranslations = {
       "Cache hit protection disabled",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "Account settings were updated",
+    "accountPool.upstreamAccounts.latestAction.reasons.credential_refresh_ok":
+      "Credentials refreshed successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_ok":
+      "Usage windows updated successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_window_partial":
+      "One usage window was updated; retry pending",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_missing":
+      "Usage response contained no usable windows",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_persist_failed":
+      "Usage window data could not be saved",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_unavailable":
+      "Credential storage is unavailable",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_missing":
+      "OAuth credentials are missing",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_kind_invalid":
+      "OAuth credential type is invalid",
+    "accountPool.upstreamAccounts.latestAction.reasons.refresh_token_missing":
+      "Refresh Token is missing",
+    "accountPool.upstreamAccounts.latestAction.reasons.refresh_token_invalid":
+      "Refresh Token is invalid",
+    "accountPool.upstreamAccounts.latestAction.reasons.access_token_rejected":
+      "Access Token was rejected",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_response_parse_failed":
+      "Credential response could not be parsed",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_response_parse_failed":
+      "Usage response could not be parsed",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_refresh_failed":
+      "Credential refresh failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_failed":
+      "Usage window update failed",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "Sync failed",
     "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "Egress rate limited",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
@@ -1739,6 +1769,8 @@ const baseTranslations = {
       "Upstream is temporarily overloaded",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
       "Reauthentication required",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_400":
+      "Upstream rejected the request (400)",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
       "Upstream rejected credentials (401)",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
@@ -5332,6 +5364,31 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.cache_hit_protection_disabled":
       "缓存命中保护已关闭",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated": "账号设置已更新",
+    "accountPool.upstreamAccounts.latestAction.reasons.credential_refresh_ok": "凭据刷新成功",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_ok":
+      "额度窗口更新成功",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_window_partial":
+      "一个额度窗口已更新，等待重试",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_missing":
+      "额度响应未包含可用窗口",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_persist_failed":
+      "额度窗口数据保存失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_unavailable": "凭据存储不可用",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_missing": "OAuth 凭据缺失",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_kind_invalid":
+      "OAuth 凭据类型无效",
+    "accountPool.upstreamAccounts.latestAction.reasons.refresh_token_missing": "Refresh Token 缺失",
+    "accountPool.upstreamAccounts.latestAction.reasons.refresh_token_invalid":
+      "Refresh Token 已失效",
+    "accountPool.upstreamAccounts.latestAction.reasons.access_token_rejected":
+      "Access Token 被上游拒绝",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_response_parse_failed":
+      "凭据响应解析失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_response_parse_failed":
+      "额度响应解析失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_refresh_failed": "凭据刷新失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_failed":
+      "额度窗口更新失败",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "同步失败",
     "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "出口正在限流",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
@@ -5343,6 +5400,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure": "网络或传输失败",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded": "上游暂时过载",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required": "需要重新登录",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_400": "上游拒绝请求（400）",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401": "上游拒绝凭据（401）",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
       "上游因套餐或计费拒绝访问（402）",

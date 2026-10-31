@@ -139,13 +139,12 @@ pub(crate) async fn begin_upstream_account_refresh_attempt(
     account_id: i64,
     operation: &str,
     source: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let now = format_utc_iso(Utc::now());
-    info!(
-        account_id,
-        operation, source, "upstream account refresh attempt started"
+    let stale_before = format_utc_iso(
+        Utc::now() - ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS),
     );
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_refresh_state (
             account_id, operation, state, last_attempt_at, source,
@@ -157,6 +156,9 @@ pub(crate) async fn begin_upstream_account_refresh_attempt(
             next_attempt_at = NULL,
             source = excluded.source,
             updated_at = excluded.updated_at
+        WHERE pool_upstream_account_refresh_state.state <> ?6
+           OR pool_upstream_account_refresh_state.last_attempt_at IS NULL
+           OR pool_upstream_account_refresh_state.last_attempt_at <= ?7
         "#,
     )
     .bind(account_id)
@@ -164,13 +166,59 @@ pub(crate) async fn begin_upstream_account_refresh_attempt(
     .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
     .bind(&now)
     .bind(source)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
+    .bind(&stale_before)
     .execute(pool)
     .await?;
-    Ok(())
+    let claimed = result.rows_affected() > 0;
+    if claimed {
+        info!(
+            account_id,
+            operation, source, "upstream account refresh attempt started"
+        );
+    } else {
+        info!(
+            account_id,
+            operation, source, "upstream account refresh attempt deferred"
+        );
+    }
+    Ok(claimed)
 }
 
 pub(crate) async fn complete_upstream_account_refresh_success(
     pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    source: &str,
+    next_attempt_at: Option<&str>,
+) -> Result<()> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    complete_upstream_account_refresh_success_state_with_executor(
+        &mut tx,
+        account_id,
+        operation,
+        source,
+        next_attempt_at,
+    )
+    .await?;
+    tx.commit().await?;
+
+    if let Err(err) =
+        record_upstream_account_refresh_success_event(pool, account_id, operation, source).await
+    {
+        warn!(
+            account_id,
+            operation,
+            source,
+            error = %err,
+            "upstream account refresh succeeded but success history event could not be recorded"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) async fn complete_upstream_account_refresh_success_state_with_executor(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
     account_id: i64,
     operation: &str,
     source: &str,
@@ -199,9 +247,19 @@ pub(crate) async fn complete_upstream_account_refresh_success(
     .bind(&now)
     .bind(next_attempt_at)
     .bind(source)
-    .execute(pool)
+    .execute(tx.as_mut())
     .await?;
 
+    Ok(())
+}
+
+pub(crate) async fn record_upstream_account_refresh_success_event(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    source: &str,
+) -> Result<()> {
+    let now = format_utc_iso(Utc::now());
     let (action, reason_code) = match operation {
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS => (
             UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_SUCCEEDED,
@@ -492,6 +550,34 @@ pub(crate) fn classify_refresh_error(error: &str, operation: &str) -> (String, S
         return (
             "upstream_http_403".to_string(),
             "上游返回 HTTP 403，等待下一分钟重试。".to_string(),
+        );
+    }
+    if lower.contains("402") {
+        return (
+            "upstream_http_402".to_string(),
+            "上游返回 HTTP 402，等待下一分钟重试。".to_string(),
+        );
+    }
+    if lower.contains("429") {
+        let quota_exhausted = ["quota", "limit", "exhausted", "rate_limit_exceeded"]
+            .iter()
+            .any(|marker| lower.contains(marker));
+        return if quota_exhausted {
+            (
+                "upstream_http_429_quota_exhausted".to_string(),
+                "上游额度窗口已耗尽，等待下一分钟重试。".to_string(),
+            )
+        } else {
+            (
+                "upstream_http_429_rate_limit".to_string(),
+                "上游请求受到限流，等待下一分钟重试。".to_string(),
+            )
+        };
+    }
+    if lower.contains("400") {
+        return (
+            "upstream_http_400".to_string(),
+            "上游返回 HTTP 400，等待下一分钟重试。".to_string(),
         );
     }
     if let Some(status) = refresh_http_status(error).filter(StatusCode::is_server_error) {
