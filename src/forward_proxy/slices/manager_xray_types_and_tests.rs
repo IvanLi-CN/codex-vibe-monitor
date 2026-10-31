@@ -2303,6 +2303,53 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn timed_codex_responses_probe_maps_http_statuses() {
+        let _guard = crate::oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+            .lock()
+            .await;
+
+        for (status, expected_ok) in [
+            (StatusCode::METHOD_NOT_ALLOWED, true),
+            (StatusCode::INTERNAL_SERVER_ERROR, false),
+        ] {
+            let app = Router::new().route(
+                "/backend-api/codex/responses",
+                get(move || async move { status }),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind codex responses probe upstream");
+            let addr = listener
+                .local_addr()
+                .expect("read codex responses probe upstream address");
+            let handle = tokio::spawn(async move {
+                axum::serve(listener, app)
+                    .await
+                    .expect("codex responses probe upstream should run");
+            });
+
+            crate::oauth_bridge::set_test_oauth_codex_upstream_base_url(
+                Url::parse(&format!("http://{addr}/backend-api/codex"))
+                    .expect("valid codex responses probe upstream url"),
+            )
+            .await;
+            let result =
+                timed_forward_proxy_codex_responses_probe(&Client::new(), Duration::from_secs(1))
+                    .await;
+
+            handle.abort();
+            assert_eq!(
+                result.ok, expected_ok,
+                "unexpected result for HTTP {status}"
+            );
+            assert_eq!(result.http_status, Some(status.as_u16()));
+            assert_eq!(result.error.is_none(), expected_ok);
+        }
+
+        crate::oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+    }
+
     #[test]
     fn manual_latency_xhttp_responses_405_keeps_round_healthy() {
         let mut accumulator = ForwardProxyLatencyAccumulator::default();
