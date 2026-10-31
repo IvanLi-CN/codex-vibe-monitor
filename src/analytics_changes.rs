@@ -22,15 +22,43 @@ const LEGACY_ANALYTICS_HISTORY_TABLES: &[&str] = &[
     "upstream_account_stats_minute",
     "long_term_usage_hourly",
     "long_term_usage_daily",
+    "long_term_stats_state",
     "long_term_stats_repair_queue",
+    "long_term_projection_state",
+    "long_term_projection_dirty_buckets",
+    "long_term_projection_bucket_state",
+    "long_term_projection_daily_backups",
+    "long_term_projection_date_publications",
+    "long_term_projection_archive_compatibility",
+    "long_term_projection_daily_backup_claims",
+    "long_term_projection_intervals",
+    "long_term_projection_interval_state",
+    "long_term_projection_interval_suppressions",
+    "long_term_projection_rebuild_members",
     "summary_source_change_journal",
     "summary_source_change_compaction_proof",
+    "summary_source_change_cursor",
+    "summary_all_time_coverage_checkpoint",
+    "summary_all_time_projection_checkpoint",
+    "summary_all_time_projection_account_checkpoint",
+    "summary_all_time_projection_usage_checkpoint",
+    "summary_live_tail_reconciliation_checkpoint",
     "summary_archive_snapshot",
+    "summary_archive_snapshot_backfill_checkpoint",
+    "summary_archive_snapshot_backfill_outcome",
     "summary_archive_snapshot_v2_proof",
     "summary_coverage_obligation",
+    "summary_compacted_source_recovery_checkpoint",
     "summary_compacted_source_recovery_aggregate",
     "summary_compacted_source_recovery_usage",
     "summary_compacted_source_recovery_record",
+    "summary_coverage_revision",
+    "summary_account_coverage_revision",
+    "hourly_rollup_archive_progress",
+    "hourly_rollup_archive_repair_progress",
+    "hourly_rollup_archive_repair_deferred",
+    "hourly_rollup_repair_seen_invocation_ids",
+    "hourly_rollup_repair_cleared_buckets",
 ];
 
 #[derive(Debug, Clone, Copy, FromRow)]
@@ -1434,6 +1462,28 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed legacy aggregate row");
+        sqlx::query("CREATE TABLE summary_all_time_projection_checkpoint (scope TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("create legacy Summary checkpoint table");
+        sqlx::query(
+            "INSERT INTO summary_all_time_projection_checkpoint (scope) VALUES ('all-time')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy Summary checkpoint row");
+        sqlx::query(
+            "CREATE TABLE archive_batches (dataset TEXT NOT NULL, status TEXT NOT NULL, summary_source_kind TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy archive metadata table");
+        sqlx::query(
+            "INSERT INTO archive_batches (dataset, status, summary_source_kind) VALUES ('codex_invocations', 'completed', 'live_mirror')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy invocation archive metadata");
 
         ensure_analytics_changes_schema(&pool)
             .await
