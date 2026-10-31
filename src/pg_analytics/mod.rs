@@ -1064,19 +1064,29 @@ async fn load_source_invocation_snapshot_page(
     after_id: i64,
 ) -> Result<Vec<AnalyticsFact>> {
     // Keep source pages bounded while retaining one character beyond the shared 256-character limit.
+    // NUL-bearing SQLite text must take the raw-text branch because SQLite text functions treat NUL
+    // as a terminator; Rust then removes NULs and applies the shared character bound.
     let rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(
         r#"
         SELECT
             id,
-            substr(invoke_id, 1, 257) AS invoke_id,
-            substr(occurred_at, 1, 257) AS occurred_at,
+            CASE WHEN instr(CAST(invoke_id AS BLOB), X'00') > 0
+                 THEN CAST(invoke_id AS TEXT)
+                 ELSE substr(invoke_id, 1, 257) END AS invoke_id,
+            CASE WHEN instr(CAST(occurred_at AS BLOB), X'00') > 0
+                 THEN CAST(occurred_at AS TEXT)
+                 ELSE substr(occurred_at, 1, 257) END AS occurred_at,
             CAST(COALESCE(ROUND((julianday(
                 occurred_at,
                 CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
             ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
             substr(occurred_at, 1, 10) AS stats_date,
-            substr(source, 1, 257) AS source,
-            substr(model, 1, 257) AS model,
+            CASE WHEN instr(CAST(source AS BLOB), X'00') > 0
+                 THEN CAST(source AS TEXT)
+                 ELSE substr(source, 1, 257) END AS source,
+            CASE WHEN instr(CAST(model AS BLOB), X'00') > 0
+                 THEN CAST(model AS TEXT)
+                 ELSE substr(model, 1, 257) END AS model,
             input_tokens,
             output_tokens,
             cache_input_tokens,
@@ -1088,22 +1098,44 @@ async fn load_source_invocation_snapshot_page(
             cost_cache_read,
             cost_output,
             cost_reasoning,
-            substr(status, 1, 257) AS status,
-            substr(failure_kind, 1, 257) AS failure_kind,
-            substr(failure_class, 1, 257) AS failure_class,
+            CASE WHEN instr(CAST(status AS BLOB), X'00') > 0
+                 THEN CAST(status AS TEXT)
+                 ELSE substr(status, 1, 257) END AS status,
+            CASE WHEN instr(CAST(failure_kind AS BLOB), X'00') > 0
+                 THEN CAST(failure_kind AS TEXT)
+                 ELSE substr(failure_kind, 1, 257) END AS failure_kind,
+            CASE WHEN instr(CAST(failure_class AS BLOB), X'00') > 0
+                 THEN CAST(failure_class AS TEXT)
+                 ELSE substr(failure_class, 1, 257) END AS failure_class,
             is_actionable,
             CASE WHEN json_valid(payload) AND json_type(payload, '$.requestModel') = 'text'
-                 THEN substr(json_extract(payload, '$.requestModel'), 1, 257) END AS request_model,
+                 THEN CASE WHEN instr(CAST(json_extract(payload, '$.requestModel') AS BLOB), X'00') > 0
+                           THEN CAST(json_extract(payload, '$.requestModel') AS TEXT)
+                           ELSE substr(json_extract(payload, '$.requestModel'), 1, 257) END END
+                 AS request_model,
             CASE WHEN json_valid(payload) AND json_type(payload, '$.responseModel') = 'text'
-                 THEN substr(json_extract(payload, '$.responseModel'), 1, 257) END AS response_model,
+                 THEN CASE WHEN instr(CAST(json_extract(payload, '$.responseModel') AS BLOB), X'00') > 0
+                           THEN CAST(json_extract(payload, '$.responseModel') AS TEXT)
+                           ELSE substr(json_extract(payload, '$.responseModel'), 1, 257) END END
+                 AS response_model,
             CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text'
-                 THEN substr(json_extract(payload, '$.reasoningEffort'), 1, 257) END AS reasoning_effort,
+                 THEN CASE WHEN instr(CAST(json_extract(payload, '$.reasoningEffort') AS BLOB), X'00') > 0
+                           THEN CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)
+                           ELSE substr(json_extract(payload, '$.reasoningEffort'), 1, 257) END END
+                 AS reasoning_effort,
             CASE WHEN json_valid(payload)
                       AND json_type(payload, '$.upstreamAccountId') IN ('integer', 'text')
-                 THEN substr(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT), 1, 257) END
-                 AS upstream_account_id,
+                 THEN CASE
+                     WHEN length(CAST(json_extract(payload, '$.upstreamAccountId') AS BLOB)) > 257
+                         OR instr(CAST(json_extract(payload, '$.upstreamAccountId') AS BLOB), X'00') > 0
+                         THEN char(0)
+                     ELSE substr(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT), 1, 257)
+                 END
+            END AS upstream_account_id,
             CASE WHEN json_valid(payload) AND json_type(payload, '$.upstreamAccountName') = 'text'
-                 THEN substr(json_extract(payload, '$.upstreamAccountName'), 1, 257) END
+                 THEN CASE WHEN instr(CAST(json_extract(payload, '$.upstreamAccountName') AS BLOB), X'00') > 0
+                           THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)
+                           ELSE substr(json_extract(payload, '$.upstreamAccountName'), 1, 257) END END
                  AS upstream_account_name,
             t_total_ms,
             t_req_read_ms,
@@ -1575,7 +1607,7 @@ async fn source_has_historical_invocation_archives(source_pool: &Pool<Sqlite>) -
 
 async fn acknowledge_unverified_legacy_history(source_pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
-        "UPDATE analytics_change_state SET historical_history_unknown = 0, updated_at = datetime('now') WHERE id = 1 AND historical_history_unknown <> 0",
+        "UPDATE analytics_change_state SET historical_history_unknown = 0, historical_history_initialized = 1, updated_at = datetime('now') WHERE id = 1 AND historical_history_unknown <> 0",
     )
     .execute(source_pool)
     .await
@@ -2566,5 +2598,75 @@ mod tests {
         assert_eq!(fact.status.as_deref(), Some("completed"));
         assert_eq!(fact.failure_kind.as_deref(), Some("failure"));
         assert_eq!(fact.failure_class.as_deref(), Some("class"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_page_sql_projection_preserves_nul_normalization_contract() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect snapshot SQL projection test database");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_input_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                total_tokens INTEGER,
+                cost REAL,
+                cost_input REAL,
+                cost_cache_write REAL,
+                cost_cache_read REAL,
+                cost_output REAL,
+                cost_reasoning REAL,
+                status TEXT,
+                failure_kind TEXT,
+                failure_class TEXT,
+                is_actionable INTEGER,
+                payload TEXT,
+                t_total_ms REAL,
+                t_req_read_ms REAL,
+                t_req_parse_ms REAL,
+                t_upstream_connect_ms REAL,
+                t_upstream_ttfb_ms REAL,
+                t_upstream_stream_ms REAL,
+                first_token_ms REAL,
+                t_resp_parse_ms REAL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create snapshot SQL projection table");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model, payload) VALUES (1, ?1, ?2, ?3, CAST(X'6162006364' AS TEXT), ?4)",
+        )
+        .bind("invoke-nul")
+        .bind("2026-10-31T00:00:00Z")
+        .bind("proxy")
+        .bind(r#"{"requestModel":"request\u0000model","upstreamAccountName":"account\u0000name","upstreamAccountId":"4\u00002"}"#)
+        .execute(&pool)
+        .await
+        .expect("insert NUL snapshot SQL projection row");
+
+        let mut connection = pool
+            .acquire()
+            .await
+            .expect("acquire snapshot SQL projection connection");
+        let facts = load_source_invocation_snapshot_page(connection.as_mut(), 0)
+            .await
+            .expect("load snapshot SQL projection row");
+        let fact = facts.into_iter().next().expect("snapshot fact");
+        assert_eq!(fact.model.as_deref(), Some("abcd"));
+        assert_eq!(fact.request_model.as_deref(), Some("requestmodel"));
+        assert_eq!(fact.upstream_account_name.as_deref(), Some("accountname"));
+        assert_eq!(fact.upstream_account_id, None);
     }
 }

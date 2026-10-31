@@ -686,6 +686,21 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                     })
                 })?
                 .rows_affected();
+                if affected > 0 {
+                    crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                        transaction.as_mut(),
+                        candidate_id,
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow::Error::new(crate::BackfillPartialFailure {
+                            source: error,
+                            next_cursor_id: committed_cursor_id,
+                            scanned: committed_scanned,
+                            updated: committed_updated,
+                        })
+                    })?;
+                }
                 summary.updated += affected;
             }
             transaction.commit().await.map_err(|error| {

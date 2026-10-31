@@ -117,14 +117,6 @@ struct ArchiveAnalyticsRow {
 }
 
 pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Result<()> {
-    let state_table_existed = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'analytics_change_state')",
-    )
-    .fetch_one(pool)
-    .await
-    .context("failed to inspect analytics change state table")?
-        != 0;
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS analytics_change_events (
@@ -159,6 +151,7 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
             invalidation_pending INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_pending IN (0, 1)),
             historical_replay_required INTEGER NOT NULL DEFAULT 0 CHECK(historical_replay_required IN (0, 1)),
             historical_history_unknown INTEGER NOT NULL DEFAULT 0 CHECK(historical_history_unknown IN (0, 1)),
+            historical_history_initialized INTEGER NOT NULL DEFAULT 0 CHECK(historical_history_initialized IN (0, 1)),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -198,6 +191,22 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
         .context("failed to add analytics change historical verification state")?;
     }
 
+    let historical_initialization_column_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('analytics_change_state') WHERE name = 'historical_history_initialized')",
+    )
+    .fetch_one(pool)
+    .await
+    .context("failed to inspect analytics history migration state")?
+        != 0;
+    if !historical_initialization_column_exists {
+        sqlx::query(
+            "ALTER TABLE analytics_change_state ADD COLUMN historical_history_initialized INTEGER NOT NULL DEFAULT 0 CHECK(historical_history_initialized IN (0, 1))",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add analytics history migration state")?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS analytics_change_coverage (
@@ -225,7 +234,13 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to seed analytics change state")?;
 
-    if !historical_unknown_column_exists || !state_table_existed {
+    let historical_history_initialized: i64 = sqlx::query_scalar(
+        "SELECT historical_history_initialized FROM analytics_change_state WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await
+    .context("failed to load analytics history migration state")?;
+    if historical_history_initialized == 0 {
         let invocation_table_exists = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_invocations')",
         )
@@ -249,14 +264,19 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
                 .context("failed to inspect existing analytics changes")?
                 != 0;
         let source_data_exists = invocation_rows_exist || event_rows_exist;
-        if source_data_exists {
-            sqlx::query(
-                "UPDATE analytics_change_state SET historical_history_unknown = 1, updated_at = datetime('now') WHERE id = 1",
-            )
-            .execute(pool)
-            .await
-            .context("failed to preserve unknown legacy analytics history")?;
-        }
+        sqlx::query(
+            r#"
+            UPDATE analytics_change_state
+            SET historical_history_unknown = CASE WHEN ?1 THEN 1 ELSE historical_history_unknown END,
+                historical_history_initialized = 1,
+                updated_at = datetime('now')
+            WHERE id = 1
+            "#,
+        )
+        .bind(source_data_exists)
+        .execute(pool)
+        .await
+        .context("failed to complete analytics history migration state")?;
     }
 
     let archive_table_exists = sqlx::query_scalar::<_, i64>(
@@ -1240,6 +1260,66 @@ mod tests {
         .await
         .expect("load migrated historical verification marker");
         assert_eq!(historical_history_unknown, 0);
+        let historical_history_initialized: i64 = sqlx::query_scalar(
+            "SELECT historical_history_initialized FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load migrated historical initialization marker");
+        assert_eq!(historical_history_initialized, 1);
+    }
+
+    #[tokio::test]
+    async fn historical_history_migration_marks_existing_source_data_unknown() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect legacy analytics history test database");
+        sqlx::query(
+            r#"
+            CREATE TABLE analytics_change_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                generation INTEGER NOT NULL DEFAULT 1,
+                coverage_revision INTEGER NOT NULL DEFAULT 0,
+                retained_from_change_id INTEGER NOT NULL DEFAULT 1,
+                capacity INTEGER NOT NULL DEFAULT 10000,
+                invalidation_pending INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_pending IN (0, 1)),
+                historical_replay_required INTEGER NOT NULL DEFAULT 0 CHECK(historical_replay_required IN (0, 1)),
+                historical_history_unknown INTEGER NOT NULL DEFAULT 0 CHECK(historical_history_unknown IN (0, 1)),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy analytics history state");
+        sqlx::query("INSERT INTO analytics_change_state (id) VALUES (1)")
+            .execute(&pool)
+            .await
+            .expect("seed legacy analytics history state");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create source invocation table");
+        sqlx::query("INSERT INTO codex_invocations (id, invoke_id) VALUES (1, 'legacy')")
+            .execute(&pool)
+            .await
+            .expect("seed source invocation row");
+
+        ensure_analytics_changes_schema(&pool)
+            .await
+            .expect("migrate legacy analytics history state with source data");
+
+        let markers: (i64, i64) = sqlx::query_as(
+            "SELECT historical_history_unknown, historical_history_initialized FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load migrated analytics history markers");
+        assert_eq!(markers, (1, 1));
     }
 
     #[tokio::test]
