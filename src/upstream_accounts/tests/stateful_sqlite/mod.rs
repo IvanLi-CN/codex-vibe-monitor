@@ -12,6 +12,7 @@ mod external_api_keys_and_oauth_upserts;
 mod maintenance_scheduler_and_schema;
 mod model_catalog;
 mod model_mappings;
+mod oauth_refresh_maintenance;
 mod prompt_cache_bindings_and_route_penalties;
 #[expect(
     clippy::too_many_arguments,

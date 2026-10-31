@@ -3911,7 +3911,7 @@ async fn refresh_pool_routing_runtime_cache_preserves_last_good_cache_after_decr
     );
 }
 
-fn maintenance_candidates(
+pub(crate) fn maintenance_candidates(
     id: i64,
     status: &str,
     last_synced_at: Option<&str>,
@@ -3944,6 +3944,15 @@ fn maintenance_candidates(
         credits_unlimited: None,
         credits_balance: None,
     }
+}
+
+fn maintenance_plan_is_due_default(
+    candidate: &MaintenanceCandidateRow,
+    tier: MaintenanceTier,
+    settings: PoolRoutingMaintenanceSettings,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_plan_is_due(candidate, tier, settings, Duration::from_secs(5 * 60), now)
 }
 
 #[test]
@@ -4070,13 +4079,7 @@ fn maintenance_plan_is_not_due_during_upstream_rejected_cooldown() {
     candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
 
     assert!(
-        !maintenance_plan_is_due(
-            &candidate,
-            MaintenanceTier::Priority,
-            settings,
-            Duration::from_secs(5 * 60),
-            now,
-        ),
+        !maintenance_plan_is_due_default(&candidate, MaintenanceTier::Priority, settings, now),
         "active upstream-rejected cooldown should suppress maintenance scheduling"
     );
 }
@@ -4109,13 +4112,7 @@ fn maintenance_plan_prefers_explicit_upstream_rejected_cooldown_until() {
     candidate.cooldown_until = Some("2026-04-13T17:00:00Z".to_string());
 
     assert!(
-        !maintenance_plan_is_due(
-            &candidate,
-            MaintenanceTier::Priority,
-            settings,
-            Duration::from_secs(5 * 60),
-            now,
-        ),
+        !maintenance_plan_is_due_default(&candidate, MaintenanceTier::Priority, settings, now),
         "explicit cooldown_until should be the canonical maintenance suppression signal"
     );
 }
@@ -4148,13 +4145,7 @@ fn maintenance_plan_is_due_when_reset_window_passes_even_during_upstream_rejecte
     candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
 
     assert!(
-        maintenance_plan_is_due(
-            &candidate,
-            MaintenanceTier::Priority,
-            settings,
-            Duration::from_secs(5 * 60),
-            now,
-        ),
+        maintenance_plan_is_due_default(&candidate, MaintenanceTier::Priority, settings, now),
         "reset-due accounts should bypass the temporary upstream-rejected cooldown"
     );
 }
@@ -4186,13 +4177,7 @@ fn maintenance_plan_ignores_wrapped_upstream_auth_errors_for_cooldown_blocking()
     candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH.to_string());
 
     assert!(
-        maintenance_plan_is_due(
-            &candidate,
-            MaintenanceTier::Priority,
-            settings,
-            Duration::from_secs(5 * 60),
-            now,
-        ),
+        maintenance_plan_is_due_default(&candidate, MaintenanceTier::Priority, settings, now),
         "wrapped upstream auth errors should not enter the maintenance cooldown path"
     );
 }
@@ -4279,13 +4264,7 @@ fn maintenance_plan_is_due_for_call_driven_upstream_rejected_errors() {
     candidate.last_error = Some("deactivated_workspace".to_string());
 
     assert!(
-        maintenance_plan_is_due(
-            &candidate,
-            MaintenanceTier::Priority,
-            settings,
-            Duration::from_secs(5 * 60),
-            now,
-        ),
+        maintenance_plan_is_due_default(&candidate, MaintenanceTier::Priority, settings, now),
         "ordinary routed 402s should still allow maintenance to retry promptly"
     );
 }
@@ -4321,106 +4300,9 @@ fn maintenance_plan_is_due_for_generic_403_upstream_rejected_text() {
     );
 
     assert!(
-        maintenance_plan_is_due(
-            &candidate,
-            MaintenanceTier::Priority,
-            settings,
-            Duration::from_secs(5 * 60),
-            now,
-        ),
+        maintenance_plan_is_due_default(&candidate, MaintenanceTier::Priority, settings, now),
         "generic 403 text that happens to mention upstream rejected should not trigger the 402-only maintenance cooldown"
     );
-}
-
-#[test]
-fn resolve_due_maintenance_dispatch_plans_schedules_refresh_due_accounts_on_one_minute_cadence() {
-    assert_eq!(DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS, 5 * 60);
-    assert_eq!(UPSTREAM_ACCOUNT_MAINTENANCE_TICK_SECS, 60);
-
-    let now = Utc
-        .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
-        .single()
-        .expect("valid time");
-    let settings = PoolRoutingMaintenanceSettings {
-        primary_sync_interval_secs: 300,
-        secondary_sync_interval_secs: 1800,
-        priority_available_account_cap: 100,
-    };
-
-    let plans = resolve_due_maintenance_dispatch_plans(
-        vec![maintenance_candidates(
-            7,
-            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-            Some("2026-03-23T11:59:00Z"),
-            None,
-            Some("2026-03-23T12:05:00Z"),
-            Some(6.0),
-            Some(6.0),
-        )],
-        settings,
-        Duration::from_secs(5 * 60),
-        now,
-    );
-
-    assert_eq!(plans.len(), 1);
-    assert_eq!(plans[0].tier, MaintenanceTier::Priority);
-    assert_eq!(plans[0].sync_interval_secs, 60);
-}
-
-#[test]
-fn resolve_due_maintenance_dispatch_plans_does_not_refresh_before_five_minute_window() {
-    let now = Utc
-        .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
-        .single()
-        .expect("valid time");
-    let settings = PoolRoutingMaintenanceSettings {
-        primary_sync_interval_secs: 300,
-        secondary_sync_interval_secs: 1800,
-        priority_available_account_cap: 100,
-    };
-
-    let plans = resolve_due_maintenance_dispatch_plans(
-        vec![maintenance_candidates(
-            70,
-            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-            Some("2026-03-23T11:59:00Z"),
-            None,
-            Some("2026-03-23T12:06:00Z"),
-            Some(6.0),
-            Some(6.0),
-        )],
-        settings,
-        Duration::from_secs(DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS),
-        now,
-    );
-
-    assert!(
-        plans.is_empty(),
-        "accounts outside the five-minute refresh window should keep the normal sync cadence"
-    );
-}
-
-#[test]
-fn maintenance_refresh_due_uses_eight_day_fallback_without_parseable_expiration() {
-    let now = Utc
-        .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
-        .single()
-        .expect("valid time");
-    let refresh_lead_time = Duration::from_secs(DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS);
-    let mut candidate = maintenance_candidates(
-        71,
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-        Some("2026-03-23T11:59:00Z"),
-        None,
-        None,
-        Some(6.0),
-        Some(6.0),
-    );
-    candidate.last_refreshed_at = Some("2026-03-15T11:59:59Z".to_string());
-    assert!(maintenance_refresh_due(&candidate, refresh_lead_time, now));
-
-    candidate.last_refreshed_at = Some("2026-03-15T12:00:01Z".to_string());
-    assert!(!maintenance_refresh_due(&candidate, refresh_lead_time, now));
 }
 
 #[test]
