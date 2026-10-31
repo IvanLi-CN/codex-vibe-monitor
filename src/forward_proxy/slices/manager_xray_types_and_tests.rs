@@ -2271,10 +2271,18 @@ mod tests {
 
     #[test]
     fn manual_latency_codex_responses_accepts_method_not_allowed() {
-        assert!(is_manual_latency_probe_reachable_status(
-            StatusCode::METHOD_NOT_ALLOWED
-        ));
-        assert!(!is_manual_latency_probe_reachable_status(
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            assert!(is_forward_proxy_codex_responses_probe_reachable_status(
+                status
+            ));
+        }
+        assert!(!is_forward_proxy_codex_responses_probe_reachable_status(
             StatusCode::INTERNAL_SERVER_ERROR
         ));
         assert!(is_forward_proxy_latency_probe_reachable_status(
@@ -2293,6 +2301,154 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             true
         ));
+    }
+
+    #[tokio::test]
+    async fn timed_codex_responses_probe_maps_http_statuses() {
+        let _guard = crate::oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+            .lock()
+            .await;
+        struct ResetCodexUpstreamOverride;
+        impl Drop for ResetCodexUpstreamOverride {
+            fn drop(&mut self) {
+                crate::oauth_bridge::reset_test_oauth_codex_upstream_base_url_now();
+            }
+        }
+        let _reset_override = ResetCodexUpstreamOverride;
+
+        for (status, expected_ok) in [
+            (StatusCode::METHOD_NOT_ALLOWED, true),
+            (StatusCode::INTERNAL_SERVER_ERROR, false),
+        ] {
+            let app = Router::new().route(
+                "/backend-api/codex/responses",
+                get(move || async move { status }),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind codex responses probe upstream");
+            let addr = listener
+                .local_addr()
+                .expect("read codex responses probe upstream address");
+            let handle = tokio::spawn(async move {
+                axum::serve(listener, app)
+                    .await
+                    .expect("codex responses probe upstream should run");
+            });
+
+            crate::oauth_bridge::set_test_oauth_codex_upstream_base_url(
+                Url::parse(&format!("http://{addr}/backend-api/codex"))
+                    .expect("valid codex responses probe upstream url"),
+            )
+            .await;
+            let result =
+                timed_forward_proxy_codex_responses_probe(&Client::new(), Duration::from_secs(1))
+                    .await;
+
+            handle.abort();
+            let _ = handle.await;
+            assert_eq!(
+                result.ok, expected_ok,
+                "unexpected result for HTTP {status}"
+            );
+            assert_eq!(result.http_status, Some(status.as_u16()));
+            assert_eq!(result.error.is_none(), expected_ok);
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind codex responses transport-error address");
+        let addr = listener
+            .local_addr()
+            .expect("read codex responses transport-error address");
+        drop(listener);
+        crate::oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("http://{addr}/backend-api/codex"))
+                .expect("valid codex responses transport-error url"),
+        )
+        .await;
+        let result =
+            timed_forward_proxy_codex_responses_probe(&Client::new(), Duration::from_secs(1)).await;
+        assert!(!result.ok);
+        assert_eq!(result.http_status, None);
+        assert!(result.error.is_some());
+
+        let app = Router::new().route(
+            "/backend-api/codex/responses",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                StatusCode::OK
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind codex responses timeout upstream");
+        let addr = listener
+            .local_addr()
+            .expect("read codex responses timeout upstream address");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("codex responses timeout upstream should run");
+        });
+        crate::oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("http://{addr}/backend-api/codex"))
+                .expect("valid codex responses timeout upstream url"),
+        )
+        .await;
+        let result =
+            timed_forward_proxy_codex_responses_probe(&Client::new(), Duration::from_millis(10))
+                .await;
+        handle.abort();
+        let _ = handle.await;
+        assert!(!result.ok);
+        assert_eq!(result.http_status, None);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("timed out"))
+        );
+    }
+
+    #[test]
+    fn manual_latency_xhttp_responses_405_keeps_round_healthy() {
+        let mut accumulator = ForwardProxyLatencyAccumulator::default();
+        let egress_ip = ForwardProxyLatencyProbeTargetResult {
+            ok: true,
+            latency_ms: Some(91.0),
+            ip: Some("203.0.113.24".to_string()),
+            http_status: None,
+            error: None,
+        };
+        let oauth_upstream = ForwardProxyLatencyProbeTargetResult {
+            ok: true,
+            latency_ms: Some(142.0),
+            ip: None,
+            http_status: Some(401),
+            error: None,
+        };
+        let codex_responses = ForwardProxyLatencyProbeTargetResult {
+            ok: is_forward_proxy_codex_responses_probe_reachable_status(
+                StatusCode::METHOD_NOT_ALLOWED,
+            ),
+            latency_ms: Some(188.0),
+            ip: None,
+            http_status: Some(405),
+            error: None,
+        };
+
+        accumulator.record_round(&egress_ip, &oauth_upstream, &codex_responses);
+
+        let progress =
+            forward_proxy_latency_timeout_progress(&ForwardProxyEndpoint::direct(), &accumulator);
+        assert!(progress.all_targets_ok);
+        assert!(progress.failed_targets.is_empty());
+        assert!(progress.egress_ip.ok);
+        assert!(progress.oauth_upstream.ok);
+        assert!(progress.codex_responses.ok);
+        assert_eq!(progress.codex_responses.http_status, Some(405));
+        assert_eq!(progress.average_latency_ms, Some(140));
     }
 
     #[test]

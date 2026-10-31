@@ -420,7 +420,6 @@ pub(crate) fn oauth_codex_latency_probe_target(path_segment: &str) -> Result<Url
 pub(crate) async fn timed_forward_proxy_codex_responses_probe(
     client: &Client,
     request_timeout: Duration,
-    strict_status: bool,
 ) -> ForwardProxyLatencyProbeTargetResult {
     let started = Instant::now();
     let target = match oauth_codex_latency_probe_target("responses") {
@@ -440,7 +439,7 @@ pub(crate) async fn timed_forward_proxy_codex_responses_probe(
     match result {
         Ok(Ok(response)) => {
             let status = response.status();
-            let ok = is_forward_proxy_latency_probe_reachable_status(status, strict_status);
+            let ok = is_forward_proxy_codex_responses_probe_reachable_status(status);
             ForwardProxyLatencyProbeTargetResult {
                 ok,
                 latency_ms: ok.then(|| elapsed_ms(started)),
@@ -502,6 +501,10 @@ pub(crate) fn forward_proxy_latency_target_timed_out(
 
 pub(crate) fn is_manual_latency_probe_reachable_status(status: StatusCode) -> bool {
     status.as_u16() < 500
+}
+
+pub(crate) fn is_forward_proxy_codex_responses_probe_reachable_status(status: StatusCode) -> bool {
+    is_manual_latency_probe_reachable_status(status)
 }
 
 pub(crate) fn is_forward_proxy_latency_probe_reachable_status(
@@ -621,12 +624,7 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                                 .filter(|remaining| !remaining.is_zero());
                         codex_responses = match remaining_round {
                             Some(remaining) => {
-                                timed_forward_proxy_codex_responses_probe(
-                                    &client,
-                                    remaining,
-                                    strict_status,
-                                )
-                                .await
+                                timed_forward_proxy_codex_responses_probe(&client, remaining).await
                             }
                             None => ForwardProxyLatencyProbeTargetResult {
                                 ok: false,
