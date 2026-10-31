@@ -2271,10 +2271,18 @@ mod tests {
 
     #[test]
     fn manual_latency_codex_responses_accepts_method_not_allowed() {
-        assert!(is_manual_latency_probe_reachable_status(
-            StatusCode::METHOD_NOT_ALLOWED
-        ));
-        assert!(!is_manual_latency_probe_reachable_status(
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            assert!(is_forward_proxy_codex_responses_probe_reachable_status(
+                status
+            ));
+        }
+        assert!(!is_forward_proxy_codex_responses_probe_reachable_status(
             StatusCode::INTERNAL_SERVER_ERROR
         ));
         assert!(is_forward_proxy_latency_probe_reachable_status(
@@ -2293,6 +2301,46 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             true
         ));
+    }
+
+    #[test]
+    fn manual_latency_xhttp_responses_405_keeps_round_healthy() {
+        let mut accumulator = ForwardProxyLatencyAccumulator::default();
+        let egress_ip = ForwardProxyLatencyProbeTargetResult {
+            ok: true,
+            latency_ms: Some(91.0),
+            ip: Some("203.0.113.24".to_string()),
+            http_status: None,
+            error: None,
+        };
+        let oauth_upstream = ForwardProxyLatencyProbeTargetResult {
+            ok: true,
+            latency_ms: Some(142.0),
+            ip: None,
+            http_status: Some(401),
+            error: None,
+        };
+        let codex_responses = ForwardProxyLatencyProbeTargetResult {
+            ok: is_forward_proxy_codex_responses_probe_reachable_status(
+                StatusCode::METHOD_NOT_ALLOWED,
+            ),
+            latency_ms: Some(188.0),
+            ip: None,
+            http_status: Some(405),
+            error: None,
+        };
+
+        accumulator.record_round(&egress_ip, &oauth_upstream, &codex_responses);
+
+        let progress =
+            forward_proxy_latency_timeout_progress(&ForwardProxyEndpoint::direct(), &accumulator);
+        assert!(progress.all_targets_ok);
+        assert!(progress.failed_targets.is_empty());
+        assert!(progress.egress_ip.ok);
+        assert!(progress.oauth_upstream.ok);
+        assert!(progress.codex_responses.ok);
+        assert_eq!(progress.codex_responses.http_status, Some(405));
+        assert_eq!(progress.average_latency_ms, Some(140));
     }
 
     #[test]
