@@ -1539,6 +1539,31 @@ mod tests {
         .await
         .expect("load migrated control history markers");
         assert_eq!(markers, (0, 1));
+
+        sqlx::query("UPDATE long_term_projection_state SET cursor_row_id = 1")
+            .execute(&pool)
+            .await
+            .expect("advance legacy projection cursor state");
+        sqlx::query("UPDATE summary_source_change_cursor SET cursor = 1")
+            .execute(&pool)
+            .await
+            .expect("advance legacy Summary source cursor state");
+        sqlx::query(
+            "UPDATE analytics_change_state SET historical_history_unknown = 0, historical_history_initialized = 0 WHERE id = 1",
+        )
+        .execute(&pool)
+        .await
+        .expect("reset legacy history migration marker");
+        ensure_analytics_changes_schema(&pool)
+            .await
+            .expect("retry legacy control state migration");
+        let markers: (i64, i64) = sqlx::query_as(
+            "SELECT historical_history_unknown, historical_history_initialized FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load retried control history markers");
+        assert_eq!(markers, (1, 1));
     }
 
     #[tokio::test]
