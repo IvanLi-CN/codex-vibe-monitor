@@ -1484,7 +1484,10 @@ async fn load_source_invocation_snapshot_page(
                 occurred_at,
                 CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
             ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
-            substr(occurred_at, 1, 10) AS stats_date,
+            date(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+8 hours' ELSE '+0 hours' END
+            ) AS stats_date,
             source,
             model,
             input_tokens,
@@ -3132,7 +3135,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_page_uses_shared_rust_normalization_and_bounds_raw_text() {
+    async fn snapshot_page_uses_shared_normalization_bounds_raw_text_and_shanghai_fact_dates() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -3199,9 +3202,33 @@ mod tests {
         assert_eq!(fact.request_model.as_deref(), Some("requestmodel"));
         assert_eq!(fact.upstream_account_name.as_deref(), Some("accountname"));
         assert_eq!(fact.upstream_account_id, None);
+        assert_eq!(fact.stats_date, "2026-10-31");
 
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (2, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
+            r#"
+            INSERT INTO codex_invocations (id, invoke_id, occurred_at, source)
+            VALUES
+                (2, 'invoke-shanghai-before-boundary', '2026-10-30T15:59:59Z', 'proxy'),
+                (3, 'invoke-shanghai-at-boundary', '2026-10-30T16:00:00Z', 'proxy'),
+                (4, 'invoke-shanghai-naive', '2026-10-31 00:00:00', 'proxy')
+            "#,
+        )
+        .execute(connection.as_mut())
+        .await
+        .expect("insert Shanghai fact-date boundary rows");
+        let boundary_facts = load_source_invocation_snapshot_page(connection.as_mut(), 1)
+            .await
+            .expect("load Shanghai fact-date boundary rows");
+        assert_eq!(
+            boundary_facts
+                .iter()
+                .map(|fact| (fact.source_row_id, fact.stats_date.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, "2026-10-30"), (3, "2026-10-31"), (4, "2026-10-31"),]
+        );
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (5, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
         )
         .bind("x".repeat((ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES + 1) as usize))
         .execute(connection.as_mut())

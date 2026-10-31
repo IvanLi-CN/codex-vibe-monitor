@@ -21,6 +21,7 @@
 - `cargo fmt --all`
 - `cargo check --locked --all-targets --all-features`
 - Focused `pg_analytics` unit tests and existing lightweight configuration compatibility tests are bounded deterministic checks.
+- FU01 fact ingestion derives `stats_date` with explicit Asia/Shanghai calendar-boundary semantics for UTC-formatted source timestamps while preserving naive Shanghai timestamps; deterministic boundary regressions cover both snapshot and incremental fact paths.
 - The validation boundary is intentionally limited to commands that complete within 180 seconds: no load generator, stress/throughput test, scale-up experiment, production-data copy, long-running suite, or p95 conclusion is part of this foundation.
 
 ## Rollout Facts
