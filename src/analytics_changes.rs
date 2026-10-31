@@ -253,6 +253,29 @@ fn payload_i64(payload: Option<&Value>, key: &str) -> Option<i64> {
     })
 }
 
+pub(crate) fn normalize_analytics_text(value: Option<&str>) -> Option<String> {
+    bounded_text(value)
+}
+
+pub(crate) fn normalize_analytics_required_text(value: &str, label: &str) -> Result<String> {
+    bounded_required_text(value, label)
+}
+
+pub(crate) fn normalize_analytics_payload(payload: Option<&str>) -> Option<Value> {
+    normalized_payload(payload)
+}
+
+pub(crate) fn normalize_analytics_payload_text(
+    payload: Option<&Value>,
+    key: &str,
+) -> Option<String> {
+    payload_text(payload, key)
+}
+
+pub(crate) fn normalize_analytics_payload_i64(payload: Option<&Value>, key: &str) -> Option<i64> {
+    payload_i64(payload, key)
+}
+
 fn terminal_status(status: Option<&str>) -> bool {
     !matches!(
         status

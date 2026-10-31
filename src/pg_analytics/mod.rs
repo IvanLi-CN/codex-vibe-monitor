@@ -441,7 +441,7 @@ struct AnalyticsReplicaStatusReport {
     source: Option<AnalyticsSourceStatus>,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, Default, FromRow)]
 struct SourceInvocationSnapshotRow {
     id: i64,
     invoke_id: String,
@@ -477,25 +477,15 @@ struct SourceInvocationSnapshotRow {
 }
 
 fn snapshot_payload(payload: Option<&str>) -> Option<Value> {
-    payload
-        .filter(|value| !value.trim().is_empty())
-        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+    crate::analytics_changes::normalize_analytics_payload(payload)
 }
 
 fn snapshot_text(payload: Option<&Value>, key: &str) -> Option<String> {
-    payload
-        .and_then(|value| value.get(key))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToOwned::to_owned)
+    crate::analytics_changes::normalize_analytics_payload_text(payload, key)
 }
 
 fn snapshot_i64(payload: Option<&Value>, key: &str) -> Option<i64> {
-    payload.and_then(|value| value.get(key)).and_then(|value| {
-        value
-            .as_i64()
-            .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
-    })
+    crate::analytics_changes::normalize_analytics_payload_i64(payload, key)
 }
 
 fn snapshot_terminal(status: Option<&str>) -> bool {
@@ -516,11 +506,74 @@ fn snapshot_success_like(status: Option<&str>) -> bool {
     )
 }
 
+fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFact> {
+    let payload = snapshot_payload(row.payload.as_deref());
+    let status = crate::analytics_changes::normalize_analytics_text(row.status.as_deref());
+    Ok(AnalyticsFact {
+        fact_version: 1,
+        source: crate::analytics_changes::normalize_analytics_required_text(&row.source, "source")?,
+        source_row_id: row.id,
+        invoke_id: crate::analytics_changes::normalize_analytics_required_text(
+            &row.invoke_id,
+            "invoke_id",
+        )?,
+        occurred_at: row.occurred_at,
+        occurred_at_epoch_ms: row.occurred_at_epoch_ms,
+        stats_date: row.stats_date,
+        model: crate::analytics_changes::normalize_analytics_text(row.model.as_deref()),
+        request_model: snapshot_text(payload.as_ref(), "requestModel"),
+        response_model: snapshot_text(payload.as_ref(), "responseModel"),
+        reasoning_effort: snapshot_text(payload.as_ref(), "reasoningEffort"),
+        upstream_account_id: snapshot_i64(payload.as_ref(), "upstreamAccountId"),
+        upstream_account_name: snapshot_text(payload.as_ref(), "upstreamAccountName"),
+        status: status.clone(),
+        success_like: snapshot_success_like(status.as_deref()),
+        terminal: snapshot_terminal(status.as_deref()),
+        failure_kind: crate::analytics_changes::normalize_analytics_text(
+            row.failure_kind.as_deref(),
+        ),
+        failure_class: crate::analytics_changes::normalize_analytics_text(
+            row.failure_class.as_deref(),
+        ),
+        is_actionable: row.is_actionable.map(|value| value != 0),
+        input_tokens: row.input_tokens,
+        output_tokens: row.output_tokens,
+        cache_input_tokens: row.cache_input_tokens,
+        reasoning_tokens: row.reasoning_tokens,
+        total_tokens: row.total_tokens,
+        cost: row.cost,
+        cost_input: row.cost_input,
+        cost_cache_write: row.cost_cache_write,
+        cost_cache_read: row.cost_cache_read,
+        cost_output: row.cost_output,
+        cost_reasoning: row.cost_reasoning,
+        t_total_ms: row.t_total_ms,
+        t_req_read_ms: row.t_req_read_ms,
+        t_req_parse_ms: row.t_req_parse_ms,
+        t_upstream_connect_ms: row.t_upstream_connect_ms,
+        t_upstream_ttfb_ms: row.t_upstream_ttfb_ms,
+        t_upstream_stream_ms: row.t_upstream_stream_ms,
+        first_token_ms: row.first_token_ms,
+        t_resp_parse_ms: row.t_resp_parse_ms,
+    })
+}
+
 fn source_retention_exhausted(state: &AnalyticsReplicaState, source: &SourceContext) -> bool {
     let cursor_predates_retention =
         state.consumer_checkpoint.saturating_add(1) < source.state.retained_from_change_id;
     let generation_changed = state.generation != source.state.generation;
     cursor_predates_retention || generation_changed || source.state.invalidation_pending != 0
+}
+
+fn replica_can_recover_pending_generation_ack(
+    state: &AnalyticsReplicaState,
+    source: &SourceContext,
+) -> bool {
+    source.state.invalidation_pending != 0
+        && state.generation == source.state.generation
+        && replica_baseline_ready(state)
+        && state.baseline_change_id == source.latest_change_id
+        && state.consumer_checkpoint == source.latest_change_id
 }
 
 fn unconsumed_source_bytes_exceed_retention_bound(lag_bytes: i64) -> bool {
@@ -993,7 +1046,10 @@ async fn load_source_changes(
     .context("failed to load the bounded analytics source batch")
 }
 
-async fn load_source_invocation_snapshot(source_pool: &Pool<Sqlite>) -> Result<Vec<AnalyticsFact>> {
+async fn load_source_invocation_snapshot_page(
+    source_connection: &mut SqliteConnection,
+    after_id: i64,
+) -> Result<Vec<AnalyticsFact>> {
     let rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(
         r#"
         SELECT
@@ -1032,59 +1088,18 @@ async fn load_source_invocation_snapshot(source_pool: &Pool<Sqlite>) -> Result<V
             first_token_ms,
             t_resp_parse_ms
         FROM codex_invocations
+        WHERE id > ?1
         ORDER BY id
+        LIMIT ?2
         "#,
     )
-    .fetch_all(source_pool)
+    .bind(after_id)
+    .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
+    .fetch_all(&mut *source_connection)
     .await
-    .context("failed to load the SQLite analytics baseline snapshot")?;
+    .context("failed to load a bounded SQLite analytics baseline page")?;
 
-    rows.into_iter()
-        .map(|row| {
-            let payload = snapshot_payload(row.payload.as_deref());
-            let status = row.status.clone();
-            Ok(AnalyticsFact {
-                fact_version: 1,
-                source: row.source,
-                source_row_id: row.id,
-                invoke_id: row.invoke_id,
-                occurred_at: row.occurred_at,
-                occurred_at_epoch_ms: row.occurred_at_epoch_ms,
-                stats_date: row.stats_date,
-                model: row.model,
-                request_model: snapshot_text(payload.as_ref(), "requestModel"),
-                response_model: snapshot_text(payload.as_ref(), "responseModel"),
-                reasoning_effort: snapshot_text(payload.as_ref(), "reasoningEffort"),
-                upstream_account_id: snapshot_i64(payload.as_ref(), "upstreamAccountId"),
-                upstream_account_name: snapshot_text(payload.as_ref(), "upstreamAccountName"),
-                status: status.clone(),
-                success_like: snapshot_success_like(status.as_deref()),
-                terminal: snapshot_terminal(status.as_deref()),
-                failure_kind: row.failure_kind,
-                failure_class: row.failure_class,
-                is_actionable: row.is_actionable.map(|value| value != 0),
-                input_tokens: row.input_tokens,
-                output_tokens: row.output_tokens,
-                cache_input_tokens: row.cache_input_tokens,
-                reasoning_tokens: row.reasoning_tokens,
-                total_tokens: row.total_tokens,
-                cost: row.cost,
-                cost_input: row.cost_input,
-                cost_cache_write: row.cost_cache_write,
-                cost_cache_read: row.cost_cache_read,
-                cost_output: row.cost_output,
-                cost_reasoning: row.cost_reasoning,
-                t_total_ms: row.t_total_ms,
-                t_req_read_ms: row.t_req_read_ms,
-                t_req_parse_ms: row.t_req_parse_ms,
-                t_upstream_connect_ms: row.t_upstream_connect_ms,
-                t_upstream_ttfb_ms: row.t_upstream_ttfb_ms,
-                t_upstream_stream_ms: row.t_upstream_stream_ms,
-                first_token_ms: row.first_token_ms,
-                t_resp_parse_ms: row.t_resp_parse_ms,
-            })
-        })
-        .collect()
+    rows.into_iter().map(snapshot_row_to_fact).collect()
 }
 
 async fn upsert_analytics_fact(
@@ -1411,6 +1426,7 @@ async fn load_status_report(
     if let Some(current_state) = state.as_ref()
         && current_state.status != "unbootstrapped"
         && (source_retention_exhausted(current_state, &source)
+            && !replica_can_recover_pending_generation_ack(current_state, &source)
             || unconsumed_source_bytes_exceed_retention_bound(lag_bytes))
     {
         let detail = format!(
@@ -1460,6 +1476,58 @@ async fn snapshot_facts_into_target(pool: &sqlx::PgPool, facts: &[AnalyticsFact]
     Ok(())
 }
 
+async fn snapshot_invocations_into_target(
+    source_pool: &Pool<Sqlite>,
+    pool: &sqlx::PgPool,
+) -> Result<()> {
+    let mut source_transaction = source_pool
+        .begin()
+        .await
+        .context("failed to start the SQLite analytics baseline snapshot")?;
+    let mut after_id = 0;
+    loop {
+        let facts = load_source_invocation_snapshot_page(&mut source_transaction, after_id).await?;
+        let Some(next_after_id) = facts.last().map(|fact| fact.source_row_id) else {
+            break;
+        };
+        snapshot_facts_into_target(pool, &facts).await?;
+        after_id = next_after_id;
+    }
+    source_transaction
+        .commit()
+        .await
+        .context("failed to commit the SQLite analytics baseline snapshot")?;
+    Ok(())
+}
+
+async fn source_has_historical_invocation_archives(source_pool: &Pool<Sqlite>) -> Result<bool> {
+    let archive_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_batches')",
+    )
+    .fetch_one(source_pool)
+    .await
+    .context("failed to inspect SQLite invocation archive metadata")?
+        != 0;
+    if !archive_table_exists {
+        return Ok(false);
+    }
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM archive_batches
+            WHERE dataset = 'codex_invocations'
+              AND status = 'completed'
+              AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+        )
+        "#,
+    )
+    .fetch_one(source_pool)
+    .await
+    .context("failed to inspect completed SQLite invocation archives")
+    .map(|exists| exists != 0)
+}
+
 async fn bootstrap_replica(
     source_pool: &Pool<Sqlite>,
     pool: &sqlx::PgPool,
@@ -1467,18 +1535,20 @@ async fn bootstrap_replica(
     execute_postgres_schema(pool).await?;
     verify_replica_schema(pool).await?;
     let source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+    if source_has_historical_invocation_archives(source_pool).await? {
+        let detail = "SQLite invocation archives exist; bootstrap cannot prove historical analytics coverage without replaying those archives";
+        mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
+        return Err(anyhow!(detail));
+    }
     clear_replica_target(pool, source_before.state.generation).await?;
-    let facts = match load_source_invocation_snapshot(source_pool).await {
-        Ok(facts) => facts,
-        Err(error) => {
-            let detail = error.to_string();
-            mark_replica_blocked(pool, "snapshot_failed", detail.clone()).await?;
-            return Err(anyhow!(detail));
-        }
-    };
-    if let Err(error) = snapshot_facts_into_target(pool, &facts).await {
+    if let Err(error) = snapshot_invocations_into_target(source_pool, pool).await {
         let detail = error.to_string();
-        mark_replica_blocked(pool, "oversized_fact", detail.clone()).await?;
+        let error_code = if detail.contains("oversized analytics replica fact") {
+            "oversized_fact"
+        } else {
+            "snapshot_failed"
+        };
+        mark_replica_blocked(pool, error_code, detail.clone()).await?;
         return Err(anyhow!(detail));
     }
     let source_after = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
@@ -1561,6 +1631,7 @@ async fn resume_replica(
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
         let lag_bytes = load_source_lag_bytes(source_pool, state.consumer_checkpoint).await?;
         if source_retention_exhausted(&state, &source)
+            && !replica_can_recover_pending_generation_ack(&state, &source)
             || unconsumed_source_bytes_exceed_retention_bound(lag_bytes)
         {
             let detail = format!(
@@ -1771,6 +1842,7 @@ async fn verify_replica(
     }
     if state.status != "unbootstrapped"
         && (source_retention_exhausted(&state, &source)
+            && !replica_can_recover_pending_generation_ack(&state, &source)
             || unconsumed_source_bytes_exceed_retention_bound(lag_bytes))
     {
         let detail = format!(
@@ -2205,6 +2277,21 @@ mod tests {
         let mut next_generation = source;
         next_generation.state.generation = 4;
         assert!(source_retention_exhausted(&state, &next_generation));
+
+        let mut pending_generation = next_generation;
+        pending_generation.state.generation = 3;
+        pending_generation.state.invalidation_pending = 1;
+        pending_generation.latest_change_id = state.consumer_checkpoint;
+        assert!(source_retention_exhausted(&state, &pending_generation));
+        assert!(replica_can_recover_pending_generation_ack(
+            &state,
+            &pending_generation
+        ));
+        pending_generation.latest_change_id += 1;
+        assert!(!replica_can_recover_pending_generation_ack(
+            &state,
+            &pending_generation
+        ));
     }
 
     #[test]
@@ -2340,5 +2427,38 @@ mod tests {
             source_ack_recovery_plan(&state, &covered_source),
             SourceAckRecoveryPlan::AlreadyCovered
         ));
+    }
+
+    #[test]
+    fn snapshot_fact_uses_incremental_normalization_contract() {
+        let long_model = "m".repeat(300);
+        let fact = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 42,
+            invoke_id: " invoke-42 ".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            occurred_at_epoch_ms: 1,
+            stats_date: "2026-10-31".to_string(),
+            source: " source ".to_string(),
+            model: Some(format!("  {long_model}  ")),
+            status: Some(" completed ".to_string()),
+            failure_kind: Some(" failure ".to_string()),
+            failure_class: Some(" class ".to_string()),
+            payload: Some(
+                r#"{"requestModel":"  request-model  ","upstreamAccountName":"  account  "}"#
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+        .expect("snapshot row should normalize into a fact");
+
+        let expected_model = "m".repeat(256);
+        assert_eq!(fact.source, "source");
+        assert_eq!(fact.invoke_id, "invoke-42");
+        assert_eq!(fact.model.as_deref(), Some(expected_model.as_str()));
+        assert_eq!(fact.request_model.as_deref(), Some("request-model"));
+        assert_eq!(fact.upstream_account_name.as_deref(), Some("account"));
+        assert_eq!(fact.status.as_deref(), Some("completed"));
+        assert_eq!(fact.failure_kind.as_deref(), Some("failure"));
+        assert_eq!(fact.failure_class.as_deref(), Some("class"));
     }
 }
