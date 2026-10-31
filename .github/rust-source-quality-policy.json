@@ -399,7 +399,7 @@
     {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
       "role": "production",
-      "line_budget": 5037,
+      "line_budget": 5047,
       "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
     },
     {
@@ -423,13 +423,13 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/relogin_duplicates_and_usage_snapshots.rs",
       "role": "test_helper",
-      "line_budget": 4803,
+      "line_budget": 4810,
       "next_module_workstream": "Split upstream relogin/duplicate usage fixtures by mailbox, identity, and snapshot recovery."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
       "role": "test_helper",
-      "line_budget": 8359,
+      "line_budget": 8419,
       "next_module_workstream": "Split upstream sync cooldown/capability fixtures by recovery, classification, and maintenance."
     }
   ],

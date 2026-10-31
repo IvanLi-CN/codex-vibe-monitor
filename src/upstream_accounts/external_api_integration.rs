@@ -311,6 +311,8 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     metadata: &ExternalUpstreamAccountMetadataRequest,
     probe: ImportedOauthProbeOutcome,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
     let existing_row = load_external_oauth_account_by_id(state, account_id, identity).await?;
     let requested_display_name = metadata
         .display_name
@@ -454,7 +456,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     }
     tx.commit().await.map_err(internal_error_tuple)?;
 
-    let _warning = apply_imported_oauth_probe_result(state, existing_row.id, &probe)
+    let _warning = apply_imported_oauth_probe_result_locked(state, existing_row.id, &probe)
         .await
         .map_err(internal_error_tuple)?;
     let routing_scope = if routing_scope_is_global {

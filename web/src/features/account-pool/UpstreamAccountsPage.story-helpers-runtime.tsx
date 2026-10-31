@@ -17,6 +17,7 @@ import type {
   UpstreamAccountListResponse,
 } from "../../lib/api";
 import type {
+  UpstreamAccountActionEvent,
   UpstreamAccountRefreshRecord,
   UpstreamAccountRefreshStatus,
 } from "../../lib/api/core-upstream";
@@ -130,6 +131,45 @@ function storyRefreshRecord(
     reasonCode: "refresh_ok",
     reasonMessage: null,
     httpStatus: null,
+  };
+}
+
+function storyActionEvent(
+  recentActions: UpstreamAccountActionEvent[] | undefined,
+  action: string,
+  source: string,
+): UpstreamAccountActionEvent {
+  const nextId = Math.max(0, ...(recentActions ?? []).map((event) => event.id)) + 1;
+  return {
+    id: nextId,
+    occurredAt: now,
+    action,
+    source,
+    accountDisplayName: null,
+    accountGroupName: null,
+    forwardProxyKey: null,
+    forwardProxyDisplayName: null,
+    forwardProxyEgressIp: null,
+    result: "success",
+    resultDescription: null,
+    reasonCode: action.startsWith("credential_")
+      ? "credential_refresh_ok"
+      : "usage_windows_refresh_ok",
+    reasonMessage: null,
+    httpStatus: null,
+    failureKind: null,
+    invokeId: null,
+    attemptId: null,
+    stickyKey: null,
+    model: null,
+    modelRouteStateBefore: null,
+    modelRouteStateAfter: null,
+    modelRoutePriorityBefore: null,
+    modelRoutePriorityAfter: null,
+    modelRouteFailureCount: null,
+    modelRouteCooldownUntil: null,
+    blockedBinding: null,
+    createdAt: now,
   };
 }
 
@@ -1042,6 +1082,14 @@ export function StorybookUpstreamAccountsMock({
             storyRefreshRecord(history, "credential_refresh_succeeded", "credential_refresh"),
             ...history,
           ].slice(0, 5),
+          recentActions: [
+            storyActionEvent(
+              detail.recentActions,
+              "credential_refresh_succeeded",
+              "credential_refresh",
+            ),
+            ...(detail.recentActions ?? []),
+          ].slice(0, 4),
         };
         store.details[accountId] = updated;
         store.accounts = store.accounts.map((item) =>
@@ -1070,6 +1118,14 @@ export function StorybookUpstreamAccountsMock({
             detail.usageWindowRefresh,
             "usage_windows_refresh",
           ),
+          recentActions: [
+            storyActionEvent(
+              detail.recentActions,
+              "usage_windows_refresh_succeeded",
+              "usage_windows_refresh",
+            ),
+            ...(detail.recentActions ?? []),
+          ].slice(0, 4),
         };
         store.details[accountId] = updated;
         store.accounts = store.accounts.map((item) =>

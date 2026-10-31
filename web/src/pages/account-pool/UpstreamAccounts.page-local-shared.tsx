@@ -2053,6 +2053,11 @@ function SharedUpstreamAccountDetailDrawerInner({
     credentialRefresh?.state === "partial" ||
     credentialRefresh?.state === "error" ||
     credentialRefresh?.state === "needs_reauth";
+  const credentialRefreshRetryAvailable =
+    credentialRefreshNeedsAttention &&
+    credentialRefresh?.state !== "needs_reauth" &&
+    selectedDetail?.enabled !== false &&
+    selectedDetail?.hasRefreshToken !== false;
   const modelRoutingStates = selectedDetail?.modelRoutingStates ?? [];
   const resetModelRouting = useCallback(
     async (model: string) => {
@@ -4437,7 +4442,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                             variant="outline"
                             onClick={() => void handleSync(selectedDetail)}
                             disabled={
-                              hasBusyAccountAction(busyAction, selectedDetail.id) || !writesEnabled
+                              hasBusyAccountAction(busyAction, selectedDetail.id) ||
+                              !writesEnabled ||
+                              selectedDetail.enabled === false
                             }
                           >
                             {t("accountPool.upstreamAccounts.refresh.retry")}
@@ -4449,24 +4456,29 @@ function SharedUpstreamAccountDetailDrawerInner({
                           <AppIcon name="alert-outline" className="h-4 w-4 shrink-0" aria-hidden />
                           <div className="min-w-0 flex-1">
                             <p className="font-medium">
-                              {t("accountPool.upstreamAccounts.refresh.credentialsFailureTitle")}
+                              {credentialRefresh?.state === "needs_reauth"
+                                ? t("accountPool.upstreamAccounts.refresh.credentialsReauthTitle")
+                                : t("accountPool.upstreamAccounts.refresh.credentialsFailureTitle")}
                             </p>
                             <p className="mt-0.5 text-xs text-base-content/70">
                               {credentialRefresh?.errorMessage ??
                                 t("accountPool.upstreamAccounts.refresh.retry")}
                             </p>
                           </div>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void handleCredentialRefresh(selectedDetail)}
-                            disabled={
-                              hasBusyAccountAction(busyAction, selectedDetail.id) || !writesEnabled
-                            }
-                          >
-                            {t("accountPool.upstreamAccounts.refresh.retryCredentials")}
-                          </Button>
+                          {credentialRefreshRetryAvailable ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void handleCredentialRefresh(selectedDetail)}
+                              disabled={
+                                hasBusyAccountAction(busyAction, selectedDetail.id) ||
+                                !writesEnabled
+                              }
+                            >
+                              {t("accountPool.upstreamAccounts.refresh.retryCredentials")}
+                            </Button>
+                          ) : null}
                         </Alert>
                       ) : null}
                       <dl className="grid gap-x-4 border-y border-base-300/60 sm:grid-cols-2 xl:grid-cols-4">
@@ -4531,7 +4543,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                                     onClick={() => void handleCredentialRefresh(selectedDetail)}
                                     disabled={
                                       hasBusyAccountAction(busyAction, selectedDetail.id) ||
-                                      !writesEnabled
+                                      !writesEnabled ||
+                                      selectedDetail.enabled === false ||
+                                      selectedDetail.hasRefreshToken === false ||
+                                      credentialRefresh?.state === "needs_reauth"
                                     }
                                     data-testid="account-credential-refresh-button"
                                   >
@@ -4597,7 +4612,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                                     onClick={() => void handleSync(selectedDetail)}
                                     disabled={
                                       hasBusyAccountAction(busyAction, selectedDetail.id) ||
-                                      !writesEnabled
+                                      !writesEnabled ||
+                                      selectedDetail.enabled === false
                                     }
                                     data-testid="account-sync-button"
                                   >

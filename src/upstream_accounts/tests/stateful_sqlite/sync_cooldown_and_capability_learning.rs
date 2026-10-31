@@ -21,6 +21,19 @@ fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
     );
     assert_eq!(invalid_token_code, "refresh_token_invalid");
+    let nested_invalid_token = extract_error_message(
+        r#"{"error":{"code":"invalid_token","message":"token is no longer valid"}}"#,
+    );
+    assert!(nested_invalid_token.contains("invalid_token"));
+    let (nested_invalid_token_code, _) = classify_refresh_error(
+        &nested_invalid_token,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    );
+    assert_eq!(nested_invalid_token_code, "refresh_token_invalid");
+    assert_eq!(
+        refresh_http_status("OAuth token endpoint returned 400: invalid_grant"),
+        Some(StatusCode::BAD_REQUEST)
+    );
     let (infrastructure_code, _) = classify_refresh_error(
         "TLS certificate has expired while connecting to the token endpoint",
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -28,6 +41,53 @@ fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
     assert_ne!(infrastructure_code, "refresh_token_invalid");
     assert!(!is_explicit_reauth_error_message("access token expired"));
     assert!(is_explicit_reauth_error_message("refresh token expired"));
+}
+
+#[tokio::test]
+async fn credential_refresh_keeps_access_token_rejection_during_transient_retry() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Rejected Access Token").await;
+    record_upstream_account_refresh_failure(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        "usage_windows_refresh",
+        "usage endpoint returned 401",
+        "access_token_rejected",
+        "额度接口拒绝当前 Access Token，下一轮独立凭据刷新将重试。",
+        false,
+        Some(StatusCode::UNAUTHORIZED),
+    )
+    .await
+    .expect("record access token rejection");
+    record_upstream_account_refresh_failure(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        "maintenance",
+        "token endpoint returned 503",
+        "upstream_http_5xx",
+        "上游返回 503，等待下一分钟重试。",
+        false,
+        Some(StatusCode::SERVICE_UNAVAILABLE),
+    )
+    .await
+    .expect("record transient credential failure");
+
+    let status = load_upstream_account_refresh_status(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await
+    .expect("load credential refresh status");
+    assert_eq!(status.error_code.as_deref(), Some("access_token_rejected"));
+    assert!(
+        status
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("upstream_http_5xx"))
+    );
 }
 
 #[test]

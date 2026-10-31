@@ -682,6 +682,8 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                 &refresh_proxy_scope,
             )
             .await?;
+            let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(row.id);
+            let _credential_refresh_guard = credential_refresh_lock.lock().await;
             let latest_row = load_upstream_account_row(&state.pool, row.id)
                 .await?
                 .ok_or_else(|| anyhow!("account disappeared during request credential refresh"))?;

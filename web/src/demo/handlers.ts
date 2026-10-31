@@ -2565,7 +2565,58 @@ function accountEvents() {
       createdAt: occurredAt,
     };
   });
-  return [...routingEvents, ...maintenanceEvents].sort(
+  const manualRefreshEvents = [
+    ...Array.from(demoManualCredentialRefreshAt, ([accountId, occurredAt]) => ({
+      accountId,
+      occurredAt,
+      action: "credential_refresh_succeeded",
+      source: "credential_refresh",
+      reasonCode: "credential_refresh_ok",
+      reasonMessage: "凭据已更新。",
+    })),
+    ...Array.from(demoManualUsageRefreshAt, ([accountId, occurredAt]) => ({
+      accountId,
+      occurredAt,
+      action: "usage_windows_refresh_succeeded",
+      source: "usage_windows_refresh",
+      reasonCode: "usage_windows_refresh_ok",
+      reasonMessage: "额度窗口已更新。",
+    })),
+  ].flatMap((event, index) => {
+    const account = accounts.find((candidate) => candidate.id === event.accountId);
+    if (!account) return [];
+    const proxyKey = account.boundProxyKeys?.[0] ?? null;
+    return [
+      {
+        id: 7400 + index,
+        action: event.action,
+        source: event.source,
+        result: "success",
+        upstreamAccountId: account.id,
+        accountDisplayName: account.displayName,
+        accountGroupName: account.groupName,
+        forwardProxyKey: proxyKey,
+        forwardProxyDisplayName: account.currentForwardProxyDisplayName ?? null,
+        forwardProxyEgressIp: null,
+        reasonCode: event.reasonCode,
+        reasonMessage: event.reasonMessage,
+        httpStatus: null,
+        model: null,
+        modelRouteStateBefore: null,
+        modelRouteStateAfter: null,
+        modelRoutePriorityBefore: null,
+        modelRoutePriorityAfter: null,
+        modelRouteFailureCount: null,
+        modelRouteCooldownUntil: null,
+        failureKind: null,
+        invokeId: null,
+        stickyKey: null,
+        occurredAt: event.occurredAt,
+        createdAt: event.occurredAt,
+      },
+    ];
+  });
+  return [...routingEvents, ...maintenanceEvents, ...manualRefreshEvents].sort(
     (left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt),
   );
 }

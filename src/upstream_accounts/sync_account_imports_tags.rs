@@ -420,7 +420,9 @@ pub(crate) async fn sync_api_key_account(
 }
 
 pub(crate) fn refresh_http_status(error: &str) -> Option<StatusCode> {
-    if error.contains("401") {
+    if error.contains("400") {
+        Some(StatusCode::BAD_REQUEST)
+    } else if error.contains("401") {
         Some(StatusCode::UNAUTHORIZED)
     } else if error.contains("402") {
         Some(StatusCode::PAYMENT_REQUIRED)
@@ -825,11 +827,15 @@ async fn refresh_oauth_credentials_with_source(
 
 pub(crate) async fn refresh_oauth_usage_windows(
     state: &AppState,
-    row: &UpstreamAccountRow,
+    _row: &UpstreamAccountRow,
     source: &str,
 ) -> Result<OAuthUsageRefreshOutcome> {
-    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(row.id);
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(_row.id);
     let _credential_refresh_guard = credential_refresh_lock.lock().await;
+    let current_row = load_upstream_account_row(&state.pool, _row.id)
+        .await?
+        .ok_or_else(|| anyhow!("account disappeared before usage refresh"))?;
+    let row = &current_row;
     let operation = UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS;
     begin_upstream_account_refresh_attempt(&state.pool, row.id, operation, source).await?;
     let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
@@ -1551,6 +1557,17 @@ pub(crate) async fn persist_usage_snapshot(
             })
         })
     });
+    let credits = snapshot.credits.clone().or_else(|| {
+        latest.as_ref().and_then(|sample| {
+            sample
+                .credits_has_credits
+                .map(|has_credits| CreditsSnapshot {
+                    has_credits: has_credits != 0,
+                    unlimited: sample.credits_unlimited.unwrap_or_default() != 0,
+                    balance: sample.credits_balance.clone(),
+                })
+        })
+    });
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_limit_samples (
@@ -1578,23 +1595,16 @@ pub(crate) async fn persist_usage_snapshot(
     .bind(secondary.as_ref().map(|value| value.window_duration_mins))
     .bind(secondary.as_ref().and_then(|value| value.resets_at.clone()))
     .bind(
-        snapshot
-            .credits
+        credits
             .as_ref()
             .map(|value| if value.has_credits { 1 } else { 0 }),
     )
     .bind(
-        snapshot
-            .credits
+        credits
             .as_ref()
             .map(|value| if value.unlimited { 1 } else { 0 }),
     )
-    .bind(
-        snapshot
-            .credits
-            .as_ref()
-            .and_then(|value| value.balance.clone()),
-    )
+    .bind(credits.as_ref().and_then(|value| value.balance.clone()))
     .execute(pool)
     .await?;
 
@@ -1622,7 +1632,7 @@ pub(crate) async fn apply_imported_oauth_probe_result(
     apply_imported_oauth_probe_result_locked(state, account_id, probe).await
 }
 
-async fn apply_imported_oauth_probe_result_locked(
+pub(crate) async fn apply_imported_oauth_probe_result_locked(
     state: &AppState,
     account_id: i64,
     probe: &ImportedOauthProbeOutcome,

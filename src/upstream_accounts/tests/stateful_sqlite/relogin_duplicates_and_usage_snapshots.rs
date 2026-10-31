@@ -1857,7 +1857,11 @@ async fn persist_usage_snapshot_preserves_missing_window_from_latest_sample() {
             window_duration_mins: 10_080,
             resets_at: Some("2026-03-18T00:00:00Z".to_string()),
         }),
-        credits: None,
+        credits: Some(CreditsSnapshot {
+            has_credits: false,
+            unlimited: false,
+            balance: Some("0".to_string()),
+        }),
     };
     persist_usage_snapshot(&pool, account_id, Some("team"), &first_snapshot, 30)
         .await
@@ -1884,6 +1888,9 @@ async fn persist_usage_snapshot_preserves_missing_window_from_latest_sample() {
     assert_eq!(latest.primary_used_percent, Some(24.0));
     assert_eq!(latest.secondary_used_percent, Some(42.0));
     assert_eq!(latest.secondary_window_minutes, Some(10_080));
+    assert_eq!(latest.credits_has_credits, Some(0));
+    assert_eq!(latest.credits_unlimited, Some(0));
+    assert_eq!(latest.credits_balance.as_deref(), Some("0"));
 }
 
 #[tokio::test]

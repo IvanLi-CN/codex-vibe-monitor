@@ -956,6 +956,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.refresh.retryCredentials": "Retry Token refresh",
     "accountPool.upstreamAccounts.refresh.failureTitle": "Usage window update failed",
     "accountPool.upstreamAccounts.refresh.credentialsFailureTitle": "Token refresh failed",
+    "accountPool.upstreamAccounts.refresh.credentialsReauthTitle": "Re-authorization required",
     "accountPool.upstreamAccounts.refresh.state.idle": "Idle",
     "accountPool.upstreamAccounts.refresh.state.refreshing": "Refreshing",
     "accountPool.upstreamAccounts.refresh.state.succeeded": "Succeeded",
@@ -1629,6 +1630,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.actions.model_route_recovered":
       "Model route recovered",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_reset": "Model route reset",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_refresh_succeeded":
+      "Credential refresh succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_refresh_failed":
+      "Credential refresh failed",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_reauth_required":
+      "Re-authorization required",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_succeeded":
+      "Usage window update succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_partial":
+      "Usage window update partial",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_failed":
+      "Usage window update failed",
     "accountPool.upstreamAccounts.latestAction.sources.call": "Call",
     "accountPool.upstreamAccounts.latestAction.sources.manual": "Manual",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "Manual sync",
@@ -1636,6 +1649,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "Post-create sync",
     "accountPool.upstreamAccounts.latestAction.sources.oauth_import": "OAuth import",
     "accountPool.upstreamAccounts.latestAction.sources.account_update": "Account update",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_callback": "OAuth callback",
+    "accountPool.upstreamAccounts.latestAction.sources.credential_refresh": "Credential refresh",
+    "accountPool.upstreamAccounts.latestAction.sources.usage_windows_refresh":
+      "Usage window update",
     "accountPool.upstreamAccounts.maintenanceEvents.title": "Non-model call execution records",
     "accountPool.upstreamAccounts.maintenanceEvents.description":
       "Recent account maintenance calls, syncs, and proxy-bound checks.",
@@ -4586,6 +4603,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.refresh.retryCredentials": "重试 Token 刷新",
     "accountPool.upstreamAccounts.refresh.failureTitle": "额度窗口更新失败",
     "accountPool.upstreamAccounts.refresh.credentialsFailureTitle": "Token 刷新失败",
+    "accountPool.upstreamAccounts.refresh.credentialsReauthTitle": "需要重新授权",
     "accountPool.upstreamAccounts.refresh.state.idle": "空闲",
     "accountPool.upstreamAccounts.refresh.state.refreshing": "刷新中",
     "accountPool.upstreamAccounts.refresh.state.succeeded": "成功",
@@ -5228,6 +5246,16 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.actions.model_route_cooldown": "模型路由冷却中",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_recovered": "模型路由恢复",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_reset": "模型路由已重置",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_refresh_succeeded":
+      "凭据刷新成功",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_refresh_failed": "凭据刷新失败",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_reauth_required": "需要重新授权",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_succeeded":
+      "额度窗口更新成功",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_partial":
+      "额度窗口更新不完整",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_failed":
+      "额度窗口更新失败",
     "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
     "accountPool.upstreamAccounts.latestAction.sources.manual": "手动操作",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "手动同步",
@@ -5235,6 +5263,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "创建后同步",
     "accountPool.upstreamAccounts.latestAction.sources.oauth_import": "OAuth 导入",
     "accountPool.upstreamAccounts.latestAction.sources.account_update": "账号修改",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_callback": "OAuth 回调",
+    "accountPool.upstreamAccounts.latestAction.sources.credential_refresh": "凭据刷新",
+    "accountPool.upstreamAccounts.latestAction.sources.usage_windows_refresh": "额度窗口更新",
     "accountPool.upstreamAccounts.maintenanceEvents.title": "非模型调用执行记录",
     "accountPool.upstreamAccounts.maintenanceEvents.description":
       "展示最近的账号维护调用、同步与代理探测。",

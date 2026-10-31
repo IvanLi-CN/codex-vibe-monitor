@@ -357,6 +357,22 @@ pub(crate) async fn record_upstream_account_refresh_failure(
     } else {
         UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
     };
+    let preserve_access_token_rejection = operation
+        == UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS
+        && !is_reauth
+        && previous.as_ref().is_some_and(|previous| {
+            previous.error_code.as_deref() == Some("access_token_rejected")
+        });
+    let persisted_error_code = if preserve_access_token_rejection {
+        "access_token_rejected"
+    } else {
+        error_code
+    };
+    let persisted_error_message = if preserve_access_token_rejection {
+        format!("Access Token 已被上游拒绝；当前凭据刷新失败（{error_code}）：{error_message}")
+    } else {
+        error_message.to_string()
+    };
     let next_attempt_at = if is_reauth {
         None
     } else {
@@ -383,8 +399,8 @@ pub(crate) async fn record_upstream_account_refresh_failure(
             last_success_at = pool_upstream_account_refresh_state.last_success_at,
             next_attempt_at = excluded.next_attempt_at,
             source = excluded.source,
-            error_code = excluded.error_code,
-            error_message = excluded.error_message,
+            error_code = ?7,
+            error_message = ?8,
             updated_at = excluded.updated_at
         "#,
     )
@@ -394,16 +410,16 @@ pub(crate) async fn record_upstream_account_refresh_failure(
     .bind(&now)
     .bind(next_attempt_at.as_deref())
     .bind(source)
-    .bind(error_code)
-    .bind(error_message)
+    .bind(persisted_error_code)
+    .bind(&persisted_error_message)
     .execute(pool)
     .await?;
 
     let should_record_event = previous.as_ref().is_none_or(|previous| {
         previous.state == UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
             || previous.state == UPSTREAM_ACCOUNT_REFRESH_STATE_IDLE
-            || previous.error_code.as_deref() != Some(error_code)
-            || previous.error_message.as_deref() != Some(error_message)
+            || previous.error_code.as_deref() != Some(persisted_error_code)
+            || previous.error_message.as_deref() != Some(persisted_error_message.as_str())
     });
     if !should_record_event {
         return Ok(());

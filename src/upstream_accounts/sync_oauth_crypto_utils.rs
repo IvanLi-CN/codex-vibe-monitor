@@ -1569,8 +1569,12 @@ pub(crate) fn value_as_timestamp(value: &Value) -> Option<DateTime<Utc>> {
 }
 
 pub(crate) fn extract_error_message(body: &str) -> String {
-    if let Ok(value) = serde_json::from_str::<Value>(body)
-        && let Some(message) = value
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        let error_code = value
+            .get("error")
+            .and_then(|value| value.get("code"))
+            .and_then(value_as_string);
+        let message = value
             .get("error_description")
             .and_then(value_as_string)
             .or_else(|| value.get("message").and_then(value_as_string))
@@ -1579,16 +1583,21 @@ pub(crate) fn extract_error_message(body: &str) -> String {
                     .get("error")
                     .and_then(|value| value.get("message"))
                     .and_then(value_as_string)
-            })
-            .or_else(|| {
-                value
-                    .get("error")
-                    .and_then(|value| value.get("code"))
-                    .and_then(value_as_string)
-            })
-            .or_else(|| value.get("error").and_then(value_as_string))
-    {
-        return message;
+            });
+        if let Some(message) = message {
+            if let Some(error_code) = error_code
+                && !message.eq_ignore_ascii_case(&error_code)
+            {
+                return format!("{error_code}: {message}");
+            }
+            return message;
+        }
+        if let Some(error_code) = error_code {
+            return error_code;
+        }
+        if let Some(error) = value.get("error").and_then(value_as_string) {
+            return error;
+        }
     }
     body.trim().chars().take(240).collect()
 }
