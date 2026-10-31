@@ -10,9 +10,9 @@
 
 ## Implementation Coverage
 
-- `REQ-PG18-001`: `src/main.rs`、`src/config.rs`、`src/pg_analytics/mod.rs` 提供 `ANALYTICS_BACKEND`、`POSTGRES_DATABASE_URL`、`POSTGRES_ANALYTICS_MAINTENANCE_URL` 和 `POSTGRES_MAX_CONNECTIONS`；测试构造器显式使用 SQLite disabled runtime。
+- `REQ-PG18-001`: `src/main.rs`、`src/config.rs`、`src/pg_analytics/mod.rs` 提供 `ANALYTICS_BACKEND`、`POSTGRES_DATABASE_URL`、`POSTGRES_ANALYTICS_MAINTENANCE_URL` 和 `POSTGRES_MAX_CONNECTIONS`；解析时拒绝相同维护/应用 URL 或共享 PostgreSQL 登录角色；测试构造器显式使用 SQLite disabled runtime。
 - `REQ-PG18-002`: `PostgresDatabaseUrl` 自定义 `Debug`/`Serialize`；`AnalyticsFact` 与 `src/pg_analytics/schema.rs` 只保留规范化 analytics 字段。
-- `REQ-PG18-003`: `PgAnalyticsPool` 校验四个预置关系并执行 rollback 的 read-only transaction；`PgAnalyticsRuntime` 保存 ready/unavailable 状态，未实现 SQLite fallback。
+- `REQ-PG18-003`: `PgAnalyticsPool` 校验七个预置关系、fact-date 兼容列并执行 rollback 的 read-only transaction；`PgAnalyticsRuntime` 保存 ready/unavailable 状态，未实现 SQLite fallback。
 - `REQ-PG18-004`: `AnalyticsRange`、`AnalyticsDimension`、metrics、projection state、overview/series DTO 和 `AnalyticsReadStore` 定义未来读取边界。
 - `REQ-PG18-005`: `AppState` 仅增加可选 runtime 入口；现有 SQLite pool、TerminalJournal、long-term projection 和 retention 代码未改写。
 
@@ -22,7 +22,7 @@
 - `cargo check --locked --all-targets --all-features`
 - Focused `pg_analytics` unit tests and existing lightweight configuration compatibility tests are bounded deterministic checks.
 - FU01 fact ingestion derives `stats_date` with explicit Asia/Shanghai calendar-boundary semantics for UTC-formatted source timestamps while preserving naive Shanghai timestamps; deterministic boundary regressions cover both snapshot and incremental fact paths.
-- FU01 compatibility persists fact-date semantics version `2` on the PostgreSQL replica state. Legacy or schema-incomplete replicas fail closed and require an explicit schema-owner provisioning step followed by maintenance-role bootstrap; bootstrap clears the target, rebuilds the bounded snapshot, resets the checkpoint, and only then makes the replica eligible. Runtime startup checks the compatibility column through privilege-independent `pg_catalog` metadata, while bootstrap holds a PostgreSQL advisory lock for the complete bounded rebuild and never executes DDL; `AnalyticsFactV1` identity and journal event version remain unchanged, with no automatic historical backfill.
+- FU01 compatibility persists fact-date semantics version `2` on the PostgreSQL replica state. Legacy or schema-incomplete replicas fail closed and require an explicit schema-owner provisioning step followed by maintenance-role bootstrap; bootstrap clears the target, rebuilds the bounded snapshot, resets the checkpoint, and only then makes the replica eligible. The shared legacy-visible `service_eligible` flag remains false for v2 state as a rollback fence, while the current program derives effective eligibility from the versioned state. Runtime startup checks the compatibility column through privilege-independent `pg_catalog` metadata, while bootstrap holds a PostgreSQL advisory lock for the complete bounded rebuild and closes the lock-holding connection if cancelled; it never executes DDL. `AnalyticsFactV1` identity and journal event version remain unchanged, with no automatic historical backfill.
 - The validation boundary is intentionally limited to commands that complete within 180 seconds: no load generator, stress/throughput test, scale-up experiment, production-data copy, long-running suite, or p95 conclusion is part of this foundation.
 
 ## Rollout Facts

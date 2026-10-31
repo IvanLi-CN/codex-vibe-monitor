@@ -93,3 +93,50 @@ fn app_config_rejects_postgres_without_url_and_zero_pool_size() {
             .contains(ENV_POSTGRES_MAX_CONNECTIONS)
     );
 }
+
+#[test]
+fn app_config_rejects_invalid_maintenance_url_with_its_own_name() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (ENV_ANALYTICS_BACKEND, Some("sqlite")),
+        (ENV_POSTGRES_DATABASE_URL, None),
+        (ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL, Some("not-a-url")),
+        (ENV_POSTGRES_MAX_CONNECTIONS, None),
+    ]);
+
+    let error = AppConfig::from_sources(&CliArgs::default())
+        .expect_err("invalid maintenance URL should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains(ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL)
+    );
+    assert!(!error.to_string().contains(ENV_POSTGRES_DATABASE_URL));
+}
+
+#[test]
+fn app_config_rejects_shared_postgres_login_roles() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (ENV_ANALYTICS_BACKEND, Some("postgres")),
+        (
+            ENV_POSTGRES_DATABASE_URL,
+            Some("postgresql://analytics:secret@example.test/codex"),
+        ),
+        (
+            ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL,
+            Some("postgresql://analytics:other-secret@example.test/codex"),
+        ),
+        (ENV_POSTGRES_MAX_CONNECTIONS, None),
+    ]);
+
+    let error = AppConfig::from_sources(&CliArgs::default())
+        .expect_err("shared PostgreSQL login roles should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("different PostgreSQL login roles")
+    );
+    assert!(!error.to_string().contains("secret"));
+    assert!(!error.to_string().contains("other-secret"));
+}

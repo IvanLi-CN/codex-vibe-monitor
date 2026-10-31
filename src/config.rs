@@ -457,12 +457,16 @@ impl AppConfig {
             .unwrap_or_default();
         let postgres_database_url = env::var(ENV_POSTGRES_DATABASE_URL)
             .ok()
-            .map(|raw| PostgresDatabaseUrl::parse(&raw))
+            .map(|raw| PostgresDatabaseUrl::parse_for(&raw, ENV_POSTGRES_DATABASE_URL))
             .transpose()?;
         let postgres_analytics_maintenance_url = env::var(ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL)
             .ok()
-            .map(|raw| PostgresDatabaseUrl::parse(&raw))
+            .map(|raw| PostgresDatabaseUrl::parse_for(&raw, ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL))
             .transpose()?;
+        validate_postgres_role_separation(
+            postgres_database_url.as_ref(),
+            postgres_analytics_maintenance_url.as_ref(),
+        )?;
         let postgres_max_connections = u32::try_from(parse_usize_env_var(
             ENV_POSTGRES_MAX_CONNECTIONS,
             DEFAULT_POSTGRES_MAX_CONNECTIONS,

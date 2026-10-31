@@ -6,7 +6,9 @@
 
 SQLite remains the default analytics backend and the existing state source. `ANALYTICS_BACKEND` accepts `sqlite` or `postgres`; the default is `sqlite`. Selecting `postgres` requires `POSTGRES_DATABASE_URL`. `POSTGRES_MAX_CONNECTIONS` defaults to `5` and must be positive. The connection URL is redacted from configuration debug and serialization output and from PostgreSQL failure diagnostics.
 
-The PostgreSQL foundation only connects, verifies four pre-provisioned relations, and runs a disposable read-only transaction. It does not execute schema DDL, migrate business writes, backfill data, or silently fall back to a heavy SQLite analytics query after PostgreSQL is selected. Its schema contract creates `cvm_analytics.analytics_facts`, `analytics_daily_rollups`, `analytics_hourly_rollups`, and `analytics_state`; the initial state row is `preparing`.
+The PostgreSQL foundation only connects, verifies seven pre-provisioned relations plus the `fact_date_semantics_version` compatibility column, and runs a disposable read-only transaction. It does not execute schema DDL, migrate business writes, backfill data, or silently fall back to a heavy SQLite analytics query after PostgreSQL is selected. Its schema contract creates `cvm_analytics.analytics_facts`, `analytics_parallel_work_keys`, `analytics_daily_rollups`, `analytics_hourly_rollups`, `analytics_state`, `analytics_replica_state`, and `analytics_replica_applied_changes`; the initial state rows are `preparing` and `unbootstrapped`.
+
+After the corrected v2 bootstrap, the shared `service_eligible` flag remains `FALSE` as a rollback fence for older programs that do not inspect the additive semantic-version column. The current program derives effective eligibility from the v2 marker, caught-up state, baseline, and matching checkpoints.
 
 Configuration alone never provisions the schema, copies data, or changes production query routing. Applying `ANALYTICS_BACKEND=postgres` through an owner-approved runtime change and restart initializes the optional PostgreSQL runtime, but the current foundation has no concrete analytics reader, shadow comparison, operator status route, or production read switch. Do not treat `/health` or a successful database connection as proof that analytics reads are serving from PostgreSQL. Keep production enablement gated until a later implementation supplies and validates those surfaces.
 
@@ -139,12 +141,17 @@ Run this sequence only under an owner-approved change window. Do not skip ahead 
 
    ```sql
    GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance;
-   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA cvm_analytics TO cvm_analytics_maintenance;
-   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA cvm_analytics TO cvm_analytics_maintenance;
-   ALTER DEFAULT PRIVILEGES FOR ROLE cvm_analytics_owner IN SCHEMA cvm_analytics
-     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cvm_analytics_maintenance;
-   ALTER DEFAULT PRIVILEGES FOR ROLE cvm_analytics_owner IN SCHEMA cvm_analytics
-     GRANT USAGE, SELECT ON SEQUENCES TO cvm_analytics_maintenance;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+     cvm_analytics.analytics_facts,
+     cvm_analytics.analytics_parallel_work_keys,
+     cvm_analytics.analytics_replica_state,
+     cvm_analytics.analytics_replica_applied_changes,
+     cvm_analytics.analytics_state
+     TO cvm_analytics_maintenance;
+   GRANT USAGE, SELECT ON SEQUENCE
+     cvm_analytics.analytics_facts_fact_id_seq
+     TO cvm_analytics_maintenance;
+   -- Do not grant default privileges; future objects require an explicit review.
    ```
 
 3. **Status:** use PostgreSQL client tools for database status, and set `POSTGRES_ANALYTICS_MAINTENANCE_URL` only for the explicitly authorized `analytics-replica` control command. The foundation does not expose a PostgreSQL status endpoint. `pg_isready` proves that a server accepts connections, not that the application selected PostgreSQL or that a read path is serving. `/health` remains service readiness, not an analytics status check.
@@ -153,12 +160,12 @@ Run this sequence only under an owner-approved change window. Do not skip ahead 
 
    ```sh
    pg_isready --dbname='service=cvm-analytics-app'
-   psql 'service=cvm-analytics-app' --set=ON_ERROR_STOP=1 --command="SELECT current_setting('server_version_num')::int >= 180000 AND current_setting('server_version_num')::int < 190000 AS is_postgresql_18; SELECT to_regclass('cvm_analytics.analytics_facts'), to_regclass('cvm_analytics.analytics_daily_rollups'), to_regclass('cvm_analytics.analytics_hourly_rollups'), to_regclass('cvm_analytics.analytics_state');"
+   psql 'service=cvm-analytics-app' --set=ON_ERROR_STOP=1 --command="SELECT current_setting('server_version_num')::int >= 180000 AND current_setting('server_version_num')::int < 190000 AS is_postgresql_18; WITH required(schema_name, relation_name) AS (VALUES ('cvm_analytics', 'analytics_facts'), ('cvm_analytics', 'analytics_parallel_work_keys'), ('cvm_analytics', 'analytics_daily_rollups'), ('cvm_analytics', 'analytics_hourly_rollups'), ('cvm_analytics', 'analytics_state'), ('cvm_analytics', 'analytics_replica_state'), ('cvm_analytics', 'analytics_replica_applied_changes')) SELECT format('%s.%s', required.schema_name, required.relation_name) AS relation, (relation.oid IS NOT NULL) AS present FROM required LEFT JOIN pg_catalog.pg_namespace AS namespace ON namespace.nspname = required.schema_name LEFT JOIN pg_catalog.pg_class AS relation ON relation.relnamespace = namespace.oid AND relation.relname = required.relation_name ORDER BY relation; SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute AS attribute JOIN pg_catalog.pg_class AS relation ON relation.oid = attribute.attrelid JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace WHERE namespace.nspname = 'cvm_analytics' AND relation.relname = 'analytics_replica_state' AND attribute.attname = 'fact_date_semantics_version' AND attribute.attnum > 0 AND NOT attribute.attisdropped) AS fact_date_semantics_version_present;"
    psql 'service=cvm-analytics-app' --set=ON_ERROR_STOP=1 --command='BEGIN READ ONLY; SELECT 1; ROLLBACK;'
    ```
 
    For command-line clients, use an owner-controlled service file for host, database, username, TLS mode, and CA path, and a protected password file or secret manager for credentials. Never enable shell tracing while credentials are in scope.
-4. **Backup and restore rehearsal:** before any future enablement, rehearse against a non-production database populated only with synthetic data. Store the archive and restore target on approved test volumes, verify the four relations and representative contents after restore, and record elapsed time and free-space observations. A SQL dump rehearsal does not by itself prove point-in-time recovery; the production backup design must also cover retained base backups and WAL archives. Prepare the restore database empty and configure its service entry to connect as its approved restore owner.
+4. **Backup and restore rehearsal:** before any future enablement, rehearse against a non-production database populated only with synthetic data. Store the archive and restore target on approved test volumes, verify the seven relations, compatibility column, and representative contents after restore, and record elapsed time and free-space observations. A SQL dump rehearsal does not by itself prove point-in-time recovery; the production backup design must also cover retained base backups and WAL archives. Prepare the restore database empty and configure its service entry to connect as its approved restore owner.
 
    **Owner authorization required. These commands are only for the synthetic non-production rehearsal; do not point them at a production database or production backup.**
 
@@ -173,13 +180,13 @@ Run this sequence only under an owner-approved change window. Do not skip ahead 
      "$BACKUP_DIR/cvm-analytics-rehearsal.dump"
    ```
 
-5. **Pre-enable verify:** repeat the read-only checks below after the restore rehearsal and confirm that all four relations exist and the application role can connect. The foundation's `AnalyticsRuntimeStatus` (`disabled`, `ready`, `unavailable`) is internal only; no operator endpoint exposes it. A successful database probe is necessary but not sufficient for production enablement.
+5. **Pre-enable verify:** repeat the read-only checks below after the restore rehearsal and confirm that all seven relations and the compatibility column exist and the application role can connect. The foundation's `AnalyticsRuntimeStatus` (`disabled`, `ready`, `unavailable`) is internal only; no operator endpoint exposes it. A successful database probe is necessary but not sufficient for production enablement.
 
    **Owner authorization required to run these read-only checks.**
 
    ```sh
    pg_isready --dbname='service=cvm-analytics-app'
-   psql 'service=cvm-analytics-app' --set=ON_ERROR_STOP=1 --command="SELECT current_setting('server_version_num')::int >= 180000 AND current_setting('server_version_num')::int < 190000 AS is_postgresql_18; SELECT to_regclass('cvm_analytics.analytics_facts'), to_regclass('cvm_analytics.analytics_daily_rollups'), to_regclass('cvm_analytics.analytics_hourly_rollups'), to_regclass('cvm_analytics.analytics_state');"
+   psql 'service=cvm-analytics-app' --set=ON_ERROR_STOP=1 --command="SELECT current_setting('server_version_num')::int >= 180000 AND current_setting('server_version_num')::int < 190000 AS is_postgresql_18; WITH required(schema_name, relation_name) AS (VALUES ('cvm_analytics', 'analytics_facts'), ('cvm_analytics', 'analytics_parallel_work_keys'), ('cvm_analytics', 'analytics_daily_rollups'), ('cvm_analytics', 'analytics_hourly_rollups'), ('cvm_analytics', 'analytics_state'), ('cvm_analytics', 'analytics_replica_state'), ('cvm_analytics', 'analytics_replica_applied_changes')) SELECT format('%s.%s', required.schema_name, required.relation_name) AS relation, (relation.oid IS NOT NULL) AS present FROM required LEFT JOIN pg_catalog.pg_namespace AS namespace ON namespace.nspname = required.schema_name LEFT JOIN pg_catalog.pg_class AS relation ON relation.relnamespace = namespace.oid AND relation.relname = required.relation_name ORDER BY relation; SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute AS attribute JOIN pg_catalog.pg_class AS relation ON relation.oid = attribute.attrelid JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace WHERE namespace.nspname = 'cvm_analytics' AND relation.relname = 'analytics_replica_state' AND attribute.attname = 'fact_date_semantics_version' AND attribute.attnum > 0 AND NOT attribute.attisdropped) AS fact_date_semantics_version_present;"
    psql 'service=cvm-analytics-app' --set=ON_ERROR_STOP=1 --command='BEGIN READ ONLY; SELECT 1; ROLLBACK;'
    ```
 
@@ -187,7 +194,7 @@ Run this sequence only under an owner-approved change window. Do not skip ahead 
 7. **Explicit enablement:** only after the owner accepts bootstrap, capacity, backup/restore, verification, and shadow evidence may a later change explicitly apply `ANALYTICS_BACKEND=postgres` and restart the service. Under I1/I2/I3 this selects and verifies the optional runtime only; it does not move business writes or wire long-term reads. This batch defines no production read-switch command or API.
 8. **Observation:** a later read-enabled release must define its operator-visible PostgreSQL runtime status, projection freshness/unavailability checks, disk/WAL/slot/backups alerts, and observation window before enablement. Missing status or alert evidence keeps the enablement gate closed.
 9. **Pause and resume:** to pause a PostgreSQL runtime that was explicitly enabled, an authorized operator restores `ANALYTICS_BACKEND=sqlite` through the approved deployment configuration and restarts the service; verify SQLite behavior before resuming traffic. Resume only after database status, schema/read-only verification, capacity, and backup gates pass again, then explicitly reapply the approved PostgreSQL selection and restart. Configuration-file edits without the approved apply/restart do nothing. Do not stop PostgreSQL or revoke roles as a substitute for pausing the application.
-10. **Rollback:** pause PostgreSQL selection first, verify the application is using its unchanged SQLite state, and retain PostgreSQL data, schema, and backups for diagnosis. The current batch moves no business writes, so it defines no reverse-copy command. Any future cleanup or data deletion needs its own owner approval and retention review.
+10. **Rollback:** pause PostgreSQL selection first, verify the application is using its unchanged SQLite state, and retain PostgreSQL data, schema, and backups for diagnosis. Do not run an older program against a v2 target: the current bootstrap leaves the shared `service_eligible` flag false so that older programs fail closed even though they ignore the additive semantic-version column. The current batch moves no business writes, so it defines no reverse-copy command. Any future cleanup or data deletion needs its own owner approval and retention review.
 
 ## Long-Term Pure-PostgreSQL Analytics Overview
 

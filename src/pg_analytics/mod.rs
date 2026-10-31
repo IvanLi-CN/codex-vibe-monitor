@@ -58,14 +58,17 @@ pub(crate) struct PostgresDatabaseUrl(String);
 
 impl PostgresDatabaseUrl {
     pub(crate) fn parse(raw: &str) -> Result<Self> {
+        Self::parse_for(raw, ENV_POSTGRES_DATABASE_URL)
+    }
+
+    pub(crate) fn parse_for(raw: &str, env_name: &str) -> Result<Self> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            bail!("{ENV_POSTGRES_DATABASE_URL} must not be empty");
+            bail!("{env_name} must not be empty");
         }
-        let parsed = Url::parse(trimmed)
-            .map_err(|_| anyhow!("invalid {ENV_POSTGRES_DATABASE_URL} value"))?;
+        let parsed = Url::parse(trimmed).map_err(|_| anyhow!("invalid {env_name} value"))?;
         if !matches!(parsed.scheme(), "postgres" | "postgresql") {
-            bail!("{ENV_POSTGRES_DATABASE_URL} must use a postgres:// or postgresql:// scheme");
+            bail!("{env_name} must use a postgres:// or postgresql:// scheme");
         }
         Ok(Self(trimmed.to_string()))
     }
@@ -73,6 +76,40 @@ impl PostgresDatabaseUrl {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn username(&self) -> String {
+        Url::parse(&self.0)
+            .expect("PostgresDatabaseUrl was validated during construction")
+            .username()
+            .to_string()
+    }
+}
+
+pub(crate) fn validate_postgres_role_separation(
+    application_url: Option<&PostgresDatabaseUrl>,
+    maintenance_url: Option<&PostgresDatabaseUrl>,
+) -> Result<()> {
+    let Some((application_url, maintenance_url)) = application_url.zip(maintenance_url) else {
+        return Ok(());
+    };
+    if application_url.as_str() == maintenance_url.as_str() {
+        bail!(
+            "{ENV_POSTGRES_DATABASE_URL} and {ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must not be identical"
+        );
+    }
+    let application_role = application_url.username();
+    let maintenance_role = maintenance_url.username();
+    if application_role.is_empty() || maintenance_role.is_empty() {
+        bail!(
+            "{ENV_POSTGRES_DATABASE_URL} and {ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must specify distinct PostgreSQL login roles"
+        );
+    }
+    if application_role == maintenance_role {
+        bail!(
+            "{ENV_POSTGRES_DATABASE_URL} and {ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must use different PostgreSQL login roles"
+        );
+    }
+    Ok(())
 }
 
 impl fmt::Debug for PostgresDatabaseUrl {
@@ -160,12 +197,22 @@ impl PgAnalyticsPool {
         let database_url = config.postgres_analytics_maintenance_url.as_ref().context(
             "POSTGRES_ANALYTICS_MAINTENANCE_URL is required for analytics replica control",
         )?;
+        validate_postgres_role_separation(
+            config.postgres_database_url.as_ref(),
+            Some(database_url),
+        )?;
         Self::connect_url(
             database_url,
             config.postgres_max_connections,
             "failed to connect to the PostgreSQL analytics maintenance backend",
         )
         .await
+        .map_err(|error| {
+            anyhow!(
+                "failed to connect to the PostgreSQL analytics maintenance backend: {}",
+                sanitize_postgres_error(&error, Some(database_url.as_str()))
+            )
+        })
     }
 
     async fn connect_url(
@@ -956,9 +1003,11 @@ fn unconsumed_source_bytes_exceed_retention_bound(lag_bytes: i64) -> bool {
 }
 
 fn replica_service_eligible(state: &AnalyticsReplicaState) -> bool {
+    // Keep the shared flag false so pre-FU01 programs fail closed when they ignore the
+    // additive semantic-version column. Current code derives eligibility from the v2 marker,
+    // lifecycle state, and matching checkpoints instead.
     fact_date_semantics_compatible(state)
         && state.status == "caught_up"
-        && state.service_eligible
         && state.consumer_checkpoint == state.source_acknowledged_through
 }
 
@@ -1312,7 +1361,6 @@ fn source_status(source: &SourceContext) -> AnalyticsSourceStatus {
 async fn mark_replica_state(
     pool: &sqlx::PgPool,
     status: &str,
-    service_eligible: bool,
     error_code: Option<&str>,
     error_detail: Option<&str>,
     projection_status: &str,
@@ -1322,15 +1370,14 @@ async fn mark_replica_state(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET status = $1,
-            service_eligible = $2,
-            last_error_code = $3,
-            last_error_detail = $4,
+            service_eligible = FALSE,
+            last_error_code = $2,
+            last_error_detail = $3,
             updated_at = NOW()
         WHERE id = 1
         "#,
     )
     .bind(status)
-    .bind(service_eligible)
     .bind(error_code)
     .bind(error_detail)
     .execute(&mut *transaction)
@@ -1353,7 +1400,6 @@ async fn mark_replica_state(
 async fn mark_replica_state_on_connection(
     connection: &mut sqlx::postgres::PgConnection,
     status: &str,
-    service_eligible: bool,
     error_code: Option<&str>,
     error_detail: Option<&str>,
     projection_status: &str,
@@ -1363,15 +1409,14 @@ async fn mark_replica_state_on_connection(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET status = $1,
-            service_eligible = $2,
-            last_error_code = $3,
-            last_error_detail = $4,
+            service_eligible = FALSE,
+            last_error_code = $2,
+            last_error_detail = $3,
             updated_at = NOW()
         WHERE id = 1
         "#,
     )
     .bind(status)
-    .bind(service_eligible)
     .bind(error_code)
     .bind(error_detail)
     .execute(&mut *transaction)
@@ -1399,7 +1444,6 @@ async fn mark_replica_invalidated(
     mark_replica_state(
         pool,
         "invalidated",
-        false,
         Some("source_retention_exhausted"),
         Some(&detail),
         "unavailable",
@@ -1416,7 +1460,6 @@ async fn mark_replica_blocked(
     mark_replica_state(
         pool,
         "blocked",
-        false,
         Some(error_code),
         Some(&detail),
         "unavailable",
@@ -1433,7 +1476,6 @@ async fn mark_replica_blocked_on_connection(
     mark_replica_state_on_connection(
         connection,
         "blocked",
-        false,
         Some(error_code),
         Some(&detail),
         "unavailable",
@@ -1494,7 +1536,7 @@ async fn ensure_fact_date_semantics_compatible(
 }
 
 async fn set_replica_running(pool: &sqlx::PgPool) -> Result<()> {
-    mark_replica_state(pool, "running", false, None, None, "preparing").await
+    mark_replica_state(pool, "running", None, None, "preparing").await
 }
 
 async fn set_replica_acknowledged(
@@ -1510,7 +1552,7 @@ async fn set_replica_acknowledged(
         UPDATE cvm_analytics.analytics_replica_state
         SET source_acknowledged_through = $1,
             status = $2,
-            service_eligible = $3,
+            service_eligible = FALSE,
             last_error_code = NULL,
             last_error_detail = NULL,
             updated_at = NOW()
@@ -1519,7 +1561,6 @@ async fn set_replica_acknowledged(
     )
     .bind(through_change_id)
     .bind(status)
-    .bind(caught_up)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
@@ -1545,7 +1586,7 @@ async fn set_replica_acknowledged_on_connection(
         UPDATE cvm_analytics.analytics_replica_state
         SET source_acknowledged_through = $1,
             status = $2,
-            service_eligible = $3,
+            service_eligible = FALSE,
             last_error_code = NULL,
             last_error_detail = NULL,
             updated_at = NOW()
@@ -1554,7 +1595,6 @@ async fn set_replica_acknowledged_on_connection(
     )
     .bind(through_change_id)
     .bind(status)
-    .bind(caught_up)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
@@ -2396,6 +2436,9 @@ async fn bootstrap_replica(
         .acquire()
         .await
         .context("failed to acquire the PostgreSQL analytics bootstrap connection")?;
+    // Session advisory locks survive PoolConnection::drop. Close this connection on cancellation
+    // so a held lock can never be returned to the pool for a later retry.
+    connection.close_on_drop();
     let acquired = sqlx::query_scalar::<_, bool>(PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL)
         .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
         .fetch_one(&mut *connection)
@@ -2764,7 +2807,7 @@ async fn pause_replica(
         replica_baseline_ready(&state),
         "analytics replica baseline is not established; run explicit bootstrap before pause"
     );
-    mark_replica_state(pool, "paused", false, None, None, "preparing").await?;
+    mark_replica_state(pool, "paused", None, None, "preparing").await?;
     load_status_report(pool, source_pool).await
 }
 
@@ -3174,6 +3217,9 @@ mod tests {
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_state"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_parallel_work_keys"));
         assert!(
+            PG_ANALYTICS_SCHEMA_SQL.contains("service_eligible BOOLEAN NOT NULL DEFAULT FALSE")
+        );
+        assert!(
             PG_ANALYTICS_SCHEMA_SQL
                 .contains("fact_date_semantics_version BIGINT NOT NULL DEFAULT 2")
         );
@@ -3203,7 +3249,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_fact_date_semantics_is_ineligible_until_explicit_bootstrap() {
+    fn current_fact_date_semantics_uses_versioned_state_and_legacy_fence() {
         let mut state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "caught_up".to_string(),
@@ -3216,12 +3262,13 @@ mod tests {
             coverage_watermark: 12,
             consumer_checkpoint: 12,
             source_acknowledged_through: 12,
-            service_eligible: true,
+            service_eligible: false,
             last_error_code: None,
             last_error_detail: None,
             updated_at: String::new(),
         };
         assert!(fact_date_semantics_compatible(&state));
+        assert!(!state.service_eligible);
         assert!(replica_service_eligible(&state));
 
         state.fact_date_semantics_version = 1;
@@ -3316,7 +3363,7 @@ mod tests {
             coverage_watermark: 10,
             consumer_checkpoint: 10,
             source_acknowledged_through: 10,
-            service_eligible: true,
+            service_eligible: false,
             last_error_code: None,
             last_error_detail: None,
             updated_at: String::new(),
@@ -3403,7 +3450,7 @@ mod tests {
 
         state.status = "caught_up".to_string();
         state.source_acknowledged_through = 7;
-        state.service_eligible = true;
+        assert!(!state.service_eligible);
         assert!(replica_service_eligible(&state));
         assert!(replica_service_eligible_for_latest_change(&state, 7));
         assert!(!replica_service_eligible_for_latest_change(&state, 8));
@@ -3682,8 +3729,8 @@ mod tests {
         }
         for statement in [
             "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA cvm_analytics TO cvm_analytics_maintenance",
-            "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA cvm_analytics TO cvm_analytics_maintenance",
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys, cvm_analytics.analytics_replica_state, cvm_analytics.analytics_replica_applied_changes, cvm_analytics.analytics_state TO cvm_analytics_maintenance",
+            "GRANT USAGE, SELECT ON SEQUENCE cvm_analytics.analytics_facts_fact_id_seq TO cvm_analytics_maintenance",
         ] {
             sqlx::query(statement)
                 .execute(&mut owner)
@@ -3727,6 +3774,15 @@ mod tests {
         anyhow::ensure!(
             maintenance_ddl.is_err(),
             "maintenance role unexpectedly retained schema DDL privilege"
+        );
+        let maintenance_rollup_dml = sqlx::query(
+            "INSERT INTO cvm_analytics.analytics_daily_rollups (stats_date, dimension, series_key, display_name) VALUES ('1970-01-01', 'overall', 'fixture', 'Fixture')",
+        )
+        .execute(&mut *maintenance)
+        .await;
+        anyhow::ensure!(
+            maintenance_rollup_dml.is_err(),
+            "maintenance role unexpectedly retained unrelated rollup DML privilege"
         );
         sqlx::query(
             r#"

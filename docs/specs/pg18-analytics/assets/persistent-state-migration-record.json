@@ -72,7 +72,7 @@
   },
   "recovery": {
     "deployed_migrations_immutable": true,
-    "program_rollback_state_behavior": "Earlier programs may ignore the additive column, but no rollback removes it or marks corrected facts service eligible under legacy semantics.",
+    "program_rollback_state_behavior": "Earlier programs may ignore the additive column, but the current v2 bootstrap keeps the shared legacy-visible service_eligible flag false so those programs fail closed; no rollback removes the column or marks corrected facts service eligible under legacy semantics.",
     "faulty_release_recovery": "A newer compatible program re-enters the explicit owner-schema step if required, then reruns the serialized maintenance bootstrap forward. A failed bootstrap leaves the target unavailable or blocked and never silently enables reads; backup restore remains separate disaster recovery.",
     "backup_restore_role": "separate-disaster-recovery"
   },
