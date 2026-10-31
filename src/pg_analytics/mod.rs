@@ -455,7 +455,13 @@ fn sanitize_postgres_error(error: &anyhow::Error, database_url: Option<&str>) ->
         .replace_all(&reason, redacted_userinfo.as_str())
         .into_owned();
     if reason.len() > 512 {
-        reason.truncate(512);
+        let truncate_at = reason
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= 512)
+            .last()
+            .unwrap_or(0);
+        reason.truncate(truncate_at);
         reason.push_str("...");
     }
     reason
@@ -1622,6 +1628,21 @@ async fn set_replica_acknowledged_on_connection(
     Ok(())
 }
 
+async fn fence_replica_service_eligibility_on_connection(
+    connection: &mut sqlx::postgres::PgConnection,
+) -> Result<()> {
+    let result = sqlx::query(
+        "UPDATE cvm_analytics.analytics_replica_state SET service_eligible = FALSE, updated_at = NOW() WHERE id = 1",
+    )
+    .execute(&mut *connection)
+    .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "PostgreSQL analytics replica state row is missing while applying the rollback fence"
+    );
+    Ok(())
+}
+
 async fn clear_replica_target(
     connection: &mut sqlx::postgres::PgConnection,
     generation: i64,
@@ -2548,6 +2569,7 @@ async fn bootstrap_replica_locked(
     connection: &mut sqlx::postgres::PgConnection,
     acknowledge_unverified_history: bool,
 ) -> Result<()> {
+    fence_replica_service_eligibility_on_connection(connection).await?;
     verify_replica_schema_on_connection(connection).await?;
     let mut source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     if source_before.state.historical_replay_required != 0
@@ -3256,6 +3278,13 @@ mod tests {
     }
 
     #[test]
+    fn postgres_error_sanitization_truncates_at_a_utf8_boundary() {
+        let error = anyhow!("{}", "界".repeat(600));
+        let sanitized = sanitize_postgres_error(&error, None);
+        assert_eq!(sanitized, format!("{}...", "界".repeat(170)));
+    }
+
+    #[test]
     fn disabled_runtime_does_not_expose_a_pool() {
         let runtime = PgAnalyticsRuntime::disabled();
         assert_eq!(
@@ -3286,6 +3315,9 @@ mod tests {
         assert!(
             PG_ANALYTICS_SCHEMA_SQL
                 .contains("ADD COLUMN IF NOT EXISTS fact_date_semantics_version")
+        );
+        assert!(
+            PG_ANALYTICS_SCHEMA_SQL.contains("SET service_eligible = FALSE, updated_at = NOW()")
         );
         assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.pg_attribute"));
         assert!(PG_ANALYTICS_RELATION_EXISTS_SQL.contains("pg_catalog.pg_class"));
@@ -3759,8 +3791,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a disposable PostgreSQL fixture and explicit owner/app/maintenance URLs"]
+    #[ignore = "requires an explicitly authorized disposable PostgreSQL *_fixture database and owner/app/maintenance URLs"]
     async fn postgres_analytics_fixture_verifies_role_separation_and_bounded_reset() -> Result<()> {
+        let reset_authorization = env::var("PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET").context(
+            "PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET=1 is required for the destructive fixture",
+        )?;
+        anyhow::ensure!(
+            reset_authorization == "1",
+            "PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET must equal 1 for the destructive fixture"
+        );
         let owner_url = env::var("PG_ANALYTICS_TEST_OWNER_URL")
             .context("PG_ANALYTICS_TEST_OWNER_URL is required for the PostgreSQL fixture")?;
         let app_url = env::var("PG_ANALYTICS_TEST_APP_URL")
@@ -3771,6 +3810,14 @@ mod tests {
         let mut owner = sqlx::postgres::PgConnection::connect(&owner_url)
             .await
             .context("connect PostgreSQL fixture owner")?;
+        let database_name: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&mut owner)
+            .await
+            .context("inspect PostgreSQL fixture database name")?;
+        anyhow::ensure!(
+            database_name.ends_with("_fixture"),
+            "PostgreSQL fixture owner URL must target a database whose name ends with _fixture"
+        );
         sqlx::query("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
             .execute(&mut owner)
             .await
@@ -3973,6 +4020,48 @@ mod tests {
         )
         .execute(&mut *maintenance)
         .await?;
+
+        sqlx::query(
+            "ALTER TABLE cvm_analytics.analytics_replica_state DROP COLUMN fact_date_semantics_version",
+        )
+        .execute(&mut owner)
+        .await?;
+        for statement in PG_ANALYTICS_SCHEMA_SQL
+            .split(';')
+            .map(str::trim)
+            .filter(|statement| !statement.is_empty())
+        {
+            sqlx::query(statement)
+                .execute(&mut owner)
+                .await
+                .with_context(|| {
+                    format!("reapply PostgreSQL fixture schema statement: {statement}")
+                })?;
+        }
+        let owner_fenced: bool = sqlx::query_scalar(
+            "SELECT service_eligible FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut owner)
+        .await?;
+        anyhow::ensure!(
+            !owner_fenced,
+            "owner-applied compatibility contract did not fence legacy eligibility"
+        );
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_replica_state SET service_eligible = TRUE WHERE id = 1",
+        )
+        .execute(&mut *maintenance)
+        .await?;
+        fence_replica_service_eligibility_on_connection(&mut maintenance).await?;
+        let bootstrap_fenced: bool = sqlx::query_scalar(
+            "SELECT service_eligible FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        anyhow::ensure!(
+            !bootstrap_fenced,
+            "bootstrap preflight did not persist the rollback fence"
+        );
 
         let app_dml = sqlx::query("DELETE FROM cvm_analytics.analytics_facts")
             .execute(&app_pool)

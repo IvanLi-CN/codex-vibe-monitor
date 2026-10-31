@@ -193,6 +193,12 @@ INSERT INTO cvm_analytics.analytics_replica_state (id, replica_id, status)
 VALUES (1, 'pg-analytics', 'unbootstrapped')
 ON CONFLICT (id) DO NOTHING;
 
+-- Reapplying the owner contract is an explicit rollback fence until maintenance bootstrap
+-- rebuilds the target with the current fact-date semantics.
+UPDATE cvm_analytics.analytics_replica_state
+SET service_eligible = FALSE, updated_at = NOW()
+WHERE id = 1;
+
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_applied_changes (
     change_id BIGINT PRIMARY KEY,
     generation BIGINT NOT NULL,
