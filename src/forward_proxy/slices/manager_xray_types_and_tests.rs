@@ -2308,6 +2308,13 @@ mod tests {
         let _guard = crate::oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
             .lock()
             .await;
+        struct ResetCodexUpstreamOverride;
+        impl Drop for ResetCodexUpstreamOverride {
+            fn drop(&mut self) {
+                crate::oauth_bridge::reset_test_oauth_codex_upstream_base_url_now();
+            }
+        }
+        let _reset_override = ResetCodexUpstreamOverride;
 
         for (status, expected_ok) in [
             (StatusCode::METHOD_NOT_ALLOWED, true),
@@ -2339,6 +2346,7 @@ mod tests {
                     .await;
 
             handle.abort();
+            let _ = handle.await;
             assert_eq!(
                 result.ok, expected_ok,
                 "unexpected result for HTTP {status}"
@@ -2347,7 +2355,55 @@ mod tests {
             assert_eq!(result.error.is_none(), expected_ok);
         }
 
-        crate::oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind codex responses transport-error address");
+        let addr = listener
+            .local_addr()
+            .expect("read codex responses transport-error address");
+        drop(listener);
+        crate::oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("http://{addr}/backend-api/codex"))
+                .expect("valid codex responses transport-error url"),
+        )
+        .await;
+        let result =
+            timed_forward_proxy_codex_responses_probe(&Client::new(), Duration::from_secs(1)).await;
+        assert!(!result.ok);
+        assert_eq!(result.http_status, None);
+        assert!(result.error.is_some());
+
+        let app = Router::new().route(
+            "/backend-api/codex/responses",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                StatusCode::OK
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind codex responses timeout upstream");
+        let addr = listener
+            .local_addr()
+            .expect("read codex responses timeout upstream address");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("codex responses timeout upstream should run");
+        });
+        crate::oauth_bridge::set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("http://{addr}/backend-api/codex"))
+                .expect("valid codex responses timeout upstream url"),
+        )
+        .await;
+        let result =
+            timed_forward_proxy_codex_responses_probe(&Client::new(), Duration::from_millis(10))
+                .await;
+        handle.abort();
+        let _ = handle.await;
+        assert!(!result.ok);
+        assert_eq!(result.http_status, None);
+        assert!(result.error.is_some());
     }
 
     #[test]
