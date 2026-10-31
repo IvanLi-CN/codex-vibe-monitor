@@ -278,6 +278,49 @@ pub(crate) fn test_jwt_token(payload: serde_json::Value) -> String {
     format!("{encoded}.{body}.{encoded}")
 }
 
+pub(crate) fn test_access_token() -> String {
+    test_access_token_expiring_at(Utc::now() + ChronoDuration::days(30))
+}
+
+pub(crate) fn test_access_token_expiring_at(expires_at: chrono::DateTime<Utc>) -> String {
+    test_jwt_token(json!({
+        "exp": expires_at.timestamp(),
+    }))
+}
+
+pub(crate) async fn set_test_account_access_token(
+    pool: &SqlitePool,
+    crypto_key: &[u8; 32],
+    account_id: i64,
+    access_token: String,
+) {
+    let row = load_upstream_account_row(pool, account_id)
+        .await
+        .expect("load account before replacing test access token")
+        .expect("account exists before replacing test access token");
+    let encrypted = row
+        .encrypted_credentials
+        .as_deref()
+        .expect("encrypted credentials before replacing test access token");
+    let mut credentials = decrypt_credentials(crypto_key, encrypted)
+        .expect("decrypt credentials before replacing test access token");
+    let StoredCredentials::Oauth(ref mut oauth) = credentials else {
+        panic!("test account must contain OAuth credentials");
+    };
+    oauth.access_token = access_token;
+    let encrypted = encrypt_credentials(crypto_key, &credentials)
+        .expect("encrypt credentials after replacing test access token");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET encrypted_credentials = ?2, updated_at = ?3 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(encrypted)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(pool)
+    .await
+    .expect("persist replaced test access token");
+}
+
 pub(crate) fn test_tag_routing_rule() -> TagRoutingRule {
     TagRoutingRule {
         allow_cut_out: true,
@@ -1586,7 +1629,7 @@ pub(crate) async fn insert_syncable_oauth_account(
     let encrypted_credentials = encrypt_credentials(
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
-            access_token: "access-token".to_string(),
+            access_token: test_access_token(),
             refresh_token: Some("refresh-token".to_string()),
             id_token: test_id_token(email, Some(account_id), Some(user_id), Some("team")),
             token_type: Some("Bearer".to_string()),
@@ -3133,6 +3176,30 @@ async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_dat
         .await
         .expect("ensure schema");
 
+    let refresh_state_table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pool_upstream_account_refresh_state'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect refresh state table");
+    assert_eq!(refresh_state_table_count, 1);
+    let refresh_state_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_table_info('pool_upstream_account_refresh_state') ORDER BY cid",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect refresh state columns");
+    assert!(
+        refresh_state_columns
+            .iter()
+            .any(|column| column == "operation")
+    );
+    assert!(
+        refresh_state_columns
+            .iter()
+            .any(|column| column == "next_attempt_at")
+    );
+
     let config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
     let row = load_pool_routing_settings_seeded(&pool, &config)
         .await
@@ -3920,6 +3987,9 @@ fn maintenance_candidates(
     primary_used_percent: Option<f64>,
     secondary_used_percent: Option<f64>,
 ) -> MaintenanceCandidateRow {
+    let credential_refresh_next_attempt_at = token_expires_at
+        .and_then(parse_rfc3339_utc)
+        .map(|expires_at| format_utc_iso(expires_at - ChronoDuration::minutes(15)));
     MaintenanceCandidateRow {
         id,
         status: status.to_string(),
@@ -3935,6 +4005,11 @@ fn maintenance_candidates(
         cooldown_until: None,
         temporary_route_failure_streak_started_at: None,
         token_expires_at: token_expires_at.map(ToOwned::to_owned),
+        credential_refresh_state: token_expires_at
+            .map(|_| UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED.to_string()),
+        credential_refresh_next_attempt_at,
+        usage_window_refresh_state: None,
+        usage_window_refresh_next_attempt_at: None,
         primary_used_percent,
         primary_resets_at: None,
         secondary_used_percent,

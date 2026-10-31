@@ -1,6 +1,7 @@
 describe("UpstreamAccountsPage sync state isolation", () => {
   it("keeps another account's sync button idle while the previous account sync is still pending", async () => {
-    const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const runUsageRefresh = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const runCredentialRefresh = vi.fn().mockImplementation(() => new Promise(() => {}));
     const selectAccount = vi.fn();
     const effectiveRoutingRule = {
                   allowCutOut: false,
@@ -49,7 +50,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
       createApiKeyAccount: vi.fn(),
       saveAccount: vi.fn(),
       saveRouting: vi.fn(),
-      runSync,
+      runUsageRefresh,
+      runCredentialRefresh,
       removeAccount: vi.fn(),
       routing: { apiKeyConfigured: false, maskedApiKey: null },
       groups: [],
@@ -67,8 +69,10 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     render();
     clickFirstRosterRow();
-    clickButton(/Sync now/i);
-    expect(runSync).toHaveBeenCalledWith(5);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
+    expect(runUsageRefresh).toHaveBeenCalledWith(5);
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
       ...baseState,
@@ -87,13 +91,14 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     );
     expect(syncButton?.querySelector(".animate-spin")).toBeNull();
     expect(
-      syncButton?.querySelector('[data-icon-name="timer-refresh-outline"]'),
+      syncButton?.querySelector('[data-icon-name="refresh"]'),
     ).not.toBeNull();
   });
 
   it("keeps the detail drawer closable while sync is pending", async () => {
     const syncDeferred = deferred<void>();
-    const runSync = vi.fn(() => syncDeferred.promise);
+    const runUsageRefresh = vi.fn(() => syncDeferred.promise);
+    const runCredentialRefresh = vi.fn().mockResolvedValue(undefined);
     const effectiveRoutingRule = {
                   allowCutOut: false,
       allowCutIn: false,
@@ -158,7 +163,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
       createApiKeyAccount: vi.fn(),
       saveAccount: vi.fn(),
       saveRouting: vi.fn(),
-      runSync,
+      runUsageRefresh,
+      runCredentialRefresh,
       removeAccount: vi.fn(),
       routing: { apiKeyConfigured: false, maskedApiKey: null },
       groups: [],
@@ -173,7 +179,9 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     render();
 
     clickFirstRosterRow();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
     await flushAsync();
 
     const closeButton = findButton(/Close details/i);
@@ -312,7 +320,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
   });
 
   it("keeps refresh enabled while an account action is pending", () => {
-    const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const runUsageRefresh = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const runCredentialRefresh = vi.fn().mockImplementation(() => new Promise(() => {}));
     const refresh = vi.fn();
     const effectiveRoutingRule = {
                   allowCutOut: false,
@@ -378,7 +387,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
       createApiKeyAccount: vi.fn(),
       saveAccount: vi.fn(),
       saveRouting: vi.fn(),
-      runSync,
+      runUsageRefresh,
+      runCredentialRefresh,
       removeAccount: vi.fn(),
       routing: { apiKeyConfigured: false, maskedApiKey: null },
       groups: [],
@@ -391,7 +401,9 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     render();
     clickFirstRosterRow();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
 
     const refreshButton = findButton(/Refresh/i);
     expect(refreshButton).toBeInstanceOf(HTMLButtonElement);
@@ -399,7 +411,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
   });
 
   it("preserves the original account sync spinner after another account starts syncing", async () => {
-    const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const runUsageRefresh = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const runCredentialRefresh = vi.fn().mockImplementation(() => new Promise(() => {}));
     const effectiveRoutingRule = {
                   allowCutOut: false,
       allowCutIn: false,
@@ -447,7 +460,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
       createApiKeyAccount: vi.fn(),
       saveAccount: vi.fn(),
       saveRouting: vi.fn(),
-      runSync,
+      runUsageRefresh,
+      runCredentialRefresh,
       removeAccount: vi.fn(),
       routing: { apiKeyConfigured: false, maskedApiKey: null },
       groups: [],
@@ -465,7 +479,9 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     render();
     clickFirstRosterRow();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
       ...baseState,
@@ -478,7 +494,9 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
     rerender();
     await flushAsync();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
       ...baseState,
@@ -495,8 +513,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     const syncButton = document.body.querySelector(
       '[data-testid="account-sync-button"]',
     ) as HTMLButtonElement | null;
-    expect(runSync).toHaveBeenNthCalledWith(1, 5);
-    expect(runSync).toHaveBeenNthCalledWith(2, 9);
+    expect(runUsageRefresh).toHaveBeenNthCalledWith(1, 5);
+    expect(runUsageRefresh).toHaveBeenNthCalledWith(2, 9);
     expect(syncButton?.disabled).toBe(true);
     expect(syncButton?.querySelector(".animate-spin")).not.toBeNull();
   });
@@ -558,22 +576,29 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     clickFirstRosterRow();
     clickTab(/Edit/i);
     clickButton(/Save changes/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
 
     const syncButton = document.body.querySelector(
       '[data-testid="account-sync-button"]',
+    ) as HTMLButtonElement | null;
+    const credentialRefreshButton = document.body.querySelector(
+      '[data-testid="account-credential-refresh-button"]',
     ) as HTMLButtonElement | null;
     const deleteButton = findButton(/Delete/i);
 
     expect(saveAccount).toHaveBeenCalledWith(5, expect.any(Object));
     expect(syncButton?.disabled).toBe(true);
+    expect(credentialRefreshButton?.disabled).toBe(true);
     expect(deleteButton?.disabled).toBe(true);
   });
 
   it("does not show a stale sync error after switching to another account", async () => {
     const syncAlpha = deferred<void>();
-    const runSync = vi.fn((accountId: number) =>
+    const runUsageRefresh = vi.fn((accountId: number) =>
       accountId === 5 ? syncAlpha.promise : Promise.resolve(),
     );
+    const runCredentialRefresh = vi.fn().mockResolvedValue(undefined);
     const effectiveRoutingRule = {
                   allowCutOut: false,
       allowCutIn: false,
@@ -621,7 +646,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
       createApiKeyAccount: vi.fn(),
       saveAccount: vi.fn(),
       saveRouting: vi.fn(),
-      runSync,
+      runUsageRefresh,
+      runCredentialRefresh,
       removeAccount: vi.fn(),
       routing: { apiKeyConfigured: false, maskedApiKey: null },
       groups: [],
@@ -639,7 +665,9 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     render();
     clickFirstRosterRow();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
       ...baseState,
@@ -662,9 +690,10 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
   it("preserves one account's action error after another account starts a new action", async () => {
     const syncAlpha = deferred<void>();
-    const runSync = vi.fn((accountId: number) =>
+    const runUsageRefresh = vi.fn((accountId: number) =>
       accountId === 5 ? syncAlpha.promise : Promise.resolve(),
     );
+    const runCredentialRefresh = vi.fn().mockResolvedValue(undefined);
     const effectiveRoutingRule = {
                   allowCutOut: false,
       allowCutIn: false,
@@ -712,7 +741,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
       createApiKeyAccount: vi.fn(),
       saveAccount: vi.fn(),
       saveRouting: vi.fn(),
-      runSync,
+      runUsageRefresh,
+      runCredentialRefresh,
       removeAccount: vi.fn(),
       routing: { apiKeyConfigured: false, maskedApiKey: null },
       groups: [],
@@ -730,7 +760,9 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     render();
     clickFirstRosterRow();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
     syncAlpha.reject(new Error("Alpha failed"));
     await flushAsync();
     expect(document.body.textContent).toContain("Alpha failed");
@@ -746,7 +778,9 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
     rerender();
     await flushAsync();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
       ...baseState,

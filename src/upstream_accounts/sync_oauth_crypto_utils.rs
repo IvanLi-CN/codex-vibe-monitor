@@ -794,6 +794,18 @@ pub(crate) fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8
         .with_context(|| format!("failed to decode {token_name} payload"))
 }
 
+pub(crate) fn parse_access_token_expiry(token: &str) -> Option<DateTime<Utc>> {
+    let payload = decode_jwt_payload(token, "access_token").ok()?;
+    let claims = serde_json::from_slice::<Value>(&payload).ok()?;
+    let exp = claims.get("exp")?;
+    let timestamp = match exp {
+        Value::Number(value) => value.as_i64(),
+        Value::String(value) => value.parse::<i64>().ok(),
+        _ => None,
+    }?;
+    Utc.timestamp_opt(timestamp, 0).single()
+}
+
 pub(crate) fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
     let payload_bytes = decode_jwt_payload(id_token, "id_token")?;
     let claims: Value =
@@ -1626,6 +1638,8 @@ pub(crate) fn is_explicit_reauth_error_message(message: &str) -> bool {
         || msg.contains("refresh token expired")
         || msg.contains("refresh token revoked")
         || msg.contains("refresh token is invalid")
+        || msg.contains("token expired")
+        || msg.contains("token revoked")
         || msg.contains("session expired")
         || msg.contains("please sign in again")
         || msg.contains("must sign in again")

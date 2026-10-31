@@ -1334,7 +1334,8 @@ describe("UpstreamAccountsPage duplicates", () => {
   });
 
   it("keeps routing errors visible after an account action succeeds", async () => {
-    const runSync = vi.fn().mockResolvedValue(undefined);
+    const runUsageRefresh = vi.fn().mockResolvedValue(undefined);
+    const runCredentialRefresh = vi.fn().mockResolvedValue(undefined);
     const saveRouting = vi.fn().mockRejectedValue(new Error("Routing failed"));
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
@@ -1386,7 +1387,8 @@ describe("UpstreamAccountsPage duplicates", () => {
       createApiKeyAccount: vi.fn(),
       saveAccount: vi.fn(),
       saveRouting,
-      runSync,
+      runUsageRefresh,
+      runCredentialRefresh,
       removeAccount: vi.fn(),
       routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
       groups: [],
@@ -1407,10 +1409,12 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("Routing failed");
 
     clickFirstRosterRow();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
     await flushAsync();
 
-    expect(runSync).toHaveBeenCalledWith(5);
+    expect(runUsageRefresh).toHaveBeenCalledWith(5);
     expect(document.body.textContent).toContain("Routing failed");
   });
 
@@ -1482,7 +1486,8 @@ describe("UpstreamAccountsPage duplicates", () => {
   });
 
   it("shows routing and account errors at the same time", async () => {
-    const runSync = vi.fn().mockRejectedValue(new Error("Sync failed"));
+    const runUsageRefresh = vi.fn().mockRejectedValue(new Error("Sync failed"));
+    const runCredentialRefresh = vi.fn().mockResolvedValue(undefined);
     const saveRouting = vi.fn().mockRejectedValue(new Error("Routing failed"));
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
@@ -1534,7 +1539,8 @@ describe("UpstreamAccountsPage duplicates", () => {
       createApiKeyAccount: vi.fn(),
       saveAccount: vi.fn(),
       saveRouting,
-      runSync,
+      runUsageRefresh,
+      runCredentialRefresh,
       removeAccount: vi.fn(),
       routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
       groups: [],
@@ -1552,7 +1558,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickButton(/Save settings/i);
     await flushAsync();
     clickFirstRosterRow();
-    clickButton(/Sync now/i);
+    clickTab(/Health & events/i);
+    expandLoginHealthDetails();
+    clickButton(/Update quota/i);
     await flushAsync();
 
     expect(document.body.textContent).toContain("Routing failed");

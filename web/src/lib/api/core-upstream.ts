@@ -65,6 +65,27 @@ export interface UpstreamAccountHistoryPoint {
   creditsBalance?: string | null;
 }
 
+export interface UpstreamAccountRefreshStatus {
+  state: string;
+  lastAttemptAt?: string | null;
+  lastSuccessAt?: string | null;
+  nextAttemptAt?: string | null;
+  source?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface UpstreamAccountRefreshRecord {
+  id: number;
+  occurredAt: string;
+  action: string;
+  source: string;
+  result?: string | null;
+  reasonCode?: string | null;
+  reasonMessage?: string | null;
+  httpStatus?: number | null;
+}
+
 export interface UpstreamAccountDuplicateInfo {
   peerAccountIds: number[];
   reasons: Array<"sharedChatgptAccountId" | "sharedChatgptUserId" | string>;
@@ -426,6 +447,9 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   chatgptUserId?: string | null;
   verifiedEmail?: string | null;
   lastRefreshedAt?: string | null;
+  credentialRefresh?: UpstreamAccountRefreshStatus;
+  usageWindowRefresh?: UpstreamAccountRefreshStatus;
+  credentialRefreshHistory?: UpstreamAccountRefreshRecord[];
   history: UpstreamAccountHistoryPoint[];
   recentActions?: UpstreamAccountActionEvent[];
   modelRoutingStates?: ModelRoutingState[];
@@ -581,6 +605,7 @@ export interface FetchUpstreamAccountActionEventsQuery {
   account?: string;
   group?: string;
   proxyKey?: string;
+  action?: string;
   result?: string;
   page?: number;
   pageSize?: number;
@@ -1561,6 +1586,38 @@ function normalizeUpstreamAccountHistoryPoint(raw: unknown): UpstreamAccountHist
   };
 }
 
+function normalizeUpstreamAccountRefreshStatus(raw: unknown): UpstreamAccountRefreshStatus {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    state: typeof payload.state === "string" && payload.state.trim() ? payload.state : "idle",
+    lastAttemptAt: typeof payload.lastAttemptAt === "string" ? payload.lastAttemptAt : null,
+    lastSuccessAt: typeof payload.lastSuccessAt === "string" ? payload.lastSuccessAt : null,
+    nextAttemptAt: typeof payload.nextAttemptAt === "string" ? payload.nextAttemptAt : null,
+    source: typeof payload.source === "string" ? payload.source : null,
+    errorCode: typeof payload.errorCode === "string" ? payload.errorCode : null,
+    errorMessage: typeof payload.errorMessage === "string" ? payload.errorMessage : null,
+  };
+}
+
+function normalizeUpstreamAccountRefreshRecord(raw: unknown): UpstreamAccountRefreshRecord | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const occurredAt = typeof payload.occurredAt === "string" ? payload.occurredAt : "";
+  const action = typeof payload.action === "string" ? payload.action : "";
+  const source = typeof payload.source === "string" ? payload.source : "";
+  if (id == null || !occurredAt || !action || !source) return null;
+  return {
+    id,
+    occurredAt,
+    action,
+    source,
+    result: typeof payload.result === "string" ? payload.result : null,
+    reasonCode: typeof payload.reasonCode === "string" ? payload.reasonCode : null,
+    reasonMessage: typeof payload.reasonMessage === "string" ? payload.reasonMessage : null,
+    httpStatus: normalizeFiniteNumber(payload.httpStatus) ?? null,
+  };
+}
+
 function normalizeUpstreamAccountActionEvent(raw: unknown): UpstreamAccountActionEvent | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
@@ -1776,6 +1833,13 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
     upstreamBaseUrl: typeof payload.upstreamBaseUrl === "string" ? payload.upstreamBaseUrl : null,
     chatgptUserId: typeof payload.chatgptUserId === "string" ? payload.chatgptUserId : null,
     lastRefreshedAt: typeof payload.lastRefreshedAt === "string" ? payload.lastRefreshedAt : null,
+    credentialRefresh: normalizeUpstreamAccountRefreshStatus(payload.credentialRefresh),
+    usageWindowRefresh: normalizeUpstreamAccountRefreshStatus(payload.usageWindowRefresh),
+    credentialRefreshHistory: Array.isArray(payload.credentialRefreshHistory)
+      ? payload.credentialRefreshHistory
+          .map(normalizeUpstreamAccountRefreshRecord)
+          .filter((item): item is UpstreamAccountRefreshRecord => item != null)
+      : [],
     history: historyRaw
       .map(normalizeUpstreamAccountHistoryPoint)
       .filter((item): item is UpstreamAccountHistoryPoint => item != null),
@@ -2424,6 +2488,7 @@ export async function fetchUpstreamAccountActionEvents(
   if (query?.account) search.set("account", query.account);
   if (query?.group) search.set("group", query.group);
   if (query?.proxyKey) search.set("proxyKey", query.proxyKey);
+  if (query?.action) search.set("action", query.action);
   if (query?.result) search.set("result", query.result);
   if (query?.page != null) search.set("page", String(query.page));
   if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
@@ -2897,6 +2962,26 @@ export async function syncUpstreamAccount(accountId: number): Promise<UpstreamAc
   const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/sync`, {
     method: "POST",
   });
+  return normalizeUpstreamAccountDetail(response);
+}
+
+export async function refreshUpstreamAccountUsage(
+  accountId: number,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/${accountId}/usage/refresh`,
+    { method: "POST" },
+  );
+  return normalizeUpstreamAccountDetail(response);
+}
+
+export async function refreshUpstreamAccountCredentials(
+  accountId: number,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/${accountId}/credentials/refresh`,
+    { method: "POST" },
+  );
   return normalizeUpstreamAccountDetail(response);
 }
 

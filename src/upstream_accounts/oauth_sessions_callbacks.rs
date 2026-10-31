@@ -1974,6 +1974,46 @@ pub(crate) async fn sync_upstream_account(
     Ok(Json(detail))
 }
 
+pub(crate) async fn refresh_upstream_account_usage(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_manual_usage_refresh(state.clone(), id)
+        .await
+        .map_err(request_runtime_error_tuple)?;
+    Ok(Json(detail))
+}
+
+pub(crate) async fn refresh_upstream_account_credentials(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_manual_credential_refresh(state.clone(), id)
+        .await
+        .map_err(request_runtime_error_tuple)?;
+    Ok(Json(detail))
+}
+
 pub(crate) async fn handle_oauth_callback(
     state: Arc<AppState>,
     query: OauthCallbackQuery,

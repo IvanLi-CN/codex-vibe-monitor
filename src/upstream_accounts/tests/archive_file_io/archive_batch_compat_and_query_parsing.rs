@@ -3348,6 +3348,25 @@ fn parse_chatgpt_jwt_claims_extracts_identity_fields() {
 }
 
 #[test]
+fn parse_access_token_expiry_reads_jwt_exp_and_rejects_invalid_payloads() {
+    let header = URL_SAFE_NO_PAD.encode(b"{}");
+    let numeric_payload = URL_SAFE_NO_PAD.encode(json!({"exp": 1_800_000_000}).to_string());
+    let numeric_token = format!("{header}.{numeric_payload}.{header}");
+    assert_eq!(
+        parse_access_token_expiry(&numeric_token),
+        Utc.timestamp_opt(1_800_000_000, 0).single()
+    );
+
+    let string_payload = URL_SAFE_NO_PAD.encode(json!({"exp": "1800000001"}).to_string());
+    let string_token = format!("{header}.{string_payload}.{header}");
+    assert_eq!(
+        parse_access_token_expiry(&string_token),
+        Utc.timestamp_opt(1_800_000_001, 0).single()
+    );
+    assert!(parse_access_token_expiry("opaque-access-token").is_none());
+}
+
+#[test]
 fn build_usage_endpoint_url_preserves_backend_api_prefix() {
     let base = Url::parse("https://chatgpt.com/backend-api").expect("chatgpt base");
     let resolved = build_usage_endpoint_url(&base).expect("resolved usage url");

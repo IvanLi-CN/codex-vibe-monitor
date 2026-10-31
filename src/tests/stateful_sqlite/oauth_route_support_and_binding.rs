@@ -496,6 +496,7 @@ fn pool_route_oauth_token_refresh_uses_account_proxy_before_live_send() {
         .execute(&state.pool)
         .await
         .expect("expire and bind oauth account");
+        set_test_account_credential_refresh_due(&state.pool, account_id).await;
         sqlx::query(
             "UPDATE pool_upstream_account_group_notes SET bound_proxy_keys_json = ?1 WHERE group_name = ?2",
         )
