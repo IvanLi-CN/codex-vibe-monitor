@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.14.2",
+  "base_stable_version": "4.14.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-31T03:26:21Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.14.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e24b37d00ea1daedac17ab687d5a17cf5b6fe52f",
+  "pr_number": 1254,
+  "pr_title": "fix(proxy): honor OAuth account bindings and restore subscriptions",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.14.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.14.2",
+  "target_sha": "4fe0e8e348c2a236a0286f712180db047728be37",
+  "type_label": "type:patch"
+}
