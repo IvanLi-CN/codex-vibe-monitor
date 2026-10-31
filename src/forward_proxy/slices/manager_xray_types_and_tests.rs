@@ -2403,7 +2403,12 @@ mod tests {
         let _ = handle.await;
         assert!(!result.ok);
         assert_eq!(result.http_status, None);
-        assert!(result.error.is_some());
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("timed out"))
+        );
     }
 
     #[test]
