@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.14.1",
+  "base_stable_version": "4.14.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-31T02:42:11Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.14.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ae0db114c0faeec99c8802bb6cac8128e3d1217f",
+  "pr_number": 1252,
+  "pr_title": "fix(proxy): restore subscription nodes after restart",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.14.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.14.1",
+  "target_sha": "efab3317241fdc26348df5cae49b9c924abac227",
+  "type_label": "type:patch"
+}
