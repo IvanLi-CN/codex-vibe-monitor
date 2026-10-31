@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.14.4",
+  "base_stable_version": "4.14.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-31T05:56:53Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.14.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d376fae034f33123ae4b77c281e290a0ff74df5e",
+  "pr_number": 1258,
+  "pr_title": "fix(web): use relative Storybook production assets",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.14.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.14.4",
+  "target_sha": "f25791b836dbb6c04750e4bc9b4a36f2400493c3",
+  "type_label": "type:patch"
+}
