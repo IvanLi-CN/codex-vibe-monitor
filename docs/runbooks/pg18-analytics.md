@@ -141,14 +141,18 @@ Run this sequence only under an owner-approved change window. Do not skip ahead 
 
    ```sql
    GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance;
-   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+   GRANT INSERT, UPDATE, DELETE ON TABLE
      cvm_analytics.analytics_facts,
-     cvm_analytics.analytics_parallel_work_keys,
+     cvm_analytics.analytics_parallel_work_keys
+     TO cvm_analytics_maintenance;
+   GRANT SELECT, UPDATE ON TABLE
      cvm_analytics.analytics_replica_state,
-     cvm_analytics.analytics_replica_applied_changes,
      cvm_analytics.analytics_state
      TO cvm_analytics_maintenance;
-   GRANT USAGE, SELECT ON SEQUENCE
+   GRANT INSERT, DELETE ON TABLE
+     cvm_analytics.analytics_replica_applied_changes
+     TO cvm_analytics_maintenance;
+   GRANT USAGE ON SEQUENCE
      cvm_analytics.analytics_facts_fact_id_seq
      TO cvm_analytics_maintenance;
    -- Do not grant default privileges; future objects require an explicit review.

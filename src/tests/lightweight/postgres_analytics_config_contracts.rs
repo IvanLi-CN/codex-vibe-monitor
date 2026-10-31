@@ -140,3 +140,30 @@ fn app_config_rejects_shared_postgres_login_roles() {
     assert!(!error.to_string().contains("secret"));
     assert!(!error.to_string().contains("other-secret"));
 }
+
+#[test]
+fn app_config_rejects_shared_postgres_login_roles_from_user_query_override() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (ENV_ANALYTICS_BACKEND, Some("postgres")),
+        (
+            ENV_POSTGRES_DATABASE_URL,
+            Some("postgresql://analytics:secret@example.test/codex"),
+        ),
+        (
+            ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL,
+            Some("postgresql://maintenance:other-secret@example.test/codex?user=analytics"),
+        ),
+        (ENV_POSTGRES_MAX_CONNECTIONS, None),
+    ]);
+
+    let error = AppConfig::from_sources(&CliArgs::default())
+        .expect_err("the SQLx user query override should not bypass role separation");
+    assert!(
+        error
+            .to_string()
+            .contains("must use different PostgreSQL login roles")
+    );
+    assert!(!error.to_string().contains("secret"));
+    assert!(!error.to_string().contains("other-secret"));
+}

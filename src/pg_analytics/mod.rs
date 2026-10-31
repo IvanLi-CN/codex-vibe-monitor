@@ -1,4 +1,5 @@
 use super::*;
+use percent_encoding::percent_decode_str;
 
 mod schema;
 pub(crate) use schema::*;
@@ -77,11 +78,19 @@ impl PostgresDatabaseUrl {
         &self.0
     }
 
-    pub(crate) fn username(&self) -> String {
-        Url::parse(&self.0)
-            .expect("PostgresDatabaseUrl was validated during construction")
-            .username()
-            .to_string()
+    pub(crate) fn effective_username(&self) -> Result<String> {
+        let parsed =
+            Url::parse(&self.0).expect("PostgresDatabaseUrl was validated during construction");
+        let mut username = percent_decode_str(parsed.username())
+            .decode_utf8()
+            .map_err(|_| anyhow!("invalid PostgreSQL login role encoding"))?
+            .into_owned();
+        for (key, value) in parsed.query_pairs() {
+            if key == "user" {
+                username = value.into_owned();
+            }
+        }
+        Ok(username)
     }
 }
 
@@ -97,8 +106,14 @@ pub(crate) fn validate_postgres_role_separation(
             "{ENV_POSTGRES_DATABASE_URL} and {ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must not be identical"
         );
     }
-    let application_role = application_url.username();
-    let maintenance_role = maintenance_url.username();
+    let application_role = application_url.effective_username().with_context(|| {
+        format!("{ENV_POSTGRES_DATABASE_URL} must specify a valid PostgreSQL login role")
+    })?;
+    let maintenance_role = maintenance_url.effective_username().with_context(|| {
+        format!(
+            "{ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must specify a valid PostgreSQL login role"
+        )
+    })?;
     if application_role.is_empty() || maintenance_role.is_empty() {
         bail!(
             "{ENV_POSTGRES_DATABASE_URL} and {ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must specify distinct PostgreSQL login roles"
@@ -3715,48 +3730,54 @@ mod tests {
             .execute(&mut owner)
             .await
             .context("reset PostgreSQL fixture schema")?;
-        for statement in PG_ANALYTICS_SCHEMA_SQL
-            .split(';')
-            .map(str::trim)
-            .filter(|statement| !statement.is_empty())
-        {
-            sqlx::query(statement)
-                .execute(&mut owner)
-                .await
-                .with_context(|| {
-                    format!("apply PostgreSQL fixture schema statement: {statement}")
-                })?;
-        }
-        for statement in [
-            "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys, cvm_analytics.analytics_replica_state, cvm_analytics.analytics_replica_applied_changes, cvm_analytics.analytics_state TO cvm_analytics_maintenance",
-            "GRANT USAGE, SELECT ON SEQUENCE cvm_analytics.analytics_facts_fact_id_seq TO cvm_analytics_maintenance",
-        ] {
-            sqlx::query(statement)
-                .execute(&mut owner)
-                .await
-                .with_context(|| {
-                    format!("grant PostgreSQL fixture maintenance privilege: {statement}")
-                })?;
-        }
+        // Keep cleanup outside the fallible body so every setup/assertion error drops the
+        // fixture pools before the destructive schema is removed.
+        let fixture_result = async {
+            for statement in PG_ANALYTICS_SCHEMA_SQL
+                .split(';')
+                .map(str::trim)
+                .filter(|statement| !statement.is_empty())
+            {
+                sqlx::query(statement)
+                    .execute(&mut owner)
+                    .await
+                    .with_context(|| {
+                        format!("apply PostgreSQL fixture schema statement: {statement}")
+                    })?;
+            }
+            for statement in [
+                "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
+                "GRANT INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
+                "GRANT SELECT, UPDATE ON TABLE cvm_analytics.analytics_replica_state, cvm_analytics.analytics_state TO cvm_analytics_maintenance",
+                "GRANT INSERT, DELETE ON TABLE cvm_analytics.analytics_replica_applied_changes TO cvm_analytics_maintenance",
+                "GRANT USAGE ON SEQUENCE cvm_analytics.analytics_facts_fact_id_seq TO cvm_analytics_maintenance",
+            ] {
+                sqlx::query(statement)
+                    .execute(&mut owner)
+                    .await
+                    .with_context(|| {
+                        format!("grant PostgreSQL fixture maintenance privilege: {statement}")
+                    })?;
+            }
 
-        let app_pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(Duration::from_secs(5))
-            .connect(&app_url)
-            .await
-            .context("connect PostgreSQL fixture application role")?;
-        let maintenance_pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(Duration::from_secs(5))
-            .connect(&maintenance_url)
-            .await
-            .context("connect PostgreSQL fixture maintenance role")?;
-        let app = PgAnalyticsPool {
+            let app_pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect(&app_url)
+                .await
+                .context("connect PostgreSQL fixture application role")?;
+            let maintenance_pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect(&maintenance_url)
+                .await
+                .context("connect PostgreSQL fixture maintenance role")?;
+            let body_result = async {
+            let app = PgAnalyticsPool {
             pool: app_pool.clone(),
-        };
-        app.verify_schema().await?;
-        app.verify_read_transaction().await?;
+            };
+            app.verify_schema().await?;
+            app.verify_read_transaction().await?;
 
         let app_ddl = sqlx::query("CREATE TABLE cvm_analytics.app_must_not_ddl (id INTEGER)")
             .execute(&app_pool)
@@ -3783,6 +3804,42 @@ mod tests {
         anyhow::ensure!(
             maintenance_rollup_dml.is_err(),
             "maintenance role unexpectedly retained unrelated rollup DML privilege"
+        );
+        let maintenance_fact_read =
+            sqlx::query("SELECT COUNT(*) FROM cvm_analytics.analytics_facts")
+                .execute(&mut *maintenance)
+                .await;
+        anyhow::ensure!(
+            maintenance_fact_read.is_err(),
+            "maintenance role unexpectedly retained analytics fact read privilege"
+        );
+        let replica_state_insert: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_replica_state', 'INSERT')",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        let replica_state_delete: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_replica_state', 'DELETE')",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        let analytics_state_insert: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_state', 'INSERT')",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        let analytics_state_delete: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_state', 'DELETE')",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        anyhow::ensure!(
+            !replica_state_insert && !replica_state_delete,
+            "maintenance role retained unnecessary replica-state INSERT/DELETE privileges"
+        );
+        anyhow::ensure!(
+            !analytics_state_insert && !analytics_state_delete,
+            "maintenance role retained unnecessary analytics-state INSERT/DELETE privileges"
         );
         sqlx::query(
             r#"
@@ -3836,20 +3893,20 @@ mod tests {
         );
 
         clear_replica_target(&mut maintenance, 7).await?;
+        drop(maintenance);
         let fact_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM cvm_analytics.analytics_facts")
-                .fetch_one(&mut *maintenance)
+                .fetch_one(&mut owner)
                 .await?;
         let applied_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM cvm_analytics.analytics_replica_applied_changes",
         )
-        .fetch_one(&mut *maintenance)
+        .fetch_one(&mut owner)
         .await?;
         let parallel_work_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM cvm_analytics.analytics_parallel_work_keys")
-                .fetch_one(&mut *maintenance)
+                .fetch_one(&mut owner)
                 .await?;
-        drop(maintenance);
         let state = load_replica_state(&maintenance_pool).await?;
         anyhow::ensure!(fact_count == 0, "bounded reset retained analytics facts");
         anyhow::ensure!(applied_count == 0, "bounded reset retained applied changes");
@@ -3921,13 +3978,22 @@ mod tests {
         .await?;
         app.verify_schema().await?;
 
-        app_pool.close().await;
-        maintenance_pool.close().await;
-        sqlx::query("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+            app_pool.close().await;
+            maintenance_pool.close().await;
+            body_result
+        }
+        .await;
+        let cleanup_result = sqlx::query("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
             .execute(&mut owner)
             .await
-            .context("clean up PostgreSQL fixture schema")?;
-        owner.close().await?;
+            .context("clean up PostgreSQL fixture schema");
+        let owner_close_result = owner.close().await;
+        fixture_result?;
+        cleanup_result?;
+        owner_close_result?;
         Ok(())
     }
 
