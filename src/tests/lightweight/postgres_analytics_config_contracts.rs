@@ -6,6 +6,7 @@ fn app_config_defaults_to_sqlite_analytics_without_new_environment() {
     let _env = EnvVarGuard::set(&[
         (ENV_ANALYTICS_BACKEND, None),
         (ENV_POSTGRES_DATABASE_URL, None),
+        (ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL, None),
         (ENV_POSTGRES_MAX_CONNECTIONS, None),
     ]);
 
@@ -14,6 +15,7 @@ fn app_config_defaults_to_sqlite_analytics_without_new_environment() {
 
     assert_eq!(config.analytics_backend, AnalyticsBackend::Sqlite);
     assert_eq!(config.postgres_database_url, None);
+    assert_eq!(config.postgres_analytics_maintenance_url, None);
     assert_eq!(config.postgres_max_connections, 5);
     assert!(config.database_url().starts_with("sqlite://"));
 }
@@ -27,6 +29,10 @@ fn app_config_accepts_postgres_settings_without_leaking_credentials() {
             ENV_POSTGRES_DATABASE_URL,
             Some("postgresql://analytics:secret@example.test/codex"),
         ),
+        (
+            ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL,
+            Some("postgresql://maintenance:other-secret@example.test/codex"),
+        ),
         (ENV_POSTGRES_MAX_CONNECTIONS, Some("7")),
     ]);
 
@@ -38,6 +44,14 @@ fn app_config_accepts_postgres_settings_without_leaking_credentials() {
     assert_eq!(config.postgres_max_connections, 7);
     assert_eq!(
         config
+            .postgres_analytics_maintenance_url
+            .as_ref()
+            .expect("maintenance URL")
+            .as_str(),
+        "postgresql://maintenance:other-secret@example.test/codex"
+    );
+    assert_eq!(
+        config
             .postgres_database_url
             .as_ref()
             .expect("postgres URL")
@@ -45,7 +59,9 @@ fn app_config_accepts_postgres_settings_without_leaking_credentials() {
         "postgresql://analytics:secret@example.test/codex"
     );
     assert!(!debug.contains("secret"));
+    assert!(!debug.contains("other-secret"));
     assert!(!json.contains("secret"));
+    assert!(!json.contains("other-secret"));
 }
 
 #[test]
@@ -55,6 +71,7 @@ fn app_config_rejects_postgres_without_url_and_zero_pool_size() {
     let _env = EnvVarGuard::set(&[
         (ENV_ANALYTICS_BACKEND, Some("postgres")),
         (ENV_POSTGRES_DATABASE_URL, None),
+        (ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL, None),
         (ENV_POSTGRES_MAX_CONNECTIONS, None),
     ]);
     let missing_url = AppConfig::from_sources(&CliArgs::default())
@@ -65,6 +82,7 @@ fn app_config_rejects_postgres_without_url_and_zero_pool_size() {
     let _env = EnvVarGuard::set(&[
         (ENV_ANALYTICS_BACKEND, Some("sqlite")),
         (ENV_POSTGRES_DATABASE_URL, None),
+        (ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL, None),
         (ENV_POSTGRES_MAX_CONNECTIONS, Some("0")),
     ]);
     let zero_connections = AppConfig::from_sources(&CliArgs::default())

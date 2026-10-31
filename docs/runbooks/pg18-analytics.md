@@ -56,11 +56,12 @@ wal_level = 'replica'
 ```conf
 # pg_hba.conf
 hostssl  cvm_analytics  cvm_analytics_app  10.20.0.0/24  scram-sha-256
+hostssl  cvm_analytics  cvm_analytics_maintenance  10.20.0.0/24  scram-sha-256
 host     all            all                0.0.0.0/0      reject
 host     all            all                ::/0           reject
 ```
 
-Keep the application credential separate from the schema owner. Use a non-login owner for DDL, and a login role with no administrative attributes for the application. The current startup probe needs database `CONNECT`; it checks relation and column names through `pg_catalog` and executes `SELECT 1`, but does not query table contents. Grant schema `USAGE` and table `SELECT` only when a separately reviewed read adapter requires them. Never grant the application role DDL or table writes.
+Keep the application credential separate from the schema owner and the replica maintenance credential. Use a non-login owner for DDL, a login role with no administrative attributes for the application, and a separate login role for the bounded replica DML. The current startup probe needs database `CONNECT`; it checks relation and column names through `pg_catalog` and executes `SELECT 1`, but does not query table contents. Grant schema `USAGE` and table `SELECT` only when a separately reviewed read adapter requires them. Never grant the application role DDL or table writes. The `analytics-replica` control commands use `POSTGRES_ANALYTICS_MAINTENANCE_URL`; that role receives only the reviewed analytics-table DML and sequence privileges required by the bounded rebuild/consumer, never DDL.
 
 **Owner authorization required to create roles/database or grant privileges. Run through the approved DBA channel; do not place a password in SQL, shell history, or logs. Execute statements individually or from a plain SQL file, not inside an explicit transaction; `CREATE DATABASE` cannot run in a transaction block.**
 
@@ -71,10 +72,13 @@ CREATE ROLE cvm_analytics_reader
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE cvm_analytics_app
   LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE cvm_analytics_maintenance
+  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
 CREATE DATABASE cvm_analytics OWNER cvm_analytics_owner;
 REVOKE CONNECT ON DATABASE cvm_analytics FROM PUBLIC;
 GRANT CONNECT ON DATABASE cvm_analytics TO cvm_analytics_app;
+GRANT CONNECT ON DATABASE cvm_analytics TO cvm_analytics_maintenance;
 ```
 
 Set the application password through the approved secret manager or an interactive `psql` password prompt. Do not add it to the SQL above. A future read adapter may receive only the read role, after its scope and need are approved:
@@ -96,6 +100,7 @@ The application configuration example is redacted. `<redacted>` is not a usable 
 ```dotenv
 ANALYTICS_BACKEND=sqlite
 POSTGRES_DATABASE_URL=postgresql://cvm_analytics_app:<redacted>@pg-analytics.internal:5432/cvm_analytics?sslmode=verify-full&sslrootcert=%2Frun%2Fsecrets%2Fpg-ca.crt
+POSTGRES_ANALYTICS_MAINTENANCE_URL=postgresql://cvm_analytics_maintenance:<redacted>@pg-analytics.internal:5432/cvm_analytics?sslmode=verify-full&sslrootcert=%2Frun%2Fsecrets%2Fpg-ca.crt
 POSTGRES_MAX_CONNECTIONS=5
 ```
 
@@ -121,16 +126,28 @@ The DBA, rehearsal, and restore entries use their own approved host, database, a
 Run this sequence only under an owner-approved change window. Do not skip ahead from configuration to production reads.
 
 1. **Capacity gate:** complete and approve the separate volume worksheet above. A failed or unknown budget blocks bootstrap.
-2. **Bootstrap:** an authorized DBA creates the private PostgreSQL 18 database and roles, confirms TLS and network policy, then applies the exact `PG_ANALYTICS_SCHEMA_SQL` from the reviewed source revision. Application startup is not a schema installer. The current source defines this SQL in `src/pg_analytics/schema.rs`; there is no application CLI/API that exports or applies it. Prepare a reviewed standalone file from that exact revision, wrapped with `SET ROLE cvm_analytics_owner` and `RESET ROLE`, and retain its source SHA with the operations record.
+2. **Bootstrap:** an authorized DBA creates the private PostgreSQL 18 database and roles, confirms TLS and network policy, then applies the exact `PG_ANALYTICS_SCHEMA_SQL` from the reviewed source revision. Application startup and the `analytics-replica` control commands are not schema installers. The current source defines this SQL in `src/pg_analytics/schema.rs`; there is no application CLI/API that exports or applies it. Prepare a reviewed standalone file from that exact revision, wrapped with `SET ROLE cvm_analytics_owner` and `RESET ROLE`, and retain its source SHA with the operations record. For an existing replica state table, this owner-applied contract adds `fact_date_semantics_version` with default `1`, explicitly marking existing facts as legacy; only after that DDL succeeds may the maintenance role run the bounded bootstrap rebuild, which promotes the rebuilt state to version `2`.
 
-   **Owner authorization required to apply the reviewed schema file. The DBA service must be authorized to `SET ROLE cvm_analytics_owner`; the file must contain the exact source SQL between the role statements.**
+   **Owner authorization required to apply the reviewed schema file. The DBA service must be authorized to `SET ROLE cvm_analytics_owner`; the file must contain the exact source SQL between the role statements. The application role and maintenance role must not receive DDL.**
 
    ```sh
    psql 'service=cvm-analytics-admin' --set=ON_ERROR_STOP=1 \
      --file="$PG_ANALYTICS_SCHEMA_FILE"
    ```
 
-3. **Status:** use PostgreSQL client tools for database status. The foundation does not expose a PostgreSQL status endpoint. `pg_isready` proves that a server accepts connections, not that the application selected PostgreSQL or that a read path is serving. `/health` remains service readiness, not an analytics status check.
+   After the schema transaction succeeds, grant the maintenance role only the bounded replica DML surface. Keep this grant separate from the schema-owner step so a stopped or failed bootstrap can be diagnosed and paused without conflating DDL completion with data rebuild completion.
+
+   ```sql
+   GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA cvm_analytics TO cvm_analytics_maintenance;
+   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA cvm_analytics TO cvm_analytics_maintenance;
+   ALTER DEFAULT PRIVILEGES FOR ROLE cvm_analytics_owner IN SCHEMA cvm_analytics
+     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cvm_analytics_maintenance;
+   ALTER DEFAULT PRIVILEGES FOR ROLE cvm_analytics_owner IN SCHEMA cvm_analytics
+     GRANT USAGE, SELECT ON SEQUENCES TO cvm_analytics_maintenance;
+   ```
+
+3. **Status:** use PostgreSQL client tools for database status, and set `POSTGRES_ANALYTICS_MAINTENANCE_URL` only for the explicitly authorized `analytics-replica` control command. The foundation does not expose a PostgreSQL status endpoint. `pg_isready` proves that a server accepts connections, not that the application selected PostgreSQL or that a read path is serving. `/health` remains service readiness, not an analytics status check.
 
    **Owner authorization required to run these read-only checks. Use a protected service/credential file; do not put secrets in command arguments.**
 

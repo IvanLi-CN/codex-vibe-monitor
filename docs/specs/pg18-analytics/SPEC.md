@@ -23,6 +23,7 @@
 - `ANALYTICS_BACKEND` MUST accept only `sqlite` or `postgres` and MUST default to `sqlite`.
 - `POSTGRES_MAX_CONNECTIONS` MUST default to `5` and MUST reject zero or values outside the supported integer range.
 - Selecting `postgres` MUST require `POSTGRES_DATABASE_URL`; invalid values MUST fail closed without exposing the URL.
+- PostgreSQL replica control commands MUST use a separate `POSTGRES_ANALYTICS_MAINTENANCE_URL`; they MUST fail closed when it is absent and MUST NOT use the runtime application URL for target writes.
 
 ### REQ-PG18-002
 
@@ -49,9 +50,9 @@
 
 ### REQ-PG18-006
 
-- The PostgreSQL analytics replica state MUST persist `fact_date_semantics_version`; a fresh schema MUST initialize the current version as `2`, while a schema missing the compatibility column MUST fail closed until an explicit bootstrap provisions it and rebuilds the bounded target snapshot.
+- The PostgreSQL analytics replica state MUST persist `fact_date_semantics_version`; a fresh schema MUST initialize the current version as `2`, while a schema missing the compatibility column MUST fail closed until the schema owner applies the reviewed compatibility DDL with default `1` and an explicit bootstrap rebuilds the bounded target snapshot.
 - Replica service eligibility MUST require the current fact-date semantics version, a completed baseline, and matching target/source checkpoints. Legacy fact rows MUST NOT become service eligible under the corrected semantics without an explicit bootstrap rebuild.
-- Explicit bootstrap MUST clear target facts, applied-change state, parallel-work keys, and the target checkpoint before rebuilding with the current fact-date semantics. The rebuild MUST be serialized by a PostgreSQL session advisory lock held on the same connection as the target writes, including when the configured pool has one connection, and MUST release that connection before the final status report.
+- Explicit bootstrap MUST use the dedicated maintenance connection, clear target facts, applied-change state, parallel-work keys, and the target checkpoint before rebuilding with the current fact-date semantics. The rebuild MUST be serialized by a PostgreSQL session advisory lock held on the same connection as the target writes, including when the configured pool has one connection, and MUST release that connection before the final status report. Neither the runtime application role nor the maintenance role may execute schema DDL.
 - Legacy-semantics invalidation MUST compare the observed semantic version, status, source generation, and checkpoint before writing invalidated state, then reload the current state. It MUST NOT overwrite a state that has advanced through bootstrap or another compatible transition.
 - `AnalyticsFactV1` identity and journal event version `1` MUST remain unchanged. This compatibility contract MUST NOT perform automatic historical backfill or alter Summary All, public query responses, or direct rollups.
 
@@ -89,9 +90,9 @@
 
 ### VER-PG18-006
 
-- Method: deterministic PostgreSQL schema SQL, catalog-inspection, state-eligibility, compare-and-swap, advisory-lock, and bounded fact-ingestion contract checks.
+- Method: deterministic PostgreSQL schema SQL, catalog-inspection, state-eligibility, compare-and-swap, advisory-lock, and bounded fact-ingestion contract checks, plus an explicitly provisioned PostgreSQL fixture test for role separation and target reset.
 - covers: `REQ-PG18-006`
-- Pass condition: version `2` is required for eligibility; missing/legacy state fails closed; explicit bootstrap cleanup and checkpoint reset are represented; catalog inspection is compatible with the least-privilege role; bootstrap serialization and single-connection release are explicit; stale invalidation cannot overwrite advanced state; fact and journal version `1` identity remains unchanged; no automatic historical backfill or query/rollup surface changes are introduced.
+- Pass condition: version `2` is required for eligibility; missing/legacy state fails closed; schema-owner DDL is separate from maintenance DML; explicit bootstrap cleanup and checkpoint reset are represented; catalog inspection is compatible with the least-privilege role; bootstrap serialization and single-connection release are explicit; stale invalidation cannot overwrite advanced state; fact and journal version `1` identity remains unchanged; no automatic historical backfill or query/rollup surface changes are introduced.
 
 ## Related ADRs
 
@@ -105,5 +106,6 @@
 
 - `./IMPLEMENTATION.md`
 - `./HISTORY.md`
+- `./assets/persistent-state-migration-record.json`
 - [`5k89c-long-term-usage-analytics`](../5k89c-long-term-usage-analytics/SPEC.md)
 - [`9aucy-db-retention-archive`](../9aucy-db-retention-archive/SPEC.md)

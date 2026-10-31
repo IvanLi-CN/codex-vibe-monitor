@@ -148,12 +148,37 @@ impl PgAnalyticsPool {
             .postgres_database_url
             .as_ref()
             .context("PostgreSQL analytics URL is not configured")?;
+        Self::connect_url(
+            database_url,
+            config.postgres_max_connections,
+            "failed to connect to the PostgreSQL analytics backend",
+        )
+        .await
+    }
+
+    async fn connect_maintenance(config: &AppConfig) -> Result<Self> {
+        let database_url = config.postgres_analytics_maintenance_url.as_ref().context(
+            "POSTGRES_ANALYTICS_MAINTENANCE_URL is required for analytics replica control",
+        )?;
+        Self::connect_url(
+            database_url,
+            config.postgres_max_connections,
+            "failed to connect to the PostgreSQL analytics maintenance backend",
+        )
+        .await
+    }
+
+    async fn connect_url(
+        database_url: &PostgresDatabaseUrl,
+        max_connections: u32,
+        error_context: &str,
+    ) -> Result<Self> {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(config.postgres_max_connections)
+            .max_connections(max_connections)
             .acquire_timeout(POSTGRES_CONNECTION_TIMEOUT)
             .connect(database_url.as_str())
             .await
-            .context("failed to connect to the PostgreSQL analytics backend")?;
+            .with_context(|| error_context.to_string())?;
         Ok(Self { pool })
     }
 
@@ -175,18 +200,15 @@ impl PgAnalyticsPool {
             .iter()
             .chain(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.iter())
         {
-            let present: Option<String> = sqlx::query_scalar("SELECT to_regclass($1::text)::text")
-                .bind(relation)
-                .fetch_one(&self.pool)
-                .await
-                .with_context(|| format!("failed to inspect required relation {relation}"))?;
-            if present.is_none() {
+            if !relation_exists(&self.pool, relation).await? {
                 bail!("required PostgreSQL analytics relation is missing: {relation}");
             }
         }
         for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
             if !column_exists(&self.pool, relation, column).await? {
-                bail!("required PostgreSQL analytics column is missing: {relation}.{column}");
+                bail!(
+                    "required PostgreSQL analytics column is missing: {relation}.{column}; apply the reviewed schema contract as the schema owner before selecting the backend"
+                );
             }
         }
         Ok(())
@@ -1084,50 +1106,35 @@ fn bounded_batch_end(encoded_sizes: &[usize], start: usize) -> Result<usize> {
     Ok(end)
 }
 
-async fn execute_postgres_schema(connection: &mut sqlx::postgres::PgConnection) -> Result<()> {
-    let mut transaction = connection
-        .begin()
-        .await
-        .context("failed to start PostgreSQL analytics bootstrap transaction")?;
-    for statement in PG_ANALYTICS_SCHEMA_SQL
-        .split(';')
-        .map(str::trim)
-        .filter(|statement| !statement.is_empty())
-    {
-        sqlx::query(statement)
-            .execute(&mut *transaction)
-            .await
-            .with_context(|| {
-                format!("failed to execute PostgreSQL analytics bootstrap statement: {statement}")
-            })?;
-    }
-    transaction
-        .commit()
-        .await
-        .context("failed to commit PostgreSQL analytics bootstrap")?;
-    Ok(())
-}
-
 async fn relation_exists(pool: &sqlx::PgPool, relation: &str) -> Result<bool> {
-    let present: Option<String> = sqlx::query_scalar("SELECT to_regclass($1::text)::text")
+    sqlx::query_scalar(PG_ANALYTICS_RELATION_EXISTS_SQL)
         .bind(relation)
         .fetch_one(pool)
         .await
-        .with_context(|| format!("failed to inspect PostgreSQL relation {relation}"))?;
-    Ok(present.is_some())
+        .with_context(|| format!("failed to inspect PostgreSQL relation {relation}"))
 }
 
 async fn relation_exists_on_connection(
     connection: &mut sqlx::postgres::PgConnection,
     relation: &str,
 ) -> Result<bool> {
-    let present: Option<String> = sqlx::query_scalar("SELECT to_regclass($1::text)::text")
+    sqlx::query_scalar(PG_ANALYTICS_RELATION_EXISTS_SQL)
         .bind(relation)
         .fetch_one(&mut *connection)
         .await
-        .with_context(|| format!("failed to inspect PostgreSQL relation {relation}"))?;
-    Ok(present.is_some())
+        .with_context(|| format!("failed to inspect PostgreSQL relation {relation}"))
 }
+
+const PG_ANALYTICS_RELATION_EXISTS_SQL: &str = r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = split_part($1::text, '.', 1)
+              AND relation.relname = split_part($1::text, '.', 2)
+        )
+        "#;
 
 async fn column_exists(pool: &sqlx::PgPool, relation: &str, column: &str) -> Result<bool> {
     // information_schema hides columns unavailable to the current role. The catalog query keeps
@@ -1156,11 +1163,16 @@ async fn column_exists_on_connection(
 const PG_ANALYTICS_COLUMN_EXISTS_SQL: &str = r#"
         SELECT EXISTS(
             SELECT 1
-            FROM pg_catalog.pg_attribute
-            WHERE attrelid = pg_catalog.to_regclass($1::text)
-              AND attname = $2
-              AND attnum > 0
-              AND NOT attisdropped
+            FROM pg_catalog.pg_attribute AS attribute
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.oid = attribute.attrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = split_part($1::text, '.', 1)
+              AND relation.relname = split_part($1::text, '.', 2)
+              AND attribute.attname = $2
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
         )
         "#;
 
@@ -1176,7 +1188,7 @@ async fn verify_replica_schema(pool: &sqlx::PgPool) -> Result<()> {
     for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
         if !column_exists(pool, relation, column).await? {
             bail!(
-                "required PostgreSQL analytics column is missing: {relation}.{column}; run explicit bootstrap to apply the compatibility contract"
+                "required PostgreSQL analytics column is missing: {relation}.{column}; apply the reviewed schema contract as the schema owner before running analytics-replica bootstrap"
             );
         }
     }
@@ -1197,7 +1209,7 @@ async fn verify_replica_schema_on_connection(
     for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
         if !column_exists_on_connection(connection, relation, column).await? {
             bail!(
-                "required PostgreSQL analytics column is missing: {relation}.{column}; run explicit bootstrap to apply the compatibility contract"
+                "required PostgreSQL analytics column is missing: {relation}.{column}; apply the reviewed schema contract as the schema owner before running analytics-replica bootstrap"
             );
         }
     }
@@ -2433,7 +2445,6 @@ async fn bootstrap_replica_locked(
     connection: &mut sqlx::postgres::PgConnection,
     acknowledge_unverified_history: bool,
 ) -> Result<()> {
-    execute_postgres_schema(connection).await?;
     verify_replica_schema_on_connection(connection).await?;
     let mut source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     if source_before.state.historical_replay_required != 0
@@ -2866,7 +2877,7 @@ pub(crate) async fn pg_analytics_replica_control(
     source_pool: &Pool<Sqlite>,
     command: AnalyticsReplicaCommand,
 ) -> Result<()> {
-    let postgres = PgAnalyticsPool::connect_raw(config).await?;
+    let postgres = PgAnalyticsPool::connect_maintenance(config).await?;
     match command {
         AnalyticsReplicaCommand::Bootstrap {
             acknowledge_unverified_history,
@@ -3171,7 +3182,11 @@ mod tests {
                 .contains("ADD COLUMN IF NOT EXISTS fact_date_semantics_version")
         );
         assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.pg_attribute"));
-        assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.to_regclass"));
+        assert!(PG_ANALYTICS_RELATION_EXISTS_SQL.contains("pg_catalog.pg_class"));
+        assert!(PG_ANALYTICS_RELATION_EXISTS_SQL.contains("pg_catalog.pg_namespace"));
+        assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.pg_class"));
+        assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.pg_namespace"));
+        assert!(!PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("to_regclass"));
         assert!(!PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("information_schema.columns"));
         assert_ne!(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY, 0);
         assert!(PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL.contains("pg_try_advisory_lock"));
@@ -3634,6 +3649,230 @@ mod tests {
                 .to_string()
                 .contains("oversized analytics replica source field model")
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL fixture and explicit owner/app/maintenance URLs"]
+    async fn postgres_analytics_fixture_verifies_role_separation_and_bounded_reset() -> Result<()> {
+        let owner_url = env::var("PG_ANALYTICS_TEST_OWNER_URL")
+            .context("PG_ANALYTICS_TEST_OWNER_URL is required for the PostgreSQL fixture")?;
+        let app_url = env::var("PG_ANALYTICS_TEST_APP_URL")
+            .context("PG_ANALYTICS_TEST_APP_URL is required for the PostgreSQL fixture")?;
+        let maintenance_url = env::var("PG_ANALYTICS_TEST_MAINTENANCE_URL")
+            .context("PG_ANALYTICS_TEST_MAINTENANCE_URL is required for the PostgreSQL fixture")?;
+
+        let mut owner = sqlx::postgres::PgConnection::connect(&owner_url)
+            .await
+            .context("connect PostgreSQL fixture owner")?;
+        sqlx::query("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
+            .execute(&mut owner)
+            .await
+            .context("reset PostgreSQL fixture schema")?;
+        for statement in PG_ANALYTICS_SCHEMA_SQL
+            .split(';')
+            .map(str::trim)
+            .filter(|statement| !statement.is_empty())
+        {
+            sqlx::query(statement)
+                .execute(&mut owner)
+                .await
+                .with_context(|| {
+                    format!("apply PostgreSQL fixture schema statement: {statement}")
+                })?;
+        }
+        for statement in [
+            "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA cvm_analytics TO cvm_analytics_maintenance",
+            "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA cvm_analytics TO cvm_analytics_maintenance",
+        ] {
+            sqlx::query(statement)
+                .execute(&mut owner)
+                .await
+                .with_context(|| {
+                    format!("grant PostgreSQL fixture maintenance privilege: {statement}")
+                })?;
+        }
+
+        let app_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&app_url)
+            .await
+            .context("connect PostgreSQL fixture application role")?;
+        let maintenance_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&maintenance_url)
+            .await
+            .context("connect PostgreSQL fixture maintenance role")?;
+        let app = PgAnalyticsPool {
+            pool: app_pool.clone(),
+        };
+        app.verify_schema().await?;
+        app.verify_read_transaction().await?;
+
+        let app_ddl = sqlx::query("CREATE TABLE cvm_analytics.app_must_not_ddl (id INTEGER)")
+            .execute(&app_pool)
+            .await;
+        anyhow::ensure!(
+            app_ddl.is_err(),
+            "application role unexpectedly retained schema DDL privilege"
+        );
+
+        let mut maintenance = maintenance_pool.acquire().await?;
+        let maintenance_ddl =
+            sqlx::query("CREATE TABLE cvm_analytics.maintenance_must_not_ddl (id INTEGER)")
+                .execute(&mut *maintenance)
+                .await;
+        anyhow::ensure!(
+            maintenance_ddl.is_err(),
+            "maintenance role unexpectedly retained schema DDL privilege"
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO cvm_analytics.analytics_facts (
+                fact_version, source, source_row_id, invoke_id, occurred_at,
+                occurred_at_epoch_ms, stats_date, success_like, terminal
+            ) VALUES (1, 'fixture', 1, 'fixture-1', to_timestamp(0), 0, '1970-01-01', TRUE, TRUE)
+            "#,
+        )
+        .execute(&mut *maintenance)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO cvm_analytics.analytics_parallel_work_keys (
+                source, source_row_id, occurred_at_epoch_ms, key_digest
+            ) VALUES ('fixture', 1, 0, 'sha256:fixture')
+            "#,
+        )
+        .execute(&mut *maintenance)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO cvm_analytics.analytics_replica_applied_changes (
+                change_id, generation, coverage_revision, event_kind, entity_kind,
+                source, source_row_id, entity_key, fact_bytes
+            ) VALUES (1, 1, 1, 'upsert', 'invocation', 'fixture', 1, 'fixture-1', 1)
+            "#,
+        )
+        .execute(&mut *maintenance)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE cvm_analytics.analytics_replica_state
+            SET status = 'caught_up', fact_date_semantics_version = 1,
+                generation = 1, baseline_generation = 1, baseline_change_id = 1,
+                coverage_generation = 1, coverage_revision = 1, coverage_watermark = 1,
+                consumer_checkpoint = 1, source_acknowledged_through = 1,
+                service_eligible = TRUE
+            WHERE id = 1
+            "#,
+        )
+        .execute(&mut *maintenance)
+        .await?;
+
+        let app_dml = sqlx::query("DELETE FROM cvm_analytics.analytics_facts")
+            .execute(&app_pool)
+            .await;
+        anyhow::ensure!(
+            app_dml.is_err(),
+            "application role unexpectedly retained analytics DML privilege"
+        );
+
+        clear_replica_target(&mut maintenance, 7).await?;
+        let fact_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cvm_analytics.analytics_facts")
+                .fetch_one(&mut *maintenance)
+                .await?;
+        let applied_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cvm_analytics.analytics_replica_applied_changes",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        let parallel_work_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cvm_analytics.analytics_parallel_work_keys")
+                .fetch_one(&mut *maintenance)
+                .await?;
+        drop(maintenance);
+        let state = load_replica_state(&maintenance_pool).await?;
+        anyhow::ensure!(fact_count == 0, "bounded reset retained analytics facts");
+        anyhow::ensure!(applied_count == 0, "bounded reset retained applied changes");
+        anyhow::ensure!(
+            parallel_work_count == 0,
+            "bounded reset retained parallel-work keys"
+        );
+        anyhow::ensure!(
+            state.status == "bootstrapping",
+            "bounded reset did not gate state"
+        );
+        anyhow::ensure!(
+            state.fact_date_semantics_version == ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            "bounded reset did not promote current fact-date semantics"
+        );
+        anyhow::ensure!(
+            state.consumer_checkpoint == 0,
+            "bounded reset retained checkpoint"
+        );
+        anyhow::ensure!(
+            !state.service_eligible,
+            "bounded reset left service eligibility set"
+        );
+
+        let mut maintenance = maintenance_pool.acquire().await?;
+        let first_locked: bool = sqlx::query_scalar(PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL)
+            .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
+            .fetch_one(&mut *maintenance)
+            .await?;
+        anyhow::ensure!(
+            first_locked,
+            "fixture could not acquire bootstrap advisory lock"
+        );
+        let second_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&maintenance_url)
+            .await?;
+        let second_locked: bool = sqlx::query_scalar(PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL)
+            .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
+            .fetch_one(&second_pool)
+            .await?;
+        anyhow::ensure!(!second_locked, "bootstrap advisory lock was not exclusive");
+        let released: bool = sqlx::query_scalar(PG_ANALYTICS_BOOTSTRAP_LOCK_RELEASE_SQL)
+            .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
+            .fetch_one(&mut *maintenance)
+            .await?;
+        anyhow::ensure!(
+            released,
+            "fixture could not release bootstrap advisory lock"
+        );
+        drop(maintenance);
+        second_pool.close().await;
+
+        sqlx::query(
+            "ALTER TABLE cvm_analytics.analytics_replica_state DROP COLUMN fact_date_semantics_version",
+        )
+        .execute(&mut owner)
+        .await?;
+        let missing_column = app.verify_schema().await;
+        anyhow::ensure!(
+            missing_column.is_err(),
+            "application schema verification accepted a missing compatibility column"
+        );
+        sqlx::query(
+            "ALTER TABLE cvm_analytics.analytics_replica_state ADD COLUMN fact_date_semantics_version BIGINT NOT NULL DEFAULT 1",
+        )
+        .execute(&mut owner)
+        .await?;
+        app.verify_schema().await?;
+
+        app_pool.close().await;
+        maintenance_pool.close().await;
+        sqlx::query("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
+            .execute(&mut owner)
+            .await
+            .context("clean up PostgreSQL fixture schema")?;
+        owner.close().await?;
+        Ok(())
     }
 
     #[test]
