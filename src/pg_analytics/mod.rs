@@ -7,6 +7,7 @@ const ANALYTICS_UNAVAILABLE_CODE: &str = "analytics_backend_unavailable";
 const POSTGRES_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const REDACTED_SECRET: &str = "<redacted>";
 pub(crate) const ANALYTICS_REPLICA_ID: &str = "pg-analytics";
+pub(crate) const ANALYTICS_FACT_DATE_SEMANTICS_VERSION: i64 = 2;
 pub(crate) const ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH: usize = 256;
 pub(crate) const ANALYTICS_REPLICA_MAX_ENCODED_BATCH_BYTES: usize = 1024 * 1024;
 pub(crate) const ANALYTICS_SOURCE_RETENTION_BOUND_BYTES: i64 = 256 * 1024 * 1024;
@@ -180,6 +181,11 @@ impl PgAnalyticsPool {
                 bail!("required PostgreSQL analytics relation is missing: {relation}");
             }
         }
+        for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
+            if !column_exists(&self.pool, relation, column).await? {
+                bail!("required PostgreSQL analytics column is missing: {relation}.{column}");
+            }
+        }
         Ok(())
     }
 
@@ -291,6 +297,7 @@ impl PgAnalyticsRuntime {
             SELECT replica_id, status, generation, baseline_generation, baseline_change_id,
                    coverage_generation, coverage_revision, coverage_watermark,
                    consumer_checkpoint, source_acknowledged_through, service_eligible,
+                   fact_date_semantics_version,
                    last_error_code, last_error_detail, updated_at::text AS updated_at
             FROM cvm_analytics.analytics_replica_state
             WHERE id = 1
@@ -584,6 +591,7 @@ pub(crate) async fn query_parallel_work_conversation_rows(
 pub(crate) struct AnalyticsReplicaState {
     pub(crate) replica_id: String,
     pub(crate) status: String,
+    pub(crate) fact_date_semantics_version: i64,
     pub(crate) generation: i64,
     pub(crate) baseline_generation: i64,
     pub(crate) baseline_change_id: i64,
@@ -923,9 +931,21 @@ fn unconsumed_source_bytes_exceed_retention_bound(lag_bytes: i64) -> bool {
 }
 
 fn replica_service_eligible(state: &AnalyticsReplicaState) -> bool {
-    state.status == "caught_up"
+    fact_date_semantics_compatible(state)
+        && state.status == "caught_up"
         && state.service_eligible
         && state.consumer_checkpoint == state.source_acknowledged_through
+}
+
+fn fact_date_semantics_compatible(state: &AnalyticsReplicaState) -> bool {
+    state.fact_date_semantics_version == ANALYTICS_FACT_DATE_SEMANTICS_VERSION
+}
+
+fn fact_date_semantics_mismatch_detail(state: &AnalyticsReplicaState) -> String {
+    format!(
+        "analytics replica fact-date semantics version {} is incompatible with required version {}; run explicit bootstrap to rebuild the bounded target snapshot",
+        state.fact_date_semantics_version, ANALYTICS_FACT_DATE_SEMANTICS_VERSION
+    )
 }
 
 fn replica_service_eligible_for_latest_change(
@@ -1094,6 +1114,29 @@ async fn relation_exists(pool: &sqlx::PgPool, relation: &str) -> Result<bool> {
     Ok(present.is_some())
 }
 
+async fn column_exists(pool: &sqlx::PgPool, relation: &str, column: &str) -> Result<bool> {
+    let (schema, table) = relation
+        .split_once('.')
+        .with_context(|| format!("invalid PostgreSQL relation name: {relation}"))?;
+    sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = $1
+              AND table_name = $2
+              AND column_name = $3
+        )
+        "#,
+    )
+    .bind(schema)
+    .bind(table)
+    .bind(column)
+    .fetch_one(pool)
+    .await
+    .with_context(|| format!("failed to inspect PostgreSQL column {relation}.{column}"))
+}
+
 async fn verify_replica_schema(pool: &sqlx::PgPool) -> Result<()> {
     for relation in PG_ANALYTICS_REQUIRED_RELATIONS
         .iter()
@@ -1101,6 +1144,13 @@ async fn verify_replica_schema(pool: &sqlx::PgPool) -> Result<()> {
     {
         if !relation_exists(pool, relation).await? {
             bail!("required PostgreSQL analytics relation is missing: {relation}");
+        }
+    }
+    for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
+        if !column_exists(pool, relation, column).await? {
+            bail!(
+                "required PostgreSQL analytics column is missing: {relation}.{column}; run explicit bootstrap to apply the compatibility contract"
+            );
         }
     }
     Ok(())
@@ -1112,6 +1162,7 @@ async fn load_replica_state(pool: &sqlx::PgPool) -> Result<AnalyticsReplicaState
         SELECT replica_id, status, generation, baseline_generation, baseline_change_id,
                coverage_generation, coverage_revision, coverage_watermark,
                consumer_checkpoint, source_acknowledged_through, service_eligible,
+               fact_date_semantics_version,
                last_error_code, last_error_detail, updated_at::text AS updated_at
         FROM cvm_analytics.analytics_replica_state
         WHERE id = 1
@@ -1272,6 +1323,28 @@ async fn mark_replica_blocked(
     .await
 }
 
+async fn ensure_fact_date_semantics_compatible(
+    pool: &sqlx::PgPool,
+    state: &AnalyticsReplicaState,
+) -> Result<()> {
+    if state.status == "unbootstrapped" || fact_date_semantics_compatible(state) {
+        return Ok(());
+    }
+    let detail = fact_date_semantics_mismatch_detail(state);
+    if state.status != "invalidated" {
+        mark_replica_state(
+            pool,
+            "invalidated",
+            false,
+            Some("fact_date_semantics_mismatch"),
+            Some(&detail),
+            "unavailable",
+        )
+        .await?;
+    }
+    Err(anyhow!(detail))
+}
+
 async fn set_replica_running(pool: &sqlx::PgPool) -> Result<()> {
     mark_replica_state(pool, "running", false, None, None, "preparing").await
 }
@@ -1326,6 +1399,7 @@ async fn clear_replica_target(pool: &sqlx::PgPool, generation: i64) -> Result<()
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET status = 'bootstrapping', generation = $1,
+            fact_date_semantics_version = $2,
             baseline_generation = 0, baseline_change_id = 0,
             coverage_generation = 0, coverage_revision = 0,
             coverage_watermark = 0, consumer_checkpoint = 0,
@@ -1335,6 +1409,7 @@ async fn clear_replica_target(pool: &sqlx::PgPool, generation: i64) -> Result<()
         "#,
     )
     .bind(generation)
+    .bind(ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
@@ -1352,6 +1427,7 @@ async fn set_replica_baseline(pool: &sqlx::PgPool, source: &SourceContext) -> Re
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET status = 'running', generation = $1,
+            fact_date_semantics_version = $4,
             baseline_generation = $1, baseline_change_id = $2,
             coverage_generation = $1, coverage_revision = $3,
             coverage_watermark = $2, consumer_checkpoint = $2,
@@ -1363,6 +1439,7 @@ async fn set_replica_baseline(pool: &sqlx::PgPool, source: &SourceContext) -> Re
     .bind(source.state.generation)
     .bind(source.latest_change_id)
     .bind(source.state.coverage_revision)
+    .bind(ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
@@ -1956,12 +2033,38 @@ async fn load_status_report(
             all_relations_ready = false;
         }
     }
+    let mut all_columns_ready = all_relations_ready;
+    if all_columns_ready {
+        for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
+            if !column_exists(pool, relation, column).await? {
+                all_columns_ready = false;
+            }
+        }
+    }
+    let schema_ready = all_relations_ready && all_columns_ready;
     let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-    let mut state = if all_relations_ready {
+    let mut state = if schema_ready {
         Some(load_replica_state(pool).await?)
     } else {
         None
     };
+    if let Some(current_state) = state.as_ref()
+        && current_state.status != "unbootstrapped"
+        && current_state.status != "invalidated"
+        && !fact_date_semantics_compatible(current_state)
+    {
+        let detail = fact_date_semantics_mismatch_detail(current_state);
+        mark_replica_state(
+            pool,
+            "invalidated",
+            false,
+            Some("fact_date_semantics_mismatch"),
+            Some(&detail),
+            "unavailable",
+        )
+        .await?;
+        state = Some(load_replica_state(pool).await?);
+    }
     let lag_bytes = if let Some(current_state) = state.as_ref()
         && current_state.status != "unbootstrapped"
     {
@@ -1995,7 +2098,7 @@ async fn load_status_report(
         })
         .unwrap_or(false);
     Ok(AnalyticsReplicaStatusReport {
-        schema_ready: all_relations_ready,
+        schema_ready,
         replica_id: ANALYTICS_REPLICA_ID.to_string(),
         service_eligible,
         state,
@@ -2179,6 +2282,7 @@ async fn resume_replica(
 ) -> Result<AnalyticsReplicaStatusReport> {
     verify_replica_schema(pool).await?;
     let mut state = load_replica_state(pool).await?;
+    ensure_fact_date_semantics_compatible(pool, &state).await?;
     anyhow::ensure!(
         state.status != "unbootstrapped",
         "analytics replica is not bootstrapped; run maintenance analytics-replica bootstrap"
@@ -2395,6 +2499,7 @@ async fn pause_replica(
 ) -> Result<AnalyticsReplicaStatusReport> {
     verify_replica_schema(pool).await?;
     let state = load_replica_state(pool).await?;
+    ensure_fact_date_semantics_compatible(pool, &state).await?;
     anyhow::ensure!(
         state.status != "unbootstrapped",
         "analytics replica is not bootstrapped; run maintenance analytics-replica bootstrap"
@@ -2432,6 +2537,22 @@ async fn verify_replica(
     let mut state = load_replica_state(pool).await?;
     let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     let mut errors = Vec::new();
+    if state.status != "unbootstrapped" && !fact_date_semantics_compatible(&state) {
+        let detail = fact_date_semantics_mismatch_detail(&state);
+        if state.status != "invalidated" {
+            mark_replica_state(
+                pool,
+                "invalidated",
+                false,
+                Some("fact_date_semantics_mismatch"),
+                Some(&detail),
+                "unavailable",
+            )
+            .await?;
+            state = load_replica_state(pool).await?;
+        }
+        errors.push(detail);
+    }
     let lag_bytes = load_source_lag_bytes(source_pool, state.consumer_checkpoint).await?;
     if state.status == "bootstrapping" {
         errors.push("replica baseline is incomplete; run explicit bootstrap".to_string());
@@ -2813,17 +2934,54 @@ mod tests {
     fn schema_contract_is_separate_from_runtime_verification() {
         assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 5);
         assert_eq!(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.len(), 2);
+        assert_eq!(PG_ANALYTICS_REQUIRED_COLUMNS.len(), 1);
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("CREATE SCHEMA IF NOT EXISTS cvm_analytics"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_daily_rollups"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_hourly_rollups"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_state"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_parallel_work_keys"));
+        assert!(
+            PG_ANALYTICS_SCHEMA_SQL
+                .contains("fact_date_semantics_version BIGINT NOT NULL DEFAULT 2")
+        );
+        assert!(
+            PG_ANALYTICS_SCHEMA_SQL
+                .contains("ADD COLUMN IF NOT EXISTS fact_date_semantics_version")
+        );
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("occurred_at_epoch_ms BIGINT NOT NULL"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("payload"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("requester_ip"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("prompt_cache"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("last_error TEXT"));
+    }
+
+    #[test]
+    fn legacy_fact_date_semantics_is_ineligible_until_explicit_bootstrap() {
+        let mut state = AnalyticsReplicaState {
+            replica_id: ANALYTICS_REPLICA_ID.to_string(),
+            status: "caught_up".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            generation: 4,
+            baseline_generation: 4,
+            baseline_change_id: 12,
+            coverage_generation: 4,
+            coverage_revision: 13,
+            coverage_watermark: 12,
+            consumer_checkpoint: 12,
+            source_acknowledged_through: 12,
+            service_eligible: true,
+            last_error_code: None,
+            last_error_detail: None,
+            updated_at: String::new(),
+        };
+        assert!(fact_date_semantics_compatible(&state));
+        assert!(replica_service_eligible(&state));
+
+        state.fact_date_semantics_version = 1;
+        assert!(!fact_date_semantics_compatible(&state));
+        assert!(!replica_service_eligible(&state));
+        assert!(fact_date_semantics_mismatch_detail(&state).contains("run explicit bootstrap"));
     }
 
     #[test]
@@ -2903,6 +3061,7 @@ mod tests {
         let state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "caught_up".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 3,
             baseline_generation: 3,
             baseline_change_id: 10,
@@ -2961,6 +3120,7 @@ mod tests {
         let mut state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "running".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 1,
             baseline_generation: 1,
             baseline_change_id: 4,
@@ -3027,6 +3187,7 @@ mod tests {
         let mut state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "running".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 2,
             baseline_generation: 2,
             baseline_change_id: 4,

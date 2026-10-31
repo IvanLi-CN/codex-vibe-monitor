@@ -13,6 +13,11 @@ pub(crate) const PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS: &[&str] = &[
     "cvm_analytics.analytics_replica_applied_changes",
 ];
 
+pub(crate) const PG_ANALYTICS_REQUIRED_COLUMNS: &[(&str, &str)] = &[(
+    "cvm_analytics.analytics_replica_state",
+    "fact_date_semantics_version",
+)];
+
 // Provisioning is intentionally separate from application startup. The runtime only verifies
 // these relations and never creates or mutates the analytics schema implicitly.
 pub(crate) const PG_ANALYTICS_SCHEMA_SQL: &str = r#"
@@ -165,6 +170,7 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_state (
         'unbootstrapped', 'bootstrapping', 'running', 'paused',
         'caught_up', 'invalidated', 'blocked', 'error'
     )),
+    fact_date_semantics_version BIGINT NOT NULL DEFAULT 2,
     generation BIGINT NOT NULL DEFAULT 0,
     baseline_generation BIGINT NOT NULL DEFAULT 0,
     baseline_change_id BIGINT NOT NULL DEFAULT 0,
@@ -178,6 +184,10 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_state (
     last_error_detail TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Existing replica state is legacy until an explicit bootstrap rebuilds its facts.
+ALTER TABLE cvm_analytics.analytics_replica_state
+    ADD COLUMN IF NOT EXISTS fact_date_semantics_version BIGINT NOT NULL DEFAULT 1;
 
 INSERT INTO cvm_analytics.analytics_replica_state (id, replica_id, status)
 VALUES (1, 'pg-analytics', 'unbootstrapped')

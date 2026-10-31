@@ -22,6 +22,7 @@
 - `cargo check --locked --all-targets --all-features`
 - Focused `pg_analytics` unit tests and existing lightweight configuration compatibility tests are bounded deterministic checks.
 - FU01 fact ingestion derives `stats_date` with explicit Asia/Shanghai calendar-boundary semantics for UTC-formatted source timestamps while preserving naive Shanghai timestamps; deterministic boundary regressions cover both snapshot and incremental fact paths.
+- FU01 compatibility persists fact-date semantics version `2` on the PostgreSQL replica state. Legacy or schema-incomplete replicas fail closed and require an explicit bootstrap, which applies the compatibility column, clears the target, rebuilds the bounded snapshot, resets the checkpoint, and only then makes the replica eligible; `AnalyticsFactV1` identity and journal event version remain unchanged, with no automatic historical backfill.
 - The validation boundary is intentionally limited to commands that complete within 180 seconds: no load generator, stress/throughput test, scale-up experiment, production-data copy, long-running suite, or p95 conclusion is part of this foundation.
 
 ## Rollout Facts
