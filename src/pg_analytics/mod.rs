@@ -1632,7 +1632,7 @@ async fn fence_replica_service_eligibility_on_connection(
     connection: &mut sqlx::postgres::PgConnection,
 ) -> Result<()> {
     let result = sqlx::query(
-        "UPDATE cvm_analytics.analytics_replica_state SET service_eligible = FALSE, updated_at = NOW() WHERE id = 1",
+        "UPDATE cvm_analytics.analytics_replica_state SET service_eligible = FALSE, status = CASE WHEN status = 'caught_up' THEN 'bootstrapping' ELSE status END, updated_at = NOW() WHERE id = 1",
     )
     .execute(&mut *connection)
     .await?;
@@ -3316,9 +3316,9 @@ mod tests {
             PG_ANALYTICS_SCHEMA_SQL
                 .contains("ADD COLUMN IF NOT EXISTS fact_date_semantics_version")
         );
-        assert!(
-            PG_ANALYTICS_SCHEMA_SQL.contains("SET service_eligible = FALSE, updated_at = NOW()")
-        );
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains(
+            "status = CASE WHEN status = 'caught_up' THEN 'bootstrapping' ELSE status END"
+        ));
         assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.pg_attribute"));
         assert!(PG_ANALYTICS_RELATION_EXISTS_SQL.contains("pg_catalog.pg_class"));
         assert!(PG_ANALYTICS_RELATION_EXISTS_SQL.contains("pg_catalog.pg_namespace"));
@@ -3362,6 +3362,9 @@ mod tests {
         assert!(fact_date_semantics_compatible(&state));
         assert!(!state.service_eligible);
         assert!(replica_service_eligible(&state));
+
+        state.status = "bootstrapping".to_string();
+        assert!(!replica_service_eligible(&state));
 
         state.fact_date_semantics_version = 1;
         assert!(!fact_date_semantics_compatible(&state));
@@ -4047,6 +4050,15 @@ mod tests {
             !owner_fenced,
             "owner-applied compatibility contract did not fence legacy eligibility"
         );
+        let owner_status: String = sqlx::query_scalar(
+            "SELECT status FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut owner)
+        .await?;
+        anyhow::ensure!(
+            owner_status == "bootstrapping",
+            "owner-applied compatibility contract did not fence current eligibility"
+        );
         sqlx::query(
             "UPDATE cvm_analytics.analytics_replica_state SET service_eligible = TRUE WHERE id = 1",
         )
@@ -4061,6 +4073,15 @@ mod tests {
         anyhow::ensure!(
             !bootstrap_fenced,
             "bootstrap preflight did not persist the rollback fence"
+        );
+        let bootstrap_status: String = sqlx::query_scalar(
+            "SELECT status FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        anyhow::ensure!(
+            bootstrap_status == "bootstrapping",
+            "bootstrap preflight did not fence current eligibility"
         );
 
         let app_dml = sqlx::query("DELETE FROM cvm_analytics.analytics_facts")

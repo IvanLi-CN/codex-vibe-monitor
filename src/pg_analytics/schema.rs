@@ -194,9 +194,12 @@ VALUES (1, 'pg-analytics', 'unbootstrapped')
 ON CONFLICT (id) DO NOTHING;
 
 -- Reapplying the owner contract is an explicit rollback fence until maintenance bootstrap
--- rebuilds the target with the current fact-date semantics.
+-- rebuilds the target with the current fact-date semantics. Move an eligible current reader
+-- out of caught_up as well as fencing older programs that only inspect service_eligible.
 UPDATE cvm_analytics.analytics_replica_state
-SET service_eligible = FALSE, updated_at = NOW()
+SET service_eligible = FALSE,
+    status = CASE WHEN status = 'caught_up' THEN 'bootstrapping' ELSE status END,
+    updated_at = NOW()
 WHERE id = 1;
 
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_applied_changes (
