@@ -2638,11 +2638,11 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         .difference(&before_subscription_keys)
         .count();
     if let Some(run) = task_run.as_ref() {
-        let (status, summary, detail) = match partial_refresh_detail {
+        let (status, summary, detail) = match partial_refresh_detail.as_ref() {
             Some(detail) => (
                 SystemTaskStatus::Skipped,
                 "forward proxy manual refresh retained the previous result".to_string(),
-                Some(detail),
+                Some(detail.clone()),
             ),
             None => (
                 SystemTaskStatus::Success,
@@ -2655,6 +2655,9 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
             ),
         };
         finish_system_task_run_batched(state.as_ref(), run, status, Some(summary), detail).await;
+    }
+    if let Some(detail) = partial_refresh_detail {
+        return Err((StatusCode::BAD_GATEWAY, detail));
     }
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref())
         .await

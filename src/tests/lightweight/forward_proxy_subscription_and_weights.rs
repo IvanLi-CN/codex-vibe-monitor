@@ -307,16 +307,15 @@ async fn partial_subscription_refresh_failure_preserves_cached_nodes() {
         manager.restore_subscription_urls(vec![cached_proxy_url.clone()]);
     }
 
-    let Json(response) = post_forward_proxy_refresh_subscriptions(
-        State(state.clone()),
-        HeaderMap::new(),
-    )
-    .await
-    .expect("a partial subscription refresh should preserve the existing HTTP response contract");
-    let response_json = serde_json::to_value(response).expect("serialize refresh response");
+    let Err((status, detail)) =
+        post_forward_proxy_refresh_subscriptions(State(state.clone()), HeaderMap::new()).await
+    else {
+        panic!("a partial subscription refresh must retain the existing HTTP error contract");
+    };
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(
-        response_json["addedNodeCount"], 0,
-        "an incomplete refresh must not report new nodes"
+        detail,
+        "proxy_connect_error: proxy connection failed during validation"
     );
     assert_eq!(
         snapshot_active_forward_proxy_endpoints(&*state.forward_proxy.lock().await).len(),
