@@ -60,7 +60,7 @@ host     all            all                0.0.0.0/0      reject
 host     all            all                ::/0           reject
 ```
 
-Keep the application credential separate from the schema owner. Use a non-login owner for DDL, and a login role with no administrative attributes for the application. The current startup probe needs database `CONNECT`; it checks relation names and executes `SELECT 1`, but does not query table contents. Grant schema `USAGE` and table `SELECT` only when a separately reviewed read adapter requires them. Never grant the application role DDL or table writes.
+Keep the application credential separate from the schema owner. Use a non-login owner for DDL, and a login role with no administrative attributes for the application. The current startup probe needs database `CONNECT`; it checks relation and column names through `pg_catalog` and executes `SELECT 1`, but does not query table contents. Grant schema `USAGE` and table `SELECT` only when a separately reviewed read adapter requires them. Never grant the application role DDL or table writes.
 
 **Owner authorization required to create roles/database or grant privileges. Run through the approved DBA channel; do not place a password in SQL, shell history, or logs. Execute statements individually or from a plain SQL file, not inside an explicit transaction; `CREATE DATABASE` cannot run in a transaction block.**
 
