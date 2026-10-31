@@ -246,7 +246,7 @@ pub(crate) fn parallel_work_counts_from_key_sets(
         .collect()
 }
 
-fn first_complete_minute_epoch(value: DateTime<Utc>) -> i64 {
+pub(crate) fn first_complete_minute_epoch(value: DateTime<Utc>) -> i64 {
     let epoch = value.timestamp();
     if epoch.rem_euclid(60) == 0 {
         epoch
@@ -255,7 +255,7 @@ fn first_complete_minute_epoch(value: DateTime<Utc>) -> i64 {
     }
 }
 
-fn end_of_complete_minutes_epoch(value: DateTime<Utc>) -> i64 {
+pub(crate) fn end_of_complete_minutes_epoch(value: DateTime<Utc>) -> i64 {
     value.timestamp().div_euclid(60) * 60
 }
 

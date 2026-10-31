@@ -167,7 +167,10 @@ impl PgAnalyticsPool {
     }
 
     async fn verify_schema(&self) -> Result<()> {
-        for relation in PG_ANALYTICS_REQUIRED_RELATIONS {
+        for relation in PG_ANALYTICS_REQUIRED_RELATIONS
+            .iter()
+            .chain(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.iter())
+        {
             let present: Option<String> = sqlx::query_scalar("SELECT to_regclass($1::text)::text")
                 .bind(relation)
                 .fetch_one(&self.pool)
@@ -278,6 +281,64 @@ impl PgAnalyticsRuntime {
             )
         }))
     }
+
+    async fn require_read_pool(&self) -> AnalyticsReadResult<&sqlx::PgPool> {
+        let pool = self
+            .require_pool()
+            .map_err(AnalyticsReadError::Unavailable)?;
+        let replica_state = sqlx::query_as::<_, AnalyticsReplicaState>(
+            r#"
+            SELECT replica_id, status, generation, baseline_generation, baseline_change_id,
+                   coverage_generation, coverage_revision, coverage_watermark,
+                   consumer_checkpoint, source_acknowledged_through, service_eligible,
+                   last_error_code, last_error_detail, updated_at::text AS updated_at
+            FROM cvm_analytics.analytics_replica_state
+            WHERE id = 1
+            "#,
+        )
+        .fetch_optional(pool.inner())
+        .await
+        .map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to load PostgreSQL analytics replica read state: {error}"
+            ))
+        })?;
+        let Some(replica_state) = replica_state else {
+            return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                AnalyticsBackend::Postgres,
+                "analytics replica state is missing",
+            )));
+        };
+        if !replica_service_eligible(&replica_state) || !replica_baseline_ready(&replica_state) {
+            return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                AnalyticsBackend::Postgres,
+                format!(
+                    "analytics replica coverage is not service eligible (status={})",
+                    replica_state.status
+                ),
+            )));
+        }
+        let projection_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM cvm_analytics.analytics_state WHERE id = 1",
+        )
+        .fetch_optional(pool.inner())
+        .await
+        .map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to load PostgreSQL analytics projection state: {error}"
+            ))
+        })?;
+        if projection_status.as_deref() != Some("ready") {
+            return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                AnalyticsBackend::Postgres,
+                format!(
+                    "analytics replica projection is not ready (status={})",
+                    projection_status.as_deref().unwrap_or("missing")
+                ),
+            )));
+        }
+        Ok(pool.inner())
+    }
 }
 
 fn sanitize_postgres_error(error: &anyhow::Error, database_url: Option<&str>) -> String {
@@ -347,6 +408,175 @@ pub(crate) struct AnalyticsFact {
     pub(crate) t_upstream_stream_ms: Option<f64>,
     pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_resp_parse_ms: Option<f64>,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct AnalyticsAccountUsageRow {
+    pub(crate) source_row_id: i64,
+    pub(crate) occurred_at_epoch_ms: i64,
+    pub(crate) upstream_account_id: i64,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) total_tokens: Option<i64>,
+    pub(crate) cost: Option<f64>,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct AnalyticsParallelWorkKeyRow {
+    pub(crate) occurred_at_epoch_ms: i64,
+    pub(crate) key_digest: String,
+    pub(crate) upstream_account_id: Option<i64>,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct AnalyticsParallelWorkConversationRow {
+    pub(crate) key_digest: String,
+    pub(crate) first_occurred_at_epoch_ms: i64,
+    pub(crate) last_occurred_at_epoch_ms: i64,
+    pub(crate) request_count: i64,
+}
+
+#[derive(Debug, Clone)]
+struct AnalyticsParallelWorkKey {
+    source: String,
+    source_row_id: i64,
+    occurred_at_epoch_ms: i64,
+    key_digest: String,
+    upstream_account_id: Option<i64>,
+}
+
+fn parallel_work_key_digest(payload: Option<&str>) -> Option<String> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    let key = value.get("promptCacheKey")?.as_str()?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    Some(format!("sha256:{:x}", Sha256::digest(key.as_bytes())))
+}
+
+pub(crate) async fn query_account_window_usage(
+    runtime: &PgAnalyticsRuntime,
+    account_ids: &[i64],
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+) -> AnalyticsReadResult<Vec<AnalyticsAccountUsageRow>> {
+    if account_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pool = runtime.require_read_pool().await?;
+    let mut query = QueryBuilder::<sqlx::Postgres>::new(
+        r#"
+        SELECT source_row_id, occurred_at_epoch_ms, upstream_account_id,
+               input_tokens, output_tokens, cache_input_tokens, total_tokens,
+               cost::double precision AS cost
+        FROM cvm_analytics.analytics_facts
+        WHERE upstream_account_id IN ("#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query
+        .push(") AND occurred_at_epoch_ms >= ")
+        .push_bind(start_at.timestamp_millis())
+        .push(" AND occurred_at_epoch_ms <= ")
+        .push_bind(end_at.timestamp_millis())
+        .push(" ORDER BY occurred_at_epoch_ms ASC, source_row_id ASC");
+    query
+        .build_query_as::<AnalyticsAccountUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to query PostgreSQL analytics account usage facts: {error}"
+            ))
+        })
+}
+
+pub(crate) async fn query_parallel_work_key_rows(
+    runtime: &PgAnalyticsRuntime,
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+    proxy_only: bool,
+    upstream_account_id: Option<i64>,
+) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkKeyRow>> {
+    let pool = runtime.require_read_pool().await?;
+    let mut query = QueryBuilder::<sqlx::Postgres>::new(
+        r#"
+        SELECT occurred_at_epoch_ms, key_digest, upstream_account_id
+        FROM cvm_analytics.analytics_parallel_work_keys
+        WHERE occurred_at_epoch_ms >= "#,
+    );
+    query
+        .push_bind(start_at.timestamp_millis())
+        .push(" AND occurred_at_epoch_ms < ")
+        .push_bind(end_at.timestamp_millis());
+    if proxy_only {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND upstream_account_id = ")
+            .push_bind(upstream_account_id);
+    }
+    query.push(" ORDER BY occurred_at_epoch_ms ASC, source_row_id ASC");
+    query
+        .build_query_as::<AnalyticsParallelWorkKeyRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to query PostgreSQL analytics parallel-work keys: {error}"
+            ))
+        })
+}
+
+pub(crate) async fn query_parallel_work_conversation_rows(
+    runtime: &PgAnalyticsRuntime,
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+    proxy_only: bool,
+    upstream_account_id: Option<i64>,
+) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkConversationRow>> {
+    let pool = runtime.require_read_pool().await?;
+    let mut query = QueryBuilder::<sqlx::Postgres>::new(
+        r#"
+        SELECT key_digest,
+               MIN(occurred_at_epoch_ms) AS first_occurred_at_epoch_ms,
+               MAX(occurred_at_epoch_ms) AS last_occurred_at_epoch_ms,
+               COUNT(*)::bigint AS request_count
+        FROM cvm_analytics.analytics_parallel_work_keys
+        WHERE occurred_at_epoch_ms >= "#,
+    );
+    query
+        .push_bind(start_at.timestamp_millis())
+        .push(" AND occurred_at_epoch_ms < ")
+        .push_bind(end_at.timestamp_millis());
+    if proxy_only {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND upstream_account_id = ")
+            .push_bind(upstream_account_id);
+    }
+    query.push(
+        " GROUP BY key_digest ORDER BY last_occurred_at_epoch_ms DESC, request_count DESC LIMIT ",
+    );
+    query.push_bind(80_i64);
+    query
+        .build_query_as::<AnalyticsParallelWorkConversationRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to query PostgreSQL analytics parallel-work conversations: {error}"
+            ))
+        })
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -493,6 +723,93 @@ struct SourceInvocationSnapshotSizeRow {
     failure_kind_bytes: Option<i64>,
     failure_class_bytes: Option<i64>,
     payload_bytes: Option<i64>,
+}
+
+#[derive(Debug, FromRow)]
+struct SourceParallelWorkMetadataRow {
+    id: i64,
+    payload: Option<String>,
+    upstream_account_id: Option<i64>,
+}
+
+async fn load_source_parallel_work_metadata_page(
+    source_connection: &mut SqliteConnection,
+    after_id: i64,
+    through_id: i64,
+) -> Result<Vec<SourceParallelWorkMetadataRow>> {
+    if after_id >= through_id {
+        return Ok(Vec::new());
+    }
+    let upstream_account_id_sql =
+        crate::api::invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, payload, ");
+    query
+        .push(upstream_account_id_sql)
+        .push(" AS upstream_account_id FROM codex_invocations WHERE id > ")
+        .push_bind(after_id)
+        .push(" AND id <= ")
+        .push_bind(through_id)
+        .push(" ORDER BY id ASC");
+    query
+        .build_query_as::<SourceParallelWorkMetadataRow>()
+        .fetch_all(&mut *source_connection)
+        .await
+        .context("failed to load bounded SQLite parallel-work key metadata")
+}
+
+async fn load_source_parallel_work_metadata(
+    source_pool: &Pool<Sqlite>,
+    source_row_id: i64,
+) -> Result<Option<SourceParallelWorkMetadataRow>> {
+    let upstream_account_id_sql =
+        crate::api::invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, payload, ");
+    query
+        .push(upstream_account_id_sql)
+        .push(" AS upstream_account_id FROM codex_invocations WHERE id = ")
+        .push_bind(source_row_id);
+    query
+        .build_query_as::<SourceParallelWorkMetadataRow>()
+        .fetch_optional(source_pool)
+        .await
+        .context("failed to load SQLite parallel-work key metadata")
+}
+
+fn parallel_work_keys_for_snapshot(
+    facts: &[AnalyticsFact],
+    metadata: Vec<SourceParallelWorkMetadataRow>,
+) -> Vec<AnalyticsParallelWorkKey> {
+    let facts_by_id = facts
+        .iter()
+        .map(|fact| (fact.source_row_id, fact))
+        .collect::<HashMap<_, _>>();
+    metadata
+        .into_iter()
+        .filter_map(|row| {
+            let fact = facts_by_id.get(&row.id)?;
+            Some(AnalyticsParallelWorkKey {
+                source: fact.source.clone(),
+                source_row_id: fact.source_row_id,
+                occurred_at_epoch_ms: fact.occurred_at_epoch_ms,
+                key_digest: parallel_work_key_digest(row.payload.as_deref())?,
+                upstream_account_id: row.upstream_account_id,
+            })
+        })
+        .collect()
+}
+
+fn parallel_work_key_for_fact(
+    fact: &AnalyticsFact,
+    metadata: Option<SourceParallelWorkMetadataRow>,
+) -> Option<AnalyticsParallelWorkKey> {
+    let metadata = metadata?;
+    Some(AnalyticsParallelWorkKey {
+        source: fact.source.clone(),
+        source_row_id: fact.source_row_id,
+        occurred_at_epoch_ms: fact.occurred_at_epoch_ms,
+        key_digest: parallel_work_key_digest(metadata.payload.as_deref())?,
+        upstream_account_id: metadata.upstream_account_id,
+    })
 }
 
 fn snapshot_terminal(status: Option<&str>) -> bool {
@@ -999,6 +1316,9 @@ async fn clear_replica_target(pool: &sqlx::PgPool, generation: i64) -> Result<()
     sqlx::query("DELETE FROM cvm_analytics.analytics_replica_applied_changes")
         .execute(&mut *transaction)
         .await?;
+    sqlx::query("DELETE FROM cvm_analytics.analytics_parallel_work_keys")
+        .execute(&mut *transaction)
+        .await?;
     sqlx::query("DELETE FROM cvm_analytics.analytics_facts")
         .execute(&mut *transaction)
         .await?;
@@ -1334,6 +1654,50 @@ async fn delete_analytics_fact(
     Ok(())
 }
 
+async fn replace_parallel_work_key(
+    connection: &mut sqlx::postgres::PgConnection,
+    source: &str,
+    source_row_id: i64,
+    key: Option<&AnalyticsParallelWorkKey>,
+) -> Result<()> {
+    if let Some(key) = key {
+        anyhow::ensure!(
+            key.source == source && key.source_row_id == source_row_id,
+            "parallel-work key identity disagrees with source change"
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO cvm_analytics.analytics_parallel_work_keys (
+                source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (source, source_row_id) DO UPDATE SET
+                occurred_at_epoch_ms = EXCLUDED.occurred_at_epoch_ms,
+                key_digest = EXCLUDED.key_digest,
+                upstream_account_id = EXCLUDED.upstream_account_id
+            "#,
+        )
+        .bind(&key.source)
+        .bind(key.source_row_id)
+        .bind(key.occurred_at_epoch_ms)
+        .bind(&key.key_digest)
+        .bind(key.upstream_account_id)
+        .execute(connection)
+        .await
+        .context("failed to upsert a PostgreSQL analytics parallel-work key")?;
+    } else {
+        sqlx::query(
+            "DELETE FROM cvm_analytics.analytics_parallel_work_keys WHERE source = $1 AND source_row_id = $2",
+        )
+        .bind(source)
+        .bind(source_row_id)
+        .execute(connection)
+        .await
+        .context("failed to remove a PostgreSQL analytics parallel-work key")?;
+    }
+    Ok(())
+}
+
 fn coverage_event_is_live_mirror(change: &SourceChangeRow) -> bool {
     serde_json::from_str::<Value>(&change.fact_json)
         .ok()
@@ -1349,6 +1713,7 @@ fn coverage_event_requires_replay(change: &SourceChangeRow) -> bool {
 async fn apply_replica_change(
     connection: &mut sqlx::postgres::PgConnection,
     change: &SourceChangeRow,
+    parallel_work_key: Option<&AnalyticsParallelWorkKey>,
 ) -> Result<()> {
     match (change.event_kind.as_str(), change.entity_kind.as_str()) {
         ("upsert", "invocation") => {
@@ -1365,12 +1730,20 @@ async fn apply_replica_change(
                 change.change_id
             );
             upsert_analytics_fact(connection, &fact).await?;
+            replace_parallel_work_key(
+                connection,
+                &change.source,
+                fact.source_row_id,
+                parallel_work_key,
+            )
+            .await?;
         }
         ("tombstone", "invocation") => {
             let source_row_id = change
                 .source_row_id
                 .context("invocation tombstone is missing source row id")?;
             delete_analytics_fact(connection, &change.source, source_row_id).await?;
+            replace_parallel_work_key(connection, &change.source, source_row_id, None).await?;
         }
         ("upsert", _) => {}
         ("coverage", _) if !coverage_event_requires_replay(change) => {}
@@ -1420,6 +1793,7 @@ async fn record_applied_change(
 }
 
 async fn apply_replica_batch(
+    source_pool: &Pool<Sqlite>,
     pool: &sqlx::PgPool,
     state: &AnalyticsReplicaState,
     source: &SourceContext,
@@ -1448,9 +1822,41 @@ async fn apply_replica_batch(
         .last()
         .map(|change| change.change_id)
         .expect("non-empty analytics replica batch");
+    let mut parallel_work_keys = HashMap::new();
+    for change in batch {
+        if change.event_kind != "upsert" || change.entity_kind != "invocation" {
+            continue;
+        }
+        let source_row_id = change
+            .source_row_id
+            .context("invocation upsert is missing source row id")?;
+        let key = if change.source == "codex_invocations" {
+            let fact =
+                serde_json::from_str::<AnalyticsFact>(&change.fact_json).with_context(|| {
+                    format!(
+                        "invalid invocation fact at source change {}",
+                        change.change_id
+                    )
+                })?;
+            parallel_work_key_for_fact(
+                &fact,
+                load_source_parallel_work_metadata(source_pool, source_row_id).await?,
+            )
+        } else {
+            None
+        };
+        parallel_work_keys.insert(change.change_id, key);
+    }
     let mut transaction = pool.begin().await?;
     for change in batch {
-        apply_replica_change(&mut transaction, change).await?;
+        apply_replica_change(
+            &mut transaction,
+            change,
+            parallel_work_keys
+                .get(&change.change_id)
+                .and_then(Option::as_ref),
+        )
+        .await?;
         record_applied_change(&mut transaction, change).await?;
     }
     let updated = sqlx::query(
@@ -1491,7 +1897,11 @@ async fn apply_replica_batch(
     Ok(last_change_id)
 }
 
-async fn apply_snapshot_batch(pool: &sqlx::PgPool, facts: &[AnalyticsFact]) -> Result<()> {
+async fn apply_snapshot_batch(
+    pool: &sqlx::PgPool,
+    facts: &[AnalyticsFact],
+    parallel_work_keys: &[AnalyticsParallelWorkKey],
+) -> Result<()> {
     anyhow::ensure!(
         !facts.is_empty(),
         "analytics snapshot batch must not be empty"
@@ -1499,6 +1909,10 @@ async fn apply_snapshot_batch(pool: &sqlx::PgPool, facts: &[AnalyticsFact]) -> R
     let mut transaction = pool.begin().await?;
     for fact in facts {
         upsert_analytics_fact(&mut transaction, fact).await?;
+    }
+    for key in parallel_work_keys {
+        replace_parallel_work_key(&mut transaction, &key.source, key.source_row_id, Some(key))
+            .await?;
     }
     transaction
         .commit()
@@ -1586,7 +2000,11 @@ async fn load_status_report(
     })
 }
 
-async fn snapshot_facts_into_target(pool: &sqlx::PgPool, facts: &[AnalyticsFact]) -> Result<()> {
+async fn snapshot_facts_into_target(
+    pool: &sqlx::PgPool,
+    facts: &[AnalyticsFact],
+    parallel_work_keys: &[AnalyticsParallelWorkKey],
+) -> Result<()> {
     let encoded_sizes = facts
         .iter()
         .map(|fact| serde_json::to_vec(fact).map(|encoded| encoded.len()))
@@ -1599,7 +2017,16 @@ async fn snapshot_facts_into_target(pool: &sqlx::PgPool, facts: &[AnalyticsFact]
                 offset
             )
         })?;
-        apply_snapshot_batch(pool, &facts[offset..end]).await?;
+        let source_row_ids = facts[offset..end]
+            .iter()
+            .map(|fact| fact.source_row_id)
+            .collect::<HashSet<_>>();
+        let parallel_work_keys = parallel_work_keys
+            .iter()
+            .filter(|key| source_row_ids.contains(&key.source_row_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        apply_snapshot_batch(pool, &facts[offset..end], &parallel_work_keys).await?;
         offset = end;
     }
     Ok(())
@@ -1619,7 +2046,14 @@ async fn snapshot_invocations_into_target(
         let Some(next_after_id) = facts.last().map(|fact| fact.source_row_id) else {
             break;
         };
-        snapshot_facts_into_target(pool, &facts).await?;
+        let metadata = load_source_parallel_work_metadata_page(
+            &mut source_transaction,
+            after_id,
+            next_after_id,
+        )
+        .await?;
+        let parallel_work_keys = parallel_work_keys_for_snapshot(&facts, metadata);
+        snapshot_facts_into_target(pool, &facts, &parallel_work_keys).await?;
         after_id = next_after_id;
     }
     source_transaction
@@ -1921,14 +2355,15 @@ async fn resume_replica(
             }
         };
         let batch = &rows[..end];
-        let last_change_id = match apply_replica_batch(pool, &state, &source, batch).await {
-            Ok(change_id) => change_id,
-            Err(error) => {
-                let detail = error.to_string();
-                mark_replica_blocked(pool, "target_apply_failed", detail.clone()).await?;
-                return Err(anyhow!(detail));
-            }
-        };
+        let last_change_id =
+            match apply_replica_batch(source_pool, pool, &state, &source, batch).await {
+                Ok(change_id) => change_id,
+                Err(error) => {
+                    let detail = error.to_string();
+                    mark_replica_blocked(pool, "target_apply_failed", detail.clone()).await?;
+                    return Err(anyhow!(detail));
+                }
+            };
         if let Err(error) =
             acknowledge_source_batch(source_pool, &source, from_change_id, last_change_id).await
         {
@@ -2373,18 +2808,61 @@ mod tests {
 
     #[test]
     fn schema_contract_is_separate_from_runtime_verification() {
-        assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 4);
+        assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 5);
         assert_eq!(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.len(), 2);
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("CREATE SCHEMA IF NOT EXISTS cvm_analytics"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_daily_rollups"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_hourly_rollups"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_state"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_parallel_work_keys"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("occurred_at_epoch_ms BIGINT NOT NULL"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("payload"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("requester_ip"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("prompt_cache"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("last_error TEXT"));
+    }
+
+    #[test]
+    fn parallel_work_key_digest_preserves_trimmed_membership_without_raw_keys() {
+        let first = parallel_work_key_digest(Some(r#"{"promptCacheKey":"  same-key  "}"#))
+            .expect("valid prompt-cache key");
+        let second = parallel_work_key_digest(Some(r#"{"promptCacheKey":"same-key"}"#))
+            .expect("valid prompt-cache key");
+        let different = parallel_work_key_digest(Some(r#"{"promptCacheKey":"other-key"}"#))
+            .expect("valid prompt-cache key");
+
+        assert_eq!(first, second);
+        assert_ne!(first, different);
+        assert!(first.starts_with("sha256:"));
+        assert!(!first.contains("same-key"));
+        assert!(parallel_work_key_digest(Some("not-json")).is_none());
+        assert!(parallel_work_key_digest(Some(r#"{"promptCacheKey":"  "}"#)).is_none());
+    }
+
+    #[tokio::test]
+    async fn selected_postgres_without_a_ready_replica_fails_closed_for_usage_reads() {
+        let runtime = PgAnalyticsRuntime {
+            backend: AnalyticsBackend::Postgres,
+            pool: None,
+            unavailable: None,
+        };
+        let error = query_account_window_usage(
+            &runtime,
+            &[7],
+            Utc::now() - ChronoDuration::minutes(5),
+            Utc::now(),
+        )
+        .await
+        .expect_err("usage reads must not fall back to SQLite");
+
+        assert!(matches!(
+            error,
+            AnalyticsReadError::Unavailable(AnalyticsUnavailable {
+                backend: AnalyticsBackend::Postgres,
+                ..
+            })
+        ));
     }
 
     #[test]

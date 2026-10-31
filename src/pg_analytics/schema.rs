@@ -2,6 +2,7 @@ pub(crate) const PG_ANALYTICS_SCHEMA_NAME: &str = "cvm_analytics";
 
 pub(crate) const PG_ANALYTICS_REQUIRED_RELATIONS: &[&str] = &[
     "cvm_analytics.analytics_facts",
+    "cvm_analytics.analytics_parallel_work_keys",
     "cvm_analytics.analytics_daily_rollups",
     "cvm_analytics.analytics_hourly_rollups",
     "cvm_analytics.analytics_state",
@@ -66,6 +67,24 @@ CREATE INDEX IF NOT EXISTS analytics_facts_model_date_idx
     ON cvm_analytics.analytics_facts (model, stats_date);
 CREATE INDEX IF NOT EXISTS analytics_facts_upstream_date_idx
     ON cvm_analytics.analytics_facts (upstream_account_id, stats_date);
+CREATE INDEX IF NOT EXISTS analytics_facts_upstream_occurred_idx
+    ON cvm_analytics.analytics_facts (upstream_account_id, occurred_at_epoch_ms, source_row_id);
+
+-- Parallel-work membership uses a one-way key digest. Raw prompt-cache keys never cross the
+-- analytics storage boundary, while the source row identity keeps corrections idempotent.
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_parallel_work_keys (
+    source TEXT NOT NULL,
+    source_row_id BIGINT NOT NULL,
+    occurred_at_epoch_ms BIGINT NOT NULL,
+    key_digest TEXT NOT NULL,
+    upstream_account_id BIGINT,
+    PRIMARY KEY (source, source_row_id)
+);
+
+CREATE INDEX IF NOT EXISTS analytics_parallel_work_keys_window_idx
+    ON cvm_analytics.analytics_parallel_work_keys (
+        occurred_at_epoch_ms, source, upstream_account_id, key_digest
+    );
 
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_daily_rollups (
     stats_date DATE NOT NULL,

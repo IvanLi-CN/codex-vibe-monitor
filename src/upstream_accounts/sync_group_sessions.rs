@@ -142,6 +142,60 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
         .map_err(Into::into)
 }
 
+pub(crate) async fn load_window_actual_usage_rows_from_analytics(
+    runtime: &PgAnalyticsRuntime,
+    account_ids: &[i64],
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+) -> AnalyticsReadResult<Vec<AccountWindowUsageRow>> {
+    query_account_window_usage(runtime, account_ids, start_at, end_at)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let occurred_at = Utc
+                .timestamp_millis_opt(row.occurred_at_epoch_ms)
+                .single()
+                .ok_or_else(|| {
+                    AnalyticsReadError::Internal(anyhow!(
+                        "invalid PostgreSQL analytics occurred_at_epoch_ms for source row {}",
+                        row.source_row_id
+                    ))
+                })?;
+            Ok(AccountWindowUsageRow {
+                id: row.source_row_id,
+                occurred_at: format_naive(occurred_at.with_timezone(&Shanghai).naive_local()),
+                upstream_account_id: row.upstream_account_id,
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cache_input_tokens: row.cache_input_tokens,
+                total_tokens: row.total_tokens,
+                cost: row.cost,
+            })
+        })
+        .collect()
+}
+
+pub(crate) async fn apply_pg_window_usage(
+    state: &AppState,
+    items: &mut [UpstreamAccountSummary],
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+    query_start: DateTime<Utc>,
+    query_end: DateTime<Utc>,
+) -> Result<()> {
+    let account_ids = plans.keys().copied().collect::<Vec<_>>();
+    let rows = load_window_actual_usage_rows_from_analytics(
+        state.pg_analytics.as_ref(),
+        &account_ids,
+        query_start,
+        query_end,
+    )
+    .await
+    .map_err(|error| anyhow!(error))?;
+    let usage = fold_account_window_usage_rows(rows, plans);
+    apply_window_actual_usage_to_summaries(items, &usage);
+    Ok(())
+}
+
 pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],

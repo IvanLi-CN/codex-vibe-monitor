@@ -4196,9 +4196,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
     state: &AppState,
     items: &mut [UpstreamAccountSummary],
 ) -> Result<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
     let now = Utc::now();
     let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
     else {
@@ -4207,6 +4204,9 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
     let account_ids = plans.keys().copied().collect::<Vec<_>>();
     if account_ids.is_empty() {
         return Ok(());
+    }
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return apply_pg_window_usage(state, items, &plans, query_start, query_end).await;
     }
     let has_live_invocations = sqlite_table_exists(&state.pool, "codex_invocations").await?;
     let has_minute_stats_rollups =
