@@ -46,7 +46,7 @@
 - Biome recommended rules remain enabled. Existing behavior-sensitive React dependency, accessibility, key, and assertion diagnostics stay visible as warnings while parse, format, import organization, and all non-migrated diagnostics remain blocking; legacy Hook exceptions use file-level, reasoned Biome suppressions instead of ESLint comments.
 - `web/` delegates `lint` to `bun run lint:web`; `docs-site/` delegates to `bun run lint:docs`; ESLint and its configuration have been removed.
 - CI job names and required-check inventory remain unchanged while the existing lint job now installs Clippy and runs the strict command above.
-- `lefthook.yml` intentionally does not run repository-wide Biome, TypeScript, Cargo fmt, or Clippy during `pre-commit`; the hook formats only matching staged files and synchronizes formatter output with `git apply --index`, while CI and the explicit commands retain full validation.
+- `lefthook.yml` intentionally does not run repository-wide Biome, TypeScript, Cargo fmt, or Clippy during `pre-commit`; the hook formats only matching staged files, applies formatted blobs to a private index with `git apply --cached`, and writes verified worktree content through descriptor-safe handles before installing that index, while CI and the explicit commands retain full validation.
 - Visual verification uses `Dashboard/WorkingConversationsSection` `Wide Desktop 1660` Storybook canvas, with existing story interaction coverage retained.
 
 ## Visual Evidence

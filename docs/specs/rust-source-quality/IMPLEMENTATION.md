@@ -15,11 +15,13 @@ The contract is implemented by the following checked-in surfaces:
 - `lefthook.yml` serializes all staged formatter jobs because Web, Markdown,
   and Rust formatter output can update the shared Git index. The managed
   pre-commit wrapper serializes the complete hook per worktree; every
-  formatter operates on a stable worktree snapshot, and `git apply --index`
-  applies the formatted patch only when the index and worktree still match
-  the snapshot. A concurrent mismatch fails without silently staging or
-  overwriting the concurrent edit before the Rust budget guard reads the
-  index.
+  formatter operates on a stable worktree snapshot, applies the formatted
+  patch to a private index with `git apply --cached`, and writes the worktree
+  through descriptor-safe `O_NOFOLLOW` file handles after rechecking each
+  expected content hash. The private index is installed only through the
+  formatter-owned Git index lock. A concurrent mismatch fails without
+  silently staging or overwriting the concurrent edit before the Rust budget
+  guard reads the index.
 - `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 84 current explicit file budgets, and 140 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - The Rust 1.99.1 upgrade retains the existing test-facade re-export boundaries and registers seven additional conditional `unused_imports` allows required by all-target Clippy; no runtime, SQL, API, or test-resource behavior changes.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local

@@ -112,6 +112,7 @@ original_objects=()
 original_worktree_hashes=()
 original_assume_unchanged=()
 original_skip_worktree=()
+original_tmp_files=()
 format_tmp_dir="$(mktemp -d "$repo_root/.codex-format.XXXXXX")"
 format_tmp_files=()
 index_path="$(git rev-parse --path-format=absolute --git-path index)"
@@ -123,6 +124,7 @@ index_lock_path=''
 index_lock_identity=''
 index_lock_held=0
 rollback_needed=0
+worktree_written=()
 
 index_identity() {
   local stat_identity index_hash
@@ -144,7 +146,7 @@ capture_index_snapshot() {
 
   for attempt in 1 2 3; do
     before="$(index_identity)" || return 1
-    cp -p "$index_path" "$snapshot_path" || return 1
+    cp "$index_path" "$snapshot_path" || return 1
     after="$(index_identity)" || return 1
     if [ "$before" = "$after" ] && cmp -s "$index_path" "$snapshot_path"; then
       printf '%s\n' "$after"
@@ -229,6 +231,128 @@ update_index() {
   fi
 }
 
+write_worktree_file() {
+  local target="$1"
+  local expected_hash="$2"
+  local source="$3"
+
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MIPC::Open2 - "$target" "$expected_hash" "$source" <<'EOF_WRITE_WORKTREE'
+use strict;
+use warnings;
+
+my ($target_path, $expected_hash, $source_path) = @ARGV;
+my $target_separator = rindex($target_path, '/');
+exit 2 if $target_separator < 1;
+my $target_directory = substr($target_path, 0, $target_separator);
+my $target_name = substr($target_path, $target_separator + 1);
+my $expected_directory = abs_path($target_directory) or exit 2;
+sysopen my $directory, $target_directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
+chdir $directory or exit 2;
+my $opened_directory = abs_path('.') or exit 2;
+exit 3 if $opened_directory ne $expected_directory;
+sysopen my $target, $target_name, O_RDWR | O_NOFOLLOW or exit 2;
+binmode $target;
+flock($target, LOCK_EX) or exit 2;
+sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW or exit 2;
+binmode $source;
+
+sub write_all {
+  my ($handle, $contents) = @_;
+  my $offset = 0;
+  while ($offset < length($contents)) {
+    my $written = syswrite($handle, $contents, length($contents) - $offset, $offset);
+    return 0 unless defined $written && $written > 0;
+    $offset += $written;
+  }
+  return 1;
+}
+
+sub replace_contents {
+  my ($handle, $contents) = @_;
+  return 0 unless seek($handle, 0, 0);
+  return 0 unless truncate($handle, 0);
+  return 0 unless write_all($handle, $contents);
+  return 0 unless seek($handle, 0, 0);
+  my $actual = do { local $/; <$handle> };
+  return defined($actual) && $actual eq $contents;
+}
+
+seek($target, 0, 0) or exit 2;
+my $current = do { local $/; <$target> };
+defined $current or exit 2;
+my ($hash_reader, $hash_writer);
+my $hash_pid = open2($hash_reader, $hash_writer, 'git', 'hash-object', '--stdin');
+binmode $hash_reader;
+binmode $hash_writer;
+print {$hash_writer} $current or exit 2;
+close $hash_writer or exit 2;
+my $actual_hash = <$hash_reader>;
+close $hash_reader or exit 2;
+waitpid($hash_pid, 0);
+defined $actual_hash or exit 2;
+chomp $actual_hash;
+exit 3 if $actual_hash ne $expected_hash;
+
+seek($source, 0, 0) or exit 2;
+my $formatted = do { local $/; <$source> };
+defined $formatted or exit 2;
+if (!replace_contents($target, $formatted)) {
+  my $restored = replace_contents($target, $current);
+  close $target;
+  exit($restored ? 2 : 4);
+}
+close $target or exit 2;
+EOF_WRITE_WORKTREE
+}
+
+install_private_index() {
+  local source="$1"
+  local lock_path="$2"
+  local index_path_arg="$3"
+  local lock_identity_arg="$4"
+
+  perl -MCwd=abs_path -MFcntl=:DEFAULT - "$source" "$lock_path" "$index_path_arg" "$lock_identity_arg" <<'EOF_INSTALL_INDEX'
+use strict;
+use warnings;
+
+my ($source_path, $lock_path, $index_path, $expected_lock_identity) = @ARGV;
+my $lock_separator = rindex($lock_path, '/');
+my $index_separator = rindex($index_path, '/');
+exit 2 if $lock_separator < 1 || $index_separator < 1;
+my $lock_directory = substr($lock_path, 0, $lock_separator);
+my $index_directory = substr($index_path, 0, $index_separator);
+my $lock_name = substr($lock_path, $lock_separator + 1);
+my $index_name = substr($index_path, $index_separator + 1);
+my $expected_directory = abs_path($lock_directory) or exit 2;
+my $resolved_index_directory = abs_path($index_directory) or exit 2;
+exit 3 if $resolved_index_directory ne $expected_directory;
+sysopen my $directory, $lock_directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
+chdir $directory or exit 2;
+my $opened_directory = abs_path('.') or exit 2;
+exit 3 if $opened_directory ne $expected_directory;
+sysopen my $lock, $lock_name, O_WRONLY | O_NOFOLLOW or exit 2;
+my @lock_stat = stat($lock) or exit 2;
+my $lock_identity = "$lock_stat[0]:$lock_stat[1]";
+exit 3 if $lock_identity ne $expected_lock_identity;
+my @lock_path_stat = lstat($lock_name) or exit 2;
+exit 3 if "$lock_path_stat[0]:$lock_path_stat[1]" ne $expected_lock_identity;
+exit 2 if -l $index_name || !-f $index_name;
+sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW or exit 2;
+binmode $source;
+binmode $lock;
+truncate($lock, 0) or exit 2;
+seek($source, 0, 0) or exit 2;
+my $contents = do { local $/; <$source> };
+defined $contents or exit 2;
+print {$lock} $contents or exit 2;
+close $source or exit 2;
+close $lock or exit 2;
+my @after_stat = lstat($lock_name) or exit 2;
+exit 3 if "$after_stat[0]:$after_stat[1]" ne $expected_lock_identity;
+rename($lock_name, $index_name) or exit 2;
+EOF_INSTALL_INDEX
+}
+
 cleanup_format_tmp() {
   local exit_code=$?
 
@@ -272,8 +396,11 @@ for file in "${files[@]}"; do
   esac
   original_worktree_hashes+=("$(git hash-object -- "$file")")
   format_tmp_file="$format_tmp_dir/$file"
+  original_tmp_file="$format_tmp_dir/.original-${#format_tmp_files[@]}"
   mkdir -p "$(dirname "$format_tmp_file")"
   git cat-file blob "$original_object" > "$format_tmp_file"
+  git cat-file blob "$original_object" > "$original_tmp_file"
+  original_tmp_files+=("$original_tmp_file")
   format_tmp_files+=("$format_tmp_file")
 done
 
@@ -361,7 +488,7 @@ for index in "${!files[@]}"; do
   fi
 done
 
-# Restore the complete index only while this formatter still owns its snapshot.
+# Restore only worktree files written by this formatter while its index lock is held.
 restore_index_metadata() {
   local index="$1"
   local file="${files[$index]}"
@@ -379,9 +506,7 @@ restore_index_metadata() {
 }
 
 restore_original_state() {
-  local index file current_worktree_hash original_file rollback_file
-  local context_lines original_lines diff_status rollback_failed=0
-  local rollback_patches=()
+  local index file current_worktree_hash rollback_failed=0
 
   if ! index_lock_owned || [ -z "$private_index_path" ]; then
     printf 'refusing to roll back formatter state without the formatter index lock\n' >&2
@@ -394,9 +519,9 @@ restore_original_state() {
   fi
 
   for index in "${!files[@]}"; do
+    [ "${worktree_written[$index]:-0}" -eq 1 ] || continue
     file="${files[$index]}"
     current_worktree_hash="$(git hash-object -- "$file" 2>/dev/null || true)"
-    rollback_patches+=("")
     if [ "$current_worktree_hash" = "${original_worktree_hashes[$index]}" ]; then
       continue
     fi
@@ -405,62 +530,13 @@ restore_original_state() {
       rollback_failed=1
       continue
     fi
-    if [ "$formatted_hashes[$index]" != "${original_worktree_hashes[$index]}" ]; then
-      original_file="$format_tmp_dir/.original-$index"
-      rollback_file="$format_tmp_dir/.rollback-$index.patch"
-      git cat-file blob "${original_objects[$index]}" > "$original_file"
-      context_lines="$(wc -l < "${format_tmp_files[$index]}")"
-      original_lines="$(wc -l < "$original_file")"
-      if [ "$original_lines" -gt "$context_lines" ]; then
-        context_lines="$original_lines"
-      fi
-      context_lines=$((context_lines + 1))
-      set +e
-      diff -u -U "$context_lines" -L "a/$file" -L "b/$file" \
-        "${format_tmp_files[$index]}" "$original_file" > "$rollback_file"
-      diff_status=$?
-      set -e
-      if [ "$diff_status" -eq 1 ]; then
-        rollback_patches[$index]="$rollback_file"
-      else
-        printf 'unable to create formatter rollback patch for: %s\n' "$file" >&2
-        rollback_failed=1
-      fi
-    fi
-  done
-
-  if [ "$rollback_failed" -ne 0 ]; then
-    printf 'refusing to roll back formatter state after a concurrent worktree change\n' >&2
-    release_index_lock
-    return 1
-  fi
-
-  for index in "${!files[@]}"; do
-    rollback_file="${rollback_patches[$index]:-}"
-    if [ -n "$rollback_file" ] && [ -s "$rollback_file" ]; then
-      if ! git apply --binary "$rollback_file"; then
-        rollback_failed=1
-        break
-      fi
-    fi
-  done
-
-  if [ "$rollback_failed" -ne 0 ]; then
-    printf 'refusing to roll back formatter state after a concurrent worktree change\n' >&2
-    release_index_lock
-    return 1
-  fi
-
-  for index in "${!files[@]}"; do
-    file="${files[$index]}"
-    if [ "${formatted_hashes[$index]}" != "${original_worktree_hashes[$index]}" ] \
-      && [ "$(git hash-object -- "$file" 2>/dev/null || true)" != "${original_worktree_hashes[$index]}" ]; then
+    if ! write_worktree_file "$file" "${formatted_hashes[$index]}" "${original_tmp_files[$index]}"; then
       rollback_failed=1
-      break
     fi
   done
+
   if [ "$rollback_failed" -ne 0 ]; then
-    printf 'refusing to roll back formatter state after a concurrent worktree change\n' >&2
+    printf 'unable to fully roll back formatter worktree changes\n' >&2
     release_index_lock
     return 1
   fi
@@ -484,13 +560,13 @@ if [ -s "$format_patch_file" ]; then
   fi
 
   private_index_path="$format_tmp_dir/formatted-index"
-  if ! cp -p "$original_index_snapshot" "$private_index_path"; then
+  if ! cp "$original_index_snapshot" "$private_index_path"; then
     printf 'unable to prepare the private Git index for formatting\n' >&2
     release_index_lock
     exit 1
   fi
   index_file_override="$private_index_path"
-  if ! GIT_INDEX_FILE="$private_index_path" git apply --check --index --binary "$format_patch_file"; then
+  if ! GIT_INDEX_FILE="$private_index_path" git apply --check --cached --binary "$format_patch_file"; then
     index_file_override=''
     private_index_path=''
     release_index_lock
@@ -513,7 +589,7 @@ if [ -s "$format_patch_file" ]; then
     fi
   done
   rollback_needed=1
-  if ! GIT_INDEX_FILE="$private_index_path" git apply --index --binary "$format_patch_file"; then
+  if ! GIT_INDEX_FILE="$private_index_path" git apply --cached --binary "$format_patch_file"; then
     restore_original_state || true
     rollback_needed=0
     index_file_override=''
@@ -526,6 +602,22 @@ if [ -s "$format_patch_file" ]; then
 
   for index in "${!files[@]}"; do
     restore_index_metadata "$index"
+  done
+
+  for index in "${!files[@]}"; do
+    file="${files[$index]}"
+    [ "${formatted_hashes[$index]}" != "${original_worktree_hashes[$index]}" ] || continue
+    worktree_written[$index]=1
+    if ! write_worktree_file "$file" "${original_worktree_hashes[$index]}" "${format_tmp_files[$index]}"; then
+      restore_original_state || true
+      rollback_needed=0
+      index_file_override=''
+      private_index_path=''
+      for concurrent_file in "${files[@]}"; do
+        printf 'refusing to stage concurrently modified file: %s\n' "$concurrent_file" >&2
+      done
+      exit 1
+    fi
   done
 
   verification_failed=0
@@ -557,26 +649,10 @@ if [ -s "$format_patch_file" ]; then
     printf 'refusing to install the formatted Git index after losing lock ownership\n' >&2
     exit 1
   fi
-  if ! cp -p "$private_index_path" "$index_lock_path"; then
-    restore_original_state || true
-    rollback_needed=0
-    index_file_override=''
-    private_index_path=''
-    printf 'unable to prepare the formatted Git index\n' >&2
-    exit 1
-  fi
-  if ! index_lock_owned; then
-    restore_original_state || true
-    rollback_needed=0
-    index_file_override=''
-    private_index_path=''
-    printf 'refusing to install the formatted Git index after losing lock ownership\n' >&2
-    exit 1
-  fi
   commit_signal_status=0
   trap 'commit_signal_status=130' INT
   trap 'commit_signal_status=143' TERM
-  if ! mv -f "$index_lock_path" "$index_path"; then
+  if ! install_private_index "$private_index_path" "$index_lock_path" "$index_path" "$index_lock_identity"; then
     trap 'exit 130' INT
     trap 'exit 143' TERM
     restore_original_state || true

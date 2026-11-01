@@ -96,9 +96,11 @@ skip unselected and deleted paths, and report the path, actual physical line
 count, and budget for an over-budget selected path. The policy itself MUST be
 read from its stage-0 index blob so staged source and policy are evaluated as
 one candidate. Each staged formatter MUST operate on a stable worktree
-snapshot and apply its formatted patch through `git apply --index` only while
-the matching index and worktree contents remain unchanged. A concurrent
-mismatch MUST fail without silently staging or overwriting the concurrent edit.
+snapshot, apply its formatted patch to a private index with `git apply --cached`, and update the worktree only through a descriptor-safe
+`O_NOFOLLOW` write after rechecking the expected content hash. The private
+index MUST be installed only through the formatter-owned Git index lock. A
+concurrent mismatch MUST fail without silently staging or overwriting the
+concurrent edit.
 The Rust formatter MUST reject partial staging and pass staged filenames after
 an option terminator. The managed pre-commit wrapper MUST
 serialize the complete formatter, safety-check, and Lefthook sequence with an
