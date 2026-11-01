@@ -84,6 +84,7 @@ if [ "$check_only" -eq 1 ]; then
   exit 0
 fi
 
+original_modes=()
 original_objects=()
 original_worktree_hashes=()
 format_tmp_dir="$(mktemp -d "$repo_root/.codex-format.XXXXXX")"
@@ -100,7 +101,8 @@ for file in "${files[@]}"; do
     exit 1
   fi
   index_entry="$(git ls-files --stage --error-unmatch -- "$file" | awk '$3 == "0" { print; exit }')"
-  read -r _ original_object _ _ <<< "$index_entry"
+  read -r original_mode original_object _ _ <<< "$index_entry"
+  original_modes+=("$original_mode")
   original_objects+=("$original_object")
   original_worktree_hashes+=("$(git hash-object -- "$file")")
   format_tmp_file="$format_tmp_dir/$file"
@@ -108,54 +110,6 @@ for file in "${files[@]}"; do
   cp "$repo_root/$file" "$format_tmp_file"
   format_tmp_files+=("$format_tmp_file")
 done
-
-apply_formatted_snapshot() {
-  local index="$1"
-  local file="${files[$index]}"
-  local format_tmp_file="${format_tmp_files[$index]}"
-  local current_index current_worktree_hash formatted_hash context_lines formatted_lines diff_status patch_file
-
-  current_index="$(git rev-parse --verify ":$file")"
-  current_worktree_hash="$(git hash-object -- "$file")"
-  if [ "$current_index" != "${original_objects[$index]}" ] \
-    || [ "$current_worktree_hash" != "${original_worktree_hashes[$index]}" ]; then
-    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
-    exit 1
-  fi
-
-  formatted_hash="$(git hash-object -- "$format_tmp_file")"
-  if [ "$formatted_hash" = "${original_worktree_hashes[$index]}" ]; then
-    return 0
-  fi
-
-  context_lines="$(wc -l < "$file")"
-  formatted_lines="$(wc -l < "$format_tmp_file")"
-  if [ "$formatted_lines" -gt "$context_lines" ]; then
-    context_lines="$formatted_lines"
-  fi
-  context_lines=$((context_lines + 1))
-  patch_file="$format_tmp_dir/.patch-$index"
-  set +e
-  diff -u -U "$context_lines" -L "a/$file" -L "b/$file" "$repo_root/$file" "$format_tmp_file" > "$patch_file"
-  diff_status=$?
-  set -e
-  if [ "$diff_status" -ne 1 ]; then
-    printf 'unable to create formatter patch for: %s\n' "$file" >&2
-    exit 1
-  fi
-
-  if ! git apply --index --binary "$patch_file"; then
-    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
-    exit 1
-  fi
-
-  current_index="$(git rev-parse --verify ":$file")"
-  current_worktree_hash="$(git hash-object -- "$file")"
-  if [ "$current_index" != "$formatted_hash" ] || [ "$current_worktree_hash" != "$formatted_hash" ]; then
-    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
-    exit 1
-  fi
-}
 
 case "$surface" in
   web)
@@ -176,6 +130,108 @@ case "$surface" in
     ;;
 esac
 
+formatted_hashes=()
+format_patch_file="$format_tmp_dir/formatted.patch"
+: > "$format_patch_file"
 for index in "${!files[@]}"; do
-  apply_formatted_snapshot "$index"
+  file="${files[$index]}"
+  format_tmp_file="${format_tmp_files[$index]}"
+  worktree_path="$repo_root/$file"
+  if [ -L "$worktree_path" ] || [ ! -f "$worktree_path" ]; then
+    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    exit 1
+  fi
+  resolved_path="$(cd "$(dirname "$worktree_path")" && pwd -P)/$(basename "$worktree_path")"
+  if [ "$resolved_path" != "$worktree_path" ]; then
+    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    exit 1
+  fi
+  current_index="$(git rev-parse --verify ":$file")"
+  current_worktree_hash="$(git hash-object -- "$file")"
+  if [ "$current_index" != "${original_objects[$index]}" ] \
+    || [ "$current_worktree_hash" != "${original_worktree_hashes[$index]}" ]; then
+    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    exit 1
+  fi
+
+  formatted_hash="$(git hash-object -- "$format_tmp_file")"
+  formatted_hashes+=("$formatted_hash")
+  if [ "$formatted_hash" = "${original_worktree_hashes[$index]}" ]; then
+    continue
+  fi
+
+  context_lines="$(wc -l < "$file")"
+  formatted_lines="$(wc -l < "$format_tmp_file")"
+  if [ "$formatted_lines" -gt "$context_lines" ]; then
+    context_lines="$formatted_lines"
+  fi
+  context_lines=$((context_lines + 1))
+  set +e
+  diff -u -U "$context_lines" -L "a/$file" -L "b/$file" "$worktree_path" "$format_tmp_file" >> "$format_patch_file"
+  diff_status=$?
+  set -e
+  if [ "$diff_status" -ne 1 ]; then
+    printf 'unable to create formatter patch for: %s\n' "$file" >&2
+    exit 1
+  fi
 done
+
+# Roll back only formatter-owned entries so concurrent edits remain untouched.
+restore_original_state() {
+  local index file worktree_path current_index current_worktree_hash restore_file
+
+  for index in "${!files[@]}"; do
+    file="${files[$index]}"
+    worktree_path="$repo_root/$file"
+    current_index="$(git rev-parse --verify ":$file" 2>/dev/null || true)"
+    current_worktree_hash="$(git hash-object -- "$file" 2>/dev/null || true)"
+    if [ "$current_index" = "${formatted_hashes[$index]}" ]; then
+      git update-index --add --cacheinfo "${original_modes[$index]},${original_objects[$index]},$file"
+    fi
+    if [ ! -L "$worktree_path" ] && [ -f "$worktree_path" ] \
+      && [ "$current_worktree_hash" = "${formatted_hashes[$index]}" ]; then
+      restore_file="$format_tmp_dir/.restore-$index"
+      git cat-file blob "${original_objects[$index]}" > "$restore_file"
+      cp "$restore_file" "$worktree_path"
+    fi
+  done
+}
+
+if [ -s "$format_patch_file" ]; then
+  if ! git apply --index --binary "$format_patch_file"; then
+    restore_original_state
+    for file in "${files[@]}"; do
+      printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    done
+    exit 1
+  fi
+fi
+
+verification_failed=0
+for index in "${!files[@]}"; do
+  file="${files[$index]}"
+  worktree_path="$repo_root/$file"
+  if [ -L "$worktree_path" ] || [ ! -f "$worktree_path" ]; then
+    verification_failed=1
+    continue
+  fi
+  resolved_path="$(cd "$(dirname "$worktree_path")" && pwd -P)/$(basename "$worktree_path")"
+  if [ "$resolved_path" != "$worktree_path" ]; then
+    verification_failed=1
+    continue
+  fi
+  current_index="$(git rev-parse --verify ":$file")"
+  current_worktree_hash="$(git hash-object -- "$file")"
+  if [ "$current_index" != "${formatted_hashes[$index]}" ] \
+    || [ "$current_worktree_hash" != "${formatted_hashes[$index]}" ]; then
+    verification_failed=1
+  fi
+done
+
+if [ "$verification_failed" -ne 0 ]; then
+  restore_original_state
+  for file in "${files[@]}"; do
+    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+  done
+  exit 1
+fi

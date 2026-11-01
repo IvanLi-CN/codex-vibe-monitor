@@ -390,6 +390,51 @@ cmp -s "$tmp_dir/expected-concurrent-index.contents" "$tmp_dir/symlink-concurren
 assert_contains "$symlink_race_target" 'fn main(){ println!("staged"); }'
 rm -f "$partial_repo/src/sample.rs"
 
+multi_race_git_bin="$tmp_dir/multi-race-git-bin"
+mkdir -p "$multi_race_git_bin"
+cat > "$multi_race_git_bin/git" <<'EOF_MULTI_RACE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = 'apply' ]; then
+  printf '\n// concurrent second-file edit\n' >> "${RACE_SECOND_TARGET:?}"
+fi
+exec "${REAL_GIT:?}" "$@"
+EOF_MULTI_RACE_GIT
+chmod +x "$multi_race_git_bin/git"
+cat > "$partial_repo/src/sample.rs" <<'EOF_MULTI_RACE_SAMPLE'
+fn main(){ println!("staged"); }
+EOF_MULTI_RACE_SAMPLE
+cat > "$partial_repo/src/second.rs" <<'EOF_MULTI_RACE_SECOND'
+fn main(){ println!("second"); }
+EOF_MULTI_RACE_SECOND
+git -C "$partial_repo" add src/sample.rs src/second.rs
+cat > "$tmp_dir/expected-multi-sample.contents" <<'EOF_EXPECTED_MULTI_SAMPLE'
+fn main(){ println!("staged"); }
+EOF_EXPECTED_MULTI_SAMPLE
+cat > "$tmp_dir/expected-multi-second.contents" <<'EOF_EXPECTED_MULTI_SECOND'
+fn main(){ println!("second"); }
+EOF_EXPECTED_MULTI_SECOND
+if (
+  cd "$partial_repo"
+  PATH="$multi_race_git_bin:$PATH" REAL_GIT="$real_git" \
+    RACE_SECOND_TARGET="$partial_repo/src/second.rs" \
+    CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" bash scripts/format-staged-files.sh rust src/sample.rs src/second.rs \
+    > "$tmp_dir/multi-concurrent-format.log" 2>&1
+); then
+  fail 'multi-file formatter failure must not leave a partial apply'
+fi
+assert_contains "$tmp_dir/multi-concurrent-format.log" 'refusing to stage concurrently modified file: src/sample.rs'
+git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/multi-sample-index.contents"
+git -C "$partial_repo" show :src/second.rs > "$tmp_dir/multi-second-index.contents"
+cmp -s "$tmp_dir/expected-multi-sample.contents" "$tmp_dir/multi-sample-index.contents" \
+  || fail 'multi-file formatter failure changed the first index entry'
+cmp -s "$tmp_dir/expected-multi-second.contents" "$tmp_dir/multi-second-index.contents" \
+  || fail 'multi-file formatter failure changed the second index entry'
+cmp -s "$tmp_dir/expected-multi-sample.contents" "$partial_repo/src/sample.rs" \
+  || fail 'multi-file formatter failure changed the first worktree file'
+assert_contains "$partial_repo/src/second.rs" '// concurrent second-file edit'
+rm -f "$partial_repo/src/second.rs"
+
 partial_linked_repo="$tmp_dir/partial-stage-linked"
 git -C "$partial_repo" branch partial-stage-linked
 git -C "$partial_repo" worktree add -q "$partial_linked_repo" partial-stage-linked
