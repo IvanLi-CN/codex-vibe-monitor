@@ -53,6 +53,9 @@ for formatter in biome rustfmt dprint; do
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\t%s\n' "$(basename "$0")" "$*" >> "${FORMATTER_LOG:?}"
+case "$(basename "$0")" in
+  biome|dprint) cat ;;
+esac
 EOF_FORMATTER
   chmod +x "$fake_bin/$formatter"
 done
@@ -67,12 +70,10 @@ export FORMATTER_LOG="$formatter_log"
   CODEX_HOOK_DPRINT_BIN="$fake_bin/dprint" \
     bash scripts/format-staged-files.sh markdown README.md removed.md docs/../README.md vendor/hotpath/README.md
 )
-assert_contains "$formatter_log" $'biome\tcheck --write '
-assert_contains "$formatter_log" '/web/src/test-setup.ts'
+assert_contains "$formatter_log" $'biome\tcheck --write --stdin-file-path=web/src/test-setup.ts'
 assert_contains "$formatter_log" $'rustfmt\t--edition 2024 -- '
 assert_contains "$formatter_log" '/src/main.rs'
-assert_contains "$formatter_log" $'dprint\tfmt '
-assert_contains "$formatter_log" '/README.md'
+assert_contains "$formatter_log" $'dprint\tfmt --stdin README.md'
 assert_not_contains "$formatter_log" 'missing.ts'
 assert_not_contains "$formatter_log" '../../package.json'
 assert_not_contains "$formatter_log" 'web/../package.json'

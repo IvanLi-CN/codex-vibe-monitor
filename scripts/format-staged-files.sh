@@ -87,6 +87,8 @@ fi
 original_modes=()
 original_objects=()
 original_worktree_hashes=()
+original_assume_unchanged=()
+original_skip_worktree=()
 format_tmp_dir="$(mktemp -d "$repo_root/.codex-format.XXXXXX")"
 format_tmp_files=()
 cleanup_format_tmp() {
@@ -102,19 +104,46 @@ for file in "${files[@]}"; do
   fi
   index_entry="$(git ls-files --stage --error-unmatch -- "$file" | awk '$3 == "0" { print; exit }')"
   read -r original_mode original_object _ _ <<< "$index_entry"
+  index_state="$(git ls-files -v -- "$file" | cut -c1)"
   original_modes+=("$original_mode")
   original_objects+=("$original_object")
+  case "$index_state" in
+    [a-z]) original_assume_unchanged+=(1) ;;
+    *) original_assume_unchanged+=(0) ;;
+  esac
+  case "$index_state" in
+    [Ss]) original_skip_worktree+=(1) ;;
+    *) original_skip_worktree+=(0) ;;
+  esac
   original_worktree_hashes+=("$(git hash-object -- "$file")")
   format_tmp_file="$format_tmp_dir/$file"
   mkdir -p "$(dirname "$format_tmp_file")"
-  cp "$repo_root/$file" "$format_tmp_file"
+  git cat-file blob "$original_object" > "$format_tmp_file"
   format_tmp_files+=("$format_tmp_file")
 done
+
+is_safe_worktree_path() {
+  local file="$1"
+  local worktree_path resolved_path
+
+  worktree_path="$repo_root/$file"
+  if [ -L "$worktree_path" ] || [ ! -f "$worktree_path" ]; then
+    return 1
+  fi
+  resolved_path="$(cd "$(dirname "$worktree_path")" && pwd -P)/$(basename "$worktree_path")"
+  [ "$resolved_path" = "$worktree_path" ]
+}
 
 case "$surface" in
   web)
     biome_bin="${CODEX_HOOK_BIOME_BIN:-$repo_root/node_modules/.bin/biome}"
-    "$biome_bin" check --write "${format_tmp_files[@]}"
+    for index in "${!files[@]}"; do
+      file="${files[$index]}"
+      format_tmp_file="${format_tmp_files[$index]}"
+      format_output="$format_tmp_dir/.biome-output-$index"
+      "$biome_bin" check --write --stdin-file-path="$file" < "$format_tmp_file" > "$format_output"
+      mv "$format_output" "$format_tmp_file"
+    done
     ;;
   rust)
     rustfmt_bin="${CODEX_HOOK_RUSTFMT_BIN:-rustfmt}"
@@ -122,7 +151,13 @@ case "$surface" in
     ;;
   markdown)
     dprint_bin="${CODEX_HOOK_DPRINT_BIN:-$repo_root/node_modules/.bin/dprint}"
-    "$dprint_bin" fmt "${format_tmp_files[@]}"
+    for index in "${!files[@]}"; do
+      file="${files[$index]}"
+      format_tmp_file="${format_tmp_files[$index]}"
+      format_output="$format_tmp_dir/.dprint-output-$index"
+      "$dprint_bin" fmt --stdin "$file" < "$format_tmp_file" > "$format_output"
+      mv "$format_output" "$format_tmp_file"
+    done
     ;;
   *)
     printf 'unknown formatter surface: %s\n' "$surface" >&2
@@ -137,12 +172,7 @@ for index in "${!files[@]}"; do
   file="${files[$index]}"
   format_tmp_file="${format_tmp_files[$index]}"
   worktree_path="$repo_root/$file"
-  if [ -L "$worktree_path" ] || [ ! -f "$worktree_path" ]; then
-    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
-    exit 1
-  fi
-  resolved_path="$(cd "$(dirname "$worktree_path")" && pwd -P)/$(basename "$worktree_path")"
-  if [ "$resolved_path" != "$worktree_path" ]; then
+  if ! is_safe_worktree_path "$file"; then
     printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
     exit 1
   fi
@@ -177,8 +207,29 @@ for index in "${!files[@]}"; do
 done
 
 # Roll back only formatter-owned entries so concurrent edits remain untouched.
+restore_index_metadata() {
+  local index="$1"
+  local file="${files[$index]}"
+
+  if [ "${original_assume_unchanged[$index]}" -eq 1 ]; then
+    git update-index --assume-unchanged -- "$file"
+  else
+    git update-index --no-assume-unchanged -- "$file"
+  fi
+  if [ "${original_skip_worktree[$index]}" -eq 1 ]; then
+    git update-index --skip-worktree -- "$file"
+  else
+    git update-index --no-skip-worktree -- "$file"
+  fi
+}
+
 restore_original_state() {
-  local index file worktree_path current_index current_worktree_hash restore_file
+  local index file worktree_path current_index current_worktree_hash original_file
+  local context_lines original_lines diff_status rollback_patch
+  local rollback_owned=()
+
+  rollback_patch="$format_tmp_dir/rollback.patch"
+  : > "$rollback_patch"
 
   for index in "${!files[@]}"; do
     file="${files[$index]}"
@@ -186,13 +237,46 @@ restore_original_state() {
     current_index="$(git rev-parse --verify ":$file" 2>/dev/null || true)"
     current_worktree_hash="$(git hash-object -- "$file" 2>/dev/null || true)"
     if [ "$current_index" = "${formatted_hashes[$index]}" ]; then
-      git update-index --add --cacheinfo "${original_modes[$index]},${original_objects[$index]},$file"
+      rollback_owned+=(1)
+    else
+      rollback_owned+=(0)
     fi
-    if [ ! -L "$worktree_path" ] && [ -f "$worktree_path" ] \
-      && [ "$current_worktree_hash" = "${formatted_hashes[$index]}" ]; then
-      restore_file="$format_tmp_dir/.restore-$index"
-      git cat-file blob "${original_objects[$index]}" > "$restore_file"
-      cp "$restore_file" "$worktree_path"
+    if [ "${rollback_owned[$index]}" -eq 1 ] \
+      && [ "$current_worktree_hash" = "${formatted_hashes[$index]}" ] \
+      && is_safe_worktree_path "$file"; then
+      original_file="$format_tmp_dir/.original-$index"
+      git cat-file blob "${original_objects[$index]}" > "$original_file"
+      context_lines="$(wc -l < "${format_tmp_files[$index]}")"
+      original_lines="$(wc -l < "$original_file")"
+      if [ "$original_lines" -gt "$context_lines" ]; then
+        context_lines="$original_lines"
+      fi
+      context_lines=$((context_lines + 1))
+      set +e
+      diff -u -U "$context_lines" -L "a/$file" -L "b/$file" \
+        "${format_tmp_files[$index]}" "$original_file" >> "$rollback_patch"
+      diff_status=$?
+      set -e
+      if [ "$diff_status" -ne 1 ]; then
+        printf 'unable to create formatter rollback patch for: %s\n' "$file" >&2
+      fi
+    fi
+  done
+
+  if [ -s "$rollback_patch" ]; then
+    git apply --index --binary "$rollback_patch" || true
+  fi
+
+  for index in "${!files[@]}"; do
+    file="${files[$index]}"
+    current_index="$(git rev-parse --verify ":$file" 2>/dev/null || true)"
+    if [ "${rollback_owned[$index]}" -eq 1 ] \
+      && [ "$current_index" = "${formatted_hashes[$index]}" ]; then
+      git update-index --add --cacheinfo "${original_modes[$index]},${original_objects[$index]},$file"
+      restore_index_metadata "$index"
+    elif [ "${rollback_owned[$index]}" -eq 1 ] \
+      && [ "$current_index" = "${original_objects[$index]}" ]; then
+      restore_index_metadata "$index"
     fi
   done
 }
@@ -211,12 +295,7 @@ verification_failed=0
 for index in "${!files[@]}"; do
   file="${files[$index]}"
   worktree_path="$repo_root/$file"
-  if [ -L "$worktree_path" ] || [ ! -f "$worktree_path" ]; then
-    verification_failed=1
-    continue
-  fi
-  resolved_path="$(cd "$(dirname "$worktree_path")" && pwd -P)/$(basename "$worktree_path")"
-  if [ "$resolved_path" != "$worktree_path" ]; then
+  if ! is_safe_worktree_path "$file"; then
     verification_failed=1
     continue
   fi
@@ -235,3 +314,7 @@ if [ "$verification_failed" -ne 0 ]; then
   done
   exit 1
 fi
+
+for index in "${!files[@]}"; do
+  restore_index_metadata "$index"
+done

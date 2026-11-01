@@ -11,6 +11,7 @@ tags:
   - cargo
 status: active
 related_specs:
+  - docs/specs/rust-source-quality/SPEC.md
   - docs/specs/v7se4-worktree-bootstrap/SPEC.md
   - docs/specs/tr4ev-bun-first-toolchain/SPEC.md
 ---
