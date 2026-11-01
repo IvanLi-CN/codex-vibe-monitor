@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 70,
+    "inventory_entries": 77,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -427,10 +427,52 @@
       "next_module_workstream": "Split upstream relogin/duplicate usage fixtures by mailbox, identity, and snapshot recovery."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/model_failure_timeline_and_api.rs",
       "role": "test_helper",
-      "line_budget": 8680,
-      "next_module_workstream": "Split upstream sync cooldown/capability fixtures by recovery, classification, and maintenance."
+      "line_budget": 820,
+      "next_module_workstream": "Maintain model failure classification, routing timelines, schema upgrades, bounded queries, and paginated history fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/cache_hit_protection_and_route_reservations.rs",
+      "role": "test_helper",
+      "line_budget": 2634,
+      "next_module_workstream": "Maintain cache-hit protection sampling, atomic reservations, sticky routes, cooldown probes, and exact-route health fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/capability_learning_and_account_health.rs",
+      "role": "test_helper",
+      "line_budget": 657,
+      "next_module_workstream": "Maintain capability learning overrides, stale observation fences, account health, and sync-success route state fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_scope_and_node_shunt.rs",
+      "role": "test_helper",
+      "line_budget": 1082,
+      "next_module_workstream": "Maintain sync scope reuse, node shunt fallbacks, routing recovery, and account list/detail rewrite fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/oauth_sync_quota_recovery.rs",
+      "role": "test_helper",
+      "line_budget": 1473,
+      "next_module_workstream": "Maintain OAuth refresh/fetch failure classification, quota recovery, stale-row fencing, and terminal sync state fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/oauth_refresh_observability.rs",
+      "role": "test_helper",
+      "line_budget": 1138,
+      "next_module_workstream": "Maintain OAuth refresh observability, independent manual operations, and usage authentication retry fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_snapshot_and_priority_handoff.rs",
+      "role": "test_helper",
+      "line_budget": 901,
+      "next_module_workstream": "Maintain persisted quota snapshot filtering, sticky rotation, priority handoff, and same-tier resolver recovery fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/candidate_ordering_and_rotation.rs",
+      "role": "test_helper",
+      "line_budget": 497,
+      "next_module_workstream": "Maintain candidate ordering, reset-time rotation, quota terminal state, and proxy/group filtering fixtures."
     }
   ],
   "suppressions": [
@@ -1203,34 +1245,34 @@
       "reason": "Retain this targeted allow for the current argument bundle at src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/cache_hit_protection_and_route_reservations.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
-      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+      "reason": "Retain this targeted expect declaration for the cache route reservation boundary; update it when the listed cache protection workstream changes the declaration."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_snapshot_and_priority_handoff.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
-      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+      "reason": "Retain this targeted expect declaration for the resolver priority handoff boundary; update it when the listed resolver workstream changes the declaration."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_snapshot_and_priority_handoff.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
-      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+      "reason": "Retain this targeted expect declaration for the resolver priority handoff boundary; update it when the listed resolver workstream changes the declaration."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_snapshot_and_priority_handoff.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
-      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+      "reason": "Retain this targeted expect declaration for the resolver priority handoff boundary; update it when the listed resolver workstream changes the declaration."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_snapshot_and_priority_handoff.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
-      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+      "reason": "Retain this targeted expect declaration for the resolver priority handoff boundary; update it when the listed resolver workstream changes the declaration."
     },
     {
       "path": "src/upstream_accounts/tests/support/mod.rs",
