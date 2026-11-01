@@ -128,6 +128,7 @@ index_lock_path=''
 index_lock_identity=''
 index_lock_held=0
 rollback_needed=0
+rollback_after_index_install=0
 worktree_written=()
 
 index_identity() {
@@ -320,6 +321,22 @@ sub write_all {
   return 1;
 }
 
+sub restore_partial_contents {
+  my ($handle, $expected, $attempted) = @_;
+  return 0 unless defined $expected;
+  my $current = read_all($handle);
+  return 0 unless defined $current;
+  return 1 if $current eq $expected;
+  return 0 unless length($current) <= length($attempted)
+    && substr($attempted, 0, length($current)) eq $current;
+  return 0 unless seek($handle, 0, 0);
+  return 0 unless truncate($handle, 0);
+  return 0 unless write_all($handle, $expected);
+  return 0 unless seek($handle, 0, 0);
+  my $restored = do { local $/; <$handle> };
+  return defined($restored) && $restored eq $expected;
+}
+
 sub replace_contents {
   my ($handle, $contents, $expected) = @_;
   if (defined $expected) {
@@ -327,11 +344,22 @@ sub replace_contents {
     return 0 unless defined $current && $current eq $expected;
   }
   return 0 unless seek($handle, 0, 0);
-  return 0 unless truncate($handle, 0);
-  return 0 unless write_all($handle, $contents);
-  return 0 unless seek($handle, 0, 0);
+  unless (truncate($handle, 0)) {
+    restore_partial_contents($handle, $expected, $contents);
+    return 0;
+  }
+  unless (write_all($handle, $contents)) {
+    restore_partial_contents($handle, $expected, $contents);
+    return 0;
+  }
+  unless (seek($handle, 0, 0)) {
+    restore_partial_contents($handle, $expected, $contents);
+    return 0;
+  }
   my $actual = do { local $/; <$handle> };
-  return defined($actual) && $actual eq $contents;
+  return 1 if defined($actual) && $actual eq $contents;
+  restore_partial_contents($handle, $expected, $contents);
+  return 0;
 }
 
 sub restore_written {
@@ -430,12 +458,19 @@ install_private_index() {
   local lock_path="$2"
   local index_path_arg="$3"
   local lock_identity_arg="$4"
+  local expected_index_identity_arg="$5"
+  local repo_root_arg="$6"
+  local original_index_snapshot_arg="$7"
+  shift 7
 
-  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode - "$source" "$lock_path" "$index_path_arg" "$lock_identity_arg" <<'EOF_INSTALL_INDEX'
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -MIPC::Open2 - "$source" "$lock_path" "$index_path_arg" "$lock_identity_arg" "$expected_index_identity_arg" "$repo_root_arg" "$original_index_snapshot_arg" "$@" <<'EOF_INSTALL_INDEX'
 use strict;
 use warnings;
 
-my ($source_path, $lock_path, $index_path, $expected_lock_identity) = @ARGV;
+my ($source_path, $lock_path, $index_path, $expected_lock_identity,
+    $expected_index_identity, $worktree_root, $original_index_snapshot,
+    @target_arguments) = @ARGV;
+exit 2 if @target_arguments % 2;
 my $lock_separator = rindex($lock_path, '/');
 my $index_separator = rindex($index_path, '/');
 exit 2 if $lock_separator < 1 || $index_separator < 1;
@@ -443,6 +478,11 @@ my $lock_directory = substr($lock_path, 0, $lock_separator);
 my $index_directory = substr($index_path, 0, $index_separator);
 my $lock_name = substr($lock_path, $lock_separator + 1);
 my $index_name = substr($index_path, $index_separator + 1);
+my @expected_index_parts = split(/:/, $expected_index_identity);
+exit 2 if @expected_index_parts < 5;
+my $expected_index_device = $expected_index_parts[0];
+my $expected_index_inode = $expected_index_parts[1];
+my $expected_index_hash = $expected_index_parts[-1];
 my $expected_directory = abs_path($lock_directory) or exit 2;
 my $resolved_index_directory = abs_path($index_directory) or exit 2;
 exit 3 if $resolved_index_directory ne $expected_directory;
@@ -458,20 +498,158 @@ my $lock_identity = "$lock_stat[0]:$lock_stat[1]";
 exit 3 if $lock_identity ne $expected_lock_identity;
 my @lock_path_stat = lstat($lock_name) or exit 2;
 exit 3 if "$lock_path_stat[0]:$lock_path_stat[1]" ne $expected_lock_identity;
-exit 2 if -l $index_name || !-f $index_name;
-sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW or exit 2;
+sub read_all {
+  my ($handle) = @_;
+  return undef unless seek($handle, 0, 0);
+  return do { local $/; <$handle> };
+}
+
+sub hash_contents {
+  my ($contents) = @_;
+  return undef unless defined $contents;
+  my ($hash_reader, $hash_writer);
+  my $hash_pid = open2($hash_reader, $hash_writer, 'git', 'hash-object', '--stdin');
+  binmode $hash_reader;
+  binmode $hash_writer;
+  return undef unless print {$hash_writer} $contents;
+  return undef unless close $hash_writer;
+  my $hash = <$hash_reader>;
+  return undef unless close $hash_reader;
+  waitpid($hash_pid, 0);
+  return undef if $? != 0 || !defined $hash;
+  chomp $hash;
+  return $hash;
+}
+
+sub write_all {
+  my ($handle, $contents) = @_;
+  my $offset = 0;
+  while ($offset < length($contents)) {
+    my $written = syswrite($handle, $contents, length($contents) - $offset, $offset);
+    return 0 unless defined $written && $written > 0;
+    $offset += $written;
+  }
+  return 1;
+}
+
+my $resolved_worktree_root = abs_path($worktree_root) or exit 2;
+
+sub open_worktree_target {
+  my ($path, $expected_hash) = @_;
+  my $root_prefix = $resolved_worktree_root eq '/' ? '/' : "$resolved_worktree_root/";
+  return unless index($path, $root_prefix) == 0;
+  my $relative_path = substr($path, length($root_prefix));
+  my @components = split('/', $relative_path, -1);
+  return if !@components || grep { $_ eq '' || $_ eq '.' || $_ eq '..' } @components;
+  my $name = pop @components;
+  my $directory;
+  sysopen $directory, '/', O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
+  chdir $directory or return;
+  for my $component (grep { length $_ } split('/', $resolved_worktree_root)) {
+    return if $component eq '.' || $component eq '..';
+    my $next_directory;
+    sysopen $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
+    chdir $next_directory or return;
+    close $directory or return;
+    $directory = $next_directory;
+  }
+  for my $component (@components) {
+    my $next_directory;
+    sysopen $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
+    chdir $next_directory or return;
+    close $directory or return;
+    $directory = $next_directory;
+  }
+  sysopen my $target, $name, O_RDWR | O_NOFOLLOW | O_NONBLOCK or return;
+  binmode $target;
+  my @target_stat = stat($target) or return;
+  return unless (($target_stat[2] & S_IFMT) == S_IFREG);
+  flock($target, LOCK_EX) or return;
+  return ($target, $directory, $expected_hash);
+}
+
+sub verify_index_path {
+  my @path_stat = lstat($index_name) or return 0;
+  return 0 unless (($path_stat[2] & S_IFMT) == S_IFREG);
+  return 0 unless "$path_stat[0]:$path_stat[1]" eq "$expected_index_device:$expected_index_inode";
+  sysopen my $index, $index_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK or return 0;
+  binmode $index;
+  my @fd_stat = stat($index) or return 0;
+  my $contents = read_all($index);
+  close $index or return 0;
+  my @after_stat = lstat($index_name) or return 0;
+  return 0 unless "$fd_stat[0]:$fd_stat[1]" eq "$after_stat[0]:$after_stat[1]";
+  my $actual_hash = hash_contents($contents);
+  return defined($actual_hash) && $actual_hash eq $expected_index_hash;
+}
+
+sub verify_targets {
+  my ($targets) = @_;
+  for my $target (@{$targets}) {
+    my $contents = read_all($target->{handle});
+    my $actual_hash = hash_contents($contents);
+    return 0 unless defined($actual_hash) && $actual_hash eq $target->{hash};
+  }
+  return 1;
+}
+
+sub restore_index {
+  my ($snapshot_path, $lock_name, $index_name, $installed_identity) = @_;
+  my @current_stat = lstat($index_name) or return 0;
+  return 0 unless "$current_stat[0]:$current_stat[1]" eq $installed_identity;
+  sysopen my $restore_lock, $lock_name,
+    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0666 or return 0;
+  binmode $restore_lock;
+  sysopen my $snapshot, $snapshot_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+    or return 0;
+  binmode $snapshot;
+  my $contents = read_all($snapshot);
+  close $snapshot or return 0;
+  return 0 unless defined $contents;
+  truncate($restore_lock, 0) or return 0;
+  write_all($restore_lock, $contents) or return 0;
+  close $restore_lock or return 0;
+  my @restore_stat = lstat($lock_name) or return 0;
+  my $restore_identity = "$restore_stat[0]:$restore_stat[1]";
+  my @before_rename = lstat($index_name) or return 0;
+  return 0 unless "$before_rename[0]:$before_rename[1]" eq $installed_identity;
+  return rename($lock_name, $index_name) ? 1 : 0;
+}
+
+my @targets;
+for (my $offset = 0; $offset < @target_arguments; $offset += 2) {
+  my ($path, $expected_hash) = @target_arguments[$offset .. $offset + 1];
+  my ($target, $target_directory, $hash) = open_worktree_target($path, $expected_hash);
+  exit 3 unless defined $target && defined $target_directory;
+  push @targets, { handle => $target, directory => $target_directory, hash => $hash };
+}
+chdir $directory or exit 2;
+exit 3 unless verify_index_path();
+exit 3 unless verify_targets(\@targets);
+sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK or exit 2;
 binmode $source;
+my $contents = read_all($source);
+close $source or exit 2;
+defined $contents or exit 2;
 binmode $lock;
 truncate($lock, 0) or exit 2;
-seek($source, 0, 0) or exit 2;
-my $contents = do { local $/; <$source> };
-defined $contents or exit 2;
-print {$lock} $contents or exit 2;
-close $source or exit 2;
-close $lock or exit 2;
-my @after_stat = lstat($lock_name) or exit 2;
-exit 3 if "$after_stat[0]:$after_stat[1]" ne $expected_lock_identity;
+write_all($lock, $contents) or exit 2;
+my @after_lock_stat = lstat($lock_name) or exit 2;
+exit 3 if "$after_lock_stat[0]:$after_lock_stat[1]" ne $expected_lock_identity;
+exit 3 unless verify_index_path();
+exit 3 unless verify_targets(\@targets);
 rename($lock_name, $index_name) or exit 2;
+my @installed_stat = lstat($index_name) or exit 4;
+my $installed_identity = "$installed_stat[0]:$installed_stat[1]";
+if (!verify_targets(\@targets)) {
+  my $restored = restore_index($original_index_snapshot, $lock_name, $index_name, $installed_identity);
+  exit($restored ? 4 : 5);
+}
+close $lock or exit 2;
+for my $target (@targets) {
+  close $target->{handle} or exit 2;
+  close $target->{directory} or exit 2;
+}
 EOF_INSTALL_INDEX
 }
 
@@ -637,7 +815,7 @@ restore_original_state() {
   local index rollback_failed=0
   local -a rollback_args=()
 
-  if ! index_lock_owned || [ -z "$private_index_path" ]; then
+  if { ! index_lock_owned && [ "$rollback_after_index_install" -ne 1 ]; } || [ -z "$private_index_path" ]; then
     printf 'refusing to roll back formatter state without the formatter index lock\n' >&2
     return 1
   fi
@@ -780,13 +958,44 @@ if [ -s "$format_patch_file" ]; then
     printf 'refusing to install the formatted Git index after losing lock ownership\n' >&2
     exit 1
   fi
+  install_args=()
+  for index in "${!files[@]}"; do
+    [ "${formatted_hashes[$index]}" != "${original_worktree_hashes[$index]}" ] || continue
+    install_args+=(
+      "$repo_root/${files[$index]}"
+      "${formatted_hashes[$index]}"
+    )
+  done
   commit_signal_status=0
   trap 'commit_signal_status=130' INT
   trap 'commit_signal_status=143' TERM
-  if ! install_private_index "$private_index_path" "$index_lock_path" "$index_path" "$index_lock_identity"; then
+  install_index_args=(
+    "$private_index_path"
+    "$index_lock_path"
+    "$index_path"
+    "$index_lock_identity"
+    "$original_index_identity"
+    "$repo_root"
+    "$original_index_snapshot"
+  )
+  if [ "${#install_args[@]}" -gt 0 ]; then
+    install_index_args+=("${install_args[@]}")
+  fi
+  install_status=0
+  if install_private_index "${install_index_args[@]}"; then
+    :
+  else
+    install_status=$?
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    if [ "$install_status" -eq 4 ]; then
+      index_lock_held=0
+      index_lock_path=''
+      index_lock_identity=''
+      rollback_after_index_install=1
+    fi
     restore_original_state || true
+    rollback_after_index_install=0
     rollback_needed=0
     index_file_override=''
     private_index_path=''
@@ -796,6 +1005,7 @@ if [ -s "$format_patch_file" ]; then
   index_lock_held=0
   index_lock_path=''
   index_lock_identity=''
+  rollback_after_index_install=0
   index_file_override=''
   private_index_path=''
   rollback_needed=0

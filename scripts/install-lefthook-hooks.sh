@@ -207,7 +207,22 @@ cleanup_legacy_prepare_commit_msg() {
   fi
 
   template_path="$template_dir/.git/hooks/prepare-commit-msg"
-  if [ -f "$template_path" ] && cmp -s "$hook_path" "$template_path"; then
+  hook_identity=''
+  if hook_identity="$(stat -c '%d:%i' "$hook_path" 2>/dev/null)"; then
+    :
+  else
+    hook_identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
+  fi
+  current_hook_identity=''
+  if current_hook_identity="$(stat -c '%d:%i' "$hook_path" 2>/dev/null)"; then
+    :
+  else
+    current_hook_identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
+  fi
+  if [ -f "$template_path" ] \
+    && [ -n "$hook_identity" ] \
+    && [ "$current_hook_identity" = "$hook_identity" ] \
+    && cmp -s "$hook_path" "$template_path"; then
     rm -f "$hook_path"
     printf '[worktree-bootstrap] removed obsolete Lefthook prepare-commit-msg wrapper\n'
   else

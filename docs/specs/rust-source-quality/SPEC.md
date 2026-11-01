@@ -348,7 +348,7 @@ covers: REQ-RUST-SOURCE-QUALITY-006
 
 Method: run `bash scripts/test-git-hooks-contract.sh`,
 `bash scripts/test-worktree-bootstrap.sh`,
-`bash scripts/test-quality-gates-contract.sh`,
+`bash .github/scripts/test-quality-gates-contract.sh`,
 `bash .github/scripts/test-staged-rust-line-budget.sh`, and `lefthook validate`;
 inspect the staged guard and formatter scripts for index-blob reads, explicit
 policy matching, descriptor-safe worktree writes, and forbidden Cargo, network,

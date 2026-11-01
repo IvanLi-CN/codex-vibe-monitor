@@ -16,6 +16,26 @@ use strict;
 use warnings;
 
 my ($lock_path, $repo_root, @hook_args) = @ARGV;
+sub open_directory_path {
+    my ($path, $label) = @_;
+    my $resolved_path = abs_path($path)
+      or die "unable to resolve $label: $!\n";
+    my $directory;
+    sysopen $directory, '/', O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+      or die "unable to open filesystem root for $label: $!\n";
+    chdir $directory or die "unable to enter filesystem root for $label: $!\n";
+    for my $component (grep { length $_ } split('/', $resolved_path)) {
+        die "invalid $label path\n" if $component eq '.' || $component eq '..';
+        my $next_directory;
+        sysopen $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+          or die "unable to open $label component: $!\n";
+        chdir $next_directory or die "unable to enter $label component: $!\n";
+        close $directory or die "unable to close $label component: $!\n";
+        $directory = $next_directory;
+    }
+    return ($directory, $resolved_path);
+}
+my ($repo_directory, $resolved_repo_root) = open_directory_path($repo_root, 'repository root');
 my $lock_separator = rindex($lock_path, '/');
 die "unable to determine pre-commit lock directory\n" if $lock_separator < 1;
 my $lock_directory = substr($lock_path, 0, $lock_separator);
@@ -50,7 +70,9 @@ sub verify_lock_identity {
 verify_lock_identity($lock, $lock_name);
 flock($lock, LOCK_EX) or die "unable to acquire pre-commit lock: $!\n";
 verify_lock_identity($lock, $lock_name);
-chdir $repo_root or die "unable to enter repository: $!\n";
+chdir $repo_directory or die "unable to enter repository: $!\n";
+die "repository root changed while opening\n"
+  unless abs_path('.') eq $resolved_repo_root;
 
 my $safety_status = system('bash', 'scripts/check-staged-formatter-safety.sh');
 if ($safety_status == -1) {
