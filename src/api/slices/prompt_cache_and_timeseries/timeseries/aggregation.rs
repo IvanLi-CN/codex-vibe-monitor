@@ -1,6 +1,84 @@
 use super::minute_projection::timeseries_projection_scope;
 use super::prompt_cache_and_timeseries_shared as prompt_shared;
 use super::*;
+
+fn timeseries_aggregate_overflow(field: &str) -> ApiError {
+    ApiError::unavailable(anyhow!(
+        "timeseries aggregate exceeded its numeric budget while adding {field}"
+    ))
+}
+
+fn checked_add_i64(target: &mut i64, value: i64, field: &str) -> Result<(), ApiError> {
+    *target = target
+        .checked_add(value)
+        .ok_or_else(|| timeseries_aggregate_overflow(field))?;
+    Ok(())
+}
+
+fn checked_add_f64(target: &mut f64, value: f64, field: &str) -> Result<(), ApiError> {
+    let next = *target + value;
+    if !next.is_finite() {
+        return Err(timeseries_aggregate_overflow(field));
+    }
+    *target = next;
+    Ok(())
+}
+
+fn require_recorded_sample(recorded: bool, field: &str) -> Result<(), ApiError> {
+    recorded
+        .then_some(())
+        .ok_or_else(|| timeseries_aggregate_overflow(field))
+}
+
+fn add_optional_token_components_checked(
+    entry: &mut BucketAggregate,
+    total_tokens: Option<i64>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+) -> Result<(), ApiError> {
+    checked_add_i64(
+        &mut entry.total_tokens,
+        total_tokens.unwrap_or_default(),
+        "total tokens",
+    )?;
+    checked_add_i64(
+        &mut entry.input_tokens,
+        input_tokens.unwrap_or_default(),
+        "input tokens",
+    )?;
+    checked_add_i64(
+        &mut entry.output_tokens,
+        output_tokens.unwrap_or_default(),
+        "output tokens",
+    )?;
+    checked_add_i64(
+        &mut entry.cache_input_tokens,
+        cache_input_tokens.unwrap_or_default(),
+        "cache input tokens",
+    )?;
+    checked_add_i64(
+        &mut entry.reasoning_tokens,
+        reasoning_tokens.unwrap_or_default(),
+        "reasoning tokens",
+    )?;
+    if total_tokens.unwrap_or_default() > 0 {
+        entry.token_components_observed = true;
+        if input_tokens.is_none()
+            || output_tokens.is_none()
+            || cache_input_tokens.is_none()
+            || reasoning_tokens.is_none()
+        {
+            checked_add_i64(
+                &mut entry.token_component_incomplete_count,
+                1,
+                "incomplete token component count",
+            )?;
+        }
+    }
+    Ok(())
+}
 pub(crate) fn fold_minute_projection_aggregates(
     minute_aggregates: BTreeMap<i64, BucketAggregate>,
     bucket_seconds: i64,
@@ -199,7 +277,7 @@ pub(crate) fn add_terminal_timeseries_records(
         add_exact_record_to_timeseries_aggregate(
             aggregates.entry(bucket_epoch).or_default(),
             &record,
-        );
+        )?;
     }
     Ok(())
 }
@@ -251,28 +329,41 @@ pub(crate) fn overlay_runtime_timeseries_snapshot(
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred.timestamp(), bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += 1;
-        entry.in_flight_count += 1;
+        checked_add_i64(&mut entry.total_count, 1, "total count")?;
+        checked_add_i64(&mut entry.in_flight_count, 1, "in-flight count")?;
         entry
             .in_flight_phase_counts
             .increment_phase_name(runtime_record_live_phase(record));
-        entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
-        entry.record_first_response_byte_total_sample(
-            record.t_req_read_ms,
-            record.t_req_parse_ms,
-            record.t_upstream_connect_ms,
-            record.t_upstream_ttfb_ms,
-        );
-        entry.record_first_token_sample(runtime_record_first_token_ms(record));
-        add_optional_token_components(
+        require_recorded_sample(
+            entry.try_record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms),
+            "first-byte latency",
+        )?;
+        require_recorded_sample(
+            entry.try_record_first_response_byte_total_sample(
+                record.t_req_read_ms,
+                record.t_req_parse_ms,
+                record.t_upstream_connect_ms,
+                record.t_upstream_ttfb_ms,
+            ),
+            "first-response-byte latency",
+        )?;
+        require_recorded_sample(
+            entry.try_record_first_token_sample(runtime_record_first_token_ms(record)),
+            "first-token latency",
+        )?;
+        add_optional_token_components_checked(
             entry,
             record.total_tokens,
             record.input_tokens,
             record.output_tokens,
             record.cache_input_tokens,
             record.reasoning_tokens,
-        );
-        entry.total_cost += record.cost.unwrap_or_default();
+        )?;
+        checked_add_f64(
+            &mut entry.total_cost,
+            record.cost.unwrap_or_default(),
+            "total cost",
+        )?;
     }
     Ok(())
 }
@@ -435,7 +526,7 @@ pub(crate) fn add_exact_records_to_timeseries_aggregates(
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
         if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            add_exact_record_to_timeseries_aggregate(entry, &record);
+            add_exact_record_to_timeseries_aggregate(entry, &record)?;
         }
     }
     Ok(())
@@ -444,8 +535,8 @@ pub(crate) fn add_exact_records_to_timeseries_aggregates(
 pub(crate) fn add_exact_record_to_timeseries_aggregate(
     entry: &mut BucketAggregate,
     record: &InvocationAggregateRecord,
-) {
-    entry.total_count += 1;
+) -> Result<(), ApiError> {
+    checked_add_i64(&mut entry.total_count, 1, "total count")?;
     let classification = resolve_failure_classification(
         record.status.as_deref(),
         record.error_message.as_deref(),
@@ -458,9 +549,9 @@ pub(crate) fn add_exact_record_to_timeseries_aggregate(
         record.error_message.as_deref(),
     ) && classification.failure_class == FailureClass::None;
     if is_success_like {
-        entry.success_count += 1;
+        checked_add_i64(&mut entry.success_count, 1, "success count")?;
     } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-        entry.in_flight_count += 1;
+        checked_add_i64(&mut entry.in_flight_count, 1, "in-flight count")?;
         entry
             .in_flight_phase_counts
             .increment_phase_name(record.live_phase.as_deref());
@@ -468,7 +559,7 @@ pub(crate) fn add_exact_record_to_timeseries_aggregate(
         record.status.as_deref(),
     ) && classification.failure_class != FailureClass::None
     {
-        entry.failure_count += 1;
+        checked_add_i64(&mut entry.failure_count, 1, "failure count")?;
     }
     let latency_status = if is_success_like {
         Some("success")
@@ -476,26 +567,38 @@ pub(crate) fn add_exact_record_to_timeseries_aggregate(
         record.status.as_deref()
     };
     if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-        entry.record_total_latency_sample(record.t_total_ms);
+        require_recorded_sample(
+            entry.try_record_total_latency_sample(record.t_total_ms),
+            "total latency",
+        )?;
     }
-    entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
-    entry.record_exact_first_response_byte_total_sample(
-        record.t_req_read_ms,
-        record.t_req_parse_ms,
-        record.t_upstream_connect_ms,
-        record.t_upstream_ttfb_ms,
-    );
-    entry.record_first_token_sample(record.first_token_ms);
-    add_optional_token_components(
+    require_recorded_sample(
+        entry.try_record_ttfb_sample(latency_status, record.t_upstream_ttfb_ms),
+        "first-byte latency",
+    )?;
+    require_recorded_sample(
+        entry.try_record_first_response_byte_total_sample(
+            record.t_req_read_ms,
+            record.t_req_parse_ms,
+            record.t_upstream_connect_ms,
+            record.t_upstream_ttfb_ms,
+        ),
+        "first-response-byte latency",
+    )?;
+    require_recorded_sample(
+        entry.try_record_first_token_sample(record.first_token_ms),
+        "first-token latency",
+    )?;
+    add_optional_token_components_checked(
         entry,
         record.total_tokens,
         record.input_tokens,
         record.output_tokens,
         record.cache_input_tokens,
         record.reasoning_tokens,
-    );
+    )?;
     let cost = record.cost.unwrap_or_default();
-    entry.total_cost += cost;
+    checked_add_f64(&mut entry.total_cost, cost, "total cost")?;
     if invocation_counts_toward_non_success_usage(
         record.status.as_deref(),
         record.error_message.as_deref(),
@@ -503,8 +606,9 @@ pub(crate) fn add_exact_record_to_timeseries_aggregate(
         record.failure_class.as_deref(),
         record.is_actionable,
     ) {
-        entry.non_success_cost += cost;
+        checked_add_f64(&mut entry.non_success_cost, cost, "non-success cost")?;
     }
+    Ok(())
 }
 
 pub(crate) fn subtract_stale_in_flight_record_from_timeseries_aggregate(
@@ -610,30 +714,47 @@ pub(crate) fn overlay_runtime_timeseries_in_flight(
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += 1;
-        entry.in_flight_count += 1;
+        checked_add_i64(&mut entry.total_count, 1, "total count")?;
+        checked_add_i64(&mut entry.in_flight_count, 1, "in-flight count")?;
         let runtime_phase = runtime_record_live_phase(&record);
         entry
             .in_flight_phase_counts
             .increment_phase_name(runtime_phase);
-        entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
-        entry.record_first_response_byte_total_sample(
-            record.t_req_read_ms,
-            record.t_req_parse_ms,
-            record.t_upstream_connect_ms,
-            record.t_upstream_ttfb_ms,
-        );
-        entry.record_first_token_sample(runtime_record_first_token_ms(&record));
-        add_optional_token_components(
+        require_recorded_sample(
+            entry.try_record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms),
+            "first-byte latency",
+        )?;
+        require_recorded_sample(
+            entry.try_record_first_response_byte_total_sample(
+                record.t_req_read_ms,
+                record.t_req_parse_ms,
+                record.t_upstream_connect_ms,
+                record.t_upstream_ttfb_ms,
+            ),
+            "first-response-byte latency",
+        )?;
+        require_recorded_sample(
+            entry.try_record_first_token_sample(runtime_record_first_token_ms(&record)),
+            "first-token latency",
+        )?;
+        add_optional_token_components_checked(
             entry,
             record.total_tokens,
             record.input_tokens,
             record.output_tokens,
             record.cache_input_tokens,
             record.reasoning_tokens,
-        );
-        entry.total_cost += record.cost.unwrap_or_default();
-        runtime_overlay_row_count += 1;
+        )?;
+        checked_add_f64(
+            &mut entry.total_cost,
+            record.cost.unwrap_or_default(),
+            "total cost",
+        )?;
+        checked_add_i64(
+            &mut runtime_overlay_row_count,
+            1,
+            "runtime overlay row count",
+        )?;
     }
     if runtime_overlay_row_count > 0 || stale_db_runtime_row_count > 0 {
         debug!(

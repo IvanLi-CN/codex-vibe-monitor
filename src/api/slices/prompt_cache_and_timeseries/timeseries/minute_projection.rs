@@ -619,7 +619,7 @@ pub(crate) async fn store_timeseries_minute_projection_v2_for_test(
         if minute < minute_start || minute >= minute_end {
             continue;
         }
-        add_exact_record_to_timeseries_aggregate(by_minute.entry(minute).or_default(), record);
+        add_exact_record_to_timeseries_aggregate(by_minute.entry(minute).or_default(), record)?;
         max_row_ids
             .entry(minute)
             .and_modify(|max_row_id: &mut i64| *max_row_id = (*max_row_id).max(record.id))
@@ -873,7 +873,7 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
             add_exact_record_to_timeseries_aggregate(
                 aggregates.entry(minute).or_default(),
                 &record,
-            );
+            )?;
             max_row_ids
                 .entry(minute)
                 .and_modify(|max_row_id| *max_row_id = (*max_row_id).max(record.id))
@@ -1095,7 +1095,7 @@ pub(crate) async fn rebuild_timeseries_minute_projection_v2_key(
             continue;
         }
         max_row_id = max_row_id.max(record.id);
-        add_exact_record_to_timeseries_aggregate(&mut aggregate, &record);
+        add_exact_record_to_timeseries_aggregate(&mut aggregate, &record)?;
     }
     Ok((aggregate, max_row_id, source_row_count))
 }

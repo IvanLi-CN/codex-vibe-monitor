@@ -865,6 +865,7 @@ struct SourceInvocationSnapshotRow {
     stats_date: String,
     source: String,
     model: Option<String>,
+    upstream_account_id: Option<i64>,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
     cache_input_tokens: Option<i64>,
@@ -1080,7 +1081,8 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
         upstream_account_id: crate::analytics_changes::normalize_analytics_payload_i64(
             payload.as_ref(),
             "upstreamAccountId",
-        ),
+        )
+        .or(row.upstream_account_id),
         upstream_account_name: crate::analytics_changes::normalize_analytics_payload_text(
             payload.as_ref(),
             "upstreamAccountName",
@@ -1935,7 +1937,9 @@ async fn load_source_invocation_snapshot_page(
     // one at a time so NUL-bearing text follows the same Rust normalization as incremental facts.
     preflight_source_invocation_snapshot_page(source_connection, after_id).await?;
 
-    let mut rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(
+    let upstream_account_id_sql =
+        crate::api::invocation_upstream_account_id_from_attempt_fallback_sql("codex_invocations");
+    let snapshot_sql = format!(
         r#"
         SELECT
             id,
@@ -1951,6 +1955,7 @@ async fn load_source_invocation_snapshot_page(
             ) AS stats_date,
             source,
             model,
+            {upstream_account_id_sql} AS upstream_account_id,
             input_tokens,
             output_tokens,
             cache_input_tokens,
@@ -1980,11 +1985,12 @@ async fn load_source_invocation_snapshot_page(
         WHERE id > ?1
         ORDER BY id
         LIMIT ?2
-        "#,
-    )
-    .bind(after_id)
-    .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
-    .fetch(&mut *source_connection);
+        "#
+    );
+    let mut rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(&snapshot_sql)
+        .bind(after_id)
+        .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
+        .fetch(&mut *source_connection);
 
     let mut facts = Vec::new();
     while let Some(row) = rows
@@ -3862,6 +3868,7 @@ mod tests {
             stats_date: "2026-10-31".to_string(),
             source: " source ".to_string(),
             model: Some(format!("  {long_model}\0  ")),
+            upstream_account_id: None,
             status: Some(" completed \0".to_string()),
             failure_kind: Some(" failure ".to_string()),
             failure_class: Some(" class ".to_string()),
@@ -3953,6 +3960,19 @@ mod tests {
         .await
         .expect("create snapshot normalization table");
         sqlx::query(
+            r#"
+            CREATE TABLE pool_upstream_request_attempts (
+                id INTEGER PRIMARY KEY,
+                invoke_id TEXT NOT NULL,
+                attempt_index INTEGER NOT NULL,
+                upstream_account_id INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create snapshot account fallback table");
+        sqlx::query(
             "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model, payload) VALUES (1, ?1, ?2, ?3, CAST(X'6162006364' AS TEXT), ?4)",
         )
         .bind("invoke-nul")
@@ -4001,7 +4021,33 @@ mod tests {
         );
 
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (5, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
+            r#"
+            INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, payload)
+            VALUES (5, 'invoke-attempt-account', '2026-10-31T00:00:00Z', 'proxy', ?1)
+            "#,
+        )
+        .bind(r#"{"upstreamAccountName":"attempt-account"}"#)
+        .execute(connection.as_mut())
+        .await
+        .expect("insert attempt-account snapshot row");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts
+                (id, invoke_id, attempt_index, upstream_account_id)
+            VALUES (1, 'invoke-attempt-account', 1, 42)
+            "#,
+        )
+        .execute(connection.as_mut())
+        .await
+        .expect("insert attempt-account fallback row");
+        let fallback_facts = load_source_invocation_snapshot_page(connection.as_mut(), 4)
+            .await
+            .expect("load attempt-account fallback row");
+        assert_eq!(fallback_facts.len(), 1);
+        assert_eq!(fallback_facts[0].upstream_account_id, Some(42));
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (6, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
         )
         .bind("x".repeat((ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES + 1) as usize))
         .execute(connection.as_mut())

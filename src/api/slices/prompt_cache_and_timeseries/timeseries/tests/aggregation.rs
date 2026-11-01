@@ -248,3 +248,35 @@ fn exact_records_survive_bucket_fill_before_aggregation() {
     assert_eq!(aggregate.total_count, 1);
     assert_eq!(aggregate.success_count, 1);
 }
+
+#[test]
+fn exact_records_fail_closed_on_numeric_overflow() {
+    let mut cost_overflow = BucketAggregate {
+        total_cost: f64::MAX,
+        ..Default::default()
+    };
+    let mut cost_record = record(102, "2026-10-30T00:00:12Z");
+    cost_record.cost = Some(f64::MAX);
+    let cost_error = super::aggregation::add_exact_record_to_timeseries_aggregate(
+        &mut cost_overflow,
+        &cost_record,
+    )
+    .expect_err("cost overflow must make the projection unavailable");
+    assert!(matches!(cost_error, crate::stats::ApiError::Unavailable(_)));
+
+    let mut token_overflow = BucketAggregate {
+        total_tokens: i64::MAX,
+        ..Default::default()
+    };
+    let mut token_record = record(103, "2026-10-30T00:00:12Z");
+    token_record.total_tokens = Some(1);
+    let token_error = super::aggregation::add_exact_record_to_timeseries_aggregate(
+        &mut token_overflow,
+        &token_record,
+    )
+    .expect_err("token overflow must make the projection unavailable");
+    assert!(matches!(
+        token_error,
+        crate::stats::ApiError::Unavailable(_)
+    ));
+}

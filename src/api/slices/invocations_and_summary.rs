@@ -18213,13 +18213,22 @@ pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
            CASE WHEN json_valid({invocation_ref}.payload) \
              THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) \
            END, \
-           (SELECT attempt.upstream_account_id \
-              FROM pool_upstream_request_attempts attempt \
-             WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
-               AND attempt.upstream_account_id IS NOT NULL \
-             ORDER BY attempt.attempt_index DESC, attempt.id DESC \
-             LIMIT 1)\
-         )"
+           {attempt_fallback}\
+         )",
+        attempt_fallback = invocation_upstream_account_id_from_attempt_fallback_sql(invocation_ref)
+    )
+}
+
+pub(crate) fn invocation_upstream_account_id_from_attempt_fallback_sql(
+    invocation_ref: &str,
+) -> String {
+    format!(
+        "(SELECT attempt.upstream_account_id \
+           FROM pool_upstream_request_attempts attempt \
+          WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+            AND attempt.upstream_account_id IS NOT NULL \
+          ORDER BY attempt.attempt_index DESC, attempt.id DESC \
+          LIMIT 1)"
     )
 }
 

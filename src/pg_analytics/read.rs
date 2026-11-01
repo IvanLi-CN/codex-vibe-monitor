@@ -685,29 +685,24 @@ pub(crate) fn validate_fact_for_projection(
             "analytics fact terminal classification is inconsistent",
         ));
     }
-    let persisted_success_like = if legacy_success_status {
-        fact.success_like && failure_class == crate::api::FailureClass::None
-    } else {
-        status.is_some_and(|status| {
-            matches!(
-                status.to_ascii_lowercase().as_str(),
-                "success" | "succeeded" | "completed" | "ok"
-            )
-        })
-    };
+    let success_like_status = status.is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "success" | "succeeded" | "completed" | "ok" | "http_200" | "warning_success"
+        )
+    });
+    let persisted_success_like = fact.success_like
+        && failure_class == crate::api::FailureClass::None
+        && (success_like_status || status.is_none());
     if fact.success_like != persisted_success_like {
         return Err(invalid_fact(
             "analytics fact success classification is inconsistent",
         ));
     }
     let success_like = analytics_fact_success_like(fact, failure_class);
-    if fact.terminal
-        && !success_like
-        && failure_class == crate::api::FailureClass::None
-        && (status.is_some() || fact.failure_kind.is_some())
-    {
+    if fact.terminal && !success_like && failure_class == crate::api::FailureClass::None {
         return Err(invalid_fact(
-            "terminal analytics fact has no resolved failure classification",
+            "terminal analytics fact has no resolved success or failure classification",
         ));
     }
     if !fact.terminal && failure_class != crate::api::FailureClass::None {
@@ -1302,7 +1297,10 @@ mod tests {
         statusless.success_like = false;
         statusless.failure_class = None;
         statusless.is_actionable = None;
-        assert!(validate_fact_for_projection(&statusless).is_ok());
+        assert!(matches!(
+            validate_fact_for_projection(&statusless),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
     }
 
     #[test]
@@ -1393,6 +1391,22 @@ mod tests {
         );
         let mut summary = AnalyticsSummaryAggregate::default();
         summary.add_fact(&fact).expect("legacy failure fact");
+        assert_eq!(summary.success_count, 0);
+        assert_eq!(summary.failure_count, 1);
+    }
+
+    #[test]
+    fn successful_status_with_legacy_error_classification_preserves_failure_parity() {
+        let mut fact = fixture_fact(101, 0, "completed", "service_failure", 1, 0.1);
+        fact.success_like = false;
+        assert!(!fact.success_like);
+        let classification = validate_fact_for_projection(&fact).expect("valid classified fact");
+        assert_eq!(
+            classification.failure_class,
+            crate::api::FailureClass::ServiceFailure
+        );
+        let mut summary = AnalyticsSummaryAggregate::default();
+        summary.add_fact(&fact).expect("classified fact aggregates");
         assert_eq!(summary.success_count, 0);
         assert_eq!(summary.failure_count, 1);
     }

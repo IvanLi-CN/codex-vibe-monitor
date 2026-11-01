@@ -182,7 +182,7 @@ pub(crate) async fn fetch_timeseries_query(
             add_exact_record_to_timeseries_aggregate(
                 aggregates.entry(bucket_epoch).or_default(),
                 &record,
-            );
+            )?;
         }
         let memory_overlay_count = add_pending_timeseries_deltas(
             state.as_ref(),
@@ -679,7 +679,7 @@ pub(crate) async fn fetch_timeseries_for_account(
             add_exact_record_to_timeseries_aggregate(
                 aggregates.entry(bucket_epoch).or_default(),
                 &record,
-            );
+            )?;
         }
         let memory_overlay_count = add_pending_timeseries_deltas(
             state.as_ref(),
@@ -1287,7 +1287,7 @@ pub(crate) async fn build_timeseries_hourly_rollup_baseline(
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
         if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            add_exact_record_to_timeseries_aggregate(entry, &record);
+            add_exact_record_to_timeseries_aggregate(entry, &record)?;
         }
     }
 
