@@ -542,12 +542,18 @@ impl AccountOpCoordinator {
         .expect_completed(AccountCommand::UpdateModelMappings)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The actor boundary carries the optimistic-version guards with the existing OAuth upsert command."
+    )]
     pub(crate) async fn run_external_oauth_upsert(
         &self,
         state: Arc<AppState>,
         id: i64,
         identity: ExternalAccountIdentity,
         metadata: ExternalUpstreamAccountMetadataRequest,
+        expected_updated_at: Option<String>,
+        expected_usage_captured_at: Option<Option<String>>,
         probe: ImportedOauthProbeOutcome,
     ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
         self.submit_command(
@@ -561,6 +567,8 @@ impl AccountOpCoordinator {
                     &identity,
                     id,
                     &metadata,
+                    expected_updated_at.as_deref(),
+                    expected_usage_captured_at,
                     probe,
                 )
                 .await
@@ -745,13 +753,32 @@ impl AccountOpCoordinator {
         id: i64,
         probe: ImportedOauthProbeOutcome,
     ) -> Result<Option<String>, (StatusCode, String)> {
+        self.run_persist_imported_oauth_with_versions(state, id, probe, None, None)
+            .await
+    }
+
+    pub(crate) async fn run_persist_imported_oauth_with_versions(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+        probe: ImportedOauthProbeOutcome,
+        expected_updated_at: Option<String>,
+        expected_usage_captured_at: Option<Option<String>>,
+    ) -> Result<Option<String>, (StatusCode, String)> {
         self.submit_command(
             state,
             id,
             AccountCommand::PersistImportedOauth,
             false,
             move |state, id| async move {
-                persist_imported_oauth_existing_inner(state.as_ref(), id, probe).await
+                persist_imported_oauth_existing_inner_with_versions(
+                    state.as_ref(),
+                    id,
+                    probe,
+                    expected_updated_at.as_deref(),
+                    expected_usage_captured_at,
+                )
+                .await
             },
         )
         .await

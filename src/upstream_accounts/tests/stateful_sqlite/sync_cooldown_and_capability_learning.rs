@@ -49,6 +49,21 @@ fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
     );
     assert_eq!(session_expired_code, "refresh_token_invalid");
+    let (session_expired_underscore_code, _) = classify_refresh_error(
+        "OAuth token endpoint returned 400: session_expired",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    );
+    assert_eq!(session_expired_underscore_code, "refresh_token_invalid");
+    let (canonical_quota_code, _) = classify_refresh_error(
+        "HTTP 429: The usage limit has been reached",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    );
+    assert_eq!(canonical_quota_code, "upstream_http_429_quota_exhausted");
+    let (insufficient_quota_code, _) = classify_refresh_error(
+        "HTTP 429: insufficient_quota",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    );
+    assert_eq!(insufficient_quota_code, "upstream_http_429_quota_exhausted");
     let callback = render_callback_page(false, "<title>", "<script>alert(1)</script>");
     assert!(!callback.contains("<title><title>"));
     assert!(callback.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));

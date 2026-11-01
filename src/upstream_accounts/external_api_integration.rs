@@ -309,11 +309,20 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     identity: &ExternalAccountIdentity,
     account_id: i64,
     metadata: &ExternalUpstreamAccountMetadataRequest,
+    expected_updated_at: Option<&str>,
+    expected_usage_captured_at: Option<Option<String>>,
     probe: ImportedOauthProbeOutcome,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
     let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
     let _credential_refresh_guard = credential_refresh_lock.lock().await;
     let existing_row = load_external_oauth_account_by_id(state, account_id, identity).await?;
+    if expected_updated_at.is_some_and(|expected| existing_row.updated_at != expected) {
+        return Err((
+            StatusCode::CONFLICT,
+            "account changed while OAuth credentials were being probed; retry the operation"
+                .to_string(),
+        ));
+    }
     let requested_display_name = metadata
         .display_name
         .as_deref()
@@ -474,9 +483,14 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     .await
     .map_err(internal_error_tuple)?;
 
-    let _warning = apply_imported_oauth_probe_result_locked(state, existing_row.id, &probe)
-        .await
-        .map_err(internal_error_tuple)?;
+    let _warning = apply_imported_oauth_probe_result_locked_with_expected_usage(
+        state,
+        existing_row.id,
+        &probe,
+        expected_usage_captured_at,
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     let routing_scope = if routing_scope_is_global {
         None
     } else {
@@ -585,6 +599,16 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
     }
     let normalized =
         normalize_external_oauth_credentials(&identity.source_account_id, &payload.oauth)?;
+    let expected_updated_at = existing_row.as_ref().map(|row| row.updated_at.clone());
+    let expected_usage_captured_at = match existing_row.as_ref() {
+        Some(existing_row) => Some(
+            load_latest_usage_sample(&state.pool, existing_row.id)
+                .await
+                .map_err(internal_error_tuple)?
+                .map(|sample| sample.captured_at),
+        ),
+        None => None,
+    };
     let probe = probe_external_oauth_credentials(
         state.as_ref(),
         &identity,
@@ -603,6 +627,8 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
                 existing_row.id,
                 identity,
                 payload.metadata,
+                expected_updated_at,
+                expected_usage_captured_at,
                 probe,
             )
             .await;
@@ -682,6 +708,13 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
                 &identity,
                 existing_row.id,
                 &payload.metadata,
+                Some(&existing_row.updated_at),
+                Some(
+                    load_latest_usage_sample(&state.pool, existing_row.id)
+                        .await
+                        .map_err(internal_error_tuple)?
+                        .map(|sample| sample.captured_at),
+                ),
                 reprobe,
             )
             .await;
@@ -791,6 +824,13 @@ pub(crate) async fn external_relogin_oauth_upstream_account(
     let row = load_external_oauth_account(state.as_ref(), &identity).await?;
     let normalized =
         normalize_external_oauth_credentials(&identity.source_account_id, &payload.oauth)?;
+    let expected_updated_at = row.updated_at.clone();
+    let expected_usage_captured_at = Some(
+        load_latest_usage_sample(&state.pool, row.id)
+            .await
+            .map_err(internal_error_tuple)?
+            .map(|sample| sample.captured_at),
+    );
     let probe = probe_external_oauth_credentials(
         state.as_ref(),
         &identity,
@@ -802,7 +842,13 @@ pub(crate) async fn external_relogin_oauth_upstream_account(
     let _warning = state
         .upstream_accounts
         .account_ops
-        .run_persist_imported_oauth(state.clone(), row.id, probe)
+        .run_persist_imported_oauth_with_versions(
+            state.clone(),
+            row.id,
+            probe,
+            Some(expected_updated_at),
+            expected_usage_captured_at,
+        )
         .await?;
     state
         .upstream_accounts

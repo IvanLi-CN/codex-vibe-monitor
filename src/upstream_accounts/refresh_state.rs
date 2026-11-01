@@ -171,9 +171,14 @@ pub(crate) async fn begin_upstream_account_refresh_attempt_with_lease(
             source = excluded.source,
             lease_token = excluded.lease_token,
             updated_at = excluded.updated_at
-        WHERE pool_upstream_account_refresh_state.state <> ?7
-           OR pool_upstream_account_refresh_state.last_attempt_at IS NULL
-           OR pool_upstream_account_refresh_state.last_attempt_at <= ?8
+        WHERE (
+            (
+                pool_upstream_account_refresh_state.state <> ?7
+                AND pool_upstream_account_refresh_state.lease_token IS NULL
+            )
+            OR pool_upstream_account_refresh_state.last_attempt_at IS NULL
+            OR pool_upstream_account_refresh_state.last_attempt_at <= ?8
+        )
         "#,
     )
     .bind(account_id)
@@ -300,6 +305,31 @@ pub(crate) async fn refresh_lease_is_current(
     .is_some())
 }
 
+pub(crate) async fn release_upstream_account_refresh_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    expected_lease_token: &str,
+) -> Result<bool> {
+    let result = sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET lease_token = NULL,
+            updated_at = ?4
+        WHERE account_id = ?1
+          AND operation = ?2
+          AND lease_token = ?3
+        "#,
+    )
+    .bind(account_id)
+    .bind(operation)
+    .bind(expected_lease_token)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub(crate) async fn complete_upstream_account_refresh_success_state_with_executor_and_lease(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     account_id: i64,
@@ -316,12 +346,16 @@ pub(crate) async fn complete_upstream_account_refresh_success_state_with_executo
         return Ok(false);
     }
     let now = format_utc_iso(Utc::now());
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_refresh_state (
             account_id, operation, state, last_attempt_at, last_success_at,
             next_attempt_at, source, error_code, error_message, lease_token, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, NULL, NULL, NULL, ?4)
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?4, ?5, ?6, NULL, NULL,
+            CASE WHEN ?2 = ?8 AND ?7 IS NOT NULL THEN ?7 ELSE NULL END,
+            ?4
+        )
         ON CONFLICT(account_id, operation) DO UPDATE SET
             state = excluded.state,
             last_success_at = excluded.last_success_at,
@@ -329,8 +363,9 @@ pub(crate) async fn complete_upstream_account_refresh_success_state_with_executo
             source = excluded.source,
             error_code = NULL,
             error_message = NULL,
-            lease_token = NULL,
+            lease_token = excluded.lease_token,
             updated_at = excluded.updated_at
+        WHERE ?7 IS NOT NULL OR pool_upstream_account_refresh_state.lease_token IS NULL
         "#,
     )
     .bind(account_id)
@@ -339,10 +374,12 @@ pub(crate) async fn complete_upstream_account_refresh_success_state_with_executo
     .bind(&now)
     .bind(next_attempt_at)
     .bind(source)
+    .bind(expected_lease_token)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
     .execute(tx.as_mut())
     .await?;
 
-    Ok(true)
+    Ok(result.rows_affected() > 0)
 }
 
 pub(crate) async fn record_upstream_account_refresh_success_event(
@@ -430,7 +467,11 @@ pub(crate) async fn defer_upstream_account_refresh_attempt_with_lease(
         INSERT INTO pool_upstream_account_refresh_state (
             account_id, operation, state, last_attempt_at, next_attempt_at,
             source, error_code, error_message, lease_token, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?4)
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+            CASE WHEN ?2 = ?10 AND ?9 IS NOT NULL THEN ?9 ELSE NULL END,
+            ?4
+        )
         ON CONFLICT(account_id, operation) DO UPDATE SET
             state = excluded.state,
             last_attempt_at = excluded.last_attempt_at,
@@ -438,9 +479,12 @@ pub(crate) async fn defer_upstream_account_refresh_attempt_with_lease(
             source = excluded.source,
             error_code = excluded.error_code,
             error_message = excluded.error_message,
-            lease_token = NULL,
+            lease_token = excluded.lease_token,
             updated_at = excluded.updated_at
-        WHERE ?9 IS NULL OR pool_upstream_account_refresh_state.lease_token = ?9
+        WHERE (
+            (?9 IS NOT NULL AND pool_upstream_account_refresh_state.lease_token = ?9)
+            OR (?9 IS NULL AND pool_upstream_account_refresh_state.lease_token IS NULL)
+        )
         "#,
     )
     .bind(account_id)
@@ -452,6 +496,7 @@ pub(crate) async fn defer_upstream_account_refresh_attempt_with_lease(
     .bind("egress_throttled")
     .bind(error_message)
     .bind(expected_lease_token)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
@@ -493,12 +538,15 @@ pub(crate) async fn schedule_upstream_account_refresh_retry(
             error_code = excluded.error_code,
             error_message = excluded.error_message,
             updated_at = excluded.updated_at
-        WHERE ?8 IS NULL OR EXISTS (
-            SELECT 1
-            FROM pool_upstream_accounts account
-            WHERE account.id = excluded.account_id
-              AND account.encrypted_credentials = ?8
-        )
+        WHERE pool_upstream_account_refresh_state.lease_token IS NULL
+          AND (
+              ?8 IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM pool_upstream_accounts account
+                  WHERE account.id = excluded.account_id
+                    AND account.encrypted_credentials = ?8
+              )
+          )
         "#,
     )
     .bind(account_id)
@@ -612,7 +660,9 @@ pub(crate) async fn record_upstream_account_refresh_failure_with_lease(
             account_id, operation, state, last_attempt_at, last_success_at,
             next_attempt_at, source, error_code, error_message, lease_token, updated_at
         ) VALUES (
-            ?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, NULL, ?4
+            ?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8,
+            CASE WHEN ?2 = ?10 AND ?9 IS NOT NULL THEN ?9 ELSE NULL END,
+            ?4
         )
         ON CONFLICT(account_id, operation) DO UPDATE SET
             state = excluded.state,
@@ -622,9 +672,12 @@ pub(crate) async fn record_upstream_account_refresh_failure_with_lease(
             source = excluded.source,
             error_code = ?7,
             error_message = ?8,
-            lease_token = NULL,
+            lease_token = excluded.lease_token,
             updated_at = excluded.updated_at
-        WHERE ?9 IS NULL OR pool_upstream_account_refresh_state.lease_token = ?9
+        WHERE (
+            (?9 IS NOT NULL AND pool_upstream_account_refresh_state.lease_token = ?9)
+            OR (?9 IS NULL AND pool_upstream_account_refresh_state.lease_token IS NULL)
+        )
         "#,
     )
     .bind(account_id)
@@ -636,6 +689,7 @@ pub(crate) async fn record_upstream_account_refresh_failure_with_lease(
     .bind(persisted_error_code)
     .bind(&persisted_error_message)
     .bind(expected_lease_token)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
     .execute(pool)
     .await?;
     if result.rows_affected() == 0 {
@@ -708,7 +762,8 @@ pub(crate) fn classify_refresh_error(error: &str, operation: &str) -> (String, S
                     && (lower.contains("invalid")
                         || lower.contains("revoked")
                         || lower.contains("expired")))
-                || lower.contains("session expired")))
+                || lower.contains("session expired")
+                || lower.contains("session_expired")))
     {
         return (
             "refresh_token_invalid".to_string(),
@@ -735,11 +790,22 @@ pub(crate) fn classify_refresh_error(error: &str, operation: &str) -> (String, S
     }
     if lower.contains("429") {
         let quota_exhausted = [
+            "insufficient_quota",
             "quota exhausted",
             "quota_exhausted",
             "credits exhausted",
             "usage limit exhausted",
+            "the usage limit has been reached",
+            "usage limit has been reached",
             "usage limit reached",
+            "billing",
+            "payment required",
+            "subscription required",
+            "weekly cap",
+            "weekly limit",
+            "plan limit",
+            "plan quota",
+            "check your plan",
         ]
         .iter()
         .any(|marker| lower.contains(marker));
