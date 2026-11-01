@@ -839,6 +839,13 @@ async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
         &format_utc_iso(Utc::now() - ChronoDuration::hours(1)),
     )
     .await;
+    set_test_account_access_token(
+        &state.pool,
+        crypto_key,
+        failing_account_id,
+        test_access_token_expiring_at(Utc::now() - ChronoDuration::minutes(5)),
+    )
+    .await;
 
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await

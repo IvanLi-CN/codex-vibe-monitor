@@ -135,6 +135,19 @@
 
 ![Maintenance events Storybook evidence](./assets/maintenance-records-story.png)
 
+- source_type: ui_demo
+  surface: web_page
+  target_program: mock-only
+  capture_scope: account-detail-health-panel
+  requested_viewport: 1440x1100 and 393x852
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  submission_gate: owner-confirmed
+  evidence_note: 验证账号详情健康面板按凭据刷新与额度更新分组，操作按钮位于各自分组标题行，信息密度与移动端布局稳定。
+
+![Account refresh health desktop evidence](./assets/account-refresh-health-density-desktop.png)
+![Account refresh health mobile evidence](./assets/account-refresh-health-density-mobile.png)
+
 ## 风险 / 假设
 
 - 出口 IP 元数据刷新是 best-effort；刷新失败保留最近成功 IP，历史旧事件仍可能显示为未记录。

@@ -1,7 +1,6 @@
 use super::*;
 use serde_json::json;
 use std::time::{Duration, Instant};
-
 #[tokio::test]
 async fn sync_scope_reuses_live_reserved_node_for_same_account_before_shared_group_probe() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -157,10 +156,11 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
                 created_at: Instant::now(),
             },
         );
-    set_test_account_token_expires_at(
+    set_test_account_access_token(
         &state.pool,
+        crypto_key,
         account_id,
-        &format_utc_iso(Utc::now() - ChronoDuration::minutes(5)),
+        test_access_token_expiring_at(Utc::now() - ChronoDuration::minutes(5)),
     )
     .await;
 
@@ -311,8 +311,7 @@ async fn manual_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_n
                 "primaryWindow": {
                     "usedPercent": 42,
                     "windowDurationMins": 300,
-                    "resetsAt": 1771322400
-                }
+                    "resetsAt": 1771322400}, "secondaryWindow": {"usedPercent": 42, "windowDurationMins": 10080, "resetsAt": 1771927200}
             }
         }),
     )
@@ -432,8 +431,7 @@ async fn maintenance_sync_allows_group_node_shunt_unassigned_account_to_probe_bo
                 "primaryWindow": {
                     "usedPercent": 42,
                     "windowDurationMins": 300,
-                    "resetsAt": 1771322400
-                }
+                    "resetsAt": 1771322400}, "secondaryWindow": {"usedPercent": 42, "windowDurationMins": 10080, "resetsAt": 1771927200}
             }
         }),
     )
@@ -536,8 +534,7 @@ async fn bulk_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_nod
                 "primaryWindow": {
                     "usedPercent": 42,
                     "windowDurationMins": 300,
-                    "resetsAt": 1771322400
-                }
+                    "resetsAt": 1771322400}, "secondaryWindow": {"usedPercent": 42, "windowDurationMins": 10080, "resetsAt": 1771927200}
             }
         }),
     )

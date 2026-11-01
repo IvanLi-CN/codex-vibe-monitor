@@ -89,6 +89,30 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   return data;
 }
 
+export async function fetchJsonAllowErrorStatus<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(withBase(path), {
+    headers: {
+      "Content-Type": "application/json",
+    },
+    ...init,
+  });
+  const rawText = await response.text();
+  if (!rawText.trim()) {
+    if (!response.ok) throw buildRequestError(response, rawText);
+    return undefined as T;
+  }
+  let data: T;
+  try {
+    data = JSON.parse(rawText) as T;
+  } catch {
+    throw buildRequestError(response, rawText);
+  }
+  if (!response.ok && (!data || typeof data !== "object" || !("id" in data))) {
+    throw buildRequestError(response, rawText);
+  }
+  return data;
+}
+
 async function fetchJsonResponse<T>(
   path: string,
   init?: RequestInit,

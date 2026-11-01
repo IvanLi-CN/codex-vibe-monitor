@@ -935,6 +935,35 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.healthDescription":
       "Keep the last successful sync, refresh, expiry, and error context visible so re-auth is never silent.",
     "accountPool.upstreamAccounts.healthDetails": "Show diagnostic details",
+    "accountPool.upstreamAccounts.refresh.details": "Refresh details",
+    "accountPool.upstreamAccounts.refresh.credentialsGroup": "Credential refresh",
+    "accountPool.upstreamAccounts.refresh.usageGroup": "Usage window update",
+    "accountPool.upstreamAccounts.refresh.otherDiagnostics": "Other diagnostics",
+    "accountPool.upstreamAccounts.actions.refreshCredentials": "Refresh credentials",
+    "accountPool.upstreamAccounts.actions.refreshUsage": "Update quota",
+    "accountPool.upstreamAccounts.refresh.credentials": "Credential refresh",
+    "accountPool.upstreamAccounts.refresh.usage": "Usage window update",
+    "accountPool.upstreamAccounts.refresh.lastAttempt": "Last attempt",
+    "accountPool.upstreamAccounts.refresh.lastSuccess": "Last success",
+    "accountPool.upstreamAccounts.refresh.credentialsLastSuccess": "Last credential refresh",
+    "accountPool.upstreamAccounts.refresh.nextAttempt": "Next attempt",
+    "accountPool.upstreamAccounts.refresh.error": "Refresh error",
+    "accountPool.upstreamAccounts.refresh.credentialsError": "Credential refresh error",
+    "accountPool.upstreamAccounts.refresh.usageError": "Usage window update error",
+    "accountPool.upstreamAccounts.refresh.history": "Recent credential refreshes",
+    "accountPool.upstreamAccounts.refresh.empty": "No credential refresh records",
+    "accountPool.upstreamAccounts.refresh.retry": "Retry",
+    "accountPool.upstreamAccounts.refresh.retryCredentials": "Retry Token refresh",
+    "accountPool.upstreamAccounts.refresh.failureTitle": "Usage window update failed",
+    "accountPool.upstreamAccounts.refresh.credentialsFailureTitle": "Token refresh failed",
+    "accountPool.upstreamAccounts.refresh.credentialsReauthTitle": "Re-authorization required",
+    "accountPool.upstreamAccounts.refresh.state.idle": "Idle",
+    "accountPool.upstreamAccounts.refresh.state.refreshing": "Refreshing",
+    "accountPool.upstreamAccounts.refresh.state.succeeded": "Succeeded",
+    "accountPool.upstreamAccounts.refresh.state.retrying": "Retrying",
+    "accountPool.upstreamAccounts.refresh.state.partial": "Partial",
+    "accountPool.upstreamAccounts.refresh.state.needs_reauth": "Re-authorization required",
+    "accountPool.upstreamAccounts.refresh.state.error": "Error",
     "accountPool.upstreamAccounts.stickyConversations.title": "Sticky key conversations",
     "accountPool.upstreamAccounts.stickyConversations.description":
       "Review the sticky keys currently attached to this upstream account, plus 24h request activity.",
@@ -1601,6 +1630,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.actions.model_route_recovered":
       "Model route recovered",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_reset": "Model route reset",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_refresh_succeeded":
+      "Credential refresh succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_refresh_failed":
+      "Credential refresh failed",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_reauth_required":
+      "Re-authorization required",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_succeeded":
+      "Usage window update succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_partial":
+      "Usage window update partial",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_failed":
+      "Usage window update failed",
     "accountPool.upstreamAccounts.latestAction.sources.call": "Call",
     "accountPool.upstreamAccounts.latestAction.sources.manual": "Manual",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "Manual sync",
@@ -1608,6 +1649,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "Post-create sync",
     "accountPool.upstreamAccounts.latestAction.sources.oauth_import": "OAuth import",
     "accountPool.upstreamAccounts.latestAction.sources.account_update": "Account update",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_callback": "OAuth callback",
+    "accountPool.upstreamAccounts.latestAction.sources.credential_refresh": "Credential refresh",
+    "accountPool.upstreamAccounts.latestAction.sources.usage_windows_refresh":
+      "Usage window update",
     "accountPool.upstreamAccounts.maintenanceEvents.title": "Non-model call execution records",
     "accountPool.upstreamAccounts.maintenanceEvents.description":
       "Recent account maintenance calls, syncs, and proxy-bound checks.",
@@ -1616,6 +1661,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.resetFilters": "Reset filters",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.account": "Account",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.type": "Type",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.action": "Action",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allActions": "All actions",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.allTypes": "All upstream types",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.pool": "Account pool",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.transit": "Transit",
@@ -1679,6 +1726,36 @@ const baseTranslations = {
       "Cache hit protection disabled",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "Account settings were updated",
+    "accountPool.upstreamAccounts.latestAction.reasons.credential_refresh_ok":
+      "Credentials refreshed successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_ok":
+      "Usage windows updated successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_window_partial":
+      "One usage window was updated; retry pending",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_missing":
+      "Usage response contained no usable windows",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_persist_failed":
+      "Usage window data could not be saved",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_unavailable":
+      "Credential storage is unavailable",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_missing":
+      "OAuth credentials are missing",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_kind_invalid":
+      "OAuth credential type is invalid",
+    "accountPool.upstreamAccounts.latestAction.reasons.refresh_token_missing":
+      "Refresh Token is missing",
+    "accountPool.upstreamAccounts.latestAction.reasons.refresh_token_invalid":
+      "Refresh Token is invalid",
+    "accountPool.upstreamAccounts.latestAction.reasons.access_token_rejected":
+      "Access Token was rejected",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_response_parse_failed":
+      "Credential response could not be parsed",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_response_parse_failed":
+      "Usage response could not be parsed",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_refresh_failed":
+      "Credential refresh failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_failed":
+      "Usage window update failed",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "Sync failed",
     "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "Egress rate limited",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
@@ -1692,6 +1769,8 @@ const baseTranslations = {
       "Upstream is temporarily overloaded",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
       "Reauthentication required",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_400":
+      "Upstream rejected the request (400)",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
       "Upstream rejected credentials (401)",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
@@ -4535,6 +4614,35 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.healthDescription":
       "持续保留最近成功同步、刷新、过期和错误上下文，避免账号静默掉线。",
     "accountPool.upstreamAccounts.healthDetails": "展开诊断详情",
+    "accountPool.upstreamAccounts.refresh.details": "刷新详情",
+    "accountPool.upstreamAccounts.refresh.credentialsGroup": "凭据刷新",
+    "accountPool.upstreamAccounts.refresh.usageGroup": "额度窗口更新",
+    "accountPool.upstreamAccounts.refresh.otherDiagnostics": "其他诊断",
+    "accountPool.upstreamAccounts.actions.refreshCredentials": "刷新凭据",
+    "accountPool.upstreamAccounts.actions.refreshUsage": "更新额度",
+    "accountPool.upstreamAccounts.refresh.credentials": "凭据刷新",
+    "accountPool.upstreamAccounts.refresh.usage": "额度窗口更新",
+    "accountPool.upstreamAccounts.refresh.lastAttempt": "上次尝试",
+    "accountPool.upstreamAccounts.refresh.lastSuccess": "上次成功",
+    "accountPool.upstreamAccounts.refresh.credentialsLastSuccess": "上次凭据刷新成功",
+    "accountPool.upstreamAccounts.refresh.nextAttempt": "下次尝试",
+    "accountPool.upstreamAccounts.refresh.error": "刷新错误",
+    "accountPool.upstreamAccounts.refresh.credentialsError": "凭据刷新错误",
+    "accountPool.upstreamAccounts.refresh.usageError": "额度窗口更新错误",
+    "accountPool.upstreamAccounts.refresh.history": "最近凭据刷新记录",
+    "accountPool.upstreamAccounts.refresh.empty": "暂无凭据刷新记录",
+    "accountPool.upstreamAccounts.refresh.retry": "重试",
+    "accountPool.upstreamAccounts.refresh.retryCredentials": "重试 Token 刷新",
+    "accountPool.upstreamAccounts.refresh.failureTitle": "额度窗口更新失败",
+    "accountPool.upstreamAccounts.refresh.credentialsFailureTitle": "Token 刷新失败",
+    "accountPool.upstreamAccounts.refresh.credentialsReauthTitle": "需要重新授权",
+    "accountPool.upstreamAccounts.refresh.state.idle": "空闲",
+    "accountPool.upstreamAccounts.refresh.state.refreshing": "刷新中",
+    "accountPool.upstreamAccounts.refresh.state.succeeded": "成功",
+    "accountPool.upstreamAccounts.refresh.state.retrying": "等待重试",
+    "accountPool.upstreamAccounts.refresh.state.partial": "部分成功",
+    "accountPool.upstreamAccounts.refresh.state.needs_reauth": "需要重新授权",
+    "accountPool.upstreamAccounts.refresh.state.error": "错误",
     "accountPool.upstreamAccounts.stickyConversations.title": "Sticky Key 对话",
     "accountPool.upstreamAccounts.stickyConversations.description":
       "查看当前账号承接的 sticky key，以及最近 24 小时请求活跃情况。",
@@ -5170,6 +5278,16 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.actions.model_route_cooldown": "模型路由冷却中",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_recovered": "模型路由恢复",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_reset": "模型路由已重置",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_refresh_succeeded":
+      "凭据刷新成功",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_refresh_failed": "凭据刷新失败",
+    "accountPool.upstreamAccounts.latestAction.actions.credential_reauth_required": "需要重新授权",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_succeeded":
+      "额度窗口更新成功",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_partial":
+      "额度窗口更新不完整",
+    "accountPool.upstreamAccounts.latestAction.actions.usage_windows_refresh_failed":
+      "额度窗口更新失败",
     "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
     "accountPool.upstreamAccounts.latestAction.sources.manual": "手动操作",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "手动同步",
@@ -5177,6 +5295,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "创建后同步",
     "accountPool.upstreamAccounts.latestAction.sources.oauth_import": "OAuth 导入",
     "accountPool.upstreamAccounts.latestAction.sources.account_update": "账号修改",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_callback": "OAuth 回调",
+    "accountPool.upstreamAccounts.latestAction.sources.credential_refresh": "凭据刷新",
+    "accountPool.upstreamAccounts.latestAction.sources.usage_windows_refresh": "额度窗口更新",
     "accountPool.upstreamAccounts.maintenanceEvents.title": "非模型调用执行记录",
     "accountPool.upstreamAccounts.maintenanceEvents.description":
       "展示最近的账号维护调用、同步与代理探测。",
@@ -5184,6 +5305,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.resetFilters": "重置筛选",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.account": "账号",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.type": "类型",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.action": "动作",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allActions": "全部动作",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.allTypes": "全部上游类型",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.pool": "号池",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.transit": "中转",
@@ -5241,6 +5364,31 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.cache_hit_protection_disabled":
       "缓存命中保护已关闭",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated": "账号设置已更新",
+    "accountPool.upstreamAccounts.latestAction.reasons.credential_refresh_ok": "凭据刷新成功",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_ok":
+      "额度窗口更新成功",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_window_partial":
+      "一个额度窗口已更新，等待重试",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_missing":
+      "额度响应未包含可用窗口",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_persist_failed":
+      "额度窗口数据保存失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_unavailable": "凭据存储不可用",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_missing": "OAuth 凭据缺失",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_kind_invalid":
+      "OAuth 凭据类型无效",
+    "accountPool.upstreamAccounts.latestAction.reasons.refresh_token_missing": "Refresh Token 缺失",
+    "accountPool.upstreamAccounts.latestAction.reasons.refresh_token_invalid":
+      "Refresh Token 已失效",
+    "accountPool.upstreamAccounts.latestAction.reasons.access_token_rejected":
+      "Access Token 被上游拒绝",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_response_parse_failed":
+      "凭据响应解析失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_response_parse_failed":
+      "额度响应解析失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.credentials_refresh_failed": "凭据刷新失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_failed":
+      "额度窗口更新失败",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "同步失败",
     "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "出口正在限流",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
@@ -5252,6 +5400,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure": "网络或传输失败",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded": "上游暂时过载",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required": "需要重新登录",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_400": "上游拒绝请求（400）",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401": "上游拒绝凭据（401）",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
       "上游因套餐或计费拒绝访问（402）",

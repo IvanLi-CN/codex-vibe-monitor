@@ -260,6 +260,12 @@ pub(crate) struct MaintenanceCandidateRow {
     pub(crate) cooldown_until: Option<String>,
     pub(crate) temporary_route_failure_streak_started_at: Option<String>,
     pub(crate) token_expires_at: Option<String>,
+    pub(crate) credential_refresh_state: Option<String>,
+    pub(crate) credential_refresh_last_attempt_at: Option<String>,
+    pub(crate) credential_refresh_next_attempt_at: Option<String>,
+    pub(crate) usage_window_refresh_state: Option<String>,
+    pub(crate) usage_window_refresh_last_attempt_at: Option<String>,
+    pub(crate) usage_window_refresh_next_attempt_at: Option<String>,
     pub(crate) primary_used_percent: Option<f64>,
     pub(crate) primary_resets_at: Option<String>,
     pub(crate) secondary_used_percent: Option<f64>,
@@ -923,6 +929,7 @@ pub(crate) struct AccountStickyKeyInvocationPreviewRow {
 #[allow(dead_code)]
 #[derive(Debug, FromRow)]
 pub(crate) struct UpstreamAccountSampleRow {
+    pub(crate) id: i64,
     pub(crate) captured_at: String,
     pub(crate) limit_id: Option<String>,
     pub(crate) limit_name: Option<String>,
@@ -943,6 +950,7 @@ pub(crate) struct UpstreamAccountSampleRow {
 pub(crate) struct OauthLoginSessionRow {
     pub(crate) login_id: String,
     pub(crate) account_id: Option<i64>,
+    pub(crate) account_updated_at: Option<String>,
     pub(crate) display_name: Option<String>,
     #[sqlx(default)]
     pub(crate) email: Option<String>,

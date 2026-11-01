@@ -1,3 +1,4 @@
+use super::sync::sync_usage_snapshot::UsageSnapshotVersion;
 use super::*;
 
 pub(crate) async fn build_imported_oauth_validation_response(
@@ -1524,6 +1525,20 @@ pub(crate) async fn import_validated_oauth_accounts(
             }
         };
         let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
+        let expected_existing_updated_at =
+            existing_match.as_ref().map(|row| row.updated_at.clone());
+        let expected_existing_usage_version = match existing_match.as_ref() {
+            Some(row) => Some(
+                load_latest_usage_sample(&state.pool, row.id)
+                    .await
+                    .map_err(internal_error_tuple)?
+                    .map(|sample| UsageSnapshotVersion {
+                        captured_at: sample.captured_at,
+                        id: sample.id,
+                    }),
+            ),
+            None => None,
+        };
         let usage_scope = match resolve_imported_oauth_probe_scope(
             state.as_ref(),
             &resolved_group_binding,
@@ -1597,7 +1612,13 @@ pub(crate) async fn import_validated_oauth_accounts(
                 let warning = state
                     .upstream_accounts
                     .account_ops
-                    .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
+                    .run_persist_imported_oauth_with_versions(
+                        state.clone(),
+                        existing_row.id,
+                        probe.clone(),
+                        expected_existing_updated_at.clone(),
+                        expected_existing_usage_version.clone(),
+                    )
                     .await?;
                 (existing_row.id, true, warning)
             } else {
@@ -1660,10 +1681,37 @@ pub(crate) async fn import_validated_oauth_accounts(
                     (account_id, persisted_as_existing)
                 };
 
+                let persisted_expected_updated_at = if persisted_as_existing {
+                    load_upstream_account_row(&state.pool, persisted_account_id)
+                        .await
+                        .map_err(internal_error_tuple)?
+                        .map(|row| row.updated_at)
+                } else {
+                    None
+                };
+                let persisted_expected_usage_version = if persisted_as_existing {
+                    Some(
+                        load_latest_usage_sample(&state.pool, persisted_account_id)
+                            .await
+                            .map_err(internal_error_tuple)?
+                            .map(|sample| UsageSnapshotVersion {
+                                captured_at: sample.captured_at,
+                                id: sample.id,
+                            }),
+                    )
+                } else {
+                    None
+                };
                 let warning = state
                     .upstream_accounts
                     .account_ops
-                    .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
+                    .run_persist_imported_oauth_with_versions(
+                        state.clone(),
+                        persisted_account_id,
+                        probe.clone(),
+                        persisted_expected_updated_at.clone(),
+                        persisted_expected_usage_version,
+                    )
                     .await?;
                 if !persisted_as_existing {
                     publish_new_account_routing_availability_if_selectable(

@@ -1713,6 +1713,7 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
     let account_filter = normalize_optional_search_filter(params.account.as_deref());
     let group_filter = normalize_optional_search_filter(params.group.as_deref());
     let proxy_key_filter = normalize_optional_exact_filter(params.proxy_key.as_deref());
+    let action_filter = normalize_optional_exact_filter(params.action.as_deref());
 
     let mut conditions = Vec::new();
     let mut binds: Vec<String> = Vec::new();
@@ -1742,6 +1743,10 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
     if let Some(filter) = proxy_key_filter.as_deref() {
         conditions.push("lower(COALESCE(event.forward_proxy_key, '')) = lower(?)".to_string());
         binds.push(filter.to_string());
+    }
+    if let Some(filter) = action_filter.as_deref() {
+        conditions.push("lower(event.action) LIKE lower(?)".to_string());
+        binds.push(format!("{filter}%"));
     }
     if let Some(filter) = result_filter.as_deref() {
         conditions.push("lower(COALESCE(event.result, '')) = lower(?)".to_string());

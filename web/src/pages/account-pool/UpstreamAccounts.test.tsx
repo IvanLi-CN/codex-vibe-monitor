@@ -695,6 +695,11 @@ function expandLoginHealthDetails() {
   });
 }
 
+function openRefreshControls() {
+  clickTab(/Health & events|健康与事件/i);
+  expandLoginHealthDetails();
+}
+
 function clickDrawerBackdrop() {
   const overlay =
     document.body.querySelector(".drawer-shell")?.parentElement?.previousElementSibling;
@@ -1022,6 +1027,8 @@ function mockBulkSyncPage(options?: {
     getBulkSyncJob: options?.getBulkSyncJob ?? vi.fn(),
     stopBulkSyncJob: options?.stopBulkSyncJob ?? vi.fn(),
     runSync: vi.fn(),
+    runCredentialRefresh: vi.fn(),
+    runUsageRefresh: vi.fn(),
     removeAccount: vi.fn(),
     groups: [],
     routing: { apiKeyConfigured: false, maskedApiKey: null },
@@ -1034,6 +1041,8 @@ function mockAccountsPage(options?: {
   saveGroupNote?: ReturnType<typeof vi.fn>;
   deleteGroupNote?: ReturnType<typeof vi.fn>;
   loadDetail?: ReturnType<typeof vi.fn>;
+  runCredentialRefresh?: ReturnType<typeof vi.fn>;
+  runUsageRefresh?: ReturnType<typeof vi.fn>;
   groups?: Array<Record<string, unknown>>;
   routing?: {
     writesEnabled: boolean;
@@ -1053,6 +1062,8 @@ function mockAccountsPage(options?: {
 }) {
   const saveRouting = options?.saveRouting ?? vi.fn();
   const loadDetail = options?.loadDetail ?? vi.fn();
+  const runCredentialRefresh = options?.runCredentialRefresh ?? vi.fn();
+  const runUsageRefresh = options?.runUsageRefresh ?? vi.fn();
   const groups = (
     options?.groups ?? [
       {
@@ -1274,6 +1285,8 @@ function mockAccountsPage(options?: {
     getBulkSyncJob: vi.fn(),
     stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
+    runCredentialRefresh,
+    runUsageRefresh,
     removeAccount: vi.fn(),
     forwardProxyNodes: [],
     forwardProxyCatalogState: {
@@ -1298,6 +1311,8 @@ function mockAccountsPage(options?: {
     saveGroupNote,
     deleteGroupNote,
     loadDetail,
+    runCredentialRefresh,
+    runUsageRefresh,
   };
 }
 
@@ -1406,6 +1421,8 @@ function mockRosterFreshnessPage(options?: {
     getBulkSyncJob: vi.fn(),
     stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
+    runCredentialRefresh: vi.fn(),
+    runUsageRefresh: vi.fn(),
     removeAccount: vi.fn(),
     groups: options?.groups ?? [
       {
@@ -1472,6 +1489,7 @@ Object.assign(scope, {
   clickButton,
   clickTab,
   expandLoginHealthDetails,
+  openRefreshControls,
   clickDrawerBackdrop,
   clickDrawerGutter,
   clickFirstRosterRow,
@@ -1513,6 +1531,21 @@ suite6(scope);
 suite7(scope);
 
 describe("UpstreamAccountsPage grouped roster toggle", () => {
+  it("keeps Token refresh separate from usage-window update", async () => {
+    const runCredentialRefresh = vi.fn().mockResolvedValue(undefined);
+    const runUsageRefresh = vi.fn().mockResolvedValue(undefined);
+    mockAccountsPage({ runCredentialRefresh, runUsageRefresh });
+    renderFlatForLegacySuites();
+
+    clickFirstRosterRow();
+    openRefreshControls();
+    clickButton(/Refresh credentials/i);
+    await flushAsync();
+
+    expect(runCredentialRefresh).toHaveBeenCalledWith(5);
+    expect(runUsageRefresh).not.toHaveBeenCalled();
+  });
+
   it("defaults to grid view with grid, grouped, flat selector order", async () => {
     mockRosterFreshnessPage();
     render();
@@ -1695,6 +1728,8 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       | "getBulkSyncJob"
       | "stopBulkSyncJob"
       | "runSync"
+      | "runCredentialRefresh"
+      | "runUsageRefresh"
       | "removeAccount"
     > = {
       selectAccount: vi.fn(),
@@ -1718,6 +1753,8 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       getBulkSyncJob: vi.fn(),
       stopBulkSyncJob: vi.fn(),
       runSync: vi.fn(),
+      runCredentialRefresh: vi.fn(),
+      runUsageRefresh: vi.fn(),
       removeAccount: vi.fn(),
     };
     const sharedRouting: UpstreamAccountsHookValue["routing"] = {

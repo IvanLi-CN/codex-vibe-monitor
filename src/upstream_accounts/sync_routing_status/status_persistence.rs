@@ -71,6 +71,27 @@ pub(crate) async fn mark_account_sync_success_with_proxy_snapshot(
     route_state: SyncSuccessRouteState,
     proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
 ) -> Result<()> {
+    mark_account_operation_success_with_proxy_snapshot(
+        pool,
+        account_id,
+        source,
+        route_state,
+        UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK,
+        proxy_snapshot,
+    )
+    .await
+}
+
+pub(crate) async fn mark_account_operation_success_with_proxy_snapshot(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    route_state: SyncSuccessRouteState,
+    action: &str,
+    reason_code: &str,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     match route_state {
         SyncSuccessRouteState::PreserveFailureState => {
@@ -129,9 +150,9 @@ pub(crate) async fn mark_account_sync_success_with_proxy_snapshot(
         pool,
         account_id,
         UpstreamAccountActionPayload {
-            action: UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED,
+            action,
             source,
-            reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK),
+            reason_code: Some(reason_code),
             reason_message: None,
             http_status: None,
             failure_kind: None,

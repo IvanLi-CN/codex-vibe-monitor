@@ -16,6 +16,11 @@ import type {
   UpdateUpstreamAccountPayload,
   UpstreamAccountListResponse,
 } from "../../lib/api";
+import type {
+  UpstreamAccountActionEvent,
+  UpstreamAccountRefreshRecord,
+  UpstreamAccountRefreshStatus,
+} from "../../lib/api/core-upstream";
 import { applyRoutingRulePatchToEffectiveRule } from "../../lib/routingRulePatches";
 import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
 import GroupsPage from "../../pages/account-pool/Groups";
@@ -94,6 +99,78 @@ function stripActualUsageFromRosterWindow<T extends { actualUsage?: unknown } | 
     ...window,
     actualUsage: null,
   } as T;
+}
+
+function storyRefreshStatus(
+  previous: UpstreamAccountRefreshStatus | undefined,
+  source: string,
+): UpstreamAccountRefreshStatus {
+  return {
+    state: "succeeded",
+    lastAttemptAt: now,
+    lastSuccessAt: now,
+    nextAttemptAt: previous?.nextAttemptAt ?? null,
+    source,
+    errorCode: null,
+    errorMessage: null,
+  };
+}
+
+function storyRefreshRecord(
+  history: UpstreamAccountRefreshRecord[] | undefined,
+  action: string,
+  source: string,
+): UpstreamAccountRefreshRecord {
+  const nextId = Math.max(0, ...(history ?? []).map((record) => record.id)) + 1;
+  return {
+    id: nextId,
+    occurredAt: now,
+    action,
+    source,
+    result: "success",
+    reasonCode: "refresh_ok",
+    reasonMessage: null,
+    httpStatus: null,
+  };
+}
+
+function storyActionEvent(
+  recentActions: UpstreamAccountActionEvent[] | undefined,
+  action: string,
+  source: string,
+): UpstreamAccountActionEvent {
+  const nextId = Math.max(0, ...(recentActions ?? []).map((event) => event.id)) + 1;
+  return {
+    id: nextId,
+    occurredAt: now,
+    action,
+    source,
+    accountDisplayName: null,
+    accountGroupName: null,
+    forwardProxyKey: null,
+    forwardProxyDisplayName: null,
+    forwardProxyEgressIp: null,
+    result: "success",
+    resultDescription: null,
+    reasonCode: action.startsWith("credential_")
+      ? "credential_refresh_ok"
+      : "usage_windows_refresh_ok",
+    reasonMessage: null,
+    httpStatus: null,
+    failureKind: null,
+    invokeId: null,
+    attemptId: null,
+    stickyKey: null,
+    model: null,
+    modelRouteStateBefore: null,
+    modelRouteStateAfter: null,
+    modelRoutePriorityBefore: null,
+    modelRoutePriorityAfter: null,
+    modelRouteFailureCount: null,
+    modelRouteCooldownUntil: null,
+    blockedBinding: null,
+    createdAt: now,
+  };
 }
 
 function buildStoryWindowActualUsage(accountId: number, multiplier: number) {
@@ -514,6 +591,7 @@ export function StorybookUpstreamAccountsMock({
         const proxyKeyFilter = parsedUrl.searchParams.get("proxyKey")?.trim().toLowerCase() || "";
         const resultFilter = parsedUrl.searchParams.get("result")?.trim().toLowerCase() || "";
         const kindFilter = parsedUrl.searchParams.get("kind")?.trim() || "";
+        const actionFilter = parsedUrl.searchParams.get("action")?.trim() || "";
         const rawPageSize = Number(parsedUrl.searchParams.get("pageSize") || 20);
         const requestedPageSize =
           Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20;
@@ -529,6 +607,7 @@ export function StorybookUpstreamAccountsMock({
             return false;
           if (proxyKeyFilter && !proxyText.includes(proxyKeyFilter)) return false;
           if (resultFilter && (event.result ?? "").toLowerCase() !== resultFilter) return false;
+          if (actionFilter && !event.action.startsWith(actionFilter)) return false;
           if (kindFilter) {
             const account = store.accounts.find(
               (candidate) => candidate.displayName === event.accountDisplayName,
@@ -980,6 +1059,79 @@ export function StorybookUpstreamAccountsMock({
         };
         store.sessions[session.loginId] = session;
         return jsonResponse(clone(session), 201);
+      }
+
+      const credentialRefreshMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/credentials\/refresh$/,
+      );
+      if (credentialRefreshMatch && method === "POST") {
+        const accountId = Number(credentialRefreshMatch[1]);
+        const detail = store.details[accountId];
+        if (!detail) return jsonResponse({ message: "missing mock account" }, 404);
+        if (detail.kind !== "oauth_codex") {
+          return jsonResponse({ message: "OAuth account not found" }, 404);
+        }
+        const history = detail.credentialRefreshHistory ?? [];
+        const updated = {
+          ...detail,
+          lastRefreshedAt: now,
+          lastError: null,
+          lastErrorAt: null,
+          credentialRefresh: storyRefreshStatus(detail.credentialRefresh, "credential_refresh"),
+          credentialRefreshHistory: [
+            storyRefreshRecord(history, "credential_refresh_succeeded", "credential_refresh"),
+            ...history,
+          ].slice(0, 5),
+          recentActions: [
+            storyActionEvent(
+              detail.recentActions,
+              "credential_refresh_succeeded",
+              "credential_refresh",
+            ),
+            ...(detail.recentActions ?? []),
+          ].slice(0, 4),
+        };
+        store.details[accountId] = updated;
+        store.accounts = store.accounts.map((item) =>
+          item.id === accountId ? toSummary(updated) : item,
+        );
+        return jsonResponse(clone(updated));
+      }
+
+      const usageRefreshMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/usage\/refresh$/,
+      );
+      if (usageRefreshMatch && method === "POST") {
+        const accountId = Number(usageRefreshMatch[1]);
+        const detail = store.details[accountId];
+        if (!detail) return jsonResponse({ message: "missing mock account" }, 404);
+        if (detail.kind !== "oauth_codex") {
+          return jsonResponse({ message: "OAuth account not found" }, 404);
+        }
+        const updated = {
+          ...syncLocalWindows(detail),
+          lastSyncedAt: now,
+          lastSuccessfulSyncAt: now,
+          lastError: null,
+          lastErrorAt: null,
+          usageWindowRefresh: storyRefreshStatus(
+            detail.usageWindowRefresh,
+            "usage_windows_refresh",
+          ),
+          recentActions: [
+            storyActionEvent(
+              detail.recentActions,
+              "usage_windows_refresh_succeeded",
+              "usage_windows_refresh",
+            ),
+            ...(detail.recentActions ?? []),
+          ].slice(0, 4),
+        };
+        store.details[accountId] = updated;
+        store.accounts = store.accounts.map((item) =>
+          item.id === accountId ? toSummary(updated) : item,
+        );
+        return jsonResponse(clone(updated));
       }
 
       const syncMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sync$/);

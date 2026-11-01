@@ -75,6 +75,7 @@ export default function MaintenanceRecordsPage() {
   const [kindFilter, setKindFilter] = useState<"" | "oauth_codex" | "api_key_codex">("");
   const [groupFilter, setGroupFilter] = useState("");
   const [proxyKeyFilter, setProxyKeyFilter] = useState("");
+  const [actionFilter, setActionFilter] = useState("");
   const [resultFilter, setResultFilter] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -90,11 +91,21 @@ export default function MaintenanceRecordsPage() {
       kind: kindFilter || undefined,
       group: kindFilter === "api_key_codex" ? undefined : groupFilter.trim() || undefined,
       proxyKey: proxyKeyFilter.trim() || undefined,
+      action: actionFilter.trim() || undefined,
       result: resultFilter.trim() || undefined,
       page,
       pageSize,
     }),
-    [accountFilter, groupFilter, kindFilter, page, pageSize, proxyKeyFilter, resultFilter],
+    [
+      accountFilter,
+      actionFilter,
+      groupFilter,
+      kindFilter,
+      page,
+      pageSize,
+      proxyKeyFilter,
+      resultFilter,
+    ],
   );
 
   useEffect(() => {
@@ -175,6 +186,23 @@ export default function MaintenanceRecordsPage() {
     ],
     [t],
   );
+  const actionOptions = useMemo(
+    () => [
+      {
+        value: "",
+        label: t("accountPool.upstreamAccounts.maintenanceEvents.filters.allActions"),
+      },
+      {
+        value: "credential_refresh",
+        label: t("accountPool.upstreamAccounts.refresh.credentials"),
+      },
+      {
+        value: "usage_windows_refresh",
+        label: t("accountPool.upstreamAccounts.refresh.usage"),
+      },
+    ],
+    [t],
+  );
   const proxyNodeByKey = useMemo(
     () => new Map(forwardProxyNodes.map((node) => [node.key, node])),
     [forwardProxyNodes],
@@ -188,6 +216,7 @@ export default function MaintenanceRecordsPage() {
     setKindFilter("");
     setGroupFilter("");
     setProxyKeyFilter("");
+    setActionFilter("");
     setResultFilter("");
     setPage(1);
   };
@@ -322,7 +351,7 @@ export default function MaintenanceRecordsPage() {
           </Tooltip>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <label className="field min-w-0">
             <span className="field-label">
               {t("accountPool.upstreamAccounts.maintenanceEvents.filters.account")}
@@ -351,6 +380,21 @@ export default function MaintenanceRecordsPage() {
               onValueChange={(value) => {
                 setKindFilter(value as "" | "oauth_codex" | "api_key_codex");
                 if (value === "api_key_codex") setGroupFilter("");
+                setPage(1);
+              }}
+            />
+          </label>
+          <label className="field min-w-0">
+            <span className="field-label">
+              {t("accountPool.upstreamAccounts.maintenanceEvents.filters.action")}
+            </span>
+            <SelectField
+              size="sm"
+              value={actionFilter}
+              options={actionOptions}
+              triggerClassName="h-11 border-base-300/90 bg-base-100 lg:h-10"
+              onValueChange={(value) => {
+                setActionFilter(value);
                 setPage(1);
               }}
             />

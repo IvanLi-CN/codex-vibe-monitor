@@ -38,6 +38,8 @@ import {
   type OauthMailboxStatus,
   type PoolRoutingSettings,
   type RateWindowActualUsage,
+  refreshUpstreamAccountCredentials,
+  refreshUpstreamAccountUsage,
   reloginUpstreamAccount,
   syncUpstreamAccount,
   type UpdateOauthLoginSessionPayload,
@@ -1062,6 +1064,62 @@ export function useUpstreamAccounts(
     ],
   );
 
+  const runUsageRefresh = useCallback(
+    async (accountId: number) => {
+      const response = await refreshUpstreamAccountUsage(accountId);
+      invalidateListRequest();
+      invalidateDetailRequest(accountId);
+      await loadList(accountId, {
+        respectCurrentSelection: true,
+        selectionAnchorId: accountId,
+      });
+      clearDetailError(accountId);
+      if (selectedIdRef.current === accountId) {
+        commitDetailResponse(response, { includeRecentActions: true });
+      } else {
+        await refreshCurrentSelectedDetail(accountId);
+      }
+      emitUpstreamAccountsChanged();
+      return response;
+    },
+    [
+      clearDetailError,
+      commitDetailResponse,
+      invalidateDetailRequest,
+      invalidateListRequest,
+      loadList,
+      refreshCurrentSelectedDetail,
+    ],
+  );
+
+  const runCredentialRefresh = useCallback(
+    async (accountId: number) => {
+      const response = await refreshUpstreamAccountCredentials(accountId);
+      invalidateListRequest();
+      invalidateDetailRequest(accountId);
+      await loadList(accountId, {
+        respectCurrentSelection: true,
+        selectionAnchorId: accountId,
+      });
+      clearDetailError(accountId);
+      if (selectedIdRef.current === accountId) {
+        commitDetailResponse(response, { includeRecentActions: true });
+      } else {
+        await refreshCurrentSelectedDetail(accountId);
+      }
+      emitUpstreamAccountsChanged();
+      return response;
+    },
+    [
+      clearDetailError,
+      commitDetailResponse,
+      invalidateDetailRequest,
+      invalidateListRequest,
+      loadList,
+      refreshCurrentSelectedDetail,
+    ],
+  );
+
   const removeAccount = useCallback(
     async (accountId: number) => {
       await deleteUpstreamAccount(accountId);
@@ -1240,6 +1298,8 @@ export function useUpstreamAccounts(
     getBulkSyncJob,
     stopBulkSyncJob,
     runSync,
+    runCredentialRefresh,
+    runUsageRefresh,
     removeAccount,
     total,
     page,

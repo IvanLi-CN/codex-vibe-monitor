@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 83,
-    "suppression_entries": 135
+    "inventory_entries": 84,
+    "suppression_entries": 140
   },
   "loc_targets": {
     "production": 2500,
@@ -387,7 +387,7 @@
     {
       "path": "src/upstream_accounts/core_runtime_types.rs",
       "role": "production",
-      "line_budget": 3516,
+      "line_budget": 3566,
       "next_module_workstream": "Split upstream account runtime types, account state, and capability projections."
     },
     {
@@ -399,13 +399,13 @@
     {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
       "role": "production",
-      "line_budget": 4413,
+      "line_budget": 5681,
       "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
     },
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
       "role": "test_helper",
-      "line_budget": 4494,
+      "line_budget": 4513,
       "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
     },
     {
@@ -417,7 +417,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/account_capabilities_attempts_and_import_matching.rs",
       "role": "test_helper",
-      "line_budget": 1499,
+      "line_budget": 1542,
       "next_module_workstream": "Maintain request capability routing, account attempt filters, import matching, and their OAuth/account fixtures."
     },
     {
@@ -429,13 +429,13 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/schema_migrations_and_pool_routing_settings.rs",
       "role": "test_helper",
-      "line_budget": 788,
+      "line_budget": 812,
       "next_module_workstream": "Maintain upstream account schema seeds/migrations and pool routing settings persistence and runtime-cache fixtures."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/maintenance_due_plans_and_candidate_capacity.rs",
       "role": "test_helper",
-      "line_budget": 977,
+      "line_budget": 1016,
       "next_module_workstream": "Maintain maintenance due planning, cadence and reset boundaries, deferred throttles, candidate capacity, and work-status fixtures."
     },
     {
@@ -459,13 +459,13 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
       "role": "test_helper",
-      "line_budget": 4522,
+      "line_budget": 4525,
       "next_module_workstream": "Split upstream prompt-cache binding/route-penalty fixtures by resolver, metadata, and lifecycle."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/relogin_duplicates_and_usage_snapshots.rs",
       "role": "test_helper",
-      "line_budget": 4729,
+      "line_budget": 4810,
       "next_module_workstream": "Split upstream relogin/duplicate usage fixtures by mailbox, identity, and snapshot recovery."
     },
     {
@@ -497,6 +497,12 @@
       "role": "test_helper",
       "line_budget": 1473,
       "next_module_workstream": "Maintain OAuth refresh/fetch failure classification, quota recovery, stale-row fencing, and terminal sync state fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/oauth_refresh_observability.rs",
+      "role": "test_helper",
+      "line_budget": 1139,
+      "next_module_workstream": "Maintain OAuth refresh observability, independent manual operations, and usage authentication retry fixtures."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_snapshot_and_priority_handoff.rs",
@@ -1321,6 +1327,36 @@
       "kind": "allow",
       "declaration": "#[allow(unused_imports)]",
       "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/support/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/upstream_accounts/refresh_state.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the refresh-state failure transition contract; remove it when the refresh state boundary is split into narrower transition payloads."
+    },
+    {
+      "path": "src/upstream_accounts/refresh_state.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Refresh failure persistence preserves the existing audit transition contract while carrying lease fencing.\" )]",
+      "reason": "Retain this targeted expect for the lease-fenced refresh failure transition contract; remove it when refresh state failure context is carried by a dedicated payload."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"The actor boundary carries the optimistic-version guards with the existing OAuth upsert command.\" )]",
+      "reason": "Retain this targeted expect for the version-fenced OAuth upsert actor boundary; remove it when the command carries a dedicated optimistic-version payload."
+    },
+    {
+      "path": "src/upstream_accounts/sync_account_imports_tags.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the usage refresh failure adapter; remove it when usage refresh failure context is carried by a dedicated payload."
+    },
+    {
+      "path": "src/upstream_accounts/sync_account_imports_tags.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Lease-fenced OAuth persistence keeps credential, expiry, source, retry, and fencing inputs explicit.\" )]",
+      "reason": "Retain this targeted expect for the lease-fenced OAuth persistence adapter; remove it when credential refresh context is carried by a dedicated payload."
     }
   ]
 }

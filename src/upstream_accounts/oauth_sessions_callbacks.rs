@@ -570,6 +570,7 @@ pub(crate) async fn create_oauth_login_session(
     let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
 
     let mut preserved_mother_flag = false;
+    let mut preserved_account_updated_at = None;
     let mut preserved_display_name = None;
     let mut preserved_email = None;
     let mut preserved_group_name = None;
@@ -590,6 +591,7 @@ pub(crate) async fn create_oauth_login_session(
             ));
         }
         preserved_mother_flag = existing.is_mother != 0;
+        preserved_account_updated_at = Some(existing.updated_at);
         preserved_display_name = Some(existing.display_name);
         preserved_email = existing.email;
         preserved_group_name = existing.group_name;
@@ -671,16 +673,17 @@ pub(crate) async fn create_oauth_login_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            login_id, account_id, account_updated_at, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
             group_node_shunt_enabled_requested, group_single_account_rotation_enabled,
             group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note, group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, ?23, NULL, ?24, ?24)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, NULL, ?24, NULL, ?25, ?25)
         "#,
     )
     .bind(&login_id)
     .bind(payload.account_id)
+    .bind(preserved_account_updated_at)
     .bind(display_name)
     .bind(email.clone())
     .bind(&resolved_group_binding.group_name)
@@ -1974,6 +1977,100 @@ pub(crate) async fn sync_upstream_account(
     Ok(Json(detail))
 }
 
+fn manual_refresh_response_status(detail: &UpstreamAccountDetail, operation: &str) -> StatusCode {
+    if operation == UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS
+        && (detail.credential_refresh.state == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
+            || detail.summary.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+    {
+        return StatusCode::CONFLICT;
+    }
+    let state = match operation {
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS => detail.credential_refresh.state.as_str(),
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS => {
+            detail.usage_window_refresh.state.as_str()
+        }
+        _ => UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED,
+    };
+    match state {
+        UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH => StatusCode::CONFLICT,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_PARTIAL
+            if operation == UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS =>
+        {
+            StatusCode::MULTI_STATUS
+        }
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
+        | UPSTREAM_ACCOUNT_REFRESH_STATE_ERROR
+        | UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING => StatusCode::BAD_GATEWAY,
+        _ => StatusCode::OK,
+    }
+}
+
+fn manual_refresh_response(detail: UpstreamAccountDetail, operation: &str) -> Response {
+    (
+        manual_refresh_response_status(&detail, operation),
+        Json(detail),
+    )
+        .into_response()
+}
+
+fn manual_refresh_request_error_tuple(err: impl ToString) -> (StatusCode, String) {
+    let message = err.to_string();
+    match message.as_str() {
+        "account not found" => (StatusCode::NOT_FOUND, message),
+        "usage window refresh only supports OAuth accounts"
+        | "credential refresh only supports OAuth accounts"
+        | "disabled accounts cannot refresh usage windows"
+        | "disabled accounts cannot refresh credentials" => (StatusCode::BAD_REQUEST, message),
+        _ => request_runtime_error_tuple(message),
+    }
+}
+
+pub(crate) async fn refresh_upstream_account_usage(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Response, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_manual_usage_refresh(state.clone(), id)
+        .await
+        .map_err(manual_refresh_request_error_tuple)?;
+    Ok(manual_refresh_response(
+        detail,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    ))
+}
+
+pub(crate) async fn refresh_upstream_account_credentials(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Response, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_manual_credential_refresh(state.clone(), id)
+        .await
+        .map_err(manual_refresh_request_error_tuple)?;
+    Ok(manual_refresh_response(
+        detail,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    ))
+}
+
 pub(crate) async fn handle_oauth_callback(
     state: Arc<AppState>,
     query: OauthCallbackQuery,
@@ -2009,7 +2106,22 @@ pub(crate) async fn handle_oauth_callback(
                 _ if message.contains("authorization failed") => "OAuth authorization failed",
                 _ => "OAuth callback rejected",
             };
-            (status, render_callback_page(false, title, &message))
+            let safe_message = match status {
+                StatusCode::BAD_GATEWAY => {
+                    "The upstream OAuth token exchange failed. Check server logs for details."
+                }
+                StatusCode::SERVICE_UNAVAILABLE => {
+                    "Credential storage is unavailable. Check server configuration."
+                }
+                _ if message.contains("expired") => {
+                    "The OAuth callback expired. Please create a new authorization link."
+                }
+                _ if message.contains("authorization failed") => {
+                    "The OAuth authorization was rejected or cancelled."
+                }
+                _ => "The OAuth callback was rejected. Check server logs for details.",
+            };
+            (status, render_callback_page(false, title, safe_message))
         })?;
 
     Ok(render_callback_page(
@@ -2204,7 +2316,13 @@ pub(crate) async fn persist_existing_oauth_callback_inner(
     state: &AppState,
     input: PersistOauthCallbackInput,
 ) -> Result<i64, (StatusCode, String)> {
-    let account_id = persist_oauth_callback_inner(state, input).await?;
+    let account_id = if let Some(account_id) = input.session.account_id {
+        let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
+        let _credential_refresh_guard = credential_refresh_lock.lock().await;
+        persist_oauth_callback_inner(state, input).await?
+    } else {
+        persist_oauth_callback_inner(state, input).await?
+    };
     if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
         warn!(account_id, error = %err, "OAuth callback updated account but initial sync failed");
     }
@@ -2235,6 +2353,15 @@ pub(crate) async fn persist_oauth_callback_inner(
     state: &AppState,
     input: PersistOauthCallbackInput,
 ) -> Result<i64, (StatusCode, String)> {
+    let credential_refresh_next_attempt_at =
+        parse_rfc3339_utc(&input.token_expires_at).map(|expires| {
+            format_utc_iso(
+                expires
+                    - ChronoDuration::seconds(
+                        state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                    ),
+            )
+        });
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -2265,6 +2392,17 @@ pub(crate) async fn persist_oauth_callback_inner(
             return Err((
                 StatusCode::CONFLICT,
                 "OAuth identity confirmation required".to_string(),
+            ));
+        }
+        if session
+            .account_updated_at
+            .as_deref()
+            .is_some_and(|expected| expected != account.updated_at)
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                "account changed while OAuth authorization was in progress; retry the operation"
+                    .to_string(),
             ));
         }
         Some(account)
@@ -2362,6 +2500,22 @@ pub(crate) async fn persist_oauth_callback_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET lease_token = NULL,
+            updated_at = ?3
+        WHERE account_id = ?1
+          AND operation = ?2
+          AND lease_token IS NOT NULL
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?;
     let completed_group_metadata_snapshot = load_group_metadata_snapshot_conn_with_limit(
         tx.as_mut(),
         session.group_name.as_deref(),
@@ -2381,7 +2535,30 @@ pub(crate) async fn persist_oauth_callback_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
+    complete_upstream_account_refresh_success_state_with_executor(
+        &mut tx,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
+        credential_refresh_next_attempt_at.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
+    if let Err(err) = record_upstream_account_refresh_success_event(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
+    )
+    .await
+    {
+        warn!(
+            account_id,
+            error = %err,
+            "OAuth callback committed but credential refresh success history event could not be recorded"
+        );
+    }
     Ok(account_id)
 }
 
@@ -2389,6 +2566,13 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     state: &AppState,
     login_id: &str,
 ) -> Result<i64, (StatusCode, String)> {
+    let account_id = load_login_session_by_login_id(&state.pool, login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .and_then(|session| session.account_id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -2414,6 +2598,17 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    if session
+        .account_updated_at
+        .as_deref()
+        .is_some_and(|expected| expected != account.updated_at)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "account changed while OAuth authorization was in progress; retry the operation"
+                .to_string(),
+        ));
+    }
     let encrypted_credentials = session
         .pending_encrypted_credentials
         .clone()
@@ -2429,6 +2624,14 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
             "login session is missing pending token expiry".to_string(),
         )
     })?;
+    let credential_refresh_next_attempt_at = parse_rfc3339_utc(&token_expires_at).map(|expires| {
+        format_utc_iso(
+            expires
+                - ChronoDuration::seconds(
+                    state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                ),
+        )
+    });
     let claims = ChatgptJwtClaims {
         email: session.pending_verified_email.clone(),
         chatgpt_plan_type: session.pending_plan_type.clone(),
@@ -2459,6 +2662,22 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET lease_token = NULL,
+            updated_at = ?3
+        WHERE account_id = ?1
+          AND operation = ?2
+          AND lease_token IS NOT NULL
+        "#,
+    )
+    .bind(resolved_account_id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?;
     let completed_group_metadata_snapshot = load_group_metadata_snapshot_conn_with_limit(
         tx.as_mut(),
         account.group_name.as_deref(),
@@ -2478,7 +2697,31 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
+    complete_upstream_account_refresh_success_state_with_executor(
+        &mut tx,
+        resolved_account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
+        credential_refresh_next_attempt_at.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
+    if let Err(err) = record_upstream_account_refresh_success_event(
+        &state.pool,
+        resolved_account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_CALLBACK,
+    )
+    .await
+    {
+        warn!(
+            account_id = resolved_account_id,
+            error = %err,
+            "OAuth identity overwrite committed but credential refresh success history event could not be recorded"
+        );
+    }
+    drop(_credential_refresh_guard);
     if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
         warn!(account_id, error = %err, "OAuth identity overwrite confirmed but initial sync failed");
     }

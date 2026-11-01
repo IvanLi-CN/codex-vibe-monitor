@@ -192,6 +192,7 @@ function createHookValue(
     getBulkSyncJob: vi.fn(),
     stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
+    runUsageRefresh: vi.fn(),
     removeAccount: vi.fn(),
     total: items.length,
     page: 1,

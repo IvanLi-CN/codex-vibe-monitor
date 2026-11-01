@@ -2877,7 +2877,7 @@ pub(crate) async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
     let now_iso = format_utc_iso(Utc::now());
 
     let token_expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(30));
-    sqlx::query_scalar(
+    let account_id = sqlx::query_scalar(
         r#"
         INSERT INTO pool_upstream_accounts (
             kind, provider, display_name, group_name, is_mother, note, status, enabled,
@@ -2906,7 +2906,46 @@ pub(crate) async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
     .bind(&now_iso)
     .fetch_one(&state.pool)
     .await
-    .expect("insert test oauth account")
+    .expect("insert test oauth account");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_refresh_state (
+            account_id, operation, state, last_attempt_at, last_success_at,
+            next_attempt_at, source, error_code, error_message, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, NULL, NULL, ?4)
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED)
+    .bind(&now_iso)
+    .bind(&token_expires_at)
+    .bind("test_fixture")
+    .execute(&state.pool)
+    .await
+    .expect("seed test oauth credential refresh state");
+    account_id
+}
+
+pub(crate) async fn set_test_account_credential_refresh_due(pool: &SqlitePool, account_id: i64) {
+    let now = Utc::now();
+    let now_iso = format_utc_iso(now);
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET last_attempt_at = ?2,
+            last_success_at = NULL,
+            next_attempt_at = ?2,
+            updated_at = ?2
+        WHERE account_id = ?1 AND operation = ?3
+        "#,
+    )
+    .bind(account_id)
+    .bind(&now_iso)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .execute(pool)
+    .await
+    .expect("mark test oauth credential refresh due");
 }
 
 fn encrypt_test_oauth_credentials(access_token: &str) -> String {

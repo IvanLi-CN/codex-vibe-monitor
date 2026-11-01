@@ -1283,6 +1283,17 @@ async fn external_oauth_relogin_repairs_needs_reauth_account_and_triggers_sync()
     assert_eq!(repaired.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
     assert_eq!(repaired.enabled, 1);
     assert!(repaired.last_synced_at.is_some());
+    let credential_refresh_status = load_upstream_account_refresh_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await
+    .expect("load credential refresh status after relogin");
+    assert_eq!(
+        credential_refresh_status.state,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
+    );
     assert!(repaired.last_successful_sync_at.is_some());
     assert_ne!(
         repaired.last_action_reason_code.as_deref(),

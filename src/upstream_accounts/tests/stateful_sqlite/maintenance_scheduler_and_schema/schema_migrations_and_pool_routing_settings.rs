@@ -10,6 +10,30 @@ async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_dat
         .await
         .expect("ensure schema");
 
+    let refresh_state_table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pool_upstream_account_refresh_state'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect refresh state table");
+    assert_eq!(refresh_state_table_count, 1);
+    let refresh_state_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_table_info('pool_upstream_account_refresh_state') ORDER BY cid",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect refresh state columns");
+    assert!(
+        refresh_state_columns
+            .iter()
+            .any(|column| column == "operation")
+    );
+    assert!(
+        refresh_state_columns
+            .iter()
+            .any(|column| column == "next_attempt_at")
+    );
+
     let config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
     let row = load_pool_routing_settings_seeded(&pool, &config)
         .await
