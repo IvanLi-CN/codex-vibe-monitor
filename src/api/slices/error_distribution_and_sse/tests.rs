@@ -1,6 +1,15 @@
 use super::*;
 
 #[test]
+fn success_status_aliases_are_not_classified_as_failures() {
+    for status in ["success", "succeeded", "completed", "ok"] {
+        let classification = classify_invocation_failure(Some(status), None);
+        assert_eq!(classification.failure_class, FailureClass::None);
+        assert!(!classification.is_actionable);
+    }
+}
+
+#[test]
 fn failure_kind_prefix_is_removed_only_when_it_matches_exactly() {
     let input = "[upstream_response_failed] upstream stream error";
 

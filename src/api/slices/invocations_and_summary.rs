@@ -16973,9 +16973,11 @@ pub(crate) async fn load_in_progress_summary_snapshot(
             }
             if runtime_record_ttfb_differs(runtime_record.t_upstream_ttfb_ms, row.upstream_ttfb_ms)
             {
-                db_ttfb_sum = (db_ttfb_sum
-                    - normalized_wait_ms(row.upstream_ttfb_ms).unwrap_or_default())
-                .max(0.0);
+                checked_summary_live_subtract(
+                    &mut db_ttfb_sum,
+                    normalized_wait_ms(row.upstream_ttfb_ms).unwrap_or_default(),
+                    "runtime replacement wait sum",
+                )?;
                 checked_summary_live_add(
                     &mut db_ttfb_sum,
                     normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).unwrap_or_default(),
@@ -16997,7 +16999,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
             .upstream_ttfb_ms
             .filter(|value| value.is_finite() && *value >= 0.0)
         {
-            db_ttfb_sum -= ttfb_ms;
+            checked_summary_live_subtract(&mut db_ttfb_sum, ttfb_ms, "runtime wait sum")?;
             avg_wait_sample_count = avg_wait_sample_count.saturating_sub(1);
         }
     }
@@ -17715,6 +17717,23 @@ fn checked_summary_live_add(target: &mut f64, value: f64, field: &str) -> Result
     Ok(())
 }
 
+fn checked_summary_live_subtract(
+    target: &mut f64,
+    value: f64,
+    field: &str,
+) -> Result<(), ApiError> {
+    if !target.is_finite() || *target < 0.0 || !value.is_finite() || value < 0.0 {
+        return Err(summary_live_numeric_overflow(field));
+    }
+    let next = *target - value;
+    let rounding_tolerance = f64::EPSILON * target.abs().max(value.abs()).max(1.0) * 8.0;
+    if !next.is_finite() || next < -rounding_tolerance {
+        return Err(summary_live_numeric_overflow(field));
+    }
+    *target = next.max(0.0);
+    Ok(())
+}
+
 fn summary_live_sum_from_average(average: Option<f64>, sample_count: i64) -> Result<f64, ApiError> {
     if sample_count < 0 {
         return Err(summary_live_numeric_overflow("database wait sample count"));
@@ -17749,6 +17768,17 @@ mod summary_live_numeric_tests {
         let mut sum = f64::MAX;
         assert!(matches!(
             checked_summary_live_add(&mut sum, f64::MAX, "test wait sum"),
+            Err(ApiError::Unavailable(_))
+        ));
+
+        let mut rounded = 0.1;
+        checked_summary_live_subtract(&mut rounded, 0.1, "test wait subtraction")
+            .expect("equal values should subtract cleanly");
+        assert_eq!(rounded, 0.0);
+
+        let mut inconsistent = 0.1;
+        assert!(matches!(
+            checked_summary_live_subtract(&mut inconsistent, 4.0, "test wait subtraction"),
             Err(ApiError::Unavailable(_))
         ));
     }

@@ -97,7 +97,9 @@ pub(crate) fn prompt_invocation_status_is_success_like(
     let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
 
     normalized_status.eq_ignore_ascii_case("success")
+        || normalized_status.eq_ignore_ascii_case("succeeded")
         || normalized_status.eq_ignore_ascii_case("completed")
+        || normalized_status.eq_ignore_ascii_case("ok")
         || normalized_status.eq_ignore_ascii_case(INVOCATION_STATUS_WARNING_SUCCESS)
         || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
 }
@@ -1459,6 +1461,17 @@ mod in_flight_query_tests {
         assert!(!is_valid_perf_stage_sample("total", -0.1));
         assert!(!is_valid_perf_stage_sample("total", f64::INFINITY));
         assert!(!is_valid_perf_stage_sample("total", f64::NAN));
+    }
+
+    #[test]
+    fn success_like_statuses_include_normalized_terminal_aliases() {
+        for status in ["success", "succeeded", "completed", "ok"] {
+            assert!(prompt_invocation_status_is_success_like(Some(status), None));
+        }
+        assert!(prompt_invocation_status_is_success_like(
+            Some(INVOCATION_STATUS_WARNING_SUCCESS),
+            None
+        ));
     }
 
     #[tokio::test]

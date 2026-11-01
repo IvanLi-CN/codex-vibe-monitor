@@ -806,7 +806,9 @@ pub(crate) fn classify_invocation_failure_with_kind(
         .filter(|value| !value.is_empty());
 
     if (status_norm == "success"
+        || status_norm == "succeeded"
         || status_norm == "completed"
+        || status_norm == "ok"
         || status_norm == INVOCATION_STATUS_WARNING_SUCCESS)
         && err.is_empty()
         && explicit_failure_kind.is_none()

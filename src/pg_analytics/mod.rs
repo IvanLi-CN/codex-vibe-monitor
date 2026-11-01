@@ -1036,13 +1036,7 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
         )
     });
     let failure_class = match stored_failure_class {
-        Some(value)
-            if value.eq_ignore_ascii_case("none")
-                && classification.failure_class != crate::api::FailureClass::None =>
-        {
-            Some(classification.failure_class.as_str().to_string())
-        }
-        Some(value) => Some(value),
+        Some(_) => Some(classification.failure_class.as_str().to_string()),
         None => (classification.failure_class != crate::api::FailureClass::None
             || (legacy_success_status && error_message.as_deref().is_none_or(str::is_empty)))
         .then(|| classification.failure_class.as_str().to_string()),
@@ -3892,7 +3886,7 @@ mod tests {
         assert_eq!(fact.upstream_account_name.as_deref(), Some("account"));
         assert_eq!(fact.status.as_deref(), Some("completed"));
         assert_eq!(fact.failure_kind.as_deref(), Some("failure"));
-        assert_eq!(fact.failure_class.as_deref(), Some("class"));
+        assert_eq!(fact.failure_class.as_deref(), Some("service_failure"));
     }
 
     #[test]
