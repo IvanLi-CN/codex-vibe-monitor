@@ -91,6 +91,26 @@ fi
 assert_contains "$tmp_dir/policy-skew.stderr" 'src/selected.rs: 4 physical lines exceeds explicit budget 3'
 cp "$tmp_dir/policy.before" "$fixture_repo/policy.json"
 
+printf '{"files":[{"path":"src/selected.rs","line_budget":99}]}\n' > "$tmp_dir/permissive-policy.json"
+mv "$fixture_repo/policy.json" "$tmp_dir/policy.index-path"
+ln -s "$tmp_dir/permissive-policy.json" "$fixture_repo/policy.json"
+if run_checker >"$tmp_dir/policy-symlink.stdout" 2>"$tmp_dir/policy-symlink.stderr"; then
+  fail 'unstaged policy symlink must not redirect the staged policy lookup'
+fi
+assert_contains "$tmp_dir/policy-symlink.stderr" 'src/selected.rs: 4 physical lines exceeds explicit budget 3'
+unlink "$fixture_repo/policy.json"
+mv "$tmp_dir/policy.index-path" "$fixture_repo/policy.json"
+
+sed -i.bak 's#src/selected.rs#src/./selected.rs#' "$fixture_repo/policy.json"
+rm -f "$fixture_repo/policy.json.bak"
+git -C "$fixture_repo" add policy.json
+if run_checker >"$tmp_dir/policy-alias.stdout" 2>"$tmp_dir/policy-alias.stderr"; then
+  fail 'non-canonical policy paths must fail closed'
+fi
+assert_contains "$tmp_dir/policy-alias.stderr" 'policy.files[0].path must be a canonical repository-relative path'
+cp "$tmp_dir/policy.before" "$fixture_repo/policy.json"
+git -C "$fixture_repo" add policy.json
+
 cat > "$fixture_repo/src/selected.rs" <<'EOF_DELETED_SIBLING'
 fn selected_one() {}
 fn selected_two() {}

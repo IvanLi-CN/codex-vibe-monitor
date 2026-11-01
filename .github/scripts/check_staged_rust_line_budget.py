@@ -7,7 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 
@@ -16,12 +16,16 @@ class CheckError(RuntimeError):
 
 
 def run_git(repo_root: Path, *arguments: str) -> bytes:
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), *arguments],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *arguments],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        detail = error.strerror or "unable to start Git"
+        raise CheckError(f"git invocation failed: {detail}") from error
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         command = "git " + " ".join(arguments)
@@ -36,20 +40,24 @@ def decode_git_path(raw_path: bytes) -> str:
         raise CheckError("staged Rust path is not valid UTF-8") from error
 
 
-def validate_relative_path(raw_path: Any, where: str) -> str:
+def validate_repo_relative_path(raw_path: Any, where: str) -> str:
     if not isinstance(raw_path, str) or not raw_path:
         raise CheckError(f"{where} must be a non-empty repository-relative path")
-    path = PurePosixPath(raw_path)
     if (
         raw_path.startswith("/")
         or "\\" in raw_path
-        or path.is_absolute()
-        or ".." in path.parts
+        or any(component in {"", ".", ".."} for component in raw_path.split("/"))
         or any(ord(character) < 0x20 or ord(character) == 0x7F for character in raw_path)
-        or not raw_path.endswith(".rs")
     ):
-        raise CheckError(f"{where} must be a repository-relative .rs path without control characters")
+        raise CheckError(f"{where} must be a canonical repository-relative path without control characters")
     return raw_path
+
+
+def validate_relative_path(raw_path: Any, where: str) -> str:
+    path = validate_repo_relative_path(raw_path, where)
+    if not path.endswith(".rs"):
+        raise CheckError(f"{where} must be a repository-relative .rs path without control characters")
+    return path
 
 
 def load_policy(raw_policy: bytes, policy_path: str) -> dict[str, int]:
@@ -81,7 +89,7 @@ def load_policy(raw_policy: bytes, policy_path: str) -> dict[str, int]:
     return budgets
 
 
-def staged_rust_paths(repo_root: Path) -> list[tuple[bytes, str]]:
+def staged_rust_paths(repo_root: Path) -> list[bytes]:
     output = run_git(
         repo_root,
         "diff",
@@ -92,15 +100,13 @@ def staged_rust_paths(repo_root: Path) -> list[tuple[bytes, str]]:
         "-z",
         "--",
     )
-    paths: list[tuple[bytes, str]] = []
+    paths: list[bytes] = []
     for raw_path in output.split(b"\0"):
         if not raw_path:
             continue
         if not raw_path.endswith(b".rs"):
             continue
-        path = decode_git_path(raw_path)
-        validate_relative_path(path, "staged path")
-        paths.append((raw_path, path))
+        paths.append(raw_path)
     return paths
 
 
@@ -135,16 +141,17 @@ def staged_source(repo_root: Path, blobs: dict[bytes, bytes], raw_path: bytes, p
         raise CheckError(f"{path}: staged blob is not valid UTF-8") from error
 
 
-def resolve_policy_path(repo_root: Path, raw_policy: str) -> Path:
+def resolve_policy_path(repo_root: Path, raw_policy: str) -> str:
     candidate = Path(raw_policy)
-    if not candidate.is_absolute():
-        candidate = repo_root / candidate
-    resolved = candidate.resolve()
-    try:
-        resolved.relative_to(repo_root)
-    except ValueError as error:
-        raise CheckError("policy path must remain inside the repository") from error
-    return resolved
+    if candidate.is_absolute():
+        try:
+            relative = candidate.relative_to(repo_root)
+        except ValueError as error:
+            raise CheckError("policy path must remain inside the repository") from error
+        raw_relative = relative.as_posix()
+    else:
+        raw_relative = raw_policy
+    return validate_repo_relative_path(raw_relative, "policy path")
 
 
 def main() -> int:
@@ -162,8 +169,7 @@ def main() -> int:
         staged_paths = staged_rust_paths(repo_root)
         if not staged_paths:
             return 0
-        policy_path = resolve_policy_path(repo_root, str(args.policy))
-        policy_relative_path = policy_path.relative_to(repo_root).as_posix()
+        policy_relative_path = resolve_policy_path(repo_root, str(args.policy))
         blobs = index_blobs(repo_root)
         policy_content = index_blob(
             repo_root,
@@ -172,7 +178,16 @@ def main() -> int:
             policy_relative_path,
         )
         budgets = load_policy(policy_content, policy_relative_path)
-        selected_paths = [(raw_path, path, budgets[path]) for raw_path, path in staged_paths if path in budgets]
+        selected_paths: list[tuple[bytes, str, int]] = []
+        for raw_path in staged_paths:
+            try:
+                path = decode_git_path(raw_path)
+            except CheckError:
+                continue
+            if path not in budgets:
+                continue
+            validate_relative_path(path, "staged path")
+            selected_paths.append((raw_path, path, budgets[path]))
         if not selected_paths:
             return 0
         failures: list[str] = []

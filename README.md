@@ -238,7 +238,7 @@ bun run test:e2e:pwa
 
 ## Worktree bootstrap
 
-首次拉到包含该功能的版本后，先确认全局 `lefthook` 版本不低于 `2.1.7`、`python3` 已在 `PATH` 中且 Lefthook 已在 `PATH` 中（repo-local `node_modules/.bin/lefthook` 不足以启动 linked worktree），再在任一 worktree 执行一次，安装 shared Git hooks：
+首次拉到包含该功能的版本后，先确认全局 `lefthook` 版本不低于 `2.2.1`、`python3` 已在 `PATH` 中且 Lefthook 已在 `PATH` 中（repo-local `node_modules/.bin/lefthook` 不足以启动 linked worktree），再在任一 worktree 执行一次，安装 shared Git hooks：
 
 ```bash
 command -v lefthook

@@ -41,6 +41,7 @@ assert_not_contains "$repo_root/lefthook.yml" 'bun run lint:web'
 assert_not_contains "$repo_root/scripts/install-lefthook-hooks.sh" 'lefthook uninstall'
 assert_not_contains "$repo_root/scripts/format-staged-files.sh" 'lefthook-unstaged.patch'
 assert_contains "$repo_root/scripts/check-staged-formatter-safety.sh" 'format-staged-files.sh" --check'
+assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" 'pre-commit.flock'
 
 fake_bin="$tmp_dir/fake-bin"
 formatter_log="$tmp_dir/formatter.log"
@@ -86,6 +87,7 @@ mkdir -p "$partial_repo/scripts" "$partial_repo/src" "$partial_repo/.github/scri
 cp "$repo_root/lefthook.yml" "$partial_repo/lefthook.yml"
 cp "$repo_root/scripts/format-staged-files.sh" "$partial_repo/scripts/format-staged-files.sh"
 cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$partial_repo/scripts/check-staged-formatter-safety.sh"
+cp "$repo_root/scripts/run-pre-commit-hook.sh" "$partial_repo/scripts/run-pre-commit-hook.sh"
 cp "$repo_root/scripts/install-lefthook-hooks.sh" "$partial_repo/scripts/install-lefthook-hooks.sh"
 cp "$repo_root/.github/scripts/check_staged_rust_line_budget.py" "$partial_repo/.github/scripts/check_staged_rust_line_budget.py"
 cat > "$partial_repo/.github/rust-source-quality-policy.json" <<'EOF_POLICY'
@@ -100,6 +102,7 @@ cat > "$partial_repo/.github/rust-source-quality-policy.json" <<'EOF_POLICY'
 EOF_POLICY
 chmod +x "$partial_repo/scripts/format-staged-files.sh"
 chmod +x "$partial_repo/scripts/check-staged-formatter-safety.sh"
+chmod +x "$partial_repo/scripts/run-pre-commit-hook.sh"
 chmod +x "$partial_repo/scripts/install-lefthook-hooks.sh"
 cat > "$partial_repo/src/sample.rs" <<'EOF_RUST'
 fn main() {
@@ -116,7 +119,7 @@ git -C "$partial_repo" commit -qm 'fixture'
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
 )
 partial_pre_commit_hook="$partial_repo/.git/hooks/pre-commit"
-assert_contains "$partial_pre_commit_hook" 'bash scripts/check-staged-formatter-safety.sh'
+assert_contains "$partial_pre_commit_hook" 'bash scripts/run-pre-commit-hook.sh'
 cat > "$partial_repo/src/sample.rs" <<'EOF_STAGED'
 fn main(){ println!("staged"); }
 EOF_STAGED
@@ -158,9 +161,45 @@ cmp -s "$tmp_dir/expected-index.contents" "$tmp_dir/index.contents" \
   || fail 'partial-stage guard modified the index'
 cmp -s "$tmp_dir/expected-worktree.contents" "$tmp_dir/worktree.contents" \
   || fail 'partial-stage guard modified the worktree'
+
+cat > "$partial_repo/src/sample.rs" <<'EOF_LOCK_STAGE'
+fn main() {
+    println!("staged");
+}
+EOF_LOCK_STAGE
+git -C "$partial_repo" add src/sample.rs
+
+cat > "$fake_bin/lock-lefthook" <<'EOF_LOCK_LEFTHOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'start\n' >> "${LOCK_TEST_LOG:?}"
+sleep 0.4
+printf 'end\n' >> "${LOCK_TEST_LOG:?}"
+EOF_LOCK_LEFTHOOK
+chmod +x "$fake_bin/lock-lefthook"
+lock_test_log="$tmp_dir/pre-commit-lock.log"
+(
+  cd "$partial_repo"
+  LEFTHOOK_BIN="$fake_bin/lock-lefthook" LOCK_TEST_LOG="$lock_test_log" bash scripts/run-pre-commit-hook.sh
+) &
+first_lock_pid=$!
+for attempt in {1..40}; do
+  grep -Fqx 'start' "$lock_test_log" 2>/dev/null && break
+  sleep 0.05
+done
+(
+  cd "$partial_repo"
+  LEFTHOOK_BIN="$fake_bin/lock-lefthook" LOCK_TEST_LOG="$lock_test_log" bash scripts/run-pre-commit-hook.sh
+) &
+second_lock_pid=$!
+wait "$first_lock_pid"
+wait "$second_lock_pid"
+awk 'NR == 1 && $0 == "start" { next } NR == 2 && $0 == "end" { next } NR == 3 && $0 == "start" { next } NR == 4 && $0 == "end" { found = 1 } END { exit found ? 0 : 1 }' "$lock_test_log" \
+  || fail 'concurrent pre-commit invocations were not serialized'
 cat > "$partial_repo/src/sample.rs" <<'EOF_FULL_STAGE'
 fn main(){ println!("staged"); }
 EOF_FULL_STAGE
+git -C "$partial_repo" add src/sample.rs
 if (
   cd "$partial_repo"
   LEFTHOOK_BIN="$lefthook_bin" CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$partial_pre_commit_hook" \
@@ -236,9 +275,11 @@ cp "$repo_root/lefthook.yml" "$legacy_repo/lefthook.yml"
 cp "$repo_root/scripts/install-lefthook-hooks.sh" "$legacy_repo/scripts/install-lefthook-hooks.sh"
 cp "$repo_root/scripts/format-staged-files.sh" "$legacy_repo/scripts/format-staged-files.sh"
 cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$legacy_repo/scripts/check-staged-formatter-safety.sh"
+cp "$repo_root/scripts/run-pre-commit-hook.sh" "$legacy_repo/scripts/run-pre-commit-hook.sh"
 chmod +x "$legacy_repo/scripts/install-lefthook-hooks.sh"
 chmod +x "$legacy_repo/scripts/format-staged-files.sh"
 chmod +x "$legacy_repo/scripts/check-staged-formatter-safety.sh"
+chmod +x "$legacy_repo/scripts/run-pre-commit-hook.sh"
 git -C "$legacy_repo" init -q
 git -C "$legacy_repo" config user.name 'Codex Test'
 git -C "$legacy_repo" config user.email 'codex-test@example.com'
@@ -261,7 +302,7 @@ legacy_hook="$legacy_repo/.git/hooks/prepare-commit-msg"
 if [ -e "$legacy_hook" ] || [ -L "$legacy_hook" ]; then
   fail 'exact obsolete Lefthook prepare-commit-msg wrapper was not removed'
 fi
-assert_contains "$legacy_repo/.git/hooks/pre-commit" 'bash scripts/check-staged-formatter-safety.sh'
+assert_contains "$legacy_repo/.git/hooks/pre-commit" 'bash scripts/run-pre-commit-hook.sh'
 idempotent_output="$tmp_dir/idempotent-install.log"
 (
   cd "$legacy_repo"
@@ -328,7 +369,7 @@ chmod +x "$old_lefthook_repo/scripts/install-lefthook-hooks.sh"
 git -C "$old_lefthook_repo" init -q
 cat > "$fake_bin/lefthook" <<'EOF_OLD_LEFTHOOK'
 #!/usr/bin/env bash
-printf '1.13.6\n'
+printf '2.1.10\n'
 EOF_OLD_LEFTHOOK
 chmod +x "$fake_bin/lefthook"
 old_lefthook_output="$tmp_dir/old-lefthook-output.log"
@@ -336,9 +377,9 @@ if (
   cd "$old_lefthook_repo"
   PATH="$fake_bin:$PATH" bash scripts/install-lefthook-hooks.sh > "$old_lefthook_output" 2>&1
 ); then
-  fail 'hooks:install must reject Lefthook versions older than 2.1.7'
+  fail 'hooks:install must reject Lefthook versions older than 2.2.1'
 fi
-assert_contains "$old_lefthook_output" 'Lefthook 2.1.7 or newer is required'
+assert_contains "$old_lefthook_output" 'Lefthook 2.2.1 or newer is required'
 
 local_only_repo="$tmp_dir/local-only-lefthook"
 mkdir -p "$local_only_repo/scripts" "$local_only_repo/node_modules/.bin"

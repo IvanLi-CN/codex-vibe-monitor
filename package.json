@@ -19,6 +19,6 @@
     "@commitlint/config-conventional": "^20.0.0",
     "commitlint-plugin-function-rules": "^4.1.0",
     "dprint": "^0.47.5",
-    "lefthook": "^2.1.7"
+    "lefthook": "^2.2.1"
   }
 }
