@@ -679,12 +679,16 @@ pub(crate) fn validate_fact_for_projection(
             "analytics fact terminal classification is inconsistent",
         ));
     }
-    let persisted_success_like = status.is_some_and(|status| {
-        matches!(
-            status.to_ascii_lowercase().as_str(),
-            "success" | "succeeded" | "completed" | "ok"
-        )
-    });
+    let persisted_success_like = if legacy_success_status {
+        fact.success_like && failure_class == crate::api::FailureClass::None
+    } else {
+        status.is_some_and(|status| {
+            matches!(
+                status.to_ascii_lowercase().as_str(),
+                "success" | "succeeded" | "completed" | "ok"
+            )
+        })
+    };
     if fact.success_like != persisted_success_like {
         return Err(invalid_fact(
             "analytics fact success classification is inconsistent",
@@ -1323,7 +1327,11 @@ mod tests {
     #[test]
     fn legacy_success_field_and_live_phase_inference_preserve_read_parity() {
         let mut warning = fixture_fact(101, 0, "warning_success", "none", 1, 0.1);
+        warning.success_like = true;
         assert!(validate_fact_for_projection(&warning).is_ok());
+        let mut http_200 = fixture_fact(102, 1_000, "http_200", "none", 1, 0.1);
+        http_200.success_like = true;
+        assert!(validate_fact_for_projection(&http_200).is_ok());
         let mut summary = AnalyticsSummaryAggregate::default();
         summary.add_fact(&warning).expect("warning success fact");
         assert_eq!(summary.success_count, 1);
