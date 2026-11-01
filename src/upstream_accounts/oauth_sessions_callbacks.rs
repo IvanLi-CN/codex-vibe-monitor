@@ -1975,6 +1975,12 @@ pub(crate) async fn sync_upstream_account(
 }
 
 fn manual_refresh_response_status(detail: &UpstreamAccountDetail, operation: &str) -> StatusCode {
+    if operation == UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS
+        && (detail.credential_refresh.state == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
+            || detail.summary.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+    {
+        return StatusCode::CONFLICT;
+    }
     let state = match operation {
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS => detail.credential_refresh.state.as_str(),
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS => {
@@ -2085,7 +2091,22 @@ pub(crate) async fn handle_oauth_callback(
                 _ if message.contains("authorization failed") => "OAuth authorization failed",
                 _ => "OAuth callback rejected",
             };
-            (status, render_callback_page(false, title, &message))
+            let safe_message = match status {
+                StatusCode::BAD_GATEWAY => {
+                    "The upstream OAuth token exchange failed. Check server logs for details."
+                }
+                StatusCode::SERVICE_UNAVAILABLE => {
+                    "Credential storage is unavailable. Check server configuration."
+                }
+                _ if message.contains("expired") => {
+                    "The OAuth callback expired. Please create a new authorization link."
+                }
+                _ if message.contains("authorization failed") => {
+                    "The OAuth authorization was rejected or cancelled."
+                }
+                _ => "The OAuth callback was rejected. Check server logs for details.",
+            };
+            (status, render_callback_page(false, title, safe_message))
         })?;
 
     Ok(render_callback_page(

@@ -140,25 +140,40 @@ pub(crate) async fn begin_upstream_account_refresh_attempt(
     operation: &str,
     source: &str,
 ) -> Result<bool> {
+    Ok(
+        begin_upstream_account_refresh_attempt_with_lease(pool, account_id, operation, source)
+            .await?
+            .is_some(),
+    )
+}
+
+pub(crate) async fn begin_upstream_account_refresh_attempt_with_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    source: &str,
+) -> Result<Option<String>> {
     let now = format_utc_iso(Utc::now());
     let stale_before = format_utc_iso(
         Utc::now() - ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS),
     );
+    let lease_token = nanoid::nanoid!(32);
     let result = sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_refresh_state (
             account_id, operation, state, last_attempt_at, source,
-            error_code, error_message, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?4)
+            error_code, error_message, lease_token, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?4)
         ON CONFLICT(account_id, operation) DO UPDATE SET
             state = excluded.state,
             last_attempt_at = excluded.last_attempt_at,
             next_attempt_at = NULL,
             source = excluded.source,
+            lease_token = excluded.lease_token,
             updated_at = excluded.updated_at
-        WHERE pool_upstream_account_refresh_state.state <> ?6
+        WHERE pool_upstream_account_refresh_state.state <> ?7
            OR pool_upstream_account_refresh_state.last_attempt_at IS NULL
-           OR pool_upstream_account_refresh_state.last_attempt_at <= ?7
+           OR pool_upstream_account_refresh_state.last_attempt_at <= ?8
         "#,
     )
     .bind(account_id)
@@ -166,6 +181,7 @@ pub(crate) async fn begin_upstream_account_refresh_attempt(
     .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
     .bind(&now)
     .bind(source)
+    .bind(&lease_token)
     .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
     .bind(&stale_before)
     .execute(pool)
@@ -182,7 +198,7 @@ pub(crate) async fn begin_upstream_account_refresh_attempt(
             operation, source, "upstream account refresh attempt deferred"
         );
     }
-    Ok(claimed)
+    Ok(claimed.then_some(lease_token))
 }
 
 pub(crate) async fn complete_upstream_account_refresh_success(
@@ -192,15 +208,39 @@ pub(crate) async fn complete_upstream_account_refresh_success(
     source: &str,
     next_attempt_at: Option<&str>,
 ) -> Result<()> {
+    complete_upstream_account_refresh_success_with_lease(
+        pool,
+        account_id,
+        operation,
+        source,
+        next_attempt_at,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+pub(crate) async fn complete_upstream_account_refresh_success_with_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    source: &str,
+    next_attempt_at: Option<&str>,
+    expected_lease_token: Option<&str>,
+) -> Result<bool> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    complete_upstream_account_refresh_success_state_with_executor(
+    let applied = complete_upstream_account_refresh_success_state_with_executor_and_lease(
         &mut tx,
         account_id,
         operation,
         source,
         next_attempt_at,
+        expected_lease_token,
     )
     .await?;
+    if !applied {
+        return Ok(false);
+    }
     tx.commit().await?;
 
     if let Err(err) =
@@ -214,7 +254,7 @@ pub(crate) async fn complete_upstream_account_refresh_success(
             "upstream account refresh succeeded but success history event could not be recorded"
         );
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) async fn complete_upstream_account_refresh_success_state_with_executor(
@@ -224,13 +264,64 @@ pub(crate) async fn complete_upstream_account_refresh_success_state_with_executo
     source: &str,
     next_attempt_at: Option<&str>,
 ) -> Result<()> {
+    complete_upstream_account_refresh_success_state_with_executor_and_lease(
+        tx,
+        account_id,
+        operation,
+        source,
+        next_attempt_at,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+pub(crate) async fn refresh_lease_is_current(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    account_id: i64,
+    operation: &str,
+    expected_lease_token: Option<&str>,
+) -> Result<bool> {
+    let Some(expected_lease_token) = expected_lease_token else {
+        return Ok(true);
+    };
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT 1
+        FROM pool_upstream_account_refresh_state
+        WHERE account_id = ?1 AND operation = ?2 AND lease_token = ?3
+        "#,
+    )
+    .bind(account_id)
+    .bind(operation)
+    .bind(expected_lease_token)
+    .fetch_optional(executor)
+    .await?
+    .is_some())
+}
+
+pub(crate) async fn complete_upstream_account_refresh_success_state_with_executor_and_lease(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    account_id: i64,
+    operation: &str,
+    source: &str,
+    next_attempt_at: Option<&str>,
+    expected_lease_token: Option<&str>,
+) -> Result<bool> {
+    if !refresh_lease_is_current(tx.as_mut(), account_id, operation, expected_lease_token).await? {
+        warn!(
+            account_id,
+            operation, source, "upstream account refresh completion discarded after lease loss"
+        );
+        return Ok(false);
+    }
     let now = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_refresh_state (
             account_id, operation, state, last_attempt_at, last_success_at,
-            next_attempt_at, source, error_code, error_message, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, NULL, NULL, ?4)
+            next_attempt_at, source, error_code, error_message, lease_token, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, NULL, NULL, NULL, ?4)
         ON CONFLICT(account_id, operation) DO UPDATE SET
             state = excluded.state,
             last_success_at = excluded.last_success_at,
@@ -238,6 +329,7 @@ pub(crate) async fn complete_upstream_account_refresh_success_state_with_executo
             source = excluded.source,
             error_code = NULL,
             error_message = NULL,
+            lease_token = NULL,
             updated_at = excluded.updated_at
         "#,
     )
@@ -250,7 +342,7 @@ pub(crate) async fn complete_upstream_account_refresh_success_state_with_executo
     .execute(tx.as_mut())
     .await?;
 
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) async fn record_upstream_account_refresh_success_event(
@@ -297,6 +389,35 @@ pub(crate) async fn defer_upstream_account_refresh_attempt(
     retry_after_secs: u64,
     error_message: &str,
 ) -> Result<()> {
+    defer_upstream_account_refresh_attempt_with_lease(
+        pool,
+        account_id,
+        operation,
+        source,
+        retry_after_secs,
+        error_message,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+pub(crate) async fn defer_upstream_account_refresh_attempt_with_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    source: &str,
+    retry_after_secs: u64,
+    error_message: &str,
+    expected_lease_token: Option<&str>,
+) -> Result<bool> {
+    if !refresh_lease_is_current(pool, account_id, operation, expected_lease_token).await? {
+        debug!(
+            account_id,
+            operation, source, "upstream account refresh defer discarded after lease loss"
+        );
+        return Ok(false);
+    }
     let now = format_utc_iso(Utc::now());
     let next_attempt_at = format_utc_iso(
         Utc::now()
@@ -304,12 +425,12 @@ pub(crate) async fn defer_upstream_account_refresh_attempt(
                 retry_after_secs.max(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS as u64) as i64,
             ),
     );
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_refresh_state (
             account_id, operation, state, last_attempt_at, next_attempt_at,
-            source, error_code, error_message, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?4)
+            source, error_code, error_message, lease_token, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?4)
         ON CONFLICT(account_id, operation) DO UPDATE SET
             state = excluded.state,
             last_attempt_at = excluded.last_attempt_at,
@@ -317,7 +438,9 @@ pub(crate) async fn defer_upstream_account_refresh_attempt(
             source = excluded.source,
             error_code = excluded.error_code,
             error_message = excluded.error_message,
+            lease_token = NULL,
             updated_at = excluded.updated_at
+        WHERE ?9 IS NULL OR pool_upstream_account_refresh_state.lease_token = ?9
         "#,
     )
     .bind(account_id)
@@ -328,9 +451,10 @@ pub(crate) async fn defer_upstream_account_refresh_attempt(
     .bind(source)
     .bind("egress_throttled")
     .bind(error_message)
+    .bind(expected_lease_token)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 pub(crate) async fn schedule_upstream_account_refresh_retry(
@@ -402,6 +526,45 @@ pub(crate) async fn record_upstream_account_refresh_failure(
     partial: bool,
     http_status: Option<StatusCode>,
 ) -> Result<()> {
+    let _ = record_upstream_account_refresh_failure_with_lease(
+        pool,
+        account_id,
+        operation,
+        source,
+        _error,
+        error_code,
+        error_message,
+        partial,
+        http_status,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Refresh failure persistence preserves the existing audit transition contract while carrying lease fencing."
+)]
+pub(crate) async fn record_upstream_account_refresh_failure_with_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    source: &str,
+    _error: &str,
+    error_code: &str,
+    error_message: &str,
+    partial: bool,
+    http_status: Option<StatusCode>,
+    expected_lease_token: Option<&str>,
+) -> Result<bool> {
+    if !refresh_lease_is_current(pool, account_id, operation, expected_lease_token).await? {
+        debug!(
+            account_id,
+            operation, source, "upstream account refresh failure discarded after lease loss"
+        );
+        return Ok(false);
+    }
     let previous = load_refresh_state_row(pool, account_id, operation).await?;
     let is_reauth = operation == UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS
         && matches!(
@@ -443,13 +606,13 @@ pub(crate) async fn record_upstream_account_refresh_failure(
         account_id,
         operation, source, error_code, partial, "upstream account refresh attempt failed"
     );
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_refresh_state (
             account_id, operation, state, last_attempt_at, last_success_at,
-            next_attempt_at, source, error_code, error_message, updated_at
+            next_attempt_at, source, error_code, error_message, lease_token, updated_at
         ) VALUES (
-            ?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?4
+            ?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, NULL, ?4
         )
         ON CONFLICT(account_id, operation) DO UPDATE SET
             state = excluded.state,
@@ -459,7 +622,9 @@ pub(crate) async fn record_upstream_account_refresh_failure(
             source = excluded.source,
             error_code = ?7,
             error_message = ?8,
+            lease_token = NULL,
             updated_at = excluded.updated_at
+        WHERE ?9 IS NULL OR pool_upstream_account_refresh_state.lease_token = ?9
         "#,
     )
     .bind(account_id)
@@ -470,8 +635,16 @@ pub(crate) async fn record_upstream_account_refresh_failure(
     .bind(source)
     .bind(persisted_error_code)
     .bind(&persisted_error_message)
+    .bind(expected_lease_token)
     .execute(pool)
     .await?;
+    if result.rows_affected() == 0 {
+        debug!(
+            account_id,
+            operation, source, "upstream account refresh failure lost its lease before persistence"
+        );
+        return Ok(false);
+    }
 
     let should_record_event = previous.as_ref().is_none_or(|previous| {
         previous.state == UPSTREAM_ACCOUNT_REFRESH_STATE_SUCCEEDED
@@ -480,7 +653,7 @@ pub(crate) async fn record_upstream_account_refresh_failure(
             || previous.error_message.as_deref() != Some(persisted_error_message.as_str())
     });
     if !should_record_event {
-        return Ok(());
+        return Ok(true);
     }
 
     let (action, reason_code) = match operation {
@@ -504,7 +677,7 @@ pub(crate) async fn record_upstream_account_refresh_failure(
             UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_FAILED,
             error_code,
         ),
-        _ => return Ok(()),
+        _ => return Ok(true),
     };
     record_upstream_account_action(
         pool,
@@ -521,7 +694,8 @@ pub(crate) async fn record_upstream_account_refresh_failure(
             occurred_at: &now,
         },
     )
-    .await
+    .await?;
+    Ok(true)
 }
 
 pub(crate) fn classify_refresh_error(error: &str, operation: &str) -> (String, String) {
@@ -533,7 +707,8 @@ pub(crate) fn classify_refresh_error(error: &str, operation: &str) -> (String, S
                 || (refresh_token_context
                     && (lower.contains("invalid")
                         || lower.contains("revoked")
-                        || lower.contains("expired")))))
+                        || lower.contains("expired")))
+                || lower.contains("session expired")))
     {
         return (
             "refresh_token_invalid".to_string(),
@@ -559,9 +734,15 @@ pub(crate) fn classify_refresh_error(error: &str, operation: &str) -> (String, S
         );
     }
     if lower.contains("429") {
-        let quota_exhausted = ["quota", "limit", "exhausted", "rate_limit_exceeded"]
-            .iter()
-            .any(|marker| lower.contains(marker));
+        let quota_exhausted = [
+            "quota exhausted",
+            "quota_exhausted",
+            "credits exhausted",
+            "usage limit exhausted",
+            "usage limit reached",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker));
         return if quota_exhausted {
             (
                 "upstream_http_429_quota_exhausted".to_string(),

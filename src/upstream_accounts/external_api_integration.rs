@@ -456,6 +456,24 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     }
     tx.commit().await.map_err(internal_error_tuple)?;
 
+    let next_attempt_at = parse_rfc3339_utc(&probe.token_expires_at).map(|expires| {
+        format_utc_iso(
+            expires
+                - ChronoDuration::seconds(
+                    state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                ),
+        )
+    });
+    complete_upstream_account_refresh_success(
+        &state.pool,
+        existing_row.id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT,
+        next_attempt_at.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+
     let _warning = apply_imported_oauth_probe_result_locked(state, existing_row.id, &probe)
         .await
         .map_err(internal_error_tuple)?;

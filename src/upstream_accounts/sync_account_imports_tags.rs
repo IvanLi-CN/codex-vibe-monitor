@@ -467,6 +467,7 @@ pub(crate) enum OAuthUsageRefreshOutcome {
 async fn record_usage_refresh_failure(
     state: &AppState,
     row: &UpstreamAccountRow,
+    lease_token: &str,
     source: &str,
     raw_error: &str,
     error_code: &str,
@@ -475,7 +476,7 @@ async fn record_usage_refresh_failure(
     http_status: Option<StatusCode>,
     proxy_snapshot: Option<AccountMaintenanceProxySnapshot>,
 ) -> Result<OAuthUsageRefreshOutcome> {
-    record_upstream_account_refresh_failure(
+    let applied = record_upstream_account_refresh_failure_with_lease(
         &state.pool,
         row.id,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
@@ -485,8 +486,12 @@ async fn record_usage_refresh_failure(
         error_message,
         partial,
         http_status,
+        Some(lease_token),
     )
     .await?;
+    if !applied {
+        return Ok(OAuthUsageRefreshOutcome::Deferred { proxy_snapshot });
+    }
     if http_status
         .is_some_and(|status| matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN))
     {
@@ -603,16 +608,16 @@ async fn refresh_oauth_credentials_with_source(
         return Ok(());
     }
 
-    if !begin_upstream_account_refresh_attempt(
+    let Some(lease_token) = begin_upstream_account_refresh_attempt_with_lease(
         &state.pool,
         row.id,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
         source,
     )
     .await?
-    {
+    else {
         return Ok(());
-    }
+    };
 
     let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
         Some(key) => key,
@@ -621,7 +626,7 @@ async fn refresh_oauth_credentials_with_source(
                 "account writes are disabled",
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
             );
-            record_upstream_account_refresh_failure(
+            record_upstream_account_refresh_failure_with_lease(
                 &state.pool,
                 row.id,
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -631,6 +636,7 @@ async fn refresh_oauth_credentials_with_source(
                 &message,
                 false,
                 None,
+                Some(&lease_token),
             )
             .await?;
             return Ok(());
@@ -643,7 +649,7 @@ async fn refresh_oauth_credentials_with_source(
                 "missing encrypted OAuth credentials",
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
             );
-            record_upstream_account_refresh_failure(
+            record_upstream_account_refresh_failure_with_lease(
                 &state.pool,
                 row.id,
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -653,6 +659,7 @@ async fn refresh_oauth_credentials_with_source(
                 &message,
                 false,
                 None,
+                Some(&lease_token),
             )
             .await?;
             return Ok(());
@@ -665,7 +672,7 @@ async fn refresh_oauth_credentials_with_source(
                 &err.to_string(),
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
             );
-            record_upstream_account_refresh_failure(
+            record_upstream_account_refresh_failure_with_lease(
                 &state.pool,
                 row.id,
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -675,6 +682,7 @@ async fn refresh_oauth_credentials_with_source(
                 &message,
                 false,
                 None,
+                Some(&lease_token),
             )
             .await?;
             return Ok(());
@@ -685,7 +693,7 @@ async fn refresh_oauth_credentials_with_source(
             "unexpected credential kind for OAuth account",
             UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
         );
-        record_upstream_account_refresh_failure(
+        record_upstream_account_refresh_failure_with_lease(
             &state.pool,
             row.id,
             UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -695,12 +703,13 @@ async fn refresh_oauth_credentials_with_source(
             &message,
             false,
             None,
+            Some(&lease_token),
         )
         .await?;
         return Ok(());
     };
     let Some(refresh_token) = oauth_refresh_token(&credentials) else {
-        record_upstream_account_refresh_failure(
+        record_upstream_account_refresh_failure_with_lease(
             &state.pool,
             row.id,
             UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -710,6 +719,7 @@ async fn refresh_oauth_credentials_with_source(
             "Refresh Token 缺失，需要重新授权。",
             false,
             None,
+            Some(&lease_token),
         )
         .await?;
         return Ok(());
@@ -742,7 +752,7 @@ async fn refresh_oauth_credentials_with_source(
                     )
                 })
                 .or_else(|| Some(format_utc_iso(Utc::now() + ChronoDuration::days(8))));
-            if let Err(err) = persist_oauth_credentials_and_complete_refresh(
+            match persist_oauth_credentials_and_complete_refresh_with_lease(
                 &state.pool,
                 row.id,
                 crypto_key,
@@ -750,25 +760,31 @@ async fn refresh_oauth_credentials_with_source(
                 &stored_token_expires_at,
                 source,
                 next_attempt_at.as_deref(),
+                Some(&lease_token),
             )
             .await
             {
-                let (code, message) = classify_refresh_error(
-                    &err.to_string(),
-                    UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
-                );
-                record_upstream_account_refresh_failure(
-                    &state.pool,
-                    row.id,
-                    UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
-                    source,
-                    &err.to_string(),
-                    &code,
-                    &message,
-                    false,
-                    None,
-                )
-                .await?;
+                Ok(true) => {}
+                Ok(false) => return Ok(()),
+                Err(err) => {
+                    let (code, message) = classify_refresh_error(
+                        &err.to_string(),
+                        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+                    );
+                    record_upstream_account_refresh_failure_with_lease(
+                        &state.pool,
+                        row.id,
+                        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+                        source,
+                        &err.to_string(),
+                        &code,
+                        &message,
+                        false,
+                        None,
+                        Some(&lease_token),
+                    )
+                    .await?;
+                }
             }
         }
         Err(err) => {
@@ -777,15 +793,19 @@ async fn refresh_oauth_credentials_with_source(
                     "maintenance egress via {} is throttled for another {} seconds",
                     throttle.proxy_display_name, throttle.retry_after_secs
                 );
-                defer_upstream_account_refresh_attempt(
+                if !defer_upstream_account_refresh_attempt_with_lease(
                     &state.pool,
                     row.id,
                     UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
                     source,
                     throttle.retry_after_secs,
                     &reason_message,
+                    Some(&lease_token),
                 )
-                .await?;
+                .await?
+                {
+                    return Ok(());
+                }
                 record_oauth_maintenance_throttled(
                     state,
                     row.id,
@@ -804,7 +824,7 @@ async fn refresh_oauth_credentials_with_source(
                 &err.to_string(),
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
             );
-            record_upstream_account_refresh_failure(
+            record_upstream_account_refresh_failure_with_lease(
                 &state.pool,
                 row.id,
                 UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -814,6 +834,7 @@ async fn refresh_oauth_credentials_with_source(
                 &message,
                 false,
                 refresh_http_status(&err.to_string()),
+                Some(&lease_token),
             )
             .await?;
         }
@@ -833,17 +854,21 @@ pub(crate) async fn refresh_oauth_usage_windows(
         .ok_or_else(|| anyhow!("account disappeared before usage refresh"))?;
     let row = &current_row;
     let operation = UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS;
-    if !begin_upstream_account_refresh_attempt(&state.pool, row.id, operation, source).await? {
+    let Some(lease_token) =
+        begin_upstream_account_refresh_attempt_with_lease(&state.pool, row.id, operation, source)
+            .await?
+    else {
         return Ok(OAuthUsageRefreshOutcome::Deferred {
             proxy_snapshot: None,
         });
-    }
+    };
     let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
         Some(key) => key,
         None => {
             return record_usage_refresh_failure(
                 state,
                 row,
+                &lease_token,
                 source,
                 "account writes are disabled",
                 "credentials_unavailable",
@@ -861,6 +886,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
             return record_usage_refresh_failure(
                 state,
                 row,
+                &lease_token,
                 source,
                 "missing encrypted OAuth credentials",
                 "credentials_missing",
@@ -879,6 +905,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
             return record_usage_refresh_failure(
                 state,
                 row,
+                &lease_token,
                 source,
                 &err.to_string(),
                 &code,
@@ -894,6 +921,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
         return record_usage_refresh_failure(
             state,
             row,
+            &lease_token,
             source,
             "unexpected credential kind for OAuth account",
             "credentials_kind_invalid",
@@ -911,6 +939,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
             record_usage_refresh_failure(
                 state,
                 row,
+                &lease_token,
                 source,
                 &err.to_string(),
                 &code,
@@ -927,6 +956,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
             return record_usage_refresh_failure(
                 state,
                 row,
+                &lease_token,
                 source,
                 &err.to_string(),
                 &code,
@@ -954,15 +984,25 @@ pub(crate) async fn refresh_oauth_usage_windows(
                     "maintenance egress via {} is throttled for another {} seconds",
                     throttle.proxy_display_name, throttle.retry_after_secs
                 );
-                defer_upstream_account_refresh_attempt(
+                if !defer_upstream_account_refresh_attempt_with_lease(
                     &state.pool,
                     row.id,
                     operation,
                     source,
                     throttle.retry_after_secs,
                     &reason_message,
+                    Some(&lease_token),
                 )
-                .await?;
+                .await?
+                {
+                    return Ok(OAuthUsageRefreshOutcome::Deferred {
+                        proxy_snapshot: Some(AccountMaintenanceProxySnapshot {
+                            proxy_key: throttle.proxy_key.clone(),
+                            proxy_display_name: throttle.proxy_display_name.clone(),
+                            proxy_egress_ip: throttle.proxy_egress_ip.clone(),
+                        }),
+                    });
+                }
                 record_oauth_maintenance_throttled(
                     state,
                     row.id,
@@ -987,6 +1027,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
             return record_usage_refresh_failure(
                 state,
                 row,
+                &lease_token,
                 source,
                 &err.to_string(),
                 &code,
@@ -1004,6 +1045,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
         return record_usage_refresh_failure(
             state,
             row,
+            &lease_token,
             source,
             "usage response did not contain a primary or secondary window",
             "usage_windows_missing",
@@ -1022,6 +1064,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
                 return record_usage_refresh_failure(
                     state,
                     row,
+                    &lease_token,
                     source,
                     &err.to_string(),
                     &code,
@@ -1033,37 +1076,60 @@ pub(crate) async fn refresh_oauth_usage_windows(
                 .await;
             }
         };
-    if let Err(err) = persist_usage_snapshot(
+    let snapshot_persisted = match persist_usage_snapshot_with_lease(
         &state.pool,
         row.id,
         effective_snapshot_plan_type.as_deref(),
         &snapshot,
         state.config.upstream_accounts_history_retention_days,
+        Some(&lease_token),
     )
     .await
     {
-        return record_usage_refresh_failure(
-            state,
-            row,
-            source,
-            &err.to_string(),
-            "usage_snapshot_persist_failed",
-            "额度窗口数据保存失败，等待下一分钟重试。",
-            false,
-            None,
-            Some(usage_proxy_snapshot),
-        )
-        .await;
-    }
+        Ok(true) => true,
+        Ok(false) => {
+            return Ok(OAuthUsageRefreshOutcome::Deferred {
+                proxy_snapshot: Some(usage_proxy_snapshot),
+            });
+        }
+        Err(err) => {
+            return record_usage_refresh_failure(
+                state,
+                row,
+                &lease_token,
+                source,
+                &err.to_string(),
+                "usage_snapshot_persist_failed",
+                "额度窗口数据保存失败，等待下一分钟重试。",
+                false,
+                None,
+                Some(usage_proxy_snapshot),
+            )
+            .await;
+        }
+    };
+    debug_assert!(snapshot_persisted);
     if has_primary && has_secondary {
-        complete_upstream_account_refresh_success(&state.pool, row.id, operation, source, None)
-            .await?;
+        if !complete_upstream_account_refresh_success_with_lease(
+            &state.pool,
+            row.id,
+            operation,
+            source,
+            None,
+            Some(&lease_token),
+        )
+        .await?
+        {
+            return Ok(OAuthUsageRefreshOutcome::Deferred {
+                proxy_snapshot: Some(usage_proxy_snapshot),
+            });
+        }
         Ok(OAuthUsageRefreshOutcome::Succeeded {
             snapshot,
             proxy_snapshot: Some(usage_proxy_snapshot),
         })
     } else {
-        record_upstream_account_refresh_failure(
+        record_upstream_account_refresh_failure_with_lease(
             &state.pool,
             row.id,
             operation,
@@ -1073,6 +1139,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
             "额度窗口响应仅包含一个窗口，已保留可用数据并将在下一分钟重试。",
             true,
             None,
+            Some(&lease_token),
         )
         .await?;
         Ok(OAuthUsageRefreshOutcome::Partial {
@@ -1147,7 +1214,8 @@ pub(crate) async fn refresh_upstream_account_usage_by_id(
     )
     .await?
     .state
-        == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH;
+        == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
+        || row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
     apply_manual_usage_refresh_outcome(
         state,
         &row,
@@ -1434,7 +1502,9 @@ pub(crate) async fn sync_oauth_account(
         }
     };
     if let Some(refresh_scope) = refresh_scope.as_ref() {
-        set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
+        if row.status != UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH {
+            set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
+        }
         if cause != SyncCause::PostCreate {
             refresh_oauth_credentials_if_due(state, row, cause, refresh_scope).await?;
         }
@@ -1450,7 +1520,8 @@ pub(crate) async fn sync_oauth_account(
     )
     .await?
     .state
-        == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH;
+        == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
+        || usage_row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
     match usage_outcome {
         OAuthUsageRefreshOutcome::Succeeded {
             snapshot,
@@ -1698,7 +1769,45 @@ pub(crate) async fn persist_oauth_credentials_and_complete_refresh(
     source: &str,
     next_attempt_at: Option<&str>,
 ) -> Result<()> {
+    let _ = persist_oauth_credentials_and_complete_refresh_with_lease(
+        pool,
+        account_id,
+        crypto_key,
+        credentials,
+        token_expires_at,
+        source,
+        next_attempt_at,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Lease-fenced OAuth persistence keeps credential, expiry, source, retry, and fencing inputs explicit."
+)]
+pub(crate) async fn persist_oauth_credentials_and_complete_refresh_with_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    crypto_key: &[u8; 32],
+    credentials: &StoredOauthCredentials,
+    token_expires_at: &str,
+    source: &str,
+    next_attempt_at: Option<&str>,
+    expected_lease_token: Option<&str>,
+) -> Result<bool> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if !refresh_lease_is_current(
+        tx.as_mut(),
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        expected_lease_token,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
     persist_oauth_credentials_with_executor(
         &mut tx,
         account_id,
@@ -1707,13 +1816,38 @@ pub(crate) async fn persist_oauth_credentials_and_complete_refresh(
         token_expires_at,
     )
     .await?;
-    complete_upstream_account_refresh_success_state_with_executor(
+    if !complete_upstream_account_refresh_success_state_with_executor_and_lease(
         &mut tx,
         account_id,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
         source,
         next_attempt_at,
+        expected_lease_token,
     )
+    .await?
+    {
+        return Ok(false);
+    }
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_error = NULL,
+            last_error_at = NULL,
+            last_route_failure_at = NULL,
+            last_route_failure_kind = NULL,
+            cooldown_until = NULL,
+            consecutive_route_failures = 0,
+            temporary_route_failure_streak_started_at = NULL,
+            updated_at = ?3
+        WHERE id = ?1 AND status = ?4
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .bind(format_utc_iso(Utc::now()))
+    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+    .execute(tx.as_mut())
     .await?;
     tx.commit().await?;
 
@@ -1733,7 +1867,7 @@ pub(crate) async fn persist_oauth_credentials_and_complete_refresh(
             "OAuth credentials persisted but success history event could not be recorded"
         );
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn persist_oauth_credentials_with_executor(
@@ -1842,6 +1976,26 @@ pub(crate) async fn persist_usage_snapshot(
     snapshot: &NormalizedUsageSnapshot,
     retention_days: u64,
 ) -> Result<()> {
+    let _ = persist_usage_snapshot_with_lease(
+        pool,
+        account_id,
+        effective_plan_type,
+        snapshot,
+        retention_days,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn persist_usage_snapshot_with_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    effective_plan_type: Option<&str>,
+    snapshot: &NormalizedUsageSnapshot,
+    retention_days: u64,
+    expected_lease_token: Option<&str>,
+) -> Result<bool> {
     let now_iso = format_utc_iso(Utc::now());
     let latest = load_latest_usage_sample(pool, account_id).await?;
     let primary = snapshot.primary.clone().or_else(|| {
@@ -1873,14 +2027,22 @@ pub(crate) async fn persist_usage_snapshot(
                 })
         })
     });
-    sqlx::query(
+    let insert_result = sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_limit_samples (
             account_id, captured_at, limit_id, limit_name, plan_type,
             primary_used_percent, primary_window_minutes, primary_resets_at,
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        )
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+        WHERE ?15 IS NULL OR EXISTS (
+            SELECT 1
+            FROM pool_upstream_account_refresh_state
+            WHERE account_id = ?1
+              AND operation = ?16
+              AND lease_token = ?15
+        )
         "#,
     )
     .bind(account_id)
@@ -1910,21 +2072,38 @@ pub(crate) async fn persist_usage_snapshot(
             .map(|value| if value.unlimited { 1 } else { 0 }),
     )
     .bind(credits.as_ref().and_then(|value| value.balance.clone()))
+    .bind(expected_lease_token)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
     .execute(pool)
     .await?;
+    if expected_lease_token.is_some() && insert_result.rows_affected() == 0 {
+        return Ok(false);
+    }
 
     let retention_cutoff = format_utc_iso(Utc::now() - ChronoDuration::days(retention_days as i64));
     sqlx::query(
         r#"
         DELETE FROM pool_upstream_account_limit_samples
-        WHERE account_id = ?1 AND captured_at < ?2
+        WHERE account_id = ?1
+          AND captured_at < ?2
+          AND (
+              ?3 IS NULL OR EXISTS (
+                  SELECT 1
+                  FROM pool_upstream_account_refresh_state
+                  WHERE account_id = ?1
+                    AND operation = ?4
+                    AND lease_token = ?3
+              )
+          )
         "#,
     )
     .bind(account_id)
     .bind(retention_cutoff)
+    .bind(expected_lease_token)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) async fn apply_imported_oauth_probe_result(
@@ -2081,6 +2260,24 @@ pub(crate) async fn persist_imported_oauth_existing_inner(
         .map_err(internal_error_tuple)?;
     }
     tx.commit().await.map_err(internal_error_tuple)?;
+
+    let next_attempt_at = parse_rfc3339_utc(&probe.token_expires_at).map(|expires| {
+        format_utc_iso(
+            expires
+                - ChronoDuration::seconds(
+                    state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                ),
+        )
+    });
+    complete_upstream_account_refresh_success(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT,
+        next_attempt_at.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
 
     let post_import_warning =
         match apply_imported_oauth_probe_result_locked(state, account_id, &probe).await {

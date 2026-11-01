@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 70,
-    "suppression_entries": 137
+    "suppression_entries": 139
   },
   "loc_targets": {
     "production": 2500,
@@ -399,7 +399,7 @@
     {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
       "role": "production",
-      "line_budget": 5352,
+      "line_budget": 5549,
       "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
     },
     {
@@ -429,7 +429,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
       "role": "test_helper",
-      "line_budget": 8535,
+      "line_budget": 8665,
       "next_module_workstream": "Split upstream sync cooldown/capability fixtures by recovery, classification, and maintenance."
     }
   ],
@@ -1251,10 +1251,22 @@
       "reason": "Retain this targeted allow for the refresh-state failure transition contract; remove it when the refresh state boundary is split into narrower transition payloads."
     },
     {
+      "path": "src/upstream_accounts/refresh_state.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Refresh failure persistence preserves the existing audit transition contract while carrying lease fencing.\" )]",
+      "reason": "Retain this targeted expect for the lease-fenced refresh failure transition contract; remove it when refresh state failure context is carried by a dedicated payload."
+    },
+    {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
       "reason": "Retain this targeted allow for the usage refresh failure adapter; remove it when usage refresh failure context is carried by a dedicated payload."
+    },
+    {
+      "path": "src/upstream_accounts/sync_account_imports_tags.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Lease-fenced OAuth persistence keeps credential, expiry, source, retry, and fencing inputs explicit.\" )]",
+      "reason": "Retain this targeted expect for the lease-fenced OAuth persistence adapter; remove it when credential refresh context is carried by a dedicated payload."
     }
   ]
 }

@@ -929,8 +929,19 @@ pub(crate) fn resolve_imported_token_expires_at(
         .ok_or_else(|| "expired is required when token exp is unavailable".to_string())
 }
 
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 pub(crate) fn render_callback_page(success: bool, title: &str, message: &str) -> String {
     let accent = if success { "#0f8b6f" } else { "#d9485f" };
+    let title = escape_html(title);
+    let message = escape_html(message);
     let script = if success {
         "setTimeout(() => { try { window.close(); } catch (_) {} }, 1200);"
     } else {
@@ -1653,6 +1664,8 @@ pub(crate) fn is_explicit_reauth_error_message(message: &str) -> bool {
         || msg.contains("refresh token expired")
         || msg.contains("refresh token revoked")
         || msg.contains("refresh token is invalid")
+        || msg.contains("session expired")
+        || msg.contains("session_expired")
         || msg.contains("please sign in again")
         || msg.contains("must sign in again")
         || msg.contains("re-authorize")
@@ -1701,9 +1714,14 @@ pub(crate) fn request_runtime_error_tuple(err: impl ToString) -> (StatusCode, St
 }
 
 pub(crate) fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
+    warn!(error = %err.to_string(), "OAuth callback failed before completion");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        render_callback_page(false, "OAuth callback failed", &err.to_string()),
+        render_callback_page(
+            false,
+            "OAuth callback failed",
+            "The OAuth callback could not be completed. Check server logs for details.",
+        ),
     )
 }
 

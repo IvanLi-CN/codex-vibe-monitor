@@ -821,6 +821,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             source TEXT,
             error_code TEXT,
             error_message TEXT,
+            lease_token TEXT,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (account_id, operation),
             FOREIGN KEY(account_id) REFERENCES pool_upstream_accounts(id) ON DELETE CASCADE
@@ -830,6 +831,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_upstream_account_refresh_state table existence")?;
+    ensure_nullable_text_column(pool, "pool_upstream_account_refresh_state", "lease_token").await?;
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_refresh_state_due

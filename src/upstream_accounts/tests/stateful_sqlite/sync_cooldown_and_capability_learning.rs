@@ -39,6 +39,19 @@ fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
     );
     assert_ne!(infrastructure_code, "refresh_token_invalid");
+    let (rate_limit_code, _) = classify_refresh_error(
+        "HTTP 429 rate_limit_exceeded: requests per minute limit exceeded",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+    );
+    assert_eq!(rate_limit_code, "upstream_http_429_rate_limit");
+    let (session_expired_code, _) = classify_refresh_error(
+        "OAuth token endpoint returned 400: session expired",
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    );
+    assert_eq!(session_expired_code, "refresh_token_invalid");
+    let callback = render_callback_page(false, "<title>", "<script>alert(1)</script>");
+    assert!(!callback.contains("<title><title>"));
+    assert!(callback.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(!is_explicit_reauth_error_message("access token expired"));
     assert!(is_explicit_reauth_error_message("refresh token expired"));
 }
@@ -48,16 +61,15 @@ async fn refresh_state_claim_prevents_concurrent_attempts_for_one_operation() {
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Refresh Claim").await;
 
-    assert!(
-        begin_upstream_account_refresh_attempt(
-            &pool,
-            account_id,
-            UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
-            "sync_maintenance",
-        )
-        .await
-        .expect("first refresh claim")
-    );
+    let first_lease = begin_upstream_account_refresh_attempt_with_lease(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        "sync_maintenance",
+    )
+    .await
+    .expect("first refresh claim")
+    .expect("first refresh lease");
     assert!(
         !begin_upstream_account_refresh_attempt(
             &pool,
@@ -80,15 +92,125 @@ async fn refresh_state_claim_prevents_concurrent_attempts_for_one_operation() {
     .execute(&pool)
     .await
     .expect("age refresh claim");
+    let second_lease = begin_upstream_account_refresh_attempt_with_lease(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+        "sync_maintenance",
+    )
+    .await
+    .expect("stale refresh claim")
+    .expect("second refresh lease");
+    assert_ne!(first_lease, second_lease);
     assert!(
-        begin_upstream_account_refresh_attempt(
+        !complete_upstream_account_refresh_success_with_lease(
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
             "sync_maintenance",
+            None,
+            Some(&first_lease),
         )
         .await
-        .expect("stale refresh claim")
+        .expect("stale refresh completion")
+    );
+    assert!(
+        complete_upstream_account_refresh_success_with_lease(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            "sync_maintenance",
+            None,
+            Some(&second_lease),
+        )
+        .await
+        .expect("current refresh completion")
+    );
+}
+
+#[tokio::test]
+async fn stale_usage_refresh_lease_cannot_persist_snapshot() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Stale Usage Snapshot").await;
+    let first_lease = begin_upstream_account_refresh_attempt_with_lease(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+        "sync_maintenance",
+    )
+    .await
+    .expect("first usage claim")
+    .expect("first usage lease");
+
+    sqlx::query(
+        "UPDATE pool_upstream_account_refresh_state SET last_attempt_at = ?1 WHERE account_id = ?2 AND operation = ?3",
+    )
+    .bind(format_utc_iso(
+        Utc::now() - ChronoDuration::seconds(UPSTREAM_ACCOUNT_REFRESH_RETRY_INTERVAL_SECS + 1),
+    ))
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
+    .execute(&pool)
+    .await
+    .expect("age usage claim");
+
+    let second_lease = begin_upstream_account_refresh_attempt_with_lease(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+        "sync_maintenance",
+    )
+    .await
+    .expect("stale usage claim")
+    .expect("second usage lease");
+    let snapshot = NormalizedUsageSnapshot {
+        plan_type: Some("team".to_string()),
+        limit_id: "codex".to_string(),
+        limit_name: Some("Codex".to_string()),
+        primary: Some(NormalizedUsageWindow {
+            used_percent: 12.0,
+            window_duration_mins: 300,
+            resets_at: Some("2026-03-17T14:00:00Z".to_string()),
+        }),
+        secondary: Some(NormalizedUsageWindow {
+            used_percent: 24.0,
+            window_duration_mins: 10_080,
+            resets_at: Some("2026-03-18T00:00:00Z".to_string()),
+        }),
+        credits: None,
+    };
+
+    assert!(
+        !persist_usage_snapshot_with_lease(
+            &pool,
+            account_id,
+            Some("team"),
+            &snapshot,
+            30,
+            Some(&first_lease),
+        )
+        .await
+        .expect("stale usage persistence")
+    );
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pool_upstream_account_limit_samples WHERE account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count usage snapshots");
+    assert_eq!(count, 0);
+    assert!(
+        persist_usage_snapshot_with_lease(
+            &pool,
+            account_id,
+            Some("team"),
+            &snapshot,
+            30,
+            Some(&second_lease),
+        )
+        .await
+        .expect("current usage persistence")
     );
 }
 
@@ -4517,6 +4639,13 @@ async fn manual_usage_refresh_updates_windows_without_refreshing_credentials() {
         .encrypted_credentials
         .clone()
         .expect("encrypted credentials before usage refresh");
+    sqlx::query("UPDATE pool_upstream_accounts SET status = ?2, updated_at = ?3 WHERE id = ?1")
+        .bind(account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+        .bind(format_utc_iso(Utc::now()))
+        .execute(&state.pool)
+        .await
+        .expect("mark account as needing reauthorization");
 
     state
         .upstream_accounts
@@ -4529,6 +4658,7 @@ async fn manual_usage_refresh_updates_windows_without_refreshing_credentials() {
         .await
         .expect("load account after usage refresh")
         .expect("account exists after usage refresh");
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
     assert_eq!(
         after.encrypted_credentials.as_deref(),
         Some(before_credentials.as_str()),
