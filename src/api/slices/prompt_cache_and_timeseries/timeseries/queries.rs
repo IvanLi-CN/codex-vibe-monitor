@@ -498,6 +498,8 @@ async fn fetch_timeseries_from_postgres(
     };
     let read_query =
         AnalyticsFactReadQuery::for_range(fact_scope, range_window.start, range_window.end)
+            .map_err(AnalyticsReadError::into_api_error)?
+            .with_source_snapshot_id(snapshot_id)
             .map_err(AnalyticsReadError::into_api_error)?;
     let snapshot = query_bounded_facts(&state.pg_analytics, read_query)
         .await

@@ -30202,11 +30202,13 @@ async fn fetch_summary_inner(
         .map_err(ApiError::bad_request)?;
     if all_time && state.pg_analytics.backend() == AnalyticsBackend::Postgres {
         let source_scope = resolve_default_source_scope(&state.pool).await?;
+        let source_snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
         return query_postgres_summary_all(
             &state,
             &state.pg_analytics,
             source_scope,
             params.upstream_account_id,
+            source_snapshot_id,
         )
         .await
         .map(Json);

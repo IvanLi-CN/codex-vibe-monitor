@@ -149,6 +149,7 @@ pub(crate) struct AnalyticsFactReadQuery {
     pub(crate) scope: AnalyticsFactScope,
     pub(crate) start_at: Option<DateTime<Utc>>,
     pub(crate) end_at: Option<DateTime<Utc>>,
+    pub(crate) source_snapshot_id: Option<i64>,
 }
 
 impl AnalyticsFactReadQuery {
@@ -167,6 +168,7 @@ impl AnalyticsFactReadQuery {
             scope,
             start_at: Some(start_at),
             end_at: Some(end_at),
+            source_snapshot_id: None,
         })
     }
 
@@ -176,7 +178,21 @@ impl AnalyticsFactReadQuery {
             scope,
             start_at: None,
             end_at: None,
+            source_snapshot_id: None,
         })
+    }
+
+    pub(crate) fn with_source_snapshot_id(
+        mut self,
+        source_snapshot_id: i64,
+    ) -> AnalyticsReadResult<Self> {
+        if source_snapshot_id < 0 {
+            return Err(AnalyticsReadError::InvalidQuery(
+                "analytics source snapshot id must not be negative".to_string(),
+            ));
+        }
+        self.source_snapshot_id = Some(source_snapshot_id);
+        Ok(self)
     }
 }
 
@@ -422,6 +438,11 @@ fn append_fact_filters(
         builder
             .push(" AND occurred_at_epoch_ms < ")
             .push_bind(query_epoch_millis(end_at));
+    }
+    if let Some(source_snapshot_id) = query.source_snapshot_id {
+        builder
+            .push(" AND source_row_id <= ")
+            .push_bind(source_snapshot_id);
     }
     if let Some(after_key) = after_key {
         push_key_predicate(builder, ">", after_key);
@@ -1354,6 +1375,19 @@ mod tests {
         assert!(matches!(
             changed.validate_cursor(&cursor),
             Err(AnalyticsReadError::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn source_snapshot_fence_is_non_negative_and_preserved_on_fact_queries() {
+        let query = AnalyticsFactReadQuery::all(AnalyticsFactScope::All).expect("all query");
+        let fenced = query
+            .with_source_snapshot_id(104)
+            .expect("valid source snapshot");
+        assert_eq!(fenced.source_snapshot_id, Some(104));
+        assert!(matches!(
+            query.with_source_snapshot_id(-1),
+            Err(AnalyticsReadError::InvalidQuery(_))
         ));
     }
 

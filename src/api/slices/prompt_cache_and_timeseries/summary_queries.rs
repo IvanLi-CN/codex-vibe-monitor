@@ -6,6 +6,7 @@ pub(crate) async fn query_postgres_summary_all(
     runtime: &PgAnalyticsRuntime,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
+    source_snapshot_id: i64,
 ) -> Result<StatsResponse, ApiError> {
     let fact_scope = match (source_scope, upstream_account_id) {
         (InvocationSourceScope::All, None) => AnalyticsFactScope::All,
@@ -15,8 +16,10 @@ pub(crate) async fn query_postgres_summary_all(
             AnalyticsFactScope::AccountProxyOnly(account_id)
         }
     };
-    let read_query =
-        AnalyticsFactReadQuery::all(fact_scope).map_err(AnalyticsReadError::into_api_error)?;
+    let read_query = AnalyticsFactReadQuery::all(fact_scope)
+        .map_err(AnalyticsReadError::into_api_error)?
+        .with_source_snapshot_id(source_snapshot_id)
+        .map_err(AnalyticsReadError::into_api_error)?;
     let snapshot = query_bounded_facts(runtime, read_query)
         .await
         .map_err(AnalyticsReadError::into_api_error)?;
