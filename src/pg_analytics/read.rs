@@ -660,12 +660,18 @@ pub(crate) fn validate_fact_for_projection(
             "http_200" | "warning_success"
         )
     });
+    let has_explicit_failure_kind = fact.failure_kind.as_deref().is_some_and(|failure_kind| {
+        let failure_kind = failure_kind.trim();
+        !failure_kind.is_empty() && !failure_kind.eq_ignore_ascii_case("none")
+    });
+    let has_explicit_failure_class = fact
+        .failure_class
+        .as_deref()
+        .is_some_and(|failure_class| !failure_class.trim().eq_ignore_ascii_case("none"));
     if legacy_success_status
-        && fact.failure_class.is_none()
-        && fact.failure_kind.as_deref().is_none_or(|failure_kind| {
-            let failure_kind = failure_kind.trim();
-            failure_kind.is_empty() || failure_kind.eq_ignore_ascii_case("none")
-        })
+        && !fact.success_like
+        && !has_explicit_failure_kind
+        && !has_explicit_failure_class
     {
         return Err(invalid_fact(
             "analytics fact legacy success status lacks persisted failure classification",
@@ -1312,6 +1318,15 @@ mod tests {
                 Err(AnalyticsReadError::Unavailable(_))
             ));
         }
+        let mut explicitly_none = fixture_fact(103, 0, "http_200", "none", 1, 0.1);
+        explicitly_none.failure_kind = None;
+        explicitly_none.failure_class = Some("none".to_string());
+        explicitly_none.is_actionable = None;
+        explicitly_none.success_like = false;
+        assert!(matches!(
+            validate_fact_for_projection(&explicitly_none),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
     }
 
     #[test]
