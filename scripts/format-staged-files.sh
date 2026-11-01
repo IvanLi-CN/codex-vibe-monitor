@@ -91,7 +91,7 @@ case "$surface" in
         exit 1
       fi
     done
-    "$rustfmt_bin" --edition 2024 "${files[@]}"
+    "$rustfmt_bin" --edition 2024 -- "${files[@]}"
     git add -- "${files[@]}"
     ;;
   markdown)

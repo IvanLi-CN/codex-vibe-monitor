@@ -113,6 +113,15 @@ customize_pre_commit_template() {
   grep -Fq 'bash scripts/run-pre-commit-hook.sh' "$template_hook_path"
 }
 
+customize_legacy_pre_commit_template() {
+  local template_hook_path="$1"
+  local original_line='call_lefthook run "pre-commit" "$@"'
+
+  [ "$(grep -Fxc "$original_line" "$template_hook_path" || true)" = '1' ] || return 1
+  perl -0pi -e 's{call_lefthook run "pre-commit" "\$@"}{if ! bash scripts/check-staged-formatter-safety.sh\nthen\n  exit 1\nfi\n\ncall_lefthook run "pre-commit" "\$@"}' "$template_hook_path"
+  grep -Fq 'bash scripts/check-staged-formatter-safety.sh' "$template_hook_path"
+}
+
 cleanup_legacy_prepare_commit_msg() {
   hook_path="$hooks_dir/prepare-commit-msg"
   [ -e "$hook_path" ] || [ -L "$hook_path" ] || return 0
@@ -204,6 +213,15 @@ is_managed_hook() {
   if [ -f "$template_path" ] && cmp -s "$hook_path" "$template_path"; then
     rm -rf "$template_dir"
     [ "$hook_name" = 'pre-commit' ] && return 1
+    return 0
+  fi
+  if [ "$hook_name" = 'pre-commit' ] \
+    && legacy_template_path="$template_dir/pre-commit.legacy" \
+    && cp "$template_path" "$legacy_template_path" \
+    && customize_legacy_pre_commit_template "$legacy_template_path" \
+    && [ -f "$legacy_template_path" ] \
+    && cmp -s "$hook_path" "$legacy_template_path"; then
+    rm -rf "$template_dir"
     return 0
   fi
   if [ "$hook_name" = 'pre-commit' ] \

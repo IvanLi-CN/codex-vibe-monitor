@@ -66,7 +66,7 @@ export FORMATTER_LOG="$formatter_log"
     bash scripts/format-staged-files.sh markdown README.md removed.md docs/../README.md vendor/hotpath/README.md
 )
 assert_contains "$formatter_log" $'biome\tcheck --write web/src/test-setup.ts'
-assert_contains "$formatter_log" $'rustfmt\t--edition 2024 src/main.rs'
+assert_contains "$formatter_log" $'rustfmt\t--edition 2024 -- src/main.rs'
 assert_contains "$formatter_log" $'dprint\tfmt README.md'
 assert_not_contains "$formatter_log" 'missing.ts'
 assert_not_contains "$formatter_log" '../../package.json'
@@ -114,6 +114,23 @@ git -C "$partial_repo" config user.name 'Codex Test'
 git -C "$partial_repo" config user.email 'codex-test@example.com'
 git -C "$partial_repo" add .
 git -C "$partial_repo" commit -qm 'fixture'
+cat > "$partial_repo/-evil.rs" <<'EOF_DASH_RUST'
+fn main() {}
+EOF_DASH_RUST
+cat > "$fake_bin/option-guard-rustfmt" <<'EOF_OPTION_GUARD_RUSTFMT'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" = '--edition' ] && shift
+[ "${1:-}" = '2024' ] && shift
+[ "${1:-}" = '--' ] && shift
+[ "${1:-}" = '-evil.rs' ]
+EOF_OPTION_GUARD_RUSTFMT
+chmod +x "$fake_bin/option-guard-rustfmt"
+(
+  cd "$partial_repo"
+  CODEX_HOOK_RUSTFMT_BIN="$fake_bin/option-guard-rustfmt" bash scripts/format-staged-files.sh rust -evil.rs
+)
+rm -f "$partial_repo/-evil.rs"
 (
   cd "$partial_repo"
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
@@ -196,6 +213,37 @@ wait "$first_lock_pid"
 wait "$second_lock_pid"
 awk 'NR == 1 && $0 == "start" { next } NR == 2 && $0 == "end" { next } NR == 3 && $0 == "start" { next } NR == 4 && $0 == "end" { found = 1 } END { exit found ? 0 : 1 }' "$lock_test_log" \
   || fail 'concurrent pre-commit invocations were not serialized'
+partial_git_dir="$(git -C "$partial_repo" rev-parse --absolute-git-dir)"
+pre_commit_lock_path="$partial_git_dir/pre-commit.flock"
+outside_lock="$tmp_dir/outside-pre-commit.lock"
+printf 'outside lock sentinel\n' > "$outside_lock"
+rm -f "$pre_commit_lock_path"
+ln -s "$outside_lock" "$pre_commit_lock_path"
+if (
+  cd "$partial_repo"
+  LEFTHOOK_BIN="$fake_bin/lock-lefthook" LOCK_TEST_LOG="$lock_test_log" bash scripts/run-pre-commit-hook.sh \
+    > "$tmp_dir/symlink-lock.log" 2>&1
+); then
+  fail 'symlinked pre-commit lock must be rejected'
+fi
+assert_contains "$tmp_dir/symlink-lock.log" 'pre-commit lock must not be a symlink'
+assert_contains "$outside_lock" 'outside lock sentinel'
+rm -f "$pre_commit_lock_path"
+mkfifo "$pre_commit_lock_path"
+(
+  cd "$partial_repo"
+  LEFTHOOK_BIN="$fake_bin/lock-lefthook" LOCK_TEST_LOG="$lock_test_log" bash scripts/run-pre-commit-hook.sh \
+    > "$tmp_dir/fifo-lock.log" 2>&1
+) &
+fifo_lock_pid=$!
+sleep 0.2
+if kill -0 "$fifo_lock_pid" 2>/dev/null; then
+  kill "$fifo_lock_pid" 2>/dev/null || true
+  wait "$fifo_lock_pid" 2>/dev/null || true
+  fail 'FIFO pre-commit lock must not block hook startup'
+fi
+wait "$fifo_lock_pid" 2>/dev/null || true
+rm -f "$pre_commit_lock_path"
 cat > "$partial_repo/src/sample.rs" <<'EOF_FULL_STAGE'
 fn main(){ println!("staged"); }
 EOF_FULL_STAGE
@@ -303,6 +351,14 @@ if [ -e "$legacy_hook" ] || [ -L "$legacy_hook" ]; then
   fail 'exact obsolete Lefthook prepare-commit-msg wrapper was not removed'
 fi
 assert_contains "$legacy_repo/.git/hooks/pre-commit" 'bash scripts/run-pre-commit-hook.sh'
+perl -0pi -e 's{bash scripts/run-pre-commit-hook.sh "\$@"}{if ! bash scripts/check-staged-formatter-safety.sh\nthen\n  exit 1\nfi\n\ncall_lefthook run "pre-commit" "\$@"}' "$legacy_repo/.git/hooks/pre-commit"
+assert_contains "$legacy_repo/.git/hooks/pre-commit" 'bash scripts/check-staged-formatter-safety.sh'
+(
+  cd "$legacy_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
+)
+assert_contains "$legacy_repo/.git/hooks/pre-commit" 'bash scripts/run-pre-commit-hook.sh'
+assert_not_contains "$legacy_repo/.git/hooks/pre-commit" 'bash scripts/check-staged-formatter-safety.sh'
 idempotent_output="$tmp_dir/idempotent-install.log"
 (
   cd "$legacy_repo"
