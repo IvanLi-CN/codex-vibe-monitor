@@ -2,10 +2,11 @@ use super::*;
 use anyhow::anyhow;
 
 pub(crate) async fn query_postgres_summary_all(
+    state: &AppState,
     runtime: &PgAnalyticsRuntime,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-) -> AnalyticsReadResult<StatsResponse> {
+) -> Result<StatsResponse, ApiError> {
     let fact_scope = match (source_scope, upstream_account_id) {
         (InvocationSourceScope::All, None) => AnalyticsFactScope::All,
         (InvocationSourceScope::ProxyOnly, None) => AnalyticsFactScope::ProxyOnly,
@@ -14,13 +15,43 @@ pub(crate) async fn query_postgres_summary_all(
             AnalyticsFactScope::AccountProxyOnly(account_id)
         }
     };
-    let read_query = AnalyticsFactReadQuery::all(fact_scope)?;
-    let snapshot = query_bounded_facts(runtime, read_query).await?;
+    let read_query =
+        AnalyticsFactReadQuery::all(fact_scope).map_err(AnalyticsReadError::into_api_error)?;
+    let snapshot = query_bounded_facts(runtime, read_query)
+        .await
+        .map_err(AnalyticsReadError::into_api_error)?;
     let mut aggregate = AnalyticsSummaryAggregate::default();
     for fact in &snapshot.facts {
-        aggregate.add_fact(fact)?;
+        aggregate
+            .add_fact(fact)
+            .map_err(AnalyticsReadError::into_api_error)?;
     }
-    Ok(aggregate.into_response(None, true))
+    let mut response = aggregate.into_response(None, false);
+    let policy = summary_live_augmentation_policy(&SummaryWindow::All, None, Utc::now());
+    let augmentation = load_summary_live_augmentation(
+        state,
+        source_scope,
+        upstream_account_id,
+        None,
+        policy,
+        None,
+    )
+    .await?;
+    finalize_postgres_summary_all_response(
+        &mut response,
+        augmentation,
+        load_stats_maintenance_response(state).await?,
+    );
+    Ok(response)
+}
+
+fn finalize_postgres_summary_all_response(
+    response: &mut StatsResponse,
+    augmentation: SummaryLiveAugmentation,
+    maintenance: StatsMaintenanceResponse,
+) {
+    apply_summary_live_augmentation(response, augmentation);
+    response.maintenance = Some(maintenance);
 }
 
 pub(crate) async fn query_hourly_backed_summary_since_with_config(
@@ -293,4 +324,30 @@ pub(crate) async fn query_hourly_backed_summary_range(
         source_scope,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn postgres_summary_all_finalization_preserves_live_response_contract() {
+        let mut response = AnalyticsSummaryAggregate::default().into_response(None, false);
+        let maintenance = StatsMaintenanceResponse {
+            raw_compression_backlog: None,
+            startup_backfill: None,
+            historical_rollup_backfill: None,
+        };
+        finalize_postgres_summary_all_response(
+            &mut response,
+            SummaryLiveAugmentation::test_fixture(),
+            maintenance.clone(),
+        );
+
+        assert_eq!(response.in_progress_conversation_count, Some(2));
+        assert_eq!(response.in_progress_retry_conversation_count, Some(1));
+        assert_eq!(response.in_progress_avg_wait_ms, Some(12.5));
+        assert_eq!(response.maintenance, Some(maintenance));
+        assert_eq!(response.non_success_tokens, None);
+    }
 }

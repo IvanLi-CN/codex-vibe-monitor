@@ -16713,6 +16713,23 @@ pub(crate) struct SummaryLiveAugmentation {
     non_success_tokens: Option<i64>,
 }
 
+#[cfg(test)]
+impl SummaryLiveAugmentation {
+    pub(crate) fn test_fixture() -> Self {
+        Self {
+            in_progress_conversation_count: Some(2),
+            in_progress_retry_conversation_count: Some(1),
+            in_progress_avg_wait_ms: Some(12.5),
+            in_progress_phase_counts: Some(InvocationPhaseCountsResponse {
+                queued: 1,
+                requesting: 1,
+                responding: 0,
+            }),
+            non_success_tokens: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SummaryLiveAugmentationPolicy {
     include_in_progress: bool,
@@ -30186,13 +30203,13 @@ async fn fetch_summary_inner(
     if all_time && state.pg_analytics.backend() == AnalyticsBackend::Postgres {
         let source_scope = resolve_default_source_scope(&state.pool).await?;
         return query_postgres_summary_all(
+            &state,
             &state.pg_analytics,
             source_scope,
             params.upstream_account_id,
         )
         .await
-        .map(Json)
-        .map_err(AnalyticsReadError::into_api_error);
+        .map(Json);
     }
     state
         .subscription_hub
