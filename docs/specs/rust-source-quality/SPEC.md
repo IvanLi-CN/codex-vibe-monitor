@@ -344,6 +344,22 @@ outcomes.
 
 covers: REQ-RUST-SOURCE-QUALITY-006
 
+### VER-RUST-SOURCE-QUALITY-010
+
+Method: run `bash scripts/test-git-hooks-contract.sh`,
+`bash scripts/test-worktree-bootstrap.sh`,
+`bash scripts/test-quality-gates-contract.sh`,
+`bash .github/scripts/test-staged-rust-line-budget.sh`, and `lefthook validate`;
+inspect the staged guard and formatter scripts for index-blob reads, explicit
+policy matching, descriptor-safe worktree writes, and forbidden Cargo, network,
+worktree-scan, or direct-index mutation paths.
+Pass condition: the hook, installer, quality-gate topology, staged line-budget,
+and Lefthook contracts pass; the guard evaluates only the staged policy/source
+blobs and the formatter rejects partial staging or concurrent content/index
+mismatches without overwriting the concurrent state.
+
+covers: REQ-RUST-SOURCE-QUALITY-010
+
 ### VER-RUST-SOURCE-QUALITY-007
 
 Method: run the Auto and Legacy one-connection baseline regressions through the canonical lightweight backend runner, retaining the persisted-conversation and caller-level buffered-runtime assertions, together with the original unknown-account reconcile test and complete backend profiles. Pass condition: six real concurrent builders complete with one connection and preserve their mode-specific payload and replay boundaries; original assertions and all three backend profiles pass. Old-source RED and temporary-candidate observations remain diagnosis evidence and do not replace formal validation.

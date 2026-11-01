@@ -48,6 +48,8 @@ assert_contains "$repo_root/scripts/format-staged-files.sh" 'git apply --cached'
 assert_contains "$repo_root/scripts/format-staged-files.sh" 'O_NOFOLLOW'
 assert_contains "$repo_root/scripts/format-staged-files.sh" 'write_worktree_files'
 assert_contains "$repo_root/scripts/format-staged-files.sh" '$current eq $expected'
+assert_contains "$repo_root/scripts/format-staged-files.sh" 'O_NONBLOCK'
+assert_contains "$repo_root/scripts/format-staged-files.sh" 'S_IFREG'
 assert_contains "$repo_root/scripts/check-staged-formatter-safety.sh" 'format-staged-files.sh" --check'
 assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" 'pre-commit.flock'
 assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" "'--no-auto-install'"

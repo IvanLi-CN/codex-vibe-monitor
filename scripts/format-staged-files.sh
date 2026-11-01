@@ -197,7 +197,7 @@ index_matches_snapshot() {
 acquire_index_lock() {
   [ "$index_lock_held" -eq 0 ] || return 0
   index_lock_path="$index_path.lock"
-  if ! index_lock_identity="$(perl -MFcntl=:DEFAULT -MFcntl=:flock -e '
+  if ! index_lock_identity="$(perl -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -e '
     my ($path) = @ARGV;
     my $separator = rindex($path, "/");
     exit 1 if $separator < 1;
@@ -208,6 +208,10 @@ acquire_index_lock() {
     chdir $directory or exit 1;
     sysopen my $lock, $lock_name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666 or exit 1;
     my @stat = stat($lock) or do { unlink $lock_name; exit 1; };
+    if (($stat[2] & S_IFMT) != S_IFREG) {
+      unlink $lock_name;
+      exit 1;
+    }
     print "$stat[0]:$stat[1]\n";
     if (!close $lock) {
       unlink $lock_name;
@@ -222,7 +226,7 @@ acquire_index_lock() {
 }
 
 remove_index_lock() {
-  perl -MFcntl=:DEFAULT -MFcntl=:flock -e '
+  perl -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -e '
     my ($path, $expected_identity) = @ARGV;
     my $separator = rindex($path, "/");
     exit 2 if $separator < 1;
@@ -231,8 +235,9 @@ remove_index_lock() {
     sysopen my $directory, $directory_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
     flock($directory, LOCK_EX) or exit 2;
     chdir $directory or exit 2;
-    sysopen my $lock, $lock_name, O_RDONLY | O_NOFOLLOW or exit 2;
+    sysopen my $lock, $lock_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK or exit 2;
     my @stat = stat($lock) or exit 2;
+    exit 2 unless (($stat[2] & S_IFMT) == S_IFREG);
     exit 3 if "$stat[0]:$stat[1]" ne $expected_identity;
     my @path_stat = lstat($lock_name) or exit 2;
     exit 3 if "$path_stat[0]:$path_stat[1]" ne $expected_identity;
@@ -272,12 +277,14 @@ update_index() {
 write_worktree_files() {
   [ "$#" -gt 0 ] || return 0
 
-  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MIPC::Open2 - "$@" <<'EOF_WRITE_WORKTREE'
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -MIPC::Open2 - "$repo_root" "$@" <<'EOF_WRITE_WORKTREE'
 use strict;
 use warnings;
 
 my @arguments = @ARGV;
-exit 2 if !@arguments || @arguments % 4;
+my $worktree_root = shift @arguments;
+exit 2 if !defined $worktree_root || !@arguments || @arguments % 4;
+my $resolved_worktree_root = abs_path($worktree_root) or exit 2;
 my @records;
 
 sub read_all {
@@ -351,17 +358,31 @@ sub restore_written {
 
 for (my $offset = 0; $offset < @arguments; $offset += 4) {
   my ($target_path, $expected_hash, $desired_hash, $source_path) = @arguments[$offset .. $offset + 3];
-  my $target_separator = rindex($target_path, '/');
-  exit 2 if $target_separator < 1;
-  my $target_directory = substr($target_path, 0, $target_separator);
-  my $target_name = substr($target_path, $target_separator + 1);
-  my $expected_directory = abs_path($target_directory) or exit 2;
-  sysopen my $directory, $target_directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
-  chdir $directory or exit 2;
-  my $opened_directory = abs_path('.') or exit 2;
-  exit 3 if $opened_directory ne $expected_directory;
-  sysopen my $target, $target_name, O_RDWR | O_NOFOLLOW or exit 2;
+  my $root_prefix = $resolved_worktree_root eq '/' ? '/' : "$resolved_worktree_root/";
+  exit 3 unless index($target_path, $root_prefix) == 0;
+  my $relative_target = substr($target_path, length($root_prefix));
+  my @target_components = split('/', $relative_target, -1);
+  exit 2 if !@target_components || grep { $_ eq '' || $_ eq '.' || $_ eq '..' } @target_components;
+  my $target_name = pop @target_components;
+  my @directory_handles;
+  sysopen my $root_handle, '/', O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
+  push @directory_handles, $root_handle;
+  chdir $root_handle or exit 2;
+  for my $component (grep { length $_ } split('/', $resolved_worktree_root)) {
+    exit 2 if $component eq '.' || $component eq '..';
+    sysopen my $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
+    chdir $next_directory or exit 2;
+    push @directory_handles, $next_directory;
+  }
+  for my $component (@target_components) {
+    sysopen my $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
+    chdir $next_directory or exit 2;
+    push @directory_handles, $next_directory;
+  }
+  sysopen my $target, $target_name, O_RDWR | O_NOFOLLOW | O_NONBLOCK or exit 2;
   binmode $target;
+  my @target_stat = stat($target) or exit 2;
+  exit 3 unless (($target_stat[2] & S_IFMT) == S_IFREG);
   flock($target, LOCK_EX) or exit 2;
   sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW or exit 2;
   binmode $source;
@@ -377,7 +398,7 @@ for (my $offset = 0; $offset < @arguments; $offset += 4) {
   push @records, {
     before => $before,
     desired => $desired,
-    directory => $directory,
+    directories => \@directory_handles,
     needs_write => $before_hash eq $expected_hash,
     source => $source,
     target => $target,
@@ -397,7 +418,9 @@ for my $record (@records) {
 for my $record (@records) {
   close $record->{source} or exit 2;
   close $record->{target} or exit 2;
-  close $record->{directory} or exit 2;
+  for my $directory (@{$record->{directories}}) {
+    close $directory or exit 2;
+  }
 }
 EOF_WRITE_WORKTREE
 }
@@ -408,7 +431,7 @@ install_private_index() {
   local index_path_arg="$3"
   local lock_identity_arg="$4"
 
-  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock - "$source" "$lock_path" "$index_path_arg" "$lock_identity_arg" <<'EOF_INSTALL_INDEX'
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode - "$source" "$lock_path" "$index_path_arg" "$lock_identity_arg" <<'EOF_INSTALL_INDEX'
 use strict;
 use warnings;
 
@@ -428,8 +451,9 @@ flock($directory, LOCK_EX) or exit 2;
 chdir $directory or exit 2;
 my $opened_directory = abs_path('.') or exit 2;
 exit 3 if $opened_directory ne $expected_directory;
-sysopen my $lock, $lock_name, O_WRONLY | O_NOFOLLOW or exit 2;
+sysopen my $lock, $lock_name, O_WRONLY | O_NOFOLLOW | O_NONBLOCK or exit 2;
 my @lock_stat = stat($lock) or exit 2;
+exit 2 unless (($lock_stat[2] & S_IFMT) == S_IFREG);
 my $lock_identity = "$lock_stat[0]:$lock_stat[1]";
 exit 3 if $lock_identity ne $expected_lock_identity;
 my @lock_path_stat = lstat($lock_name) or exit 2;
