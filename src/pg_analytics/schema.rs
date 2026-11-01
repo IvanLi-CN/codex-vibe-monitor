@@ -74,6 +74,14 @@ CREATE INDEX IF NOT EXISTS analytics_facts_upstream_date_idx
     ON cvm_analytics.analytics_facts (upstream_account_id, stats_date);
 CREATE INDEX IF NOT EXISTS analytics_facts_upstream_occurred_idx
     ON cvm_analytics.analytics_facts (upstream_account_id, occurred_at_epoch_ms, source_row_id);
+-- Projection readers use this tuple for high-watermark capture and keyset pages. Keep an
+-- account-leading variant so scoped reads retain the same order without scanning other accounts.
+CREATE INDEX IF NOT EXISTS analytics_facts_projection_cursor_idx
+    ON cvm_analytics.analytics_facts (stats_date, occurred_at_epoch_ms, source, source_row_id);
+CREATE INDEX IF NOT EXISTS analytics_facts_account_projection_cursor_idx
+    ON cvm_analytics.analytics_facts (
+        upstream_account_id, stats_date, occurred_at_epoch_ms, source, source_row_id
+    );
 
 -- Parallel-work membership uses a one-way key digest. Raw prompt-cache keys never cross the
 -- analytics storage boundary, while the source row identity keeps corrections idempotent.

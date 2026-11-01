@@ -53,9 +53,6 @@ fn finalize_postgres_summary_all_response(
     augmentation: SummaryLiveAugmentation,
     maintenance: StatsMaintenanceResponse,
 ) {
-    // SummaryWindow::All intentionally omits usageBreakdown on the existing
-    // SQLite route; keep the PostgreSQL projection on the same wire contract.
-    response.usage_breakdown = None;
     apply_summary_live_augmentation(response, augmentation);
     response.maintenance = Some(maintenance);
 }
@@ -339,13 +336,14 @@ mod tests {
     #[test]
     fn postgres_summary_all_finalization_preserves_live_response_contract() {
         let mut response = AnalyticsSummaryAggregate::default().into_response(None, false);
-        response.usage_breakdown = Some(UsageBreakdownResponse {
+        let expected_usage = UsageBreakdownResponse {
             cache_write_tokens: 1,
             cache_read_tokens: 2,
             output_tokens: 3,
             costs: None,
             models: Vec::new(),
-        });
+        };
+        response.usage_breakdown = Some(expected_usage.clone());
         let maintenance = StatsMaintenanceResponse {
             raw_compression_backlog: None,
             startup_backfill: None,
@@ -362,6 +360,6 @@ mod tests {
         assert_eq!(response.in_progress_avg_wait_ms, Some(12.5));
         assert_eq!(response.maintenance, Some(maintenance));
         assert_eq!(response.non_success_tokens, None);
-        assert_eq!(response.usage_breakdown, None);
+        assert_eq!(response.usage_breakdown, Some(expected_usage));
     }
 }

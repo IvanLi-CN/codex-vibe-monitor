@@ -3456,6 +3456,8 @@ mod tests {
         assert!(PG_ANALYTICS_LEGACY_INVALIDATION_SQL.contains("generation = $4"));
         assert!(PG_ANALYTICS_LEGACY_INVALIDATION_SQL.contains("consumer_checkpoint = $5"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("occurred_at_epoch_ms BIGINT NOT NULL"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts_projection_cursor_idx"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts_account_projection_cursor_idx"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("payload"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("requester_ip"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("prompt_cache"));
