@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.14.6",
+  "base_stable_version": "4.14.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-01T06:00:20Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.14.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9f24cdf19e6e5e378adce3e522bc49c591fcad71",
+  "pr_number": 1264,
+  "pr_title": "refactor(tests): split upstream maintenance scheduler helpers",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.14.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.14.6",
+  "target_sha": "30b5897929181d60780d4558b2bb60b84766d2dd",
+  "type_label": "type:patch"
+}
