@@ -30,7 +30,9 @@ done
 assert_contains "$repo_root/lefthook.yml" 'name: check-rust-line-budget'
 assert_contains "$repo_root/lefthook.yml" 'check_staged_rust_line_budget.py'
 assert_contains "$repo_root/lefthook.yml" '{staged_files}'
-assert_contains "$repo_root/lefthook.yml" 'glob: "**/*.md"'
+assert_contains "$repo_root/lefthook.yml" '"web/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"'
+assert_contains "$repo_root/lefthook.yml" '"*.md"'
+assert_contains "$repo_root/lefthook.yml" '"**/*.md"'
 assert_contains "$repo_root/lefthook.yml" 'parallel: false'
 [ "$(sed -n '2p' "$repo_root/lefthook.yml")" = '  parallel: false' ] \
   || fail 'staged formatter jobs must serialize their shared index writes'
@@ -90,7 +92,7 @@ case "$(cd "$(dirname "$lefthook_bin")" && pwd -P)" in
 esac
 
 partial_repo="$tmp_dir/partial-stage"
-mkdir -p "$partial_repo/scripts" "$partial_repo/src" "$partial_repo/.github/scripts"
+mkdir -p "$partial_repo/scripts" "$partial_repo/src" "$partial_repo/.github/scripts" "$partial_repo/web"
 cp "$repo_root/lefthook.yml" "$partial_repo/lefthook.yml"
 cp "$repo_root/scripts/format-staged-files.sh" "$partial_repo/scripts/format-staged-files.sh"
 cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$partial_repo/scripts/check-staged-formatter-safety.sh"
@@ -124,6 +126,8 @@ EOF_MODULE_ROOT
 cat > "$partial_repo/src/child.rs" <<'EOF_MODULE_CHILD'
 pub fn run(){ println!("child"); }
 EOF_MODULE_CHILD
+printf '# fixture README\n' > "$partial_repo/README.md"
+printf '{"name":"fixture"}\n' > "$partial_repo/web/package.json"
 git -C "$partial_repo" init -q
 git -C "$partial_repo" config user.name 'Codex Test'
 git -C "$partial_repo" config user.email 'codex-test@example.com'
@@ -135,6 +139,18 @@ git -C "$partial_repo" commit -qm 'fixture'
 )
 grep -Fqx 'fn main() {' "$partial_repo/src/module_root.rs" \
   || fail 'rustfmt must format a module root without resolving temporary children'
+root_glob_formatter_log="$tmp_dir/root-glob-formatter.log"
+: > "$root_glob_formatter_log"
+(
+  cd "$partial_repo"
+  FORMATTER_LOG="$root_glob_formatter_log" \
+    CODEX_HOOK_BIOME_BIN="$fake_bin/biome" CODEX_HOOK_DPRINT_BIN="$fake_bin/dprint" \
+    CODEX_HOOK_RUSTFMT_BIN="$fake_bin/rustfmt" \
+    "$lefthook_bin" run pre-commit --all-files --no-auto-install --no-tty \
+    > "$tmp_dir/root-glob.log" 2>&1
+)
+assert_contains "$root_glob_formatter_log" $'biome\tcheck --write --stdin-file-path=web/package.json'
+assert_contains "$root_glob_formatter_log" $'dprint\tfmt --stdin README.md'
 cat > "$partial_repo/-evil.rs" <<'EOF_DASH_RUST'
 fn main() {}
 EOF_DASH_RUST
