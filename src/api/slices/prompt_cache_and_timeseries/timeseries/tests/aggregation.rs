@@ -280,3 +280,56 @@ fn exact_records_fail_closed_on_numeric_overflow() {
         crate::stats::ApiError::Unavailable(_)
     ));
 }
+
+#[test]
+fn runtime_overlay_rejects_inconsistent_tokens_and_invalid_timing() {
+    let start = Utc
+        .with_ymd_and_hms(2026, 10, 30, 0, 0, 0)
+        .single()
+        .expect("valid timeseries start");
+    let end = start + ChronoDuration::minutes(1);
+
+    let mut inconsistent = crate::api::summary_projection_test_invocation();
+    inconsistent.status = Some("pending".to_string());
+    inconsistent.occurred_at = "2026-10-30T00:00:12Z".to_string();
+    inconsistent.input_tokens = Some(1);
+    inconsistent.output_tokens = Some(0);
+    inconsistent.total_tokens = Some(1);
+    inconsistent.cache_input_tokens = Some(2);
+    let mut aggregates = BTreeMap::new();
+    let token_error = super::aggregation::overlay_runtime_timeseries_snapshot(
+        &mut aggregates,
+        &[inconsistent],
+        InvocationSourceScope::All,
+        None,
+        start,
+        end,
+        60,
+        chrono_tz::Asia::Shanghai,
+    )
+    .expect_err("inconsistent runtime token components must fail closed");
+    assert!(matches!(
+        token_error,
+        crate::stats::ApiError::Unavailable(_)
+    ));
+
+    let mut invalid_timing = crate::api::summary_projection_test_invocation();
+    invalid_timing.status = Some("pending".to_string());
+    invalid_timing.occurred_at = "2026-10-30T00:00:12Z".to_string();
+    invalid_timing.t_upstream_ttfb_ms = Some(f64::NAN);
+    let timing_error = super::aggregation::overlay_runtime_timeseries_snapshot(
+        &mut BTreeMap::new(),
+        &[invalid_timing],
+        InvocationSourceScope::All,
+        None,
+        start,
+        end,
+        60,
+        chrono_tz::Asia::Shanghai,
+    )
+    .expect_err("non-finite runtime timing must fail closed");
+    assert!(matches!(
+        timing_error,
+        crate::stats::ApiError::Unavailable(_)
+    ));
+}

@@ -864,10 +864,13 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
             || (legacy_success_status && error_message.as_deref().is_none_or(str::is_empty)))
         .then(|| classification.failure_class.as_str().to_string()),
     };
-    let is_actionable = row.is_actionable.or_else(|| {
-        (classification.failure_class != crate::api::FailureClass::None)
-            .then_some(i64::from(classification.is_actionable))
-    });
+    let is_actionable = row
+        .is_actionable
+        .filter(|value| (*value != 0) == classification.is_actionable)
+        .or_else(|| {
+            (classification.failure_class != crate::api::FailureClass::None)
+                .then_some(i64::from(classification.is_actionable))
+        });
     let success_like = crate::api::prompt_invocation_status_is_success_like(
         status.as_deref(),
         error_message.as_deref(),
@@ -1525,7 +1528,7 @@ mod tests {
         assert_eq!(fact["upstreamAccountId"], 42);
         assert_eq!(fact["successLike"], false);
         assert_eq!(fact["failureClass"], "service_failure");
-        assert_eq!(fact["isActionable"], false);
+        assert_eq!(fact["isActionable"], true);
     }
 
     #[tokio::test]

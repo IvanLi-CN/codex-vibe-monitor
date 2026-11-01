@@ -54,6 +54,10 @@ fn finalize_postgres_summary_all_response(
     maintenance: StatsMaintenanceResponse,
 ) {
     apply_summary_live_augmentation(response, augmentation);
+    // All-time SQLite summaries intentionally omit range-only usage detail. Keep the
+    // PostgreSQL projection on the same response contract even though its bounded fact
+    // aggregate computes usage internally.
+    response.usage_breakdown = None;
     response.maintenance = Some(maintenance);
 }
 
@@ -368,6 +372,6 @@ mod tests {
         );
         assert_eq!(response.maintenance, Some(maintenance));
         assert_eq!(response.non_success_tokens, None);
-        assert_eq!(response.usage_breakdown, Some(expected_usage));
+        assert_eq!(response.usage_breakdown, None);
     }
 }

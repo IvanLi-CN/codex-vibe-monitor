@@ -94,6 +94,14 @@ fn validate_runtime_timeseries_numeric_fields(record: &ApiInvocation) -> Result<
             )));
         }
     }
+    if let (Some(input_tokens), Some(cache_input_tokens)) =
+        (record.input_tokens, record.cache_input_tokens)
+        && cache_input_tokens > input_tokens
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "timeseries runtime overlay contains cache input tokens exceeding input tokens"
+        )));
+    }
     if record
         .cost
         .is_some_and(|value| !value.is_finite() || value < 0.0)
@@ -101,6 +109,23 @@ fn validate_runtime_timeseries_numeric_fields(record: &ApiInvocation) -> Result<
         return Err(ApiError::unavailable(anyhow!(
             "timeseries runtime overlay contains invalid cost"
         )));
+    }
+    for (field, value) in [
+        ("total latency", record.t_total_ms),
+        ("request read latency", record.t_req_read_ms),
+        ("request parse latency", record.t_req_parse_ms),
+        ("upstream connect latency", record.t_upstream_connect_ms),
+        ("upstream TTFB latency", record.t_upstream_ttfb_ms),
+        ("upstream stream latency", record.t_upstream_stream_ms),
+        ("first token latency", record.first_token_ms),
+        ("response parse latency", record.t_resp_parse_ms),
+        ("persist latency", record.t_persist_ms),
+    ] {
+        if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err(ApiError::unavailable(anyhow!(
+                "timeseries runtime overlay contains invalid {field}"
+            )));
+        }
     }
     Ok(())
 }

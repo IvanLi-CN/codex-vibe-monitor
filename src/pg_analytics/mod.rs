@@ -1047,10 +1047,13 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
             || (legacy_success_status && error_message.as_deref().is_none_or(str::is_empty)))
         .then(|| classification.failure_class.as_str().to_string()),
     };
-    let is_actionable = row.is_actionable.or_else(|| {
-        (classification.failure_class != crate::api::FailureClass::None)
-            .then_some(i64::from(classification.is_actionable))
-    });
+    let is_actionable = row
+        .is_actionable
+        .filter(|value| (*value != 0) == classification.is_actionable)
+        .or_else(|| {
+            (classification.failure_class != crate::api::FailureClass::None)
+                .then_some(i64::from(classification.is_actionable))
+        });
     Ok(AnalyticsFact {
         fact_version: 1,
         source: crate::analytics_changes::normalize_analytics_required_text(&row.source, "source")?,
@@ -3903,6 +3906,7 @@ mod tests {
             status: Some("http_200".to_string()),
             error_message: Some("failed to contact upstream".to_string()),
             failure_class: Some("none".to_string()),
+            is_actionable: Some(0),
             ..Default::default()
         })
         .expect("legacy error message should classify before fact persistence");
