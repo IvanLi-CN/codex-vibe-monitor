@@ -459,7 +459,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/oauth_refresh_observability.rs",
       "role": "test_helper",
-      "line_budget": 1138,
+      "line_budget": 1139,
       "next_module_workstream": "Maintain OAuth refresh observability, independent manual operations, and usage authentication retry fixtures."
     },
     {

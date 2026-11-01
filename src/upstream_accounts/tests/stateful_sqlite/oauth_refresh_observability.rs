@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::json;
 
+#[test]
 fn refresh_error_classification_distinguishes_access_and_refresh_tokens() {
     let (usage_code, _) = classify_refresh_error(
         "usage endpoint returned 401: access token revoked",
@@ -273,7 +274,7 @@ async fn credential_refresh_keeps_access_token_rejection_during_transient_retry(
     );
 }
 
-#[test]
+#[tokio::test]
 async fn manual_usage_refresh_updates_windows_without_refreshing_credentials() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
         spawn_sequenced_oauth_sync_server(
