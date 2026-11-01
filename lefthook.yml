@@ -16,7 +16,6 @@ pre-commit:
         jobs:
           - name: format-rust
             run: bash scripts/format-staged-files.sh rust {staged_files}
-            stage_fixed: true
           - name: check-rust-line-budget
             run: python3 .github/scripts/check_staged_rust_line_budget.py
 

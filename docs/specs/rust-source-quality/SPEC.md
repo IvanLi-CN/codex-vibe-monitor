@@ -93,10 +93,13 @@ line-budget guard when staged Rust paths are relevant. The guard MUST read
 selected source blobs from Git's index, match exact paths from
 `.github/rust-source-quality-policy.json`, enforce each recorded `line_budget`,
 skip unselected and deleted paths, and report the path, actual physical line
-count, and budget for an over-budget selected path. It MUST NOT run Cargo,
-access the network, scan the worktree, or mutate the index or worktree. The
-existing partial-staging safety check, commitlint hook, post-checkout hook, and
-the canonical full runner MUST remain intact.
+count, and budget for an over-budget selected path. The policy itself MUST be
+read from its stage-0 index blob so staged source and policy are evaluated as
+one candidate. The Rust formatter MUST reject partial staging and stage its
+formatted whole-file output before the guard reads the index. The guard MUST
+NOT run Cargo, access the network, scan the worktree, or mutate the index or
+worktree. The existing partial-staging safety check, commitlint hook,
+post-checkout hook, and the canonical full runner MUST remain intact.
 
 covers: VER-RUST-SOURCE-QUALITY-010
 

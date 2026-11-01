@@ -84,7 +84,15 @@ case "$surface" in
     ;;
   rust)
     rustfmt_bin="${CODEX_HOOK_RUSTFMT_BIN:-rustfmt}"
+    for file in "${files[@]}"; do
+      if ! git diff --quiet -- "$file"; then
+        printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
+        printf 'stage or unstage all changes in this file before committing\n' >&2
+        exit 1
+      fi
+    done
     "$rustfmt_bin" --edition 2024 "${files[@]}"
+    git add -- "${files[@]}"
     ;;
   markdown)
     dprint_bin="${CODEX_HOOK_DPRINT_BIN:-$repo_root/node_modules/.bin/dprint}"

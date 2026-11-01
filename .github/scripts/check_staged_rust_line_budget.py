@@ -45,17 +45,17 @@ def validate_relative_path(raw_path: Any, where: str) -> str:
         or "\\" in raw_path
         or path.is_absolute()
         or ".." in path.parts
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in raw_path)
         or not raw_path.endswith(".rs")
     ):
-        raise CheckError(f"{where} must be a repository-relative .rs path")
+        raise CheckError(f"{where} must be a repository-relative .rs path without control characters")
     return raw_path
 
 
-def load_policy(policy_path: Path) -> dict[str, int]:
+def load_policy(raw_policy: bytes, policy_path: str) -> dict[str, int]:
     try:
-        with policy_path.open(encoding="utf-8") as stream:
-            policy = json.load(stream)
-    except (OSError, json.JSONDecodeError) as error:
+        policy = json.loads(raw_policy.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CheckError(f"unable to load Rust source-quality policy {policy_path}: {error}") from error
 
     if not isinstance(policy, dict):
@@ -120,11 +120,15 @@ def index_blobs(repo_root: Path) -> dict[bytes, bytes]:
     return blobs
 
 
-def staged_source(repo_root: Path, blobs: dict[bytes, bytes], raw_path: bytes, path: str) -> str:
+def index_blob(repo_root: Path, blobs: dict[bytes, bytes], raw_path: bytes, path: str) -> bytes:
     object_id = blobs.get(raw_path)
     if object_id is None:
         raise CheckError(f"{path}: staged path has no stage-0 Git index blob")
-    content = run_git(repo_root, "cat-file", "blob", object_id.decode("ascii"))
+    return run_git(repo_root, "cat-file", "blob", object_id.decode("ascii"))
+
+
+def staged_source(repo_root: Path, blobs: dict[bytes, bytes], raw_path: bytes, path: str) -> str:
+    content = index_blob(repo_root, blobs, raw_path, path)
     try:
         return content.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -155,12 +159,22 @@ def main() -> int:
     repo_root = args.repo_root.resolve()
 
     try:
-        budgets = load_policy(resolve_policy_path(repo_root, str(args.policy)))
         staged_paths = staged_rust_paths(repo_root)
+        if not staged_paths:
+            return 0
+        policy_path = resolve_policy_path(repo_root, str(args.policy))
+        policy_relative_path = policy_path.relative_to(repo_root).as_posix()
+        blobs = index_blobs(repo_root)
+        policy_content = index_blob(
+            repo_root,
+            blobs,
+            policy_relative_path.encode("utf-8"),
+            policy_relative_path,
+        )
+        budgets = load_policy(policy_content, policy_relative_path)
         selected_paths = [(raw_path, path, budgets[path]) for raw_path, path in staged_paths if path in budgets]
         if not selected_paths:
             return 0
-        blobs = index_blobs(repo_root)
         failures: list[str] = []
         for raw_path, path, budget in selected_paths:
             actual = len(staged_source(repo_root, blobs, raw_path, path).splitlines())

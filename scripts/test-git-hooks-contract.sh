@@ -88,7 +88,16 @@ cp "$repo_root/scripts/format-staged-files.sh" "$partial_repo/scripts/format-sta
 cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$partial_repo/scripts/check-staged-formatter-safety.sh"
 cp "$repo_root/scripts/install-lefthook-hooks.sh" "$partial_repo/scripts/install-lefthook-hooks.sh"
 cp "$repo_root/.github/scripts/check_staged_rust_line_budget.py" "$partial_repo/.github/scripts/check_staged_rust_line_budget.py"
-cp "$repo_root/.github/rust-source-quality-policy.json" "$partial_repo/.github/rust-source-quality-policy.json"
+cat > "$partial_repo/.github/rust-source-quality-policy.json" <<'EOF_POLICY'
+{
+  "files": [
+    {
+      "path": "src/sample.rs",
+      "line_budget": 2
+    }
+  ]
+}
+EOF_POLICY
 chmod +x "$partial_repo/scripts/format-staged-files.sh"
 chmod +x "$partial_repo/scripts/check-staged-formatter-safety.sh"
 chmod +x "$partial_repo/scripts/install-lefthook-hooks.sh"
@@ -152,10 +161,14 @@ cmp -s "$tmp_dir/expected-worktree.contents" "$tmp_dir/worktree.contents" \
 cat > "$partial_repo/src/sample.rs" <<'EOF_FULL_STAGE'
 fn main(){ println!("staged"); }
 EOF_FULL_STAGE
-(
+if (
   cd "$partial_repo"
-  LEFTHOOK_BIN="$lefthook_bin" CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$partial_pre_commit_hook"
-)
+  LEFTHOOK_BIN="$lefthook_bin" CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$partial_pre_commit_hook" \
+    > "$tmp_dir/formatted-stage.log" 2>&1
+); then
+  fail 'selected formatted Rust file over its budget must fail after formatting'
+fi
+assert_contains "$tmp_dir/formatted-stage.log" 'src/sample.rs: 3 physical lines exceeds explicit budget 2'
 git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/formatted-index.contents"
 cp "$partial_repo/src/sample.rs" "$tmp_dir/formatted-worktree.contents"
 cat > "$tmp_dir/expected-formatted.contents" <<'EOF_FORMATTED'

@@ -82,6 +82,15 @@ git -C "$fixture_repo" diff --cached --binary >"$tmp_dir/index.after"
 cmp -s "$tmp_dir/index.before" "$tmp_dir/index.after" || fail 'checker modified staged content'
 cmp -s "$tmp_dir/worktree.before" "$fixture_repo/src/selected.rs" || fail 'checker modified worktree content'
 
+cp "$fixture_repo/policy.json" "$tmp_dir/policy.before"
+sed -i.bak 's/"line_budget": 3/"line_budget": 99/' "$fixture_repo/policy.json"
+rm -f "$fixture_repo/policy.json.bak"
+if run_checker >"$tmp_dir/policy-skew.stdout" 2>"$tmp_dir/policy-skew.stderr"; then
+  fail 'staged policy must control the budget when the worktree policy is changed'
+fi
+assert_contains "$tmp_dir/policy-skew.stderr" 'src/selected.rs: 4 physical lines exceeds explicit budget 3'
+cp "$tmp_dir/policy.before" "$fixture_repo/policy.json"
+
 cat > "$fixture_repo/src/selected.rs" <<'EOF_DELETED_SIBLING'
 fn selected_one() {}
 fn selected_two() {}
