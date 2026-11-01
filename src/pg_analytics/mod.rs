@@ -377,7 +377,7 @@ impl PgAnalyticsRuntime {
         }))
     }
 
-    async fn require_read_transaction(
+    pub(crate) async fn require_read_transaction(
         &self,
     ) -> AnalyticsReadResult<sqlx::Transaction<'_, sqlx::Postgres>> {
         let pool = self
@@ -628,6 +628,29 @@ pub(crate) async fn query_parallel_work_key_rows(
     upstream_account_id: Option<i64>,
 ) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkKeyRow>> {
     let mut transaction = runtime.require_read_transaction().await?;
+    let rows = query_parallel_work_key_rows_on_connection(
+        &mut transaction,
+        start_at,
+        end_at,
+        proxy_only,
+        upstream_account_id,
+    )
+    .await?;
+    transaction.commit().await.map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to commit PostgreSQL analytics parallel-work key read transaction: {error}"
+        ))
+    })?;
+    Ok(rows)
+}
+
+pub(crate) async fn query_parallel_work_key_rows_on_connection(
+    connection: &mut sqlx::PgConnection,
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+    proxy_only: bool,
+    upstream_account_id: Option<i64>,
+) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkKeyRow>> {
     let mut query = QueryBuilder::<sqlx::Postgres>::new(
         r#"
         SELECT occurred_at_epoch_ms, key_digest, upstream_account_id
@@ -649,18 +672,13 @@ pub(crate) async fn query_parallel_work_key_rows(
     query.push(" ORDER BY occurred_at_epoch_ms ASC, source_row_id ASC");
     let rows = query
         .build_query_as::<AnalyticsParallelWorkKeyRow>()
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
                 "failed to query PostgreSQL analytics parallel-work keys: {error}"
             ))
         })?;
-    transaction.commit().await.map_err(|error| {
-        AnalyticsReadError::Internal(anyhow!(
-            "failed to commit PostgreSQL analytics parallel-work key read transaction: {error}"
-        ))
-    })?;
     Ok(rows)
 }
 
@@ -672,6 +690,29 @@ pub(crate) async fn query_parallel_work_conversation_rows(
     upstream_account_id: Option<i64>,
 ) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkConversationRow>> {
     let mut transaction = runtime.require_read_transaction().await?;
+    let rows = query_parallel_work_conversation_rows_on_connection(
+        &mut transaction,
+        start_at,
+        end_at,
+        proxy_only,
+        upstream_account_id,
+    )
+    .await?;
+    transaction.commit().await.map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to commit PostgreSQL analytics conversation read transaction: {error}"
+        ))
+    })?;
+    Ok(rows)
+}
+
+pub(crate) async fn query_parallel_work_conversation_rows_on_connection(
+    connection: &mut sqlx::PgConnection,
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+    proxy_only: bool,
+    upstream_account_id: Option<i64>,
+) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkConversationRow>> {
     let mut query = QueryBuilder::<sqlx::Postgres>::new(
         r#"
         SELECT key_digest,
@@ -699,18 +740,13 @@ pub(crate) async fn query_parallel_work_conversation_rows(
     query.push_bind(80_i64);
     let rows = query
         .build_query_as::<AnalyticsParallelWorkConversationRow>()
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
                 "failed to query PostgreSQL analytics parallel-work conversations: {error}"
             ))
         })?;
-    transaction.commit().await.map_err(|error| {
-        AnalyticsReadError::Internal(anyhow!(
-            "failed to commit PostgreSQL analytics conversation read transaction: {error}"
-        ))
-    })?;
     Ok(rows)
 }
 
@@ -3928,6 +3964,15 @@ mod tests {
             };
             app.verify_schema().await?;
             app.verify_read_transaction().await?;
+            let app_inherits_reader: bool = sqlx::query_scalar(
+                "SELECT pg_has_role(current_user, 'cvm_analytics_reader', 'USAGE')",
+            )
+            .fetch_one(&app_pool)
+            .await?;
+            anyhow::ensure!(
+                app_inherits_reader,
+                "application role does not inherit the PostgreSQL analytics reader role"
+            );
             let app_runtime = PgAnalyticsRuntime {
                 backend: AnalyticsBackend::Postgres,
                 pool: Some(PgAnalyticsPool {
@@ -4086,6 +4131,40 @@ mod tests {
         sqlx::query("UPDATE cvm_analytics.analytics_state SET status = 'ready' WHERE id = 1")
             .execute(&mut *maintenance)
             .await?;
+        let read_start = Utc
+            .timestamp_millis_opt(-1)
+            .single()
+            .context("build PostgreSQL fixture read start")?;
+        let read_end = Utc
+            .timestamp_millis_opt(1)
+            .single()
+            .context("build PostgreSQL fixture read end")?;
+        let mut production_read = app_runtime.require_read_transaction().await?;
+        let production_key_rows = query_parallel_work_key_rows_on_connection(
+            &mut production_read,
+            read_start,
+            read_end,
+            false,
+            None,
+        )
+        .await?;
+        anyhow::ensure!(
+            production_key_rows.len() == 1,
+            "production PostgreSQL key query did not read the fixture row"
+        );
+        let production_conversation_rows = query_parallel_work_conversation_rows_on_connection(
+            &mut production_read,
+            read_start,
+            read_end,
+            false,
+            None,
+        )
+        .await?;
+        anyhow::ensure!(
+            production_conversation_rows.len() == 1,
+            "production PostgreSQL conversation query did not read the fixture row"
+        );
+        production_read.commit().await?;
         let mut in_flight_reader = app_runtime.require_read_transaction().await?;
         fence_replica_service_eligibility_on_connection(&mut maintenance).await?;
         clear_replica_target(&mut maintenance, 2).await?;
@@ -4099,6 +4178,11 @@ mod tests {
             "repeatable-read analytics reader did not retain the pre-fence snapshot"
         );
         in_flight_reader.rollback().await?;
+        let post_fence_reader = app_runtime.require_read_transaction().await;
+        anyhow::ensure!(
+            post_fence_reader.is_err(),
+            "PostgreSQL reader admitted a new transaction after the rebuild fence"
+        );
         sqlx::query(
             r#"
             UPDATE cvm_analytics.analytics_replica_state
