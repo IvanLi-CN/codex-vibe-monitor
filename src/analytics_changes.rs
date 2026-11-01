@@ -1,6 +1,7 @@
 use super::*;
 
-const ANALYTICS_CHANGE_EVENT_VERSION: i64 = 1;
+pub(crate) const ANALYTICS_SOURCE_EVENT_VERSION: i64 = 1;
+pub(crate) const ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION: i64 = 2;
 const ANALYTICS_CHANGE_CAPACITY_DEFAULT: i64 = 10_000;
 const ANALYTICS_CHANGE_FACT_MAX_BYTES: usize = 64 * 1024;
 const ANALYTICS_CHANGE_ENTITY_KEY_MAX_BYTES: usize = 512;
@@ -180,6 +181,7 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
         CREATE TABLE IF NOT EXISTS analytics_change_events (
             change_id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_version INTEGER NOT NULL,
+            fact_date_semantics_version INTEGER NOT NULL DEFAULT 1,
             event_kind TEXT NOT NULL CHECK(event_kind IN ('upsert', 'tombstone', 'coverage')),
             entity_kind TEXT NOT NULL,
             source TEXT NOT NULL,
@@ -197,6 +199,22 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure analytics_change_events table")?;
+
+    let fact_date_semantics_column_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('analytics_change_events') WHERE name = 'fact_date_semantics_version')",
+    )
+    .fetch_one(pool)
+    .await
+    .context("failed to inspect analytics change event compatibility columns")?
+        != 0;
+    if !fact_date_semantics_column_exists {
+        sqlx::query(
+            "ALTER TABLE analytics_change_events ADD COLUMN fact_date_semantics_version INTEGER NOT NULL DEFAULT 1",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add analytics change event fact-date semantics version")?;
+    }
 
     sqlx::query(
         r#"
@@ -637,6 +655,7 @@ async fn append_analytics_change_tx(
         r#"
         INSERT INTO analytics_change_events (
             event_version,
+            fact_date_semantics_version,
             event_kind,
             entity_kind,
             source,
@@ -647,9 +666,11 @@ async fn append_analytics_change_tx(
             occurred_at,
             fact_json
         )
-        VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         "#,
     )
+    .bind(ANALYTICS_SOURCE_EVENT_VERSION)
+    .bind(ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION)
     .bind(event_kind)
     .bind(&entity_kind)
     .bind(&source)
@@ -821,7 +842,7 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
     let invoke_id = bounded_required_text(&row.invoke_id, "invoke_id")?;
     let entity_key = format!("invocation:{}:{}", source, row.id);
     let fact_json = json!({
-        "factVersion": ANALYTICS_CHANGE_EVENT_VERSION,
+        "factVersion": ANALYTICS_SOURCE_EVENT_VERSION,
         "source": source,
         "sourceRowId": row.id,
         "invokeId": invoke_id,
@@ -886,7 +907,7 @@ pub(crate) async fn append_invocation_tombstone_for_identity_tx(
     let source = bounded_required_text(source, "source")?;
     let invoke_id = bounded_required_text(invoke_id, "invoke_id")?;
     let fact_json = json!({
-        "factVersion": ANALYTICS_CHANGE_EVENT_VERSION,
+        "factVersion": ANALYTICS_SOURCE_EVENT_VERSION,
         "source": source,
         "sourceRowId": source_row_id,
         "invokeId": invoke_id,
@@ -998,7 +1019,7 @@ async fn append_attempt_analytics_row_tx(
     let source = "pool_upstream_request_attempts";
     let attempt_public_id = bounded_text(row.attempt_public_id.as_deref());
     let fact_json = json!({
-        "factVersion": ANALYTICS_CHANGE_EVENT_VERSION,
+        "factVersion": ANALYTICS_SOURCE_EVENT_VERSION,
         "source": source,
         "sourceRowId": row.id,
         "attemptPublicId": attempt_public_id,
@@ -1063,7 +1084,7 @@ pub(crate) async fn append_archive_coverage_for_file_tx(
         .as_deref()
         .unwrap_or(row.month_key.as_str());
     let fact_json = json!({
-        "factVersion": ANALYTICS_CHANGE_EVENT_VERSION,
+        "factVersion": ANALYTICS_SOURCE_EVENT_VERSION,
         "source": row.dataset,
         "sourceRowId": row.id,
         "dataset": row.dataset,
@@ -1385,19 +1406,27 @@ mod tests {
                 .await
                 .expect("commit fact-date boundary transaction");
 
-            let (event_kind, entity_kind, entity_key, event_occurred_at, fact_json): (
-                String,
-                String,
-                String,
-                String,
-                String,
-            ) = sqlx::query_as(
-                "SELECT event_kind, entity_kind, entity_key, occurred_at, fact_json FROM analytics_change_events WHERE source_row_id = ?1",
-            )
-            .bind(row_id)
-            .fetch_one(&pool)
-            .await
-            .expect("load fact-date boundary invocation event");
+            let (
+                event_version,
+                fact_date_semantics_version,
+                event_kind,
+                entity_kind,
+                entity_key,
+                event_occurred_at,
+                fact_json,
+            ): (i64, i64, String, String, String, String, String) =
+                sqlx::query_as(
+                    "SELECT event_version, fact_date_semantics_version, event_kind, entity_kind, entity_key, occurred_at, fact_json FROM analytics_change_events WHERE source_row_id = ?1",
+                )
+                .bind(row_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load fact-date boundary invocation event");
+            assert_eq!(event_version, ANALYTICS_SOURCE_EVENT_VERSION);
+            assert_eq!(
+                fact_date_semantics_version,
+                ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION
+            );
             assert_eq!(event_kind, "upsert");
             assert_eq!(entity_kind, "invocation");
             assert_eq!(entity_key, format!("invocation:proxy:{row_id}"));
@@ -1409,6 +1438,93 @@ mod tests {
             assert_eq!(fact["sourceRowId"], row_id);
             assert_eq!(fact["statsDate"], expected_stats_date);
         }
+    }
+
+    #[tokio::test]
+    async fn analytics_change_schema_marks_legacy_events_and_current_writes() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect legacy analytics event test database");
+        sqlx::query(
+            r#"
+            CREATE TABLE analytics_change_events (
+                change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_version INTEGER NOT NULL,
+                event_kind TEXT NOT NULL,
+                entity_kind TEXT NOT NULL,
+                source TEXT NOT NULL,
+                source_row_id INTEGER,
+                entity_key TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                coverage_revision INTEGER NOT NULL,
+                occurred_at TEXT NOT NULL,
+                fact_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy analytics event table");
+        sqlx::query(
+            r#"
+            INSERT INTO analytics_change_events (
+                event_version, event_kind, entity_kind, source, source_row_id,
+                entity_key, generation, coverage_revision, occurred_at, fact_json
+            ) VALUES (1, 'upsert', 'invocation', 'proxy', 1, 'legacy', 1, 1,
+                      '2026-10-30 12:00:00', '{}')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert legacy analytics event");
+
+        ensure_analytics_changes_schema(&pool)
+            .await
+            .expect("migrate legacy analytics event table");
+
+        let legacy_version: i64 = sqlx::query_scalar(
+            "SELECT fact_date_semantics_version FROM analytics_change_events WHERE entity_key = 'legacy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load legacy event semantics version");
+        assert_eq!(legacy_version, 1);
+
+        let mut tx = pool
+            .begin()
+            .await
+            .expect("begin current analytics event transaction");
+        append_analytics_change_tx(
+            tx.as_mut(),
+            AnalyticsChangeInput {
+                event_kind: "upsert",
+                entity_kind: "invocation",
+                source: "proxy",
+                source_row_id: Some(2),
+                entity_key: "current",
+                occurred_at: "2026-10-30 12:00:01",
+                fact_json: "{}",
+            },
+        )
+        .await
+        .expect("append current analytics event");
+        tx.commit()
+            .await
+            .expect("commit current analytics event transaction");
+
+        let current_version: i64 = sqlx::query_scalar(
+            "SELECT fact_date_semantics_version FROM analytics_change_events WHERE entity_key = 'current'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load current event semantics version");
+        assert_eq!(
+            current_version,
+            ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION
+        );
     }
 
     #[tokio::test]

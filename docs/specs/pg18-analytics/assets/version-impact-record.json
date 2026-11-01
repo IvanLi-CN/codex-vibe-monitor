@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Make PostgreSQL analytics fact-date semantics explicit across the SQLite source journal and invalidate legacy invocation events before a v2 replica apply.",
+    "release_unit_description": "PG18 analytics fact-date compatibility and replica bootstrap safety follow-up.",
+    "affected_contracts": [
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "The HTTP and analytics response contracts remain unchanged, but the candidate adds an additive source-journal compatibility marker and a fail-closed writer/consumer contract for durable replica state. Earlier writers remain readable and are explicitly treated as legacy until a bounded bootstrap rebuilds the target.",
+      "assessed_at": "2026-11-01",
+      "evidence": [
+        "docs/specs/pg18-analytics/SPEC.md#req-pg18-006",
+        "docs/specs/pg18-analytics/assets/persistent-state-migration-record.json"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "The follow-up remains limited to explicit fact-date semantics, bounded invalidation, and deterministic compatibility evidence; public query and fact identity contracts remain unchanged."
+      },
+      "reasoning": "The source journal marker is additive with a legacy default, current writes are explicitly versioned, and legacy invocation events are rejected before PostgreSQL target DML. The existing v2 replica-state fence and explicit bootstrap remain the only repair path.",
+      "reassessed_at": "2026-11-01",
+      "evidence": [
+        "src/analytics_changes.rs",
+        "src/pg_analytics/mod.rs",
+        "docs/specs/pg18-analytics/SPEC.md"
+      ]
+    },
+    "verified": {
+      "impact": "minor",
+      "reasoning": "Focused source-journal migration, current/legacy marker, Asia/Shanghai fact-date, and pre-DML legacy invocation rejection tests pass. No public response, range, dimension, or AnalyticsFactV1 identity changes are present; current-head CI and the disposable PostgreSQL fixture remain separate delivery gates.",
+      "verified_at": "2026-11-01",
+      "evidence": [
+        "src/analytics_changes.rs",
+        "src/pg_analytics/mod.rs",
+        "cargo test --locked analytics_changes::tests -- --nocapture",
+        "cargo test --locked pg_analytics::tests -- --nocapture"
+      ],
+      "status": "compatibility-verified; current-head-ci-and-review-are-separate-delivery-gates"
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "none",
+      "planned_impact": "patch",
+      "supported_consumer_range": "Existing HTTP, analytics DTO, and AnalyticsFactV1 consumers; no response fields, ranges, dimensions, or query routes change.",
+      "evidence": [
+        "docs/specs/pg18-analytics/SPEC.md#req-pg18-004",
+        "src/pg_analytics/mod.rs"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "planned_impact": "minor",
+      "state_description": "SQLite analytics_change_events.fact_date_semantics_version and PostgreSQL replica fact-date compatibility state.",
+      "source_program_compatibility_range": "Supported earlier writers that omit the additive source-journal column remain readable as legacy version 1; current consumers fail closed and require explicit bounded bootstrap before legacy invocation events can affect a v2 target.",
+      "evidence": [
+        "src/analytics_changes.rs",
+        "src/pg_analytics/mod.rs",
+        "docs/specs/pg18-analytics/assets/persistent-state-migration-record.json"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/pg18-analytics/assets/version-impact-record.json",
+      "docs/specs/pg18-analytics/assets/persistent-state-migration-record.json"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "Verified public API impact is Patch because no response or fact identity contract changes.",
+      "Durable source-journal compatibility and forward-only replica repair are Minor.",
+      "Release-unit maximum is Minor; current-head CI and delivery gates remain separate obligations."
+    ],
+    "validation_status": "compatibility-verified; current-head-ci-and-review-are-separate-delivery-gates"
+  }
+}

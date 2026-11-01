@@ -8,7 +8,8 @@ const ANALYTICS_UNAVAILABLE_CODE: &str = "analytics_backend_unavailable";
 const POSTGRES_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const REDACTED_SECRET: &str = "<redacted>";
 pub(crate) const ANALYTICS_REPLICA_ID: &str = "pg-analytics";
-pub(crate) const ANALYTICS_FACT_DATE_SEMANTICS_VERSION: i64 = 2;
+pub(crate) const ANALYTICS_FACT_DATE_SEMANTICS_VERSION: i64 =
+    crate::analytics_changes::ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION;
 pub(crate) const ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH: usize = 256;
 pub(crate) const ANALYTICS_REPLICA_MAX_ENCODED_BATCH_BYTES: usize = 1024 * 1024;
 pub(crate) const ANALYTICS_SOURCE_RETENTION_BOUND_BYTES: i64 = 256 * 1024 * 1024;
@@ -811,6 +812,8 @@ enum SourceAckRecoveryPlan {
 #[derive(Debug, Clone, FromRow)]
 struct SourceChangeRow {
     change_id: i64,
+    event_version: i64,
+    fact_date_semantics_version: i64,
     event_kind: String,
     entity_kind: String,
     source: String,
@@ -1793,7 +1796,8 @@ async fn load_source_changes(
 ) -> Result<Vec<SourceChangeRow>> {
     sqlx::query_as::<_, SourceChangeRow>(
         r#"
-        SELECT change_id, event_kind, entity_kind, source, source_row_id,
+        SELECT change_id, event_version, fact_date_semantics_version,
+               event_kind, entity_kind, source, source_row_id,
                entity_key, generation, coverage_revision, fact_json
         FROM analytics_change_events
         WHERE change_id > ?1
@@ -2171,6 +2175,31 @@ fn coverage_event_requires_replay(change: &SourceChangeRow) -> bool {
     change.source == "codex_invocations" && !coverage_event_is_live_mirror(change)
 }
 
+fn validate_source_change_compatibility(
+    change: &SourceChangeRow,
+    required_fact_date_semantics_version: i64,
+) -> Result<()> {
+    anyhow::ensure!(
+        change.event_version == crate::analytics_changes::ANALYTICS_SOURCE_EVENT_VERSION,
+        "analytics source change {} uses unsupported journal event version {}; expected {}",
+        change.change_id,
+        change.event_version,
+        crate::analytics_changes::ANALYTICS_SOURCE_EVENT_VERSION
+    );
+    if change.entity_kind == "invocation"
+        && matches!(change.event_kind.as_str(), "upsert" | "tombstone")
+    {
+        anyhow::ensure!(
+            change.fact_date_semantics_version == required_fact_date_semantics_version,
+            "analytics source change {} uses fact-date semantics version {}; target requires {}; run explicit bootstrap to rebuild the bounded target snapshot",
+            change.change_id,
+            change.fact_date_semantics_version,
+            required_fact_date_semantics_version
+        );
+    }
+    Ok(())
+}
+
 async fn apply_replica_change(
     connection: &mut sqlx::postgres::PgConnection,
     change: &SourceChangeRow,
@@ -2270,6 +2299,9 @@ async fn apply_replica_batch(
         first_change_id,
         state.consumer_checkpoint.saturating_add(1)
     );
+    for change in batch {
+        validate_source_change_compatibility(change, state.fact_date_semantics_version)?;
+    }
     for change in batch {
         anyhow::ensure!(
             change.generation == source.state.generation,
@@ -2897,6 +2929,13 @@ async fn resume_replica(
             }
         };
         let batch = &rows[..end];
+        if let Some(error) = batch.iter().find_map(|change| {
+            validate_source_change_compatibility(change, state.fact_date_semantics_version).err()
+        }) {
+            let detail = error.to_string();
+            invalidate_legacy_fact_date_semantics(pool, &state, &detail).await?;
+            return Err(anyhow!(detail));
+        }
         let last_change_id =
             match apply_replica_batch(source_pool, pool, &state, &source, batch).await {
                 Ok(change_id) => change_id,
@@ -3443,6 +3482,37 @@ mod tests {
         assert!(!fact_date_semantics_compatible(&state));
         assert!(!replica_service_eligible(&state));
         assert!(fact_date_semantics_mismatch_detail(&state).contains("run explicit bootstrap"));
+    }
+
+    #[test]
+    fn invocation_source_changes_require_current_fact_date_semantics() {
+        let mut change = SourceChangeRow {
+            change_id: 7,
+            event_version: crate::analytics_changes::ANALYTICS_SOURCE_EVENT_VERSION,
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            event_kind: "upsert".to_string(),
+            entity_kind: "invocation".to_string(),
+            source: "codex_invocations".to_string(),
+            source_row_id: Some(42),
+            entity_key: "invocation:proxy:42".to_string(),
+            generation: 1,
+            coverage_revision: 1,
+            fact_json: "{}".to_string(),
+        };
+        validate_source_change_compatibility(&change, ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
+            .expect("current invocation source change should be accepted");
+
+        change.fact_date_semantics_version = 1;
+        let error =
+            validate_source_change_compatibility(&change, ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
+                .expect_err("legacy invocation source change should fail closed");
+        assert!(error.to_string().contains("run explicit bootstrap"));
+
+        change.event_kind = "tombstone".to_string();
+        let error =
+            validate_source_change_compatibility(&change, ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
+                .expect_err("legacy invocation tombstone should fail closed");
+        assert!(error.to_string().contains("fact-date semantics version"));
     }
 
     #[test]
@@ -4104,6 +4174,8 @@ mod tests {
 
         let change = SourceChangeRow {
             change_id: 1,
+            event_version: crate::analytics_changes::ANALYTICS_SOURCE_EVENT_VERSION,
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             event_kind: "upsert".to_string(),
             entity_kind: "invocation".to_string(),
             source: "fixture".to_string(),
