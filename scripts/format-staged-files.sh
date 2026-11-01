@@ -98,7 +98,9 @@ done
 
 if [ "$check_only" -eq 1 ]; then
   for file in "${files[@]}"; do
-    if ! git diff --quiet -- "$file"; then
+    index_object="$(git rev-parse --verify ":$file")"
+    worktree_object="$(git hash-object -- "$file")"
+    if ! git diff --quiet -- "$file" || [ "$worktree_object" != "$index_object" ]; then
       printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
       printf 'stage or unstage all changes in this file before committing\n' >&2
       exit 1
@@ -193,13 +195,20 @@ index_matches_snapshot() {
 acquire_index_lock() {
   [ "$index_lock_held" -eq 0 ] || return 0
   index_lock_path="$index_path.lock"
-  if ! index_lock_identity="$(perl -MFcntl=:DEFAULT -e '
+  if ! index_lock_identity="$(perl -MFcntl=:DEFAULT -MFcntl=:flock -e '
     my ($path) = @ARGV;
-    sysopen my $lock, $path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666 or exit 1;
-    my @stat = stat($lock) or do { unlink $path; exit 1; };
+    my $separator = rindex($path, "/");
+    exit 1 if $separator < 1;
+    my $directory_path = substr($path, 0, $separator);
+    my $lock_name = substr($path, $separator + 1);
+    sysopen my $directory, $directory_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 1;
+    flock($directory, LOCK_EX) or exit 1;
+    chdir $directory or exit 1;
+    sysopen my $lock, $lock_name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666 or exit 1;
+    my @stat = stat($lock) or do { unlink $lock_name; exit 1; };
     print "$stat[0]:$stat[1]\n";
     if (!close $lock) {
-      unlink $path;
+      unlink $lock_name;
       exit 1;
     }
   ' "$index_lock_path")"; then
@@ -210,10 +219,37 @@ acquire_index_lock() {
   index_lock_held=1
 }
 
+remove_index_lock() {
+  perl -MFcntl=:DEFAULT -MFcntl=:flock -e '
+    my ($path, $expected_identity) = @ARGV;
+    my $separator = rindex($path, "/");
+    exit 2 if $separator < 1;
+    my $directory_path = substr($path, 0, $separator);
+    my $lock_name = substr($path, $separator + 1);
+    sysopen my $directory, $directory_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
+    flock($directory, LOCK_EX) or exit 2;
+    chdir $directory or exit 2;
+    sysopen my $lock, $lock_name, O_RDONLY | O_NOFOLLOW or exit 2;
+    my @stat = stat($lock) or exit 2;
+    exit 3 if "$stat[0]:$stat[1]" ne $expected_identity;
+    my @path_stat = lstat($lock_name) or exit 2;
+    exit 3 if "$path_stat[0]:$path_stat[1]" ne $expected_identity;
+    unlink($lock_name) or exit 2;
+  ' "$index_lock_path" "$index_lock_identity"
+}
+
 release_index_lock() {
   if [ "$index_lock_held" -eq 1 ]; then
     if index_lock_owned; then
-      unlink "$index_lock_path" || printf 'unable to remove the formatter Git index lock\n' >&2
+      set +e
+      remove_index_lock
+      remove_status=$?
+      set -e
+      case "$remove_status" in
+        0) ;;
+        3) printf 'leaving a replaced Git index lock untouched\n' >&2 ;;
+        *) printf 'unable to remove the formatter Git index lock\n' >&2 ;;
+      esac
     else
       printf 'leaving a replaced Git index lock untouched\n' >&2
     fi
@@ -231,30 +267,38 @@ update_index() {
   fi
 }
 
-write_worktree_file() {
-  local target="$1"
-  local expected_hash="$2"
-  local source="$3"
+write_worktree_files() {
+  [ "$#" -gt 0 ] || return 0
 
-  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MIPC::Open2 - "$target" "$expected_hash" "$source" <<'EOF_WRITE_WORKTREE'
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MIPC::Open2 - "$@" <<'EOF_WRITE_WORKTREE'
 use strict;
 use warnings;
 
-my ($target_path, $expected_hash, $source_path) = @ARGV;
-my $target_separator = rindex($target_path, '/');
-exit 2 if $target_separator < 1;
-my $target_directory = substr($target_path, 0, $target_separator);
-my $target_name = substr($target_path, $target_separator + 1);
-my $expected_directory = abs_path($target_directory) or exit 2;
-sysopen my $directory, $target_directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
-chdir $directory or exit 2;
-my $opened_directory = abs_path('.') or exit 2;
-exit 3 if $opened_directory ne $expected_directory;
-sysopen my $target, $target_name, O_RDWR | O_NOFOLLOW or exit 2;
-binmode $target;
-flock($target, LOCK_EX) or exit 2;
-sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW or exit 2;
-binmode $source;
+my @arguments = @ARGV;
+exit 2 if !@arguments || @arguments % 4;
+my @records;
+
+sub read_all {
+  my ($handle) = @_;
+  return undef unless seek($handle, 0, 0);
+  return do { local $/; <$handle> };
+}
+
+sub hash_contents {
+  my ($contents) = @_;
+  my ($hash_reader, $hash_writer);
+  my $hash_pid = open2($hash_reader, $hash_writer, 'git', 'hash-object', '--stdin');
+  binmode $hash_reader;
+  binmode $hash_writer;
+  return undef unless print {$hash_writer} $contents;
+  return undef unless close $hash_writer;
+  my $hash = <$hash_reader>;
+  return undef unless close $hash_reader;
+  waitpid($hash_pid, 0);
+  return undef if $? != 0 || !defined $hash;
+  chomp $hash;
+  return $hash;
+}
 
 sub write_all {
   my ($handle, $contents) = @_;
@@ -277,31 +321,78 @@ sub replace_contents {
   return defined($actual) && $actual eq $contents;
 }
 
-seek($target, 0, 0) or exit 2;
-my $current = do { local $/; <$target> };
-defined $current or exit 2;
-my ($hash_reader, $hash_writer);
-my $hash_pid = open2($hash_reader, $hash_writer, 'git', 'hash-object', '--stdin');
-binmode $hash_reader;
-binmode $hash_writer;
-print {$hash_writer} $current or exit 2;
-close $hash_writer or exit 2;
-my $actual_hash = <$hash_reader>;
-close $hash_reader or exit 2;
-waitpid($hash_pid, 0);
-defined $actual_hash or exit 2;
-chomp $actual_hash;
-exit 3 if $actual_hash ne $expected_hash;
-
-seek($source, 0, 0) or exit 2;
-my $formatted = do { local $/; <$source> };
-defined $formatted or exit 2;
-if (!replace_contents($target, $formatted)) {
-  my $restored = replace_contents($target, $current);
-  close $target;
-  exit($restored ? 2 : 4);
+sub restore_written {
+  my ($records) = @_;
+  my $failed = 0;
+  for my $record (@{$records}) {
+    next unless $record->{written};
+    my $actual = read_all($record->{target});
+    if (!defined $actual) {
+      $failed = 1;
+      next;
+    }
+    if ($actual eq $record->{before}) {
+      next;
+    }
+    if ($actual eq $record->{desired}) {
+      $failed = 1 unless replace_contents($record->{target}, $record->{before});
+    } else {
+      $failed = 1;
+    }
+  }
+  return !$failed;
 }
-close $target or exit 2;
+
+for (my $offset = 0; $offset < @arguments; $offset += 4) {
+  my ($target_path, $expected_hash, $desired_hash, $source_path) = @arguments[$offset .. $offset + 3];
+  my $target_separator = rindex($target_path, '/');
+  exit 2 if $target_separator < 1;
+  my $target_directory = substr($target_path, 0, $target_separator);
+  my $target_name = substr($target_path, $target_separator + 1);
+  my $expected_directory = abs_path($target_directory) or exit 2;
+  sysopen my $directory, $target_directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
+  chdir $directory or exit 2;
+  my $opened_directory = abs_path('.') or exit 2;
+  exit 3 if $opened_directory ne $expected_directory;
+  sysopen my $target, $target_name, O_RDWR | O_NOFOLLOW or exit 2;
+  binmode $target;
+  flock($target, LOCK_EX) or exit 2;
+  sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW or exit 2;
+  binmode $source;
+
+  my $before = read_all($target);
+  my $desired = read_all($source);
+  exit 2 unless defined $before && defined $desired;
+  my $before_hash = hash_contents($before);
+  my $source_hash = hash_contents($desired);
+  exit 2 unless defined $before_hash && defined $source_hash;
+  exit 3 if $source_hash ne $desired_hash;
+  exit 3 if $before_hash ne $expected_hash && $before_hash ne $desired_hash;
+  push @records, {
+    before => $before,
+    desired => $desired,
+    directory => $directory,
+    needs_write => $before_hash eq $expected_hash,
+    source => $source,
+    target => $target,
+    written => 0,
+  };
+}
+
+for my $record (@records) {
+  next unless $record->{needs_write};
+  $record->{written} = 1;
+  if (!replace_contents($record->{target}, $record->{desired})) {
+    my $restored = restore_written(\@records);
+    exit($restored ? 2 : 4);
+  }
+}
+
+for my $record (@records) {
+  close $record->{source} or exit 2;
+  close $record->{target} or exit 2;
+  close $record->{directory} or exit 2;
+}
 EOF_WRITE_WORKTREE
 }
 
@@ -311,7 +402,7 @@ install_private_index() {
   local index_path_arg="$3"
   local lock_identity_arg="$4"
 
-  perl -MCwd=abs_path -MFcntl=:DEFAULT - "$source" "$lock_path" "$index_path_arg" "$lock_identity_arg" <<'EOF_INSTALL_INDEX'
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock - "$source" "$lock_path" "$index_path_arg" "$lock_identity_arg" <<'EOF_INSTALL_INDEX'
 use strict;
 use warnings;
 
@@ -327,6 +418,7 @@ my $expected_directory = abs_path($lock_directory) or exit 2;
 my $resolved_index_directory = abs_path($index_directory) or exit 2;
 exit 3 if $resolved_index_directory ne $expected_directory;
 sysopen my $directory, $lock_directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
+flock($directory, LOCK_EX) or exit 2;
 chdir $directory or exit 2;
 my $opened_directory = abs_path('.') or exit 2;
 exit 3 if $opened_directory ne $expected_directory;
@@ -383,6 +475,12 @@ for file in "${files[@]}"; do
   fi
   index_entry="$(git ls-files --stage --error-unmatch -- "$file" | awk '$3 == "0" { print; exit }')"
   read -r original_mode original_object _ _ <<< "$index_entry"
+  original_worktree_hash="$(git hash-object -- "$file")"
+  if [ "$original_worktree_hash" != "$original_object" ]; then
+    printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
+    printf 'stage or unstage all changes in this file before committing\n' >&2
+    exit 1
+  fi
   index_state="$(git ls-files -v -- "$file" | cut -c1)"
   original_modes+=("$original_mode")
   original_objects+=("$original_object")
@@ -394,7 +492,7 @@ for file in "${files[@]}"; do
     [Ss]) original_skip_worktree+=(1) ;;
     *) original_skip_worktree+=(0) ;;
   esac
-  original_worktree_hashes+=("$(git hash-object -- "$file")")
+  original_worktree_hashes+=("$original_worktree_hash")
   format_tmp_file="$format_tmp_dir/$file"
   original_tmp_file="$format_tmp_dir/.original-${#format_tmp_files[@]}"
   mkdir -p "$(dirname "$format_tmp_file")"
@@ -506,7 +604,8 @@ restore_index_metadata() {
 }
 
 restore_original_state() {
-  local index file current_worktree_hash rollback_failed=0
+  local index rollback_failed=0
+  local -a rollback_args=()
 
   if ! index_lock_owned || [ -z "$private_index_path" ]; then
     printf 'refusing to roll back formatter state without the formatter index lock\n' >&2
@@ -520,20 +619,16 @@ restore_original_state() {
 
   for index in "${!files[@]}"; do
     [ "${worktree_written[$index]:-0}" -eq 1 ] || continue
-    file="${files[$index]}"
-    current_worktree_hash="$(git hash-object -- "$file" 2>/dev/null || true)"
-    if [ "$current_worktree_hash" = "${original_worktree_hashes[$index]}" ]; then
-      continue
-    fi
-    if [ "$current_worktree_hash" != "${formatted_hashes[$index]}" ] \
-      || ! is_safe_worktree_path "$file"; then
-      rollback_failed=1
-      continue
-    fi
-    if ! write_worktree_file "$file" "${formatted_hashes[$index]}" "${original_tmp_files[$index]}"; then
-      rollback_failed=1
-    fi
+    rollback_args+=(
+      "$repo_root/${files[$index]}"
+      "${formatted_hashes[$index]}"
+      "${original_worktree_hashes[$index]}"
+      "${original_tmp_files[$index]}"
+    )
   done
+  if [ "${#rollback_args[@]}" -gt 0 ] && ! write_worktree_files "${rollback_args[@]}"; then
+    rollback_failed=1
+  fi
 
   if [ "$rollback_failed" -ne 0 ]; then
     printf 'unable to fully roll back formatter worktree changes\n' >&2
@@ -604,21 +699,27 @@ if [ -s "$format_patch_file" ]; then
     restore_index_metadata "$index"
   done
 
+  forward_args=()
   for index in "${!files[@]}"; do
-    file="${files[$index]}"
     [ "${formatted_hashes[$index]}" != "${original_worktree_hashes[$index]}" ] || continue
     worktree_written[$index]=1
-    if ! write_worktree_file "$file" "${original_worktree_hashes[$index]}" "${format_tmp_files[$index]}"; then
-      restore_original_state || true
-      rollback_needed=0
-      index_file_override=''
-      private_index_path=''
-      for concurrent_file in "${files[@]}"; do
-        printf 'refusing to stage concurrently modified file: %s\n' "$concurrent_file" >&2
-      done
-      exit 1
-    fi
+    forward_args+=(
+      "$repo_root/${files[$index]}"
+      "${original_worktree_hashes[$index]}"
+      "${formatted_hashes[$index]}"
+      "${format_tmp_files[$index]}"
+    )
   done
+  if ! write_worktree_files "${forward_args[@]}"; then
+    restore_original_state || true
+    rollback_needed=0
+    index_file_override=''
+    private_index_path=''
+    for concurrent_file in "${files[@]}"; do
+      printf 'refusing to stage concurrently modified file: %s\n' "$concurrent_file" >&2
+    done
+    exit 1
+  fi
 
   verification_failed=0
   for index in "${!files[@]}"; do

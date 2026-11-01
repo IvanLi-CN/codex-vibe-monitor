@@ -46,7 +46,7 @@ assert_not_contains "$repo_root/scripts/format-staged-files.sh" 'lefthook-unstag
 assert_not_contains "$repo_root/scripts/format-staged-files.sh" 'git apply --index'
 assert_contains "$repo_root/scripts/format-staged-files.sh" 'git apply --cached'
 assert_contains "$repo_root/scripts/format-staged-files.sh" 'O_NOFOLLOW'
-assert_contains "$repo_root/scripts/format-staged-files.sh" 'write_worktree_file'
+assert_contains "$repo_root/scripts/format-staged-files.sh" 'write_worktree_files'
 assert_contains "$repo_root/scripts/check-staged-formatter-safety.sh" 'format-staged-files.sh" --check'
 assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" 'pre-commit.flock'
 assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" "'--no-auto-install'"
@@ -789,5 +789,21 @@ if (
   fail 'hooks:install must reject a repo-local Lefthook binary'
 fi
 assert_contains "$local_only_output" 'repo-local binary is not sufficient'
+
+for index_flag in assume-unchanged skip-worktree; do
+  flag_file="src/$index_flag.rs"
+  printf 'fn main() {}\n' > "$partial_repo/$flag_file"
+  git -C "$partial_repo" add -- "$flag_file"
+  printf 'fn main() {}\n// hidden unstaged hunk must survive\n' > "$partial_repo/$flag_file"
+  git -C "$partial_repo" update-index "--$index_flag" -- "$flag_file"
+  if (
+    cd "$partial_repo"
+    bash scripts/format-staged-files.sh --check > "$tmp_dir/$index_flag-check.log" 2>&1
+  ); then
+    fail "$index_flag must not hide an unstaged worktree change"
+  fi
+  assert_contains "$tmp_dir/$index_flag-check.log" "refusing to auto-format partially staged file: $flag_file"
+  git -C "$partial_repo" show ":$flag_file" > "$partial_repo/$flag_file"
+done
 
 printf 'git hook contract smoke passed\n'

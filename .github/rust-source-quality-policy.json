@@ -15,7 +15,7 @@
     {
       "path": "src/api/slices/invocations_and_summary.rs",
       "role": "production",
-      "line_budget": 40575,
+      "line_budget": 40442,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
     },
     {
@@ -93,7 +93,7 @@
     {
       "path": "src/tests/lightweight/forward_proxy_subscription_and_weights.rs",
       "role": "test_helper",
-      "line_budget": 780,
+      "line_budget": 662,
       "next_module_workstream": "Split forward-proxy subscription and weight fixtures by refresh, bootstrap probing, and endpoint selection."
     },
     {
@@ -189,7 +189,7 @@
     {
       "path": "src/tests/stateful_sqlite/oauth_route_support_and_binding.rs",
       "role": "test_helper",
-      "line_budget": 1170,
+      "line_budget": 1146,
       "next_module_workstream": "Maintain the completed OAuth request-body, sticky-binding, route-preparation, and forwarding-observability fixtures below the test-helper target."
     },
     {
@@ -357,7 +357,7 @@
     {
       "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
       "role": "test_helper",
-      "line_budget": 3977,
+      "line_budget": 3888,
       "next_module_workstream": "Split request preparation/handshake fixtures by capture, parser cost, body, and handshake paths."
     },
     {
@@ -369,7 +369,7 @@
     {
       "path": "src/tests/stateful_sqlite/routing_failover_terminal_reasoning.rs",
       "role": "test_helper",
-      "line_budget": 3671,
+      "line_budget": 3669,
       "next_module_workstream": "Split routing failover terminal-reasoning fixtures by capture route, overload, and timeout."
     },
     {
@@ -381,7 +381,7 @@
     {
       "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
       "role": "test_helper",
-      "line_budget": 4976,
+      "line_budget": 4973,
       "next_module_workstream": "Split system status/account roster fixtures by archive, account, and projection helpers."
     },
     {
@@ -393,7 +393,7 @@
     {
       "path": "src/upstream_accounts/oauth_sessions_callbacks.rs",
       "role": "production",
-      "line_budget": 3500,
+      "line_budget": 2902,
       "next_module_workstream": "Split OAuth session callbacks, mailbox transitions, and account mutation helpers."
     },
     {
@@ -423,7 +423,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/maintenance_dispatch_and_lifecycle.rs",
       "role": "test_helper",
-      "line_budget": 1466,
+      "line_budget": 1465,
       "next_module_workstream": "Maintain maintenance dispatch, background synchronization, serialization, deduplication, revalidation, and panic recovery fixtures."
     },
     {
@@ -489,13 +489,13 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/sync_scope_and_node_shunt.rs",
       "role": "test_helper",
-      "line_budget": 1082,
+      "line_budget": 1079,
       "next_module_workstream": "Maintain sync scope reuse, node shunt fallbacks, routing recovery, and account list/detail rewrite fixtures."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/oauth_sync_quota_recovery.rs",
       "role": "test_helper",
-      "line_budget": 1473,
+      "line_budget": 1440,
       "next_module_workstream": "Maintain OAuth refresh/fetch failure classification, quota recovery, stale-row fencing, and terminal sync state fixtures."
     },
     {
