@@ -2474,6 +2474,22 @@ pub(crate) async fn persist_oauth_callback_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET lease_token = NULL,
+            updated_at = ?3
+        WHERE account_id = ?1
+          AND operation = ?2
+          AND lease_token IS NOT NULL
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?;
     let completed_group_metadata_snapshot = load_group_metadata_snapshot_conn_with_limit(
         tx.as_mut(),
         session.group_name.as_deref(),
@@ -2607,6 +2623,22 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
             external_identity: None,
         },
     )
+    .await
+    .map_err(internal_error_tuple)?;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET lease_token = NULL,
+            updated_at = ?3
+        WHERE account_id = ?1
+          AND operation = ?2
+          AND lease_token IS NOT NULL
+        "#,
+    )
+    .bind(resolved_account_id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(tx.as_mut())
     .await
     .map_err(internal_error_tuple)?;
     let completed_group_metadata_snapshot = load_group_metadata_snapshot_conn_with_limit(

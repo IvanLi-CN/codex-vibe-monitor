@@ -27,6 +27,8 @@ mod sync_oauth_crypto_utils;
 mod sync_routing_status;
 #[path = "sync_sub2api_import.rs"]
 mod sync_sub2api_import;
+#[path = "sync_usage_snapshot.rs"]
+pub(crate) mod sync_usage_snapshot;
 
 pub(crate) use refresh_state::*;
 pub(crate) use sync_account_imports_tags::*;

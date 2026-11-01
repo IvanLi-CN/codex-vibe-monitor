@@ -1,3 +1,4 @@
+use super::sync::sync_usage_snapshot::imported_oauth_probe_error_tuple;
 use super::*;
 use sqlx::Transaction;
 
@@ -407,6 +408,38 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
+    if let Some(expected_updated_at) = expected_updated_at {
+        let current_updated_at = sqlx::query_scalar::<_, String>(
+            "SELECT updated_at FROM pool_upstream_accounts WHERE id = ?1",
+        )
+        .bind(existing_row.id)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+        if current_updated_at.as_deref() != Some(expected_updated_at) {
+            return Err((
+                StatusCode::CONFLICT,
+                "account changed while OAuth credentials were being probed; retry the operation"
+                    .to_string(),
+            ));
+        }
+    }
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET lease_token = NULL,
+            updated_at = ?3
+        WHERE account_id = ?1
+          AND operation = ?2
+          AND lease_token IS NOT NULL
+        "#,
+    )
+    .bind(existing_row.id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?;
     let effective_existing_plan_type = resolve_effective_plan_type_for_account(
         tx.as_mut(),
         existing_row.id,
@@ -490,7 +523,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         expected_usage_captured_at,
     )
     .await
-    .map_err(internal_error_tuple)?;
+    .map_err(imported_oauth_probe_error_tuple)?;
     let routing_scope = if routing_scope_is_global {
         None
     } else {

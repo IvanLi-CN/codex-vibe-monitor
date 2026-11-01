@@ -176,8 +176,10 @@ pub(crate) async fn begin_upstream_account_refresh_attempt_with_lease(
                 pool_upstream_account_refresh_state.state <> ?7
                 AND pool_upstream_account_refresh_state.lease_token IS NULL
             )
-            OR pool_upstream_account_refresh_state.last_attempt_at IS NULL
-            OR pool_upstream_account_refresh_state.last_attempt_at <= ?8
+            OR (
+                pool_upstream_account_refresh_state.state = ?8
+                AND pool_upstream_account_refresh_state.last_attempt_at <= ?9
+            )
         )
         "#,
     )
@@ -187,6 +189,7 @@ pub(crate) async fn begin_upstream_account_refresh_attempt_with_lease(
     .bind(&now)
     .bind(source)
     .bind(&lease_token)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
     .bind(UPSTREAM_ACCOUNT_REFRESH_STATE_REFRESHING)
     .bind(&stale_before)
     .execute(pool)
@@ -325,6 +328,32 @@ pub(crate) async fn release_upstream_account_refresh_lease(
     .bind(operation)
     .bind(expected_lease_token)
     .bind(format_utc_iso(Utc::now()))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub(crate) async fn touch_upstream_account_refresh_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    operation: &str,
+    expected_lease_token: &str,
+) -> Result<bool> {
+    let now = format_utc_iso(Utc::now());
+    let result = sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET last_attempt_at = ?4,
+            updated_at = ?4
+        WHERE account_id = ?1
+          AND operation = ?2
+          AND lease_token = ?3
+        "#,
+    )
+    .bind(account_id)
+    .bind(operation)
+    .bind(expected_lease_token)
+    .bind(now)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)

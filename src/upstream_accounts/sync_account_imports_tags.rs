@@ -1,6 +1,9 @@
+use super::sync_usage_snapshot::{
+    OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE, persist_usage_snapshot_with_versions,
+    usage_refresh_failure_message,
+};
 use super::*;
 use sqlx::Transaction;
-
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
 pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
@@ -525,7 +528,7 @@ async fn record_usage_refresh_failure(
         .await?;
     }
     Ok(OAuthUsageRefreshOutcome::Failed {
-        error: error_message.to_string(),
+        error: usage_refresh_failure_message(error_code, error_message),
         http_status,
         proxy_snapshot,
         lease_token: lease_token.to_string(),
@@ -638,7 +641,8 @@ async fn refresh_oauth_credentials_with_source(
         return Ok(());
     };
 
-    let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
+    let refresh_result = async {
+        let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
         Some(key) => key,
         None => {
             let (code, message) = classify_refresh_error(
@@ -660,8 +664,8 @@ async fn refresh_oauth_credentials_with_source(
             .await?;
             return Ok(());
         }
-    };
-    let encrypted = match row.encrypted_credentials.as_deref() {
+        };
+        let encrypted = match row.encrypted_credentials.as_deref() {
         Some(value) => value,
         None => {
             let (code, message) = classify_refresh_error(
@@ -683,8 +687,8 @@ async fn refresh_oauth_credentials_with_source(
             .await?;
             return Ok(());
         }
-    };
-    let decrypted = match decrypt_credentials(crypto_key, encrypted) {
+        };
+        let decrypted = match decrypt_credentials(crypto_key, encrypted) {
         Ok(credentials) => credentials,
         Err(err) => {
             let (code, message) = classify_refresh_error(
@@ -706,8 +710,8 @@ async fn refresh_oauth_credentials_with_source(
             .await?;
             return Ok(());
         }
-    };
-    let StoredCredentials::Oauth(mut credentials) = decrypted else {
+        };
+        let StoredCredentials::Oauth(mut credentials) = decrypted else {
         let (code, message) = classify_refresh_error(
             "unexpected credential kind for OAuth account",
             UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
@@ -726,8 +730,8 @@ async fn refresh_oauth_credentials_with_source(
         )
         .await?;
         return Ok(());
-    };
-    let Some(refresh_token) = oauth_refresh_token(&credentials) else {
+        };
+        let Some(refresh_token) = oauth_refresh_token(&credentials) else {
         record_upstream_account_refresh_failure_with_lease(
             &state.pool,
             row.id,
@@ -742,9 +746,9 @@ async fn refresh_oauth_credentials_with_source(
         )
         .await?;
         return Ok(());
-    };
+        };
 
-    match refresh_oauth_tokens_for_required_scope(state, refresh_scope, refresh_token).await {
+        match refresh_oauth_tokens_for_required_scope(state, refresh_scope, refresh_token).await {
         Ok(response) => {
             let response_token_expires_at = apply_oauth_token_response(&mut credentials, response);
             let access_token_expiry = parse_access_token_expiry(&credentials.access_token);
@@ -857,8 +861,28 @@ async fn refresh_oauth_credentials_with_source(
             )
             .await?;
         }
+        }
+        Ok(())
     }
-    Ok(())
+    .await;
+    if refresh_result.is_err()
+        && let Err(err) = release_upstream_account_refresh_lease(
+            &state.pool,
+            row.id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            &lease_token,
+        )
+        .await
+    {
+        warn!(
+            account_id = row.id,
+            operation = UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+            source,
+            error = %err,
+            "upstream account credential refresh lease cleanup failed after an internal error"
+        );
+    }
+    refresh_result
 }
 
 pub(crate) async fn refresh_oauth_usage_windows(
@@ -1298,10 +1322,21 @@ async fn apply_manual_usage_refresh_outcome(
     usage_outcome: OAuthUsageRefreshOutcome,
 ) -> Result<()> {
     let lease_token = usage_outcome.lease_token().map(str::to_owned);
+    if let Some(lease_token) = lease_token.as_deref()
+        && !touch_upstream_account_refresh_lease(
+            &state.pool,
+            row.id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+            lease_token,
+        )
+        .await?
+    {
+        return Ok(());
+    }
     let apply_result = async {
         match usage_outcome {
         OAuthUsageRefreshOutcome::Succeeded {
-            snapshot,
+            snapshot: _,
             proxy_snapshot,
             ..
         } => {
@@ -1313,7 +1348,9 @@ async fn apply_manual_usage_refresh_outcome(
                     Some("OAuth 凭据刷新需要重新授权。"),
                 )
                 .await?;
-            } else if imported_snapshot_is_exhausted(&snapshot) {
+            } else if persisted_usage_sample_is_exhausted(
+                load_latest_usage_sample(&state.pool, row.id).await?.as_ref(),
+            ) {
                 let latest_row = load_upstream_account_row(&state.pool, row.id)
                     .await?
                     .ok_or_else(|| anyhow!("account disappeared after manual usage refresh"))?;
@@ -1358,7 +1395,6 @@ async fn apply_manual_usage_refresh_outcome(
             }
         }
         OAuthUsageRefreshOutcome::Partial {
-            snapshot,
             ..
         } => {
             if credential_reauth_required {
@@ -1369,7 +1405,9 @@ async fn apply_manual_usage_refresh_outcome(
                     Some("OAuth 凭据刷新需要重新授权。"),
                 )
                 .await?;
-            } else if imported_snapshot_is_exhausted(&snapshot) {
+            } else if persisted_usage_sample_is_exhausted(
+                load_latest_usage_sample(&state.pool, row.id).await?.as_ref(),
+            ) {
                 let latest_row = load_upstream_account_row(&state.pool, row.id)
                     .await?
                     .ok_or_else(|| anyhow!("account disappeared after partial usage refresh"))?;
@@ -1598,10 +1636,21 @@ pub(crate) async fn sync_oauth_account(
         == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
         || outcome_row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
     let lease_token = usage_outcome.lease_token().map(str::to_owned);
+    if let Some(lease_token) = lease_token.as_deref()
+        && !touch_upstream_account_refresh_lease(
+            &state.pool,
+            row.id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+            lease_token,
+        )
+        .await?
+    {
+        return Ok(());
+    }
     let apply_result = async {
         match usage_outcome {
         OAuthUsageRefreshOutcome::Succeeded {
-            snapshot,
+            snapshot: _,
             proxy_snapshot,
             ..
         } => {
@@ -1619,7 +1668,9 @@ pub(crate) async fn sync_oauth_account(
                 return Ok(());
             }
             if route_failure_kind_is_quota_exhausted(latest_row.last_route_failure_kind.as_deref())
-                && imported_snapshot_is_exhausted(&snapshot)
+                && persisted_usage_sample_is_exhausted(
+                    load_latest_usage_sample(&state.pool, row.id).await?.as_ref(),
+                )
             {
                 record_account_sync_recovery_blocked(
                     &state.pool,
@@ -1638,7 +1689,9 @@ pub(crate) async fn sync_oauth_account(
                 .await?;
                 return Ok(());
             }
-            if imported_snapshot_is_exhausted(&snapshot) {
+            if persisted_usage_sample_is_exhausted(
+                load_latest_usage_sample(&state.pool, row.id).await?.as_ref(),
+            ) {
                 record_account_sync_hard_unavailable(
                     &state.pool,
                     row.id,
@@ -1665,7 +1718,6 @@ pub(crate) async fn sync_oauth_account(
             .await?;
         }
         OAuthUsageRefreshOutcome::Partial {
-            snapshot,
             ..
         } => {
             if credential_reauth_required {
@@ -1681,7 +1733,9 @@ pub(crate) async fn sync_oauth_account(
             let latest_row = load_upstream_account_row(&state.pool, row.id)
                 .await?
                 .ok_or_else(|| anyhow!("account disappeared after partial usage refresh"))?;
-            if imported_snapshot_is_exhausted(&snapshot) {
+            if persisted_usage_sample_is_exhausted(
+                load_latest_usage_sample(&state.pool, row.id).await?.as_ref(),
+            ) {
                 if route_failure_kind_is_quota_exhausted(
                     latest_row.last_route_failure_kind.as_deref(),
                 ) {
@@ -2087,114 +2141,16 @@ pub(crate) async fn persist_usage_snapshot_with_lease(
     retention_days: u64,
     expected_lease_token: Option<&str>,
 ) -> Result<bool> {
-    let now_iso = format_utc_iso(Utc::now());
-    let latest = load_latest_usage_sample(pool, account_id).await?;
-    let primary = snapshot.primary.clone().or_else(|| {
-        latest.as_ref().and_then(|sample| {
-            Some(NormalizedUsageWindow {
-                used_percent: sample.primary_used_percent?,
-                window_duration_mins: sample.primary_window_minutes?,
-                resets_at: sample.primary_resets_at.clone(),
-            })
-        })
-    });
-    let secondary = snapshot.secondary.clone().or_else(|| {
-        latest.as_ref().and_then(|sample| {
-            Some(NormalizedUsageWindow {
-                used_percent: sample.secondary_used_percent?,
-                window_duration_mins: sample.secondary_window_minutes?,
-                resets_at: sample.secondary_resets_at.clone(),
-            })
-        })
-    });
-    let credits = snapshot.credits.clone().or_else(|| {
-        latest.as_ref().and_then(|sample| {
-            sample
-                .credits_has_credits
-                .map(|has_credits| CreditsSnapshot {
-                    has_credits: has_credits != 0,
-                    unlimited: sample.credits_unlimited.unwrap_or_default() != 0,
-                    balance: sample.credits_balance.clone(),
-                })
-        })
-    });
-    let insert_result = sqlx::query(
-        r#"
-        INSERT INTO pool_upstream_account_limit_samples (
-            account_id, captured_at, limit_id, limit_name, plan_type,
-            primary_used_percent, primary_window_minutes, primary_resets_at,
-            secondary_used_percent, secondary_window_minutes, secondary_resets_at,
-            credits_has_credits, credits_unlimited, credits_balance
-        )
-        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
-        WHERE ?15 IS NULL OR EXISTS (
-            SELECT 1
-            FROM pool_upstream_account_refresh_state
-            WHERE account_id = ?1
-              AND operation = ?16
-              AND lease_token = ?15
-        )
-        "#,
+    persist_usage_snapshot_with_versions(
+        pool,
+        account_id,
+        effective_plan_type,
+        snapshot,
+        retention_days,
+        expected_lease_token,
+        None,
     )
-    .bind(account_id)
-    .bind(&now_iso)
-    .bind(&snapshot.limit_id)
-    .bind(&snapshot.limit_name)
-    .bind(
-        snapshot
-            .plan_type
-            .clone()
-            .or_else(|| effective_plan_type.map(str::to_string)),
-    )
-    .bind(primary.as_ref().map(|value| value.used_percent))
-    .bind(primary.as_ref().map(|value| value.window_duration_mins))
-    .bind(primary.as_ref().and_then(|value| value.resets_at.clone()))
-    .bind(secondary.as_ref().map(|value| value.used_percent))
-    .bind(secondary.as_ref().map(|value| value.window_duration_mins))
-    .bind(secondary.as_ref().and_then(|value| value.resets_at.clone()))
-    .bind(
-        credits
-            .as_ref()
-            .map(|value| if value.has_credits { 1 } else { 0 }),
-    )
-    .bind(
-        credits
-            .as_ref()
-            .map(|value| if value.unlimited { 1 } else { 0 }),
-    )
-    .bind(credits.as_ref().and_then(|value| value.balance.clone()))
-    .bind(expected_lease_token)
-    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
-    .execute(pool)
-    .await?;
-    if expected_lease_token.is_some() && insert_result.rows_affected() == 0 {
-        return Ok(false);
-    }
-
-    let retention_cutoff = format_utc_iso(Utc::now() - ChronoDuration::days(retention_days as i64));
-    sqlx::query(
-        r#"
-        DELETE FROM pool_upstream_account_limit_samples
-        WHERE account_id = ?1
-          AND captured_at < ?2
-          AND (
-              ?3 IS NULL OR EXISTS (
-                  SELECT 1
-                  FROM pool_upstream_account_refresh_state
-                  WHERE account_id = ?1
-                    AND operation = ?4
-                    AND lease_token = ?3
-              )
-          )
-        "#,
-    )
-    .bind(account_id)
-    .bind(retention_cutoff)
-    .bind(expected_lease_token)
-    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
-    .execute(pool)
-    .await?;
-    Ok(true)
+    .await
 }
 
 pub(crate) async fn apply_imported_oauth_probe_result(
@@ -2228,22 +2184,21 @@ pub(crate) async fn apply_imported_oauth_probe_result_locked_with_expected_usage
         let was_selectable = before
             .as_ref()
             .is_some_and(|row| is_account_selectable_for_fresh_assignment(row, false, now));
-        if let Some(expected_usage_captured_at) = expected_usage_captured_at {
-            let current_usage_captured_at = load_latest_usage_sample(&state.pool, account_id)
-                .await?
-                .map(|sample| sample.captured_at);
-            if current_usage_captured_at != expected_usage_captured_at {
-                bail!("usage snapshot changed while OAuth credentials were being probed");
-            }
-        }
-        persist_usage_snapshot(
+        let persisted = persist_usage_snapshot_with_versions(
             &state.pool,
             account_id,
             probe.claims.chatgpt_plan_type.as_deref(),
             snapshot,
             state.config.upstream_accounts_history_retention_days,
+            None,
+            expected_usage_captured_at
+                .as_ref()
+                .map(|value| value.as_deref()),
         )
         .await?;
+        if !persisted {
+            bail!(OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE);
+        }
         mark_account_sync_success_with_proxy_snapshot(
             &state.pool,
             account_id,
@@ -2329,6 +2284,38 @@ pub(crate) async fn persist_imported_oauth_existing_inner_with_versions(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
+    if let Some(expected_updated_at) = expected_updated_at {
+        let current_updated_at = sqlx::query_scalar::<_, String>(
+            "SELECT updated_at FROM pool_upstream_accounts WHERE id = ?1",
+        )
+        .bind(existing_row.id)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+        if current_updated_at.as_deref() != Some(expected_updated_at) {
+            return Err((
+                StatusCode::CONFLICT,
+                "account changed while OAuth credentials were being probed; retry the operation"
+                    .to_string(),
+            ));
+        }
+    }
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_refresh_state
+        SET lease_token = NULL,
+            updated_at = ?3
+        WHERE account_id = ?1
+          AND operation = ?2
+          AND lease_token IS NOT NULL
+        "#,
+    )
+    .bind(existing_row.id)
+    .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?;
     let effective_existing_plan_type = resolve_effective_plan_type_for_account(
         tx.as_mut(),
         existing_row.id,
@@ -2414,6 +2401,17 @@ pub(crate) async fn persist_imported_oauth_existing_inner_with_versions(
     .await
     {
         Ok(warning) => warning,
+        Err(err)
+            if err
+                .chain()
+                .any(|cause| cause.to_string() == OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE) =>
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                "usage data changed while OAuth credentials were being probed; retry the operation"
+                    .to_string(),
+            ));
+        }
         Err(err) => {
             warn!(
                 account_id,
