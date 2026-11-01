@@ -1,5 +1,4 @@
-use super::sync::sync_usage_snapshot::UsageSnapshotVersion;
-use super::sync::sync_usage_snapshot::imported_oauth_probe_error_tuple;
+use super::sync::sync_usage_snapshot::{UsageSnapshotVersion, ensure_usage, probe_error_tuple};
 use super::*;
 use sqlx::Transaction;
 
@@ -425,6 +424,12 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
             ));
         }
     }
+    ensure_usage(
+        tx.as_mut(),
+        existing_row.id,
+        expected_usage_version.as_ref(),
+    )
+    .await?;
     sqlx::query(
         r#"
         UPDATE pool_upstream_account_refresh_state
@@ -524,7 +529,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         expected_usage_version,
     )
     .await
-    .map_err(imported_oauth_probe_error_tuple)?;
+    .map_err(probe_error_tuple)?;
     let routing_scope = if routing_scope_is_global {
         None
     } else {

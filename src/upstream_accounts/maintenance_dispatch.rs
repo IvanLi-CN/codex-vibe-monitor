@@ -315,49 +315,49 @@ pub(crate) async fn load_maintenance_candidates(
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_used_percent,
             (
                 SELECT sample.primary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_resets_at,
             (
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_used_percent,
             (
                 SELECT sample.secondary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_resets_at,
             (
                 SELECT sample.credits_has_credits
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_has_credits,
             (
                 SELECT sample.credits_unlimited
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_unlimited,
             (
                 SELECT sample.credits_balance
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_balance
         FROM pool_upstream_accounts account
@@ -436,49 +436,49 @@ pub(crate) async fn load_maintenance_candidate(
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_used_percent,
             (
                 SELECT sample.primary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_resets_at,
             (
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_used_percent,
             (
                 SELECT sample.secondary_resets_at
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_resets_at,
             (
                 SELECT sample.credits_has_credits
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_has_credits,
             (
                 SELECT sample.credits_unlimited
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_unlimited,
             (
                 SELECT sample.credits_balance
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_balance
         FROM pool_upstream_accounts account
@@ -956,49 +956,49 @@ pub(crate) async fn load_maintenance_candidates_ranked_before(
                     SELECT sample.primary_used_percent
                     FROM pool_upstream_account_limit_samples sample
                     WHERE sample.account_id = account.id
-                    ORDER BY sample.captured_at DESC
+                    ORDER BY sample.captured_at DESC, sample.id DESC
                     LIMIT 1
                 ) AS primary_used_percent,
                 (
                     SELECT sample.primary_resets_at
                     FROM pool_upstream_account_limit_samples sample
                     WHERE sample.account_id = account.id
-                    ORDER BY sample.captured_at DESC
+                    ORDER BY sample.captured_at DESC, sample.id DESC
                     LIMIT 1
                 ) AS primary_resets_at,
                 (
                     SELECT sample.secondary_used_percent
                     FROM pool_upstream_account_limit_samples sample
                     WHERE sample.account_id = account.id
-                    ORDER BY sample.captured_at DESC
+                    ORDER BY sample.captured_at DESC, sample.id DESC
                     LIMIT 1
                 ) AS secondary_used_percent,
                 (
                     SELECT sample.secondary_resets_at
                     FROM pool_upstream_account_limit_samples sample
                     WHERE sample.account_id = account.id
-                    ORDER BY sample.captured_at DESC
+                    ORDER BY sample.captured_at DESC, sample.id DESC
                     LIMIT 1
                 ) AS secondary_resets_at,
                 (
                     SELECT sample.credits_has_credits
                     FROM pool_upstream_account_limit_samples sample
                     WHERE sample.account_id = account.id
-                    ORDER BY sample.captured_at DESC
+                    ORDER BY sample.captured_at DESC, sample.id DESC
                     LIMIT 1
                 ) AS credits_has_credits,
                 (
                     SELECT sample.credits_unlimited
                     FROM pool_upstream_account_limit_samples sample
                     WHERE sample.account_id = account.id
-                    ORDER BY sample.captured_at DESC
+                    ORDER BY sample.captured_at DESC, sample.id DESC
                     LIMIT 1
                 ) AS credits_unlimited,
                 (
                     SELECT sample.credits_balance
                     FROM pool_upstream_account_limit_samples sample
                     WHERE sample.account_id = account.id
-                    ORDER BY sample.captured_at DESC
+                    ORDER BY sample.captured_at DESC, sample.id DESC
                     LIMIT 1
                 ) AS credits_balance
             FROM pool_upstream_accounts account

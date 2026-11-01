@@ -916,7 +916,7 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.plan_type
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS plan_type,
             (
@@ -924,7 +924,7 @@ pub(crate) async fn load_account_routing_candidates(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.secondary_used_percent IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_used_percent,
             (
@@ -932,7 +932,7 @@ pub(crate) async fn load_account_routing_candidates(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.secondary_window_minutes IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_window_minutes,
             (
@@ -940,7 +940,7 @@ pub(crate) async fn load_account_routing_candidates(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.secondary_resets_at IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_resets_at,
             (
@@ -948,7 +948,7 @@ pub(crate) async fn load_account_routing_candidates(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.primary_used_percent IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_used_percent,
             (
@@ -956,7 +956,7 @@ pub(crate) async fn load_account_routing_candidates(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.primary_window_minutes IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_window_minutes,
             (
@@ -964,7 +964,7 @@ pub(crate) async fn load_account_routing_candidates(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.primary_resets_at IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_resets_at,
             account.local_primary_limit,
@@ -973,21 +973,21 @@ pub(crate) async fn load_account_routing_candidates(
                 SELECT sample.credits_has_credits
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_has_credits,
             (
                 SELECT sample.credits_unlimited
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_unlimited,
             (
                 SELECT sample.credits_balance
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_balance,
             account.last_selected_at,
@@ -1043,7 +1043,7 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.plan_type
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS plan_type,
             (
@@ -1051,7 +1051,7 @@ pub(crate) async fn load_account_routing_candidate(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.secondary_used_percent IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_used_percent,
             (
@@ -1059,7 +1059,7 @@ pub(crate) async fn load_account_routing_candidate(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.secondary_window_minutes IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_window_minutes,
             (
@@ -1067,7 +1067,7 @@ pub(crate) async fn load_account_routing_candidate(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.secondary_resets_at IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS secondary_resets_at,
             (
@@ -1075,7 +1075,7 @@ pub(crate) async fn load_account_routing_candidate(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.primary_used_percent IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_used_percent,
             (
@@ -1083,7 +1083,7 @@ pub(crate) async fn load_account_routing_candidate(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.primary_window_minutes IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_window_minutes,
             (
@@ -1091,7 +1091,7 @@ pub(crate) async fn load_account_routing_candidate(
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                   AND sample.primary_resets_at IS NOT NULL
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS primary_resets_at,
             account.local_primary_limit,
@@ -1100,21 +1100,21 @@ pub(crate) async fn load_account_routing_candidate(
                 SELECT sample.credits_has_credits
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_has_credits,
             (
                 SELECT sample.credits_unlimited
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_unlimited,
             (
                 SELECT sample.credits_balance
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
+                ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_balance,
             account.last_selected_at,

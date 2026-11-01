@@ -283,41 +283,31 @@ async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers()
 }
 
 #[tokio::test]
-async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_syncing() {
+async fn oauth_sync_usage_auth_failure_schedules_independent_credential_retry() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
-            spawn_sequenced_oauth_sync_server(
-                vec![
-                    (
-                        StatusCode::UNAUTHORIZED,
-                        json!({
-                            "error": {
-                                "message": "Session cookie expired during usage snapshot"
-                            }
-                        }),
-                    ),
-                    (
-                        StatusCode::FORBIDDEN,
-                        json!({
-                            "error": {
-                                "message": "Authentication token has been invalidated, please sign in again"
-                            }
-                        }),
-                    ),
-                ],
+        spawn_sequenced_oauth_sync_server(
+            vec![(
+                StatusCode::UNAUTHORIZED,
                 json!({
-                    "access_token": "refreshed-access-token",
-                    "refresh_token": "refresh-token-rotated",
-                    "id_token": test_id_token(
-                        "reauth-required@example.com",
-                        Some("org_retry_reauth"),
-                        Some("user_retry_reauth"),
-                        Some("team"),
-                    ),
-                    "token_type": "Bearer",
-                    "expires_in": 3600
+                    "error": {
+                        "message": "Session cookie expired during usage snapshot"
+                    }
                 }),
-            )
-            .await;
+            )],
+            json!({
+                "access_token": "refreshed-access-token",
+                "refresh_token": "refresh-token-rotated",
+                "id_token": test_id_token(
+                    "reauth-required@example.com",
+                    Some("org_retry_reauth"),
+                    Some("user_retry_reauth"),
+                    Some("team"),
+                ),
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }),
+        )
+        .await;
     let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
     let crypto_key = state
         .upstream_accounts
@@ -346,7 +336,7 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         .await
         .expect("load oauth row after retry failure")
         .expect("oauth row exists after retry failure");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
     assert!(after.last_synced_at.is_some());
     assert!(after.last_successful_sync_at.is_none());
     assert_eq!(
@@ -355,33 +345,14 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
     );
     assert_eq!(
         after.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, Some(403));
+    assert_eq!(after.last_action_http_status, Some(401));
     assert_eq!(
         after.last_error.as_deref(),
-        Some(
-            "usage endpoint returned 403 Forbidden: Authentication token has been invalidated, please sign in again"
-        )
+        Some("上游返回 HTTP 401，等待下一分钟重试。")
     );
     assert!(after.last_action_at.is_some());
-
-    let decrypted = decrypt_credentials(
-        crypto_key,
-        after
-            .encrypted_credentials
-            .as_deref()
-            .expect("encrypted oauth credentials"),
-    )
-    .expect("decrypt refreshed credentials");
-    let StoredCredentials::Oauth(credentials) = decrypted else {
-        panic!("unexpected credential kind after refresh")
-    };
-    assert_eq!(credentials.access_token, "refreshed-access-token");
-    assert_eq!(
-        credentials.refresh_token.as_deref(),
-        Some("refresh-token-rotated")
-    );
 
     let summary = build_summary_from_row(
         &after,
@@ -392,9 +363,15 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         0,
         Utc::now(),
     );
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert_eq!(
+        summary.display_status,
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+    );
+    assert_eq!(
+        summary.health_status,
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+    );
     assert_eq!(
         summary.work_status,
         UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
@@ -407,7 +384,7 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         .expect("detail export exists");
     assert_eq!(
         detail.summary.display_status,
-        UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
     );
     assert_eq!(
         detail.summary.work_status,
@@ -426,35 +403,40 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
             .recent_actions
             .first()
             .and_then(|event| event.reason_code.as_deref()),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    let credential_refresh_status = load_upstream_account_refresh_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await
+    .expect("load credential refresh status");
+    assert_eq!(
+        credential_refresh_status.state,
+        UPSTREAM_ACCOUNT_REFRESH_STATE_RETRYING
+    );
+    assert_eq!(
+        credential_refresh_status.error_code.as_deref(),
+        Some("access_token_rejected")
+    );
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
 #[tokio::test]
-async fn oauth_sync_retry_after_refresh_records_non_auth_terminal_failure_without_stale_syncing() {
+async fn oauth_sync_usage_failure_records_non_auth_terminal_failure_without_stale_syncing() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
         spawn_sequenced_oauth_sync_server(
-            vec![
-                (
-                    StatusCode::UNAUTHORIZED,
-                    json!({
-                        "error": {
-                            "message": "Session cookie expired during usage snapshot"
-                        }
-                    }),
-                ),
-                (
-                    StatusCode::BAD_GATEWAY,
-                    json!({
-                        "error": {
-                            "message": "gateway temporarily unavailable"
-                        }
-                    }),
-                ),
-            ],
+            vec![(
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "error": {
+                        "message": "gateway temporarily unavailable"
+                    }
+                }),
+            )],
             json!({
                 "access_token": "refreshed-temporary-token",
                 "refresh_token": "refresh-token-rotated",
@@ -518,7 +500,7 @@ async fn oauth_sync_retry_after_refresh_records_non_auth_terminal_failure_withou
     assert_eq!(after.last_action_http_status, Some(502));
     assert_eq!(
         after.last_error.as_deref(),
-        Some("usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable")
+        Some("上游返回 HTTP 502: 上游返回 502: 等待下一分钟重试。")
     );
     assert!(after.last_action_at.is_some());
     assert_eq!(
@@ -570,33 +552,23 @@ async fn oauth_sync_retry_after_refresh_records_non_auth_terminal_failure_withou
             .and_then(|event| event.http_status),
         Some(502)
     );
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
 #[tokio::test]
-async fn oauth_sync_retry_after_refresh_preserves_quota_marker_from_current_db_state() {
+async fn oauth_sync_usage_failure_preserves_quota_marker_from_current_db_state() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
         spawn_sequenced_oauth_sync_server(
-            vec![
-                (
-                    StatusCode::UNAUTHORIZED,
-                    json!({
-                        "error": {
-                            "message": "Session cookie expired during usage snapshot"
-                        }
-                    }),
-                ),
-                (
-                    StatusCode::BAD_GATEWAY,
-                    json!({
-                        "error": {
-                            "message": "gateway temporarily unavailable"
-                        }
-                    }),
-                ),
-            ],
+            vec![(
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "error": {
+                        "message": "gateway temporarily unavailable"
+                    }
+                }),
+            )],
             json!({
                 "access_token": "refreshed-quota-preserving-token",
                 "refresh_token": "refresh-token-rotated",
@@ -662,7 +634,7 @@ async fn oauth_sync_retry_after_refresh_preserves_quota_marker_from_current_db_s
     assert_eq!(after.last_action_http_status, Some(502));
     assert_eq!(
         after.last_error.as_deref(),
-        Some("usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable")
+        Some("上游返回 HTTP 502: 上游返回 502: 等待下一分钟重试。")
     );
     assert!(after.last_action_at.is_some());
     assert_eq!(
@@ -703,8 +675,8 @@ async fn oauth_sync_retry_after_refresh_preserves_quota_marker_from_current_db_s
     );
     assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
 }
 

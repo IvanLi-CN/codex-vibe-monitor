@@ -1,7 +1,4 @@
-use super::sync_usage_snapshot::{
-    OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE, UsageSnapshotVersion,
-    persist_usage_snapshot_with_versions, usage_refresh_failure_message,
-};
+use super::sync_usage_snapshot::*;
 use super::*;
 use sqlx::Transaction;
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
@@ -2162,7 +2159,6 @@ pub(crate) async fn apply_imported_oauth_probe_result(
     let _credential_refresh_guard = credential_refresh_lock.lock().await;
     apply_imported_oauth_probe_result_locked(state, account_id, probe).await
 }
-
 pub(crate) async fn apply_imported_oauth_probe_result_locked(
     state: &AppState,
     account_id: i64,
@@ -2276,7 +2272,6 @@ pub(crate) async fn persist_imported_oauth_existing_inner_with_versions(
         &StoredCredentials::Oauth(probe.credentials.clone()),
     )
     .map_err(internal_error_tuple)?;
-
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -2298,6 +2293,12 @@ pub(crate) async fn persist_imported_oauth_existing_inner_with_versions(
             ));
         }
     }
+    ensure_usage(
+        tx.as_mut(),
+        existing_row.id,
+        expected_usage_version.as_ref(),
+    )
+    .await?;
     sqlx::query(
         r#"
         UPDATE pool_upstream_account_refresh_state
@@ -2599,7 +2600,7 @@ pub(crate) async fn load_conflicting_display_name_rows(
                             WHERE previous_sample.account_id = account.id
                               AND previous_sample.plan_type IS NOT NULL
                               AND TRIM(previous_sample.plan_type) <> ''
-                            ORDER BY previous_sample.captured_at DESC
+                            ORDER BY previous_sample.captured_at DESC, previous_sample.id DESC
                             LIMIT 1
                          ))
                         THEN NULLIF(TRIM(account.plan_type), '')
@@ -2609,7 +2610,7 @@ pub(crate) async fn load_conflicting_display_name_rows(
                         WHERE previous_sample.account_id = account.id
                           AND previous_sample.plan_type IS NOT NULL
                           AND TRIM(previous_sample.plan_type) <> ''
-                        ORDER BY previous_sample.captured_at DESC
+                        ORDER BY previous_sample.captured_at DESC, previous_sample.id DESC
                         LIMIT 1
                     )
                 END,
@@ -2981,7 +2982,7 @@ pub(crate) async fn load_latest_usage_sample_plan_type_with_executor(
         WHERE account_id = ?1
           AND plan_type IS NOT NULL
           AND TRIM(plan_type) <> ''
-        ORDER BY captured_at DESC
+        ORDER BY captured_at DESC, id DESC
         LIMIT 1
         "#,
     )
@@ -3039,7 +3040,7 @@ pub(crate) async fn load_duplicate_info_map(
                             WHERE previous_sample.account_id = account.id
                               AND previous_sample.plan_type IS NOT NULL
                               AND TRIM(previous_sample.plan_type) <> ''
-                            ORDER BY previous_sample.captured_at DESC
+                            ORDER BY previous_sample.captured_at DESC, previous_sample.id DESC
                             LIMIT 1
                          ))
                         THEN NULLIF(TRIM(account.plan_type), '')
@@ -3049,7 +3050,7 @@ pub(crate) async fn load_duplicate_info_map(
                         WHERE previous_sample.account_id = account.id
                           AND previous_sample.plan_type IS NOT NULL
                           AND TRIM(previous_sample.plan_type) <> ''
-                        ORDER BY previous_sample.captured_at DESC
+                        ORDER BY previous_sample.captured_at DESC, previous_sample.id DESC
                         LIMIT 1
                     )
                 END,
@@ -3183,7 +3184,7 @@ pub(crate) async fn load_duplicate_info_for_account(
                             WHERE previous_sample.account_id = account.id
                               AND previous_sample.plan_type IS NOT NULL
                               AND TRIM(previous_sample.plan_type) <> ''
-                            ORDER BY previous_sample.captured_at DESC
+                            ORDER BY previous_sample.captured_at DESC, previous_sample.id DESC
                             LIMIT 1
                          ))
                         THEN NULLIF(TRIM(account.plan_type), '')
@@ -3193,7 +3194,7 @@ pub(crate) async fn load_duplicate_info_for_account(
                         WHERE previous_sample.account_id = account.id
                           AND previous_sample.plan_type IS NOT NULL
                           AND TRIM(previous_sample.plan_type) <> ''
-                        ORDER BY previous_sample.captured_at DESC
+                        ORDER BY previous_sample.captured_at DESC, previous_sample.id DESC
                         LIMIT 1
                     )
                 END,
@@ -3230,7 +3231,7 @@ pub(crate) async fn load_duplicate_info_for_account(
                             WHERE previous_sample.account_id = account.id
                               AND previous_sample.plan_type IS NOT NULL
                               AND TRIM(previous_sample.plan_type) <> ''
-                            ORDER BY previous_sample.captured_at DESC
+                            ORDER BY previous_sample.captured_at DESC, previous_sample.id DESC
                             LIMIT 1
                          ))
                         THEN NULLIF(TRIM(account.plan_type), '')
@@ -3240,7 +3241,7 @@ pub(crate) async fn load_duplicate_info_for_account(
                         WHERE previous_sample.account_id = account.id
                           AND previous_sample.plan_type IS NOT NULL
                           AND TRIM(previous_sample.plan_type) <> ''
-                        ORDER BY previous_sample.captured_at DESC
+                        ORDER BY previous_sample.captured_at DESC, previous_sample.id DESC
                         LIMIT 1
                     )
                 END,
@@ -4475,7 +4476,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
             credits_has_credits, credits_unlimited, credits_balance
         FROM pool_upstream_account_limit_samples
         WHERE account_id = ?1
-        ORDER BY captured_at DESC
+        ORDER BY captured_at DESC, id DESC
         LIMIT 128
         "#,
     )

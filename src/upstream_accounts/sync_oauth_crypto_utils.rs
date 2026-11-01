@@ -1581,40 +1581,57 @@ pub(crate) fn value_as_timestamp(value: &Value) -> Option<DateTime<Utc>> {
 
 pub(crate) fn extract_error_message(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
-        let error_code = value
-            .get("error")
-            .and_then(|value| value.get("code"))
-            .and_then(value_as_string);
-        let message = value
-            .get("error_description")
-            .and_then(value_as_string)
-            .or_else(|| value.get("message").and_then(value_as_string))
-            .or_else(|| {
-                value
-                    .get("error")
-                    .and_then(|value| value.get("message"))
-                    .and_then(value_as_string)
-            });
-        if let Some(message) = message {
-            let message = sanitize_extracted_error_message(&message);
-            if let Some(error_code) = error_code
-                && !message.eq_ignore_ascii_case(&error_code)
-            {
-                return format!(
-                    "{}: {message}",
-                    sanitize_extracted_error_message(&error_code)
-                );
-            }
-            return message;
+        if let Some(message) = extract_json_error_message(&value) {
+            return sanitize_extracted_error_message(&message);
         }
-        if let Some(error_code) = error_code {
-            return sanitize_extracted_error_message(&error_code);
-        }
-        if let Some(error) = value.get("error").and_then(value_as_string) {
-            return sanitize_extracted_error_message(&error);
-        }
+        return "upstream returned an unstructured error response".to_string();
     }
-    "upstream returned an unstructured error response".to_string()
+    let message = sanitize_extracted_error_message(body);
+    if message.is_empty() {
+        "upstream returned an unstructured error response".to_string()
+    } else {
+        message
+    }
+}
+
+fn extract_json_error_message(value: &Value) -> Option<String> {
+    if let Some(object) = value.as_object() {
+        let message = ["error_description", "message", "description"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(value_as_string));
+        let code = object.get("code").and_then(value_as_string);
+        if let Some(message) = message {
+            if let Some(code) = code.as_deref()
+                && !message.eq_ignore_ascii_case(code)
+            {
+                return Some(format!("{code}: {message}"));
+            }
+            return Some(message);
+        }
+
+        for key in ["error", "detail"] {
+            if let Some(nested) = object.get(key) {
+                if let Some(message) = extract_json_error_message(nested) {
+                    if let Some(code) = code.as_deref()
+                        && !message.eq_ignore_ascii_case(code)
+                    {
+                        return Some(format!("{code}: {message}"));
+                    }
+                    return Some(message);
+                }
+                if let Some(message) = value_as_string(nested) {
+                    if let Some(code) = code.as_deref()
+                        && !message.eq_ignore_ascii_case(code)
+                    {
+                        return Some(format!("{code}: {message}"));
+                    }
+                    return Some(message);
+                }
+            }
+        }
+        return code;
+    }
+    value_as_string(value)
 }
 
 fn sanitize_extracted_error_message(message: &str) -> String {
@@ -1632,18 +1649,28 @@ fn sanitize_extracted_error_message(message: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     let lower = collapsed.to_ascii_lowercase();
-    if lower.contains("authorization:")
-        || lower.contains("bearer ")
-        || lower.contains("access_token=")
-        || lower.contains("access_token:")
-        || lower.contains("refresh_token=")
-        || lower.contains("refresh_token:")
-        || lower.contains("id_token=")
-        || lower.contains("id_token:")
+    if contains_sensitive_error_marker(&lower, "authorization:")
+        || contains_sensitive_error_marker(&lower, "bearer ")
+        || contains_sensitive_error_marker(&lower, "access_token=")
+        || contains_sensitive_error_marker(&lower, "access_token:")
+        || contains_sensitive_error_marker(&lower, "refresh_token=")
+        || contains_sensitive_error_marker(&lower, "refresh_token:")
+        || contains_sensitive_error_marker(&lower, "id_token=")
+        || contains_sensitive_error_marker(&lower, "id_token:")
     {
         return "upstream returned a sensitive error response".to_string();
     }
     collapsed.chars().take(240).collect()
+}
+
+fn contains_sensitive_error_marker(message: &str, marker: &str) -> bool {
+    message.find(marker).is_some_and(|index| {
+        index == 0
+            || !message
+                .as_bytes()
+                .get(index.saturating_sub(1))
+                .is_some_and(u8::is_ascii_alphanumeric)
+    })
 }
 
 pub(crate) fn is_scope_permission_error_message(message: &str) -> bool {

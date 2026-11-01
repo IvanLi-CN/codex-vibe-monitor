@@ -3,7 +3,7 @@ use super::*;
 pub(crate) const OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE: &str =
     "usage snapshot changed while OAuth credentials were being probed";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UsageSnapshotVersion {
     pub(crate) captured_at: String,
     pub(crate) id: i64,
@@ -17,7 +17,7 @@ pub(crate) fn usage_refresh_failure_message(error_code: &str, error_message: &st
     }
 }
 
-pub(crate) fn imported_oauth_probe_error_tuple(error: anyhow::Error) -> (StatusCode, String) {
+pub(crate) fn probe_error_tuple(error: anyhow::Error) -> (StatusCode, String) {
     if error
         .chain()
         .any(|cause| cause.to_string() == OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE)
@@ -30,6 +30,32 @@ pub(crate) fn imported_oauth_probe_error_tuple(error: anyhow::Error) -> (StatusC
     } else {
         internal_error_tuple(error)
     }
+}
+
+pub(crate) async fn ensure_usage(
+    connection: &mut sqlx::SqliteConnection,
+    account_id: i64,
+    expected: Option<&Option<UsageSnapshotVersion>>,
+) -> std::result::Result<(), (StatusCode, String)> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let current = sqlx::query_as::<_, (String, i64)>(
+        "SELECT captured_at, id FROM pool_upstream_account_limit_samples WHERE account_id = ?1 ORDER BY captured_at DESC, id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(internal_error_tuple)?
+    .map(|(captured_at, id)| UsageSnapshotVersion { captured_at, id });
+    if current != expected.clone() {
+        return Err((
+            StatusCode::CONFLICT,
+            "usage data changed while OAuth credentials were being probed; retry the operation"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn persist_usage_snapshot_with_versions(
