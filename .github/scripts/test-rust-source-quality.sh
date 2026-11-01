@@ -59,4 +59,6 @@ expect_failure unrecorded-suppression "unrecorded or materially altered allow su
 expect_failure altered-suppression "unrecorded or materially altered allow suppression"
 expect_failure include "include! control-flow composition is not allowed"
 
+bash "$repo_root/.github/scripts/test-staged-rust-line-budget.sh"
+
 echo "rust-source-quality fixtures: passed"

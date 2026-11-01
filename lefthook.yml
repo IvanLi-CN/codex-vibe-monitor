@@ -1,18 +1,24 @@
 pre-commit:
   parallel: true
-  commands:
-    format-web:
+  jobs:
+    - name: format-web
       glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
       run: bash scripts/format-staged-files.sh web {staged_files}
       stage_fixed: true
-    format-markdown:
+    - name: format-markdown
       glob: "**/*.md"
       run: bash scripts/format-staged-files.sh markdown {staged_files}
       stage_fixed: true
-    format-rust:
+    - name: rust-staged-checks
       glob: "*.{rs}"
-      run: bash scripts/format-staged-files.sh rust {staged_files}
-      stage_fixed: true
+      group:
+        parallel: false
+        jobs:
+          - name: format-rust
+            run: bash scripts/format-staged-files.sh rust {staged_files}
+            stage_fixed: true
+          - name: check-rust-line-budget
+            run: python3 .github/scripts/check_staged_rust_line_budget.py
 
 commit-msg:
   commands:

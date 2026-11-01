@@ -7,10 +7,20 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
+- `.github/scripts/check_staged_rust_line_budget.py` is the dependency-free
+  pre-commit first layer. It discovers staged Rust paths from Git, reads their
+  stage-0 blobs from the index, and enforces only exact selected policy paths;
+  it never reads source content from the worktree or writes Git/file state.
+- `lefthook.yml` keeps Web and Markdown jobs in the existing parallel hook
+  group, while the Rust formatter and staged budget guard run in a serial
+  group so `stage_fixed` completes before the guard reads the index.
 - `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 43 current explicit file budgets (4 production and 39 test/helper), and 134 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - The Rust 1.99.1 upgrade retains the existing test-facade re-export boundaries and registers seven additional conditional `unused_imports` allows required by all-target Clippy; no runtime, SQL, API, or test-resource behavior changes.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
+- `.github/scripts/test-staged-rust-line-budget.sh` covers selected over-budget
+  and boundary-pass blobs, unselected long files, paths with spaces, deleted
+  paths, index-vs-worktree content, and staged/worktree immutability.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
   `.github/workflows/ci-main.yml` delegate Rust source quality to the same
   runner while retaining the existing lint job name and check topology.
@@ -498,9 +508,16 @@ runner, which executes:
 
 No global Clippy pedantic configuration or new dependency is introduced.
 
+Validation is deliberately layered: Lefthook provides immediate staged
+feedback for selected Rust budgets, while the canonical runner remains the
+complete repository-wide rustfmt, locked all-target/all-feature Clippy, and
+explicit source-quality policy path. The staged guard does not add a Cargo or
+network operation to the commit hook.
+
 ## Verification
 
 - `bash .github/scripts/test-rust-source-quality.sh`
+- `bash .github/scripts/test-staged-rust-line-budget.sh`
 - `bash .github/scripts/run-rust-source-quality.sh`
 - `bun run verify:rust`
 - `bash .github/scripts/test-quality-gates-contract.sh`

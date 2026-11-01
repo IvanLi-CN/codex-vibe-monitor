@@ -31,6 +31,10 @@ publication, or a global repository file-length rule.
 - `bash .github/scripts/run-rust-source-quality.sh` is the canonical runner.
   `bun run verify:rust` and both existing `Lint & Format Check` jobs delegate
   to this runner.
+- The Lefthook pre-commit staged budget guard is a fast first layer. It checks
+  only changed Rust paths whose exact path is listed in the policy and reads
+  their staged blobs from Git's index. It does not replace the canonical
+  repository-wide runner.
 
 ## Requirements
 
@@ -80,6 +84,21 @@ altered suppressions, and forbidden `include!` composition without compiling
 the fixtures.
 
 covers: VER-RUST-SOURCE-QUALITY-006
+
+### REQ-RUST-SOURCE-QUALITY-010
+
+The installed Lefthook pre-commit flow MUST retain the staged Web, Markdown,
+and Rust formatter behavior and MUST invoke a dependency-free staged Rust
+line-budget guard when staged Rust paths are relevant. The guard MUST read
+selected source blobs from Git's index, match exact paths from
+`.github/rust-source-quality-policy.json`, enforce each recorded `line_budget`,
+skip unselected and deleted paths, and report the path, actual physical line
+count, and budget for an over-budget selected path. It MUST NOT run Cargo,
+access the network, scan the worktree, or mutate the index or worktree. The
+existing partial-staging safety check, commitlint hook, post-checkout hook, and
+the canonical full runner MUST remain intact.
+
+covers: VER-RUST-SOURCE-QUALITY-010
 
 ### REQ-RUST-SOURCE-QUALITY-007
 

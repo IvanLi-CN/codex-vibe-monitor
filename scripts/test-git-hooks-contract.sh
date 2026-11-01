@@ -25,12 +25,16 @@ assert_not_contains() {
 }
 
 for surface in web markdown rust; do
-  assert_contains "$repo_root/lefthook.yml" "format-$surface:"
+  assert_contains "$repo_root/lefthook.yml" "name: format-$surface"
 done
+assert_contains "$repo_root/lefthook.yml" 'name: check-rust-line-budget'
+assert_contains "$repo_root/lefthook.yml" 'check_staged_rust_line_budget.py'
 assert_contains "$repo_root/lefthook.yml" '{staged_files}'
 assert_contains "$repo_root/lefthook.yml" 'glob: "**/*.md"'
 assert_contains "$repo_root/lefthook.yml" 'parallel: true'
+assert_contains "$repo_root/lefthook.yml" 'parallel: false'
 assert_contains "$repo_root/lefthook.yml" 'stage_fixed: true'
+assert_not_contains "$repo_root/lefthook.yml" 'cargo '
 assert_not_contains "$repo_root/lefthook.yml" 'cargo clippy'
 assert_not_contains "$repo_root/lefthook.yml" 'tsc -b'
 assert_not_contains "$repo_root/lefthook.yml" 'bun run lint:web'
@@ -78,11 +82,13 @@ case "$(cd "$(dirname "$lefthook_bin")" && pwd -P)" in
 esac
 
 partial_repo="$tmp_dir/partial-stage"
-mkdir -p "$partial_repo/scripts" "$partial_repo/src"
+mkdir -p "$partial_repo/scripts" "$partial_repo/src" "$partial_repo/.github/scripts"
 cp "$repo_root/lefthook.yml" "$partial_repo/lefthook.yml"
 cp "$repo_root/scripts/format-staged-files.sh" "$partial_repo/scripts/format-staged-files.sh"
 cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$partial_repo/scripts/check-staged-formatter-safety.sh"
 cp "$repo_root/scripts/install-lefthook-hooks.sh" "$partial_repo/scripts/install-lefthook-hooks.sh"
+cp "$repo_root/.github/scripts/check_staged_rust_line_budget.py" "$partial_repo/.github/scripts/check_staged_rust_line_budget.py"
+cp "$repo_root/.github/rust-source-quality-policy.json" "$partial_repo/.github/rust-source-quality-policy.json"
 chmod +x "$partial_repo/scripts/format-staged-files.sh"
 chmod +x "$partial_repo/scripts/check-staged-formatter-safety.sh"
 chmod +x "$partial_repo/scripts/install-lefthook-hooks.sh"
