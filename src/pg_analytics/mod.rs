@@ -3,6 +3,8 @@ use percent_encoding::percent_decode_str;
 
 mod schema;
 pub(crate) use schema::*;
+mod read;
+pub(crate) use read::*;
 
 const ANALYTICS_UNAVAILABLE_CODE: &str = "analytics_backend_unavailable";
 const POSTGRES_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -485,7 +487,7 @@ fn sanitize_postgres_error(error: &anyhow::Error, database_url: Option<&str>) ->
     reason
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AnalyticsFact {
     pub(crate) fact_version: i16,
@@ -3325,7 +3327,13 @@ impl AnalyticsReadError {
                 ApiError::unavailable_with_code(ANALYTICS_UNAVAILABLE_CODE, error)
             }
             Self::InvalidQuery(error) => ApiError::bad_request(anyhow!(error)),
-            Self::Internal(error) => ApiError::Internal(error),
+            Self::Internal(_) => ApiError::unavailable_with_code(
+                ANALYTICS_UNAVAILABLE_CODE,
+                AnalyticsUnavailable::new(
+                    AnalyticsBackend::Postgres,
+                    "PostgreSQL analytics read failed",
+                ),
+            ),
         }
     }
 }
@@ -3996,7 +4004,7 @@ mod tests {
             apply_fixture_schema(&mut owner, "apply PostgreSQL fixture schema").await?;
             for statement in [
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_reader",
-                "GRANT SELECT (source_row_id, occurred_at_epoch_ms, upstream_account_id, input_tokens, output_tokens, cache_input_tokens, total_tokens, cost) ON TABLE cvm_analytics.analytics_facts TO cvm_analytics_reader",
+                "GRANT SELECT (fact_version, source, source_row_id, invoke_id, occurred_at, occurred_at_epoch_ms, stats_date, model, request_model, response_model, reasoning_effort, upstream_account_id, upstream_account_name, status, success_like, terminal, failure_kind, failure_class, is_actionable, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, first_token_ms, t_resp_parse_ms) ON TABLE cvm_analytics.analytics_facts TO cvm_analytics_reader",
                 "GRANT SELECT (source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id) ON TABLE cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_reader",
                 "GRANT SELECT (id, replica_id, status, generation, baseline_generation, baseline_change_id, coverage_generation, coverage_revision, coverage_watermark, consumer_checkpoint, source_acknowledged_through, service_eligible, fact_date_semantics_version, last_error_code, last_error_detail, updated_at) ON TABLE cvm_analytics.analytics_replica_state TO cvm_analytics_reader",
                 "GRANT SELECT (id, status) ON TABLE cvm_analytics.analytics_state TO cvm_analytics_reader",

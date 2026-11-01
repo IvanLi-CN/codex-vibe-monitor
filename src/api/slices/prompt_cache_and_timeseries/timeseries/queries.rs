@@ -42,13 +42,24 @@ pub(crate) async fn fetch_timeseries_query(
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let bucket_selection = resolve_timeseries_bucket_selection(
         &params,
         &range_window,
         state.config.invocation_max_days,
     )?;
+    if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return fetch_timeseries_from_postgres(
+            state,
+            reporting_tz,
+            source_scope,
+            range_window,
+            bucket_selection,
+            params.upstream_account_id,
+        )
+        .await;
+    }
+    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     if let Some(upstream_account_id) = params.upstream_account_id {
         return fetch_timeseries_for_account(
             state,
@@ -463,6 +474,83 @@ pub(crate) async fn fetch_timeseries_query(
     };
 
     Ok(Json(response))
+}
+
+async fn fetch_timeseries_from_postgres(
+    state: Arc<AppState>,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    range_window: RangeWindow,
+    bucket_selection: TimeseriesBucketSelection,
+    upstream_account_id: Option<i64>,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let fact_scope = match (source_scope, upstream_account_id) {
+        (InvocationSourceScope::All, None) => AnalyticsFactScope::All,
+        (InvocationSourceScope::ProxyOnly, None) => AnalyticsFactScope::ProxyOnly,
+        (InvocationSourceScope::All, Some(account_id)) => AnalyticsFactScope::Account(account_id),
+        (InvocationSourceScope::ProxyOnly, Some(account_id)) => {
+            AnalyticsFactScope::AccountProxyOnly(account_id)
+        }
+    };
+    let read_query =
+        AnalyticsFactReadQuery::for_range(fact_scope, range_window.start, range_window.end)
+            .map_err(AnalyticsReadError::into_api_error)?;
+    let snapshot = query_bounded_facts(&state.pg_analytics, read_query)
+        .await
+        .map_err(AnalyticsReadError::into_api_error)?;
+    let snapshot_id = snapshot.fence.identity.coverage_watermark;
+    let fact_count = snapshot.facts.len();
+    let records = snapshot
+        .facts
+        .into_iter()
+        .map(analytics_fact_to_invocation_record)
+        .collect::<Vec<_>>();
+    let db_runtime_records = collect_in_flight_aggregate_records(&records);
+    let mut aggregates = BTreeMap::new();
+    let (fill_start_epoch, fill_end_epoch) = fill_timeseries_buckets(
+        &mut aggregates,
+        range_window.start,
+        range_window.end,
+        bucket_selection.bucket_seconds,
+        reporting_tz,
+    )?;
+    add_exact_records_to_timeseries_aggregates(
+        &mut aggregates,
+        records,
+        bucket_selection.bucket_seconds,
+        reporting_tz,
+    )?;
+    overlay_runtime_timeseries_in_flight(
+        state.as_ref(),
+        &mut aggregates,
+        source_scope,
+        upstream_account_id,
+        range_window.start,
+        range_window.end,
+        bucket_selection.bucket_seconds,
+        reporting_tz,
+        &db_runtime_records,
+    )?;
+    debug!(
+        route = "timeseries_http_or_topic",
+        builder = "postgres_bounded_fact_pages",
+        response_source = "postgres_analytics_facts",
+        snapshot_id,
+        fact_count,
+        upstream_account_id,
+        "built timeseries from one fenced PostgreSQL fact snapshot"
+    );
+    build_timeseries_response(
+        range_window.start,
+        range_window.display_end,
+        bucket_selection.bucket_seconds,
+        snapshot_id,
+        bucket_selection,
+        aggregates,
+        fill_start_epoch,
+        fill_end_epoch,
+        reporting_tz,
+    )
 }
 
 pub(crate) async fn fetch_timeseries_for_account(

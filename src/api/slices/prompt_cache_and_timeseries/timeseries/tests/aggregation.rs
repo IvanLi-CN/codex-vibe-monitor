@@ -219,3 +219,32 @@ fn add_rollup_rows_preserves_total_latency_metrics() {
     assert_eq!(aggregate.total_latency_sample_count, 2);
     assert_eq!(aggregate.total_latency_sum_ms, 1_100.0);
 }
+
+#[test]
+fn exact_records_survive_bucket_fill_before_aggregation() {
+    let start = Utc
+        .with_ymd_and_hms(2026, 10, 30, 0, 0, 0)
+        .single()
+        .expect("valid timeseries start");
+    let end = start + ChronoDuration::minutes(1);
+    let mut aggregates = BTreeMap::new();
+    super::aggregation::fill_timeseries_buckets(
+        &mut aggregates,
+        start,
+        end,
+        60,
+        chrono_tz::Asia::Shanghai,
+    )
+    .expect("fill timeseries bucket");
+    super::aggregation::add_exact_records_to_timeseries_aggregates(
+        &mut aggregates,
+        vec![record(101, "2026-10-30T00:00:12Z")],
+        60,
+        chrono_tz::Asia::Shanghai,
+    )
+    .expect("add exact record");
+
+    let aggregate = aggregates.values().next().expect("filled bucket");
+    assert_eq!(aggregate.total_count, 1);
+    assert_eq!(aggregate.success_count, 1);
+}

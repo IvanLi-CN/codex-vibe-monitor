@@ -1,6 +1,14 @@
 use super::*;
 use anyhow::anyhow;
 
+pub(crate) async fn query_postgres_summary_all(
+    runtime: &PgAnalyticsRuntime,
+    _source_scope: InvocationSourceScope,
+    _upstream_account_id: Option<i64>,
+) -> AnalyticsReadResult<StatsResponse> {
+    Err(summary_all_compact_authority_unavailable(runtime))
+}
+
 pub(crate) async fn query_hourly_backed_summary_since_with_config(
     pool: &Pool<Sqlite>,
     invocation_max_days: u64,

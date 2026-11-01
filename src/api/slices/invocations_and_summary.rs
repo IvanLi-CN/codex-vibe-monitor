@@ -30183,6 +30183,16 @@ async fn fetch_summary_inner(
     );
     let _key = SummarySnapshotKey::try_from_query(&params, state.config.list_limit_max as i64)
         .map_err(ApiError::bad_request)?;
+    if all_time && state.pg_analytics.backend() == AnalyticsBackend::Postgres {
+        return query_postgres_summary_all(
+            &state.pg_analytics,
+            InvocationSourceScope::All,
+            params.upstream_account_id,
+        )
+        .await
+        .map(Json)
+        .map_err(AnalyticsReadError::into_api_error);
+    }
     state
         .subscription_hub
         .note_summary_http_interest(all_time)
