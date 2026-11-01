@@ -79,6 +79,7 @@ assert_not_contains "$formatter_log" 'vendor/hotpath/'
 
 lefthook_bin="$(command -v lefthook 2>/dev/null || true)"
 [ -n "$lefthook_bin" ] || fail 'git hook contract smoke requires an external Lefthook binary'
+real_git="$(command -v git)"
 case "$(cd "$(dirname "$lefthook_bin")" && pwd -P)" in
   "$repo_root"|"$repo_root"/*) fail 'git hook contract smoke cannot use repo-local Lefthook' ;;
 esac
@@ -273,6 +274,38 @@ cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-index.contents
   || fail 'formatter rewrite was not staged exactly'
 cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-worktree.contents" \
   || fail 'formatter rewrite was not applied exactly'
+
+race_git_bin="$tmp_dir/race-git-bin"
+mkdir -p "$race_git_bin"
+cat > "$race_git_bin/git" <<'EOF_RACE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = 'add' ]; then
+  printf '\n// concurrent editor change\n' >> "${RACE_TARGET:?}"
+fi
+exec "${REAL_GIT:?}" "$@"
+EOF_RACE_GIT
+chmod +x "$race_git_bin/git"
+cat > "$partial_repo/src/sample.rs" <<'EOF_RACE_STAGE'
+fn main(){ println!("staged"); }
+EOF_RACE_STAGE
+git -C "$partial_repo" add src/sample.rs
+if (
+  cd "$partial_repo"
+  PATH="$race_git_bin:$PATH" REAL_GIT="$real_git" RACE_TARGET="$partial_repo/src/sample.rs" \
+    CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" bash scripts/format-staged-files.sh rust src/sample.rs \
+    > "$tmp_dir/concurrent-format.log" 2>&1
+); then
+  fail 'formatter must reject a concurrent edit before staging it'
+fi
+assert_contains "$tmp_dir/concurrent-format.log" 'refusing to stage concurrently modified file: src/sample.rs'
+git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/concurrent-index.contents"
+cat > "$tmp_dir/expected-concurrent-index.contents" <<'EOF_EXPECTED_CONCURRENT_INDEX'
+fn main(){ println!("staged"); }
+EOF_EXPECTED_CONCURRENT_INDEX
+cmp -s "$tmp_dir/expected-concurrent-index.contents" "$tmp_dir/concurrent-index.contents" \
+  || fail 'concurrent formatter edit was left staged'
+assert_contains "$partial_repo/src/sample.rs" '// concurrent editor change'
 
 partial_linked_repo="$tmp_dir/partial-stage-linked"
 git -C "$partial_repo" branch partial-stage-linked

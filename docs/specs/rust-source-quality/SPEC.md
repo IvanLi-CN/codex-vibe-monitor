@@ -96,8 +96,10 @@ skip unselected and deleted paths, and report the path, actual physical line
 count, and budget for an over-budget selected path. The policy itself MUST be
 read from its stage-0 index blob so staged source and policy are evaluated as
 one candidate. The Rust formatter MUST reject partial staging, pass staged
-filenames after an option terminator, and stage its formatted whole-file output
-before the guard reads the index. The managed pre-commit wrapper MUST
+filenames after an option terminator, revalidate the formatted file immediately
+before staging, and stage its formatted whole-file output only when the staged
+index entry still matches the formatter result. On a concurrent mismatch it
+MUST restore the original stage-0 entry and fail. The managed pre-commit wrapper MUST
 serialize the complete formatter, safety-check, and Lefthook sequence with an
 advisory lock in the current worktree's Git metadata, invoke Lefthook with
 auto-install disabled, and it MUST reject symlink and

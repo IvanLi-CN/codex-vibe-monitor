@@ -46,7 +46,7 @@
 - 单项失败后必须继续其余任务并记录 failed digest；自动 hook 对相同 failed digest 必须告警并跳过重试，手动入口必须返回非零。
 - 未配置 `core.hooksPath` 时，`lefthook` 2.2.1 或更高版本必须在 `PATH` 中可执行；`bun run hooks:install` 缺少或版本过低时必须明确返回非零。已配置 `core.hooksPath` 时安装入口必须安全 no-op，不要求 Lefthook。
 - `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；仅当已有 hook 与当前配置生成的 Lefthook 模板及本仓库 marker 逐字相等时才能更新。已标记的旧 standard 或 inline-safety pre-commit 可作为受管前身迁移到带 lock wrapper 的模板；其他变体一律保留。`prepare-commit-msg` 仅在与带该 hook 配置生成的 Lefthook 标准模板逐字相等、未配置且不是 symlink 时删除。
-- staged formatter 只能处理无未暂存 hunk 的文件；同一目标文件同时存在 staged 与 unstaged 修改时，受管 pre-commit wrapper 必须在 Lefthook 运行前失败，并保持 index 与工作树不变。不得依赖 shared Git common-dir 中 Lefthook 未暂存补丁的路径或时效性；检查与 formatter 必须共享同一路径过滤逻辑。
+- staged formatter 只能处理无未暂存 hunk 的文件；同一目标文件同时存在 staged 与 unstaged 修改时，受管 pre-commit wrapper 必须在 Lefthook 运行前失败，并保持 index 与工作树不变。Rust formatter 在 staging 前后必须校验格式化结果的 hash；并发 mismatch 时必须恢复原 stage-0 entry 并失败，不能把并发编辑静默加入 index。不得依赖 shared Git common-dir 中 Lefthook 未暂存补丁的路径或时效性；检查与 formatter 必须共享同一路径过滤逻辑。
 - 受管 pre-commit wrapper 必须使用当前 worktree 的 Git metadata 持有 advisory lock，串行化 staged formatter、安全检查与 Lefthook 执行，并以 `--no-auto-install` 调用 Lefthook，避免并发提交交错保存或恢复 unstaged 内容及运行时覆盖 wrapper。
 - `hooks:install` 必须使用 shared common Git metadata 的 advisory lock 串行化 hook 检测、迁移、安装和 marker 写入；非 regular hook 必须保留且不得被比较或阻塞读取。
 - 资源同步锁必须位于当前 worktree 的 Git metadata；采用随持锁进程退出自动释放的 advisory lock，同一 worktree busy 时必须非阻塞跳过，不同 linked worktree 不得互相等待。setup 对同一 worktree 自动路径同样非阻塞，手动入口串行等待。

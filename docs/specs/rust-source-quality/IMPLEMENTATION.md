@@ -15,8 +15,10 @@ The contract is implemented by the following checked-in surfaces:
 - `lefthook.yml` keeps Web and Markdown jobs in the existing parallel hook
   group, while the Rust formatter and staged budget guard run in a serial
   group. The managed pre-commit wrapper serializes the complete hook per
-  worktree; the Rust formatter rejects partial staging and explicitly stages
-  its formatted whole-file output before the guard reads the index.
+  worktree; the Rust formatter rejects partial staging, revalidates its
+  formatted hash before staging, restores the original stage-0 entry on a
+  concurrent mismatch, and explicitly stages its formatted whole-file output
+  before the guard reads the index.
 - `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 43 current explicit file budgets (4 production and 39 test/helper), and 134 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - The Rust 1.99.1 upgrade retains the existing test-facade re-export boundaries and registers seven additional conditional `unused_imports` allows required by all-target Clippy; no runtime, SQL, API, or test-resource behavior changes.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local

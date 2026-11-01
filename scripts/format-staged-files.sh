@@ -91,6 +91,8 @@ case "$surface" in
     ;;
   rust)
     rustfmt_bin="${CODEX_HOOK_RUSTFMT_BIN:-rustfmt}"
+    original_modes=()
+    original_objects=()
     for file in "${files[@]}"; do
       if ! git diff --quiet -- "$file"; then
         printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
@@ -98,8 +100,28 @@ case "$surface" in
         exit 1
       fi
     done
+    for file in "${files[@]}"; do
+      index_entry="$(git ls-files --stage --error-unmatch -- "$file" | awk '$3 == "0" { print; exit }')"
+      read -r original_mode original_object original_stage _ <<< "$index_entry"
+      original_modes+=("$original_mode")
+      original_objects+=("$original_object")
+    done
     "$rustfmt_bin" --edition 2024 -- "${files[@]}"
-    git add -- "${files[@]}"
+    for index in "${!files[@]}"; do
+      file="${files[$index]}"
+      formatted_hash="$(git hash-object -- "$file")"
+      if [ "$(git hash-object -- "$file")" != "$formatted_hash" ]; then
+        printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+        exit 1
+      fi
+      git add -- "$file"
+      staged_hash="$(git rev-parse --verify ":$file")"
+      if [ "$staged_hash" != "$formatted_hash" ]; then
+        git update-index --add --cacheinfo "${original_modes[$index]},${original_objects[$index]},$file"
+        printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+        exit 1
+      fi
+    done
     ;;
   markdown)
     dprint_bin="${CODEX_HOOK_DPRINT_BIN:-$repo_root/node_modules/.bin/dprint}"
