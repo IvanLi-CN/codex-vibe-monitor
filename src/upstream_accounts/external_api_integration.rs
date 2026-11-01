@@ -1,3 +1,4 @@
+use super::sync::sync_usage_snapshot::UsageSnapshotVersion;
 use super::sync::sync_usage_snapshot::imported_oauth_probe_error_tuple;
 use super::*;
 use sqlx::Transaction;
@@ -311,7 +312,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     account_id: i64,
     metadata: &ExternalUpstreamAccountMetadataRequest,
     expected_updated_at: Option<&str>,
-    expected_usage_captured_at: Option<Option<String>>,
+    expected_usage_version: Option<Option<UsageSnapshotVersion>>,
     probe: ImportedOauthProbeOutcome,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
     let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
@@ -520,7 +521,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         state,
         existing_row.id,
         &probe,
-        expected_usage_captured_at,
+        expected_usage_version,
     )
     .await
     .map_err(imported_oauth_probe_error_tuple)?;
@@ -633,12 +634,15 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
     let normalized =
         normalize_external_oauth_credentials(&identity.source_account_id, &payload.oauth)?;
     let expected_updated_at = existing_row.as_ref().map(|row| row.updated_at.clone());
-    let expected_usage_captured_at = match existing_row.as_ref() {
+    let expected_usage_version = match existing_row.as_ref() {
         Some(existing_row) => Some(
             load_latest_usage_sample(&state.pool, existing_row.id)
                 .await
                 .map_err(internal_error_tuple)?
-                .map(|sample| sample.captured_at),
+                .map(|sample| UsageSnapshotVersion {
+                    captured_at: sample.captured_at,
+                    id: sample.id,
+                }),
         ),
         None => None,
     };
@@ -661,7 +665,7 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
                 identity,
                 payload.metadata,
                 expected_updated_at,
-                expected_usage_captured_at,
+                expected_usage_version,
                 probe,
             )
             .await;
@@ -746,7 +750,10 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
                     load_latest_usage_sample(&state.pool, existing_row.id)
                         .await
                         .map_err(internal_error_tuple)?
-                        .map(|sample| sample.captured_at),
+                        .map(|sample| UsageSnapshotVersion {
+                            captured_at: sample.captured_at,
+                            id: sample.id,
+                        }),
                 ),
                 reprobe,
             )
@@ -858,11 +865,14 @@ pub(crate) async fn external_relogin_oauth_upstream_account(
     let normalized =
         normalize_external_oauth_credentials(&identity.source_account_id, &payload.oauth)?;
     let expected_updated_at = row.updated_at.clone();
-    let expected_usage_captured_at = Some(
+    let expected_usage_version = Some(
         load_latest_usage_sample(&state.pool, row.id)
             .await
             .map_err(internal_error_tuple)?
-            .map(|sample| sample.captured_at),
+            .map(|sample| UsageSnapshotVersion {
+                captured_at: sample.captured_at,
+                id: sample.id,
+            }),
     );
     let probe = probe_external_oauth_credentials(
         state.as_ref(),
@@ -880,7 +890,7 @@ pub(crate) async fn external_relogin_oauth_upstream_account(
             row.id,
             probe,
             Some(expected_updated_at),
-            expected_usage_captured_at,
+            expected_usage_version,
         )
         .await?;
     state

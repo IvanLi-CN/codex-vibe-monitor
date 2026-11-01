@@ -1109,6 +1109,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         CREATE TABLE IF NOT EXISTS pool_oauth_login_sessions (
             login_id TEXT PRIMARY KEY,
             account_id INTEGER,
+            account_updated_at TEXT,
             display_name TEXT,
             email TEXT,
             group_name TEXT,
@@ -1165,6 +1166,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_name")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_name")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "account_updated_at")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.account_updated_at")?;
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "email")
         .await
         .context("failed to ensure pool_oauth_login_sessions.email")?;

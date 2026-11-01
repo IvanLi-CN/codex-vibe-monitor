@@ -3,6 +3,12 @@ use super::*;
 pub(crate) const OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE: &str =
     "usage snapshot changed while OAuth credentials were being probed";
 
+#[derive(Debug, Clone)]
+pub(crate) struct UsageSnapshotVersion {
+    pub(crate) captured_at: String,
+    pub(crate) id: i64,
+}
+
 pub(crate) fn usage_refresh_failure_message(error_code: &str, error_message: &str) -> String {
     if error_code == "upstream_http_429_quota_exhausted" {
         format!("quota exhausted: {error_message}")
@@ -33,7 +39,7 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
     snapshot: &NormalizedUsageSnapshot,
     retention_days: u64,
     expected_lease_token: Option<&str>,
-    expected_usage_captured_at: Option<Option<&str>>,
+    expected_usage_version: Option<Option<UsageSnapshotVersion>>,
 ) -> Result<bool> {
     let now_iso = format_utc_iso(Utc::now());
     let latest =
@@ -92,10 +98,12 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
               ))
-              OR (?18 = 1 AND ?19 = (
-                  SELECT MAX(captured_at)
+              OR (?18 = 1 AND (?19, ?20) = (
+                  SELECT captured_at, id
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
+                  ORDER BY captured_at DESC, id DESC
+                  LIMIT 1
               ))
           )
         "#,
@@ -129,12 +137,28 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
     .bind(credits.as_ref().and_then(|value| value.balance.clone()))
     .bind(expected_lease_token)
     .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
-    .bind(i64::from(expected_usage_captured_at.is_some()))
-    .bind(i64::from(expected_usage_captured_at.flatten().is_some()))
-    .bind(expected_usage_captured_at.flatten())
+    .bind(i64::from(expected_usage_version.is_some()))
+    .bind(i64::from(
+        expected_usage_version
+            .as_ref()
+            .and_then(Option::as_ref)
+            .is_some(),
+    ))
+    .bind(
+        expected_usage_version
+            .as_ref()
+            .and_then(Option::as_ref)
+            .map(|value| value.captured_at.as_str()),
+    )
+    .bind(
+        expected_usage_version
+            .as_ref()
+            .and_then(Option::as_ref)
+            .map(|value| value.id),
+    )
     .execute(pool)
     .await?;
-    if (expected_lease_token.is_some() || expected_usage_captured_at.is_some())
+    if (expected_lease_token.is_some() || expected_usage_version.is_some())
         && insert_result.rows_affected() == 0
     {
         return Ok(false);

@@ -1,6 +1,6 @@
 use super::sync_usage_snapshot::{
-    OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE, persist_usage_snapshot_with_versions,
-    usage_refresh_failure_message,
+    OAUTH_USAGE_SNAPSHOT_CONFLICT_MESSAGE, UsageSnapshotVersion,
+    persist_usage_snapshot_with_versions, usage_refresh_failure_message,
 };
 use super::*;
 use sqlx::Transaction;
@@ -2176,7 +2176,7 @@ pub(crate) async fn apply_imported_oauth_probe_result_locked_with_expected_usage
     state: &AppState,
     account_id: i64,
     probe: &ImportedOauthProbeOutcome,
-    expected_usage_captured_at: Option<Option<String>>,
+    expected_usage_version: Option<Option<UsageSnapshotVersion>>,
 ) -> Result<Option<String>> {
     if let Some(snapshot) = probe.usage_snapshot.as_ref() {
         let before = load_upstream_account_row(&state.pool, account_id).await?;
@@ -2191,9 +2191,7 @@ pub(crate) async fn apply_imported_oauth_probe_result_locked_with_expected_usage
             snapshot,
             state.config.upstream_accounts_history_retention_days,
             None,
-            expected_usage_captured_at
-                .as_ref()
-                .map(|value| value.as_deref()),
+            expected_usage_version,
         )
         .await?;
         if !persisted {
@@ -2249,7 +2247,7 @@ pub(crate) async fn persist_imported_oauth_existing_inner_with_versions(
     account_id: i64,
     probe: ImportedOauthProbeOutcome,
     expected_updated_at: Option<&str>,
-    expected_usage_captured_at: Option<Option<String>>,
+    expected_usage_version: Option<Option<UsageSnapshotVersion>>,
 ) -> Result<Option<String>, (StatusCode, String)> {
     let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(account_id);
     let _credential_refresh_guard = credential_refresh_lock.lock().await;
@@ -2396,7 +2394,7 @@ pub(crate) async fn persist_imported_oauth_existing_inner_with_versions(
         state,
         account_id,
         &probe,
-        expected_usage_captured_at,
+        expected_usage_version,
     )
     .await
     {
@@ -4051,6 +4049,7 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct LatestUpstreamAccountSampleByAccountRow {
     account_id: i64,
+    sample_id: i64,
     captured_at: String,
     limit_id: Option<String>,
     limit_name: Option<String>,
@@ -4086,6 +4085,7 @@ pub(crate) async fn load_latest_usage_sample_map(
         r#"
         SELECT
             sample.account_id,
+            sample.id AS sample_id,
             sample.captured_at,
             sample.limit_id,
             sample.limit_name,
@@ -4210,6 +4210,7 @@ pub(crate) async fn load_latest_usage_sample_map(
             (
                 account_id,
                 UpstreamAccountSampleRow {
+                    id: row.sample_id,
                     captured_at: row.captured_at,
                     limit_id: row.limit_id,
                     limit_name: row.limit_name,
@@ -4468,7 +4469,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
     let history_rows = sqlx::query_as::<_, UpstreamAccountSampleRow>(
         r#"
         SELECT
-            captured_at, limit_id, limit_name, plan_type,
+            id, captured_at, limit_id, limit_name, plan_type,
             primary_used_percent, primary_window_minutes, primary_resets_at,
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance

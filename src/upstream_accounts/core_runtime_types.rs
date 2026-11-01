@@ -1,7 +1,7 @@
+use super::sync::sync_usage_snapshot::UsageSnapshotVersion;
 use super::*;
 #[path = "core_runtime_types/runtime_state.rs"]
 mod runtime_state;
-
 use futures_util::FutureExt;
 use std::{any::Any, collections::BTreeMap, panic::AssertUnwindSafe};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
@@ -553,7 +553,7 @@ impl AccountOpCoordinator {
         identity: ExternalAccountIdentity,
         metadata: ExternalUpstreamAccountMetadataRequest,
         expected_updated_at: Option<String>,
-        expected_usage_captured_at: Option<Option<String>>,
+        expected_usage_version: Option<Option<UsageSnapshotVersion>>,
         probe: ImportedOauthProbeOutcome,
     ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
         self.submit_command(
@@ -568,7 +568,7 @@ impl AccountOpCoordinator {
                     id,
                     &metadata,
                     expected_updated_at.as_deref(),
-                    expected_usage_captured_at,
+                    expected_usage_version,
                     probe,
                 )
                 .await
@@ -763,7 +763,7 @@ impl AccountOpCoordinator {
         id: i64,
         probe: ImportedOauthProbeOutcome,
         expected_updated_at: Option<String>,
-        expected_usage_captured_at: Option<Option<String>>,
+        expected_usage_version: Option<Option<UsageSnapshotVersion>>,
     ) -> Result<Option<String>, (StatusCode, String)> {
         self.submit_command(
             state,
@@ -776,7 +776,7 @@ impl AccountOpCoordinator {
                     id,
                     probe,
                     expected_updated_at.as_deref(),
-                    expected_usage_captured_at,
+                    expected_usage_version,
                 )
                 .await
             },

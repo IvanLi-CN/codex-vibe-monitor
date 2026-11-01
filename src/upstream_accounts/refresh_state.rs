@@ -106,15 +106,18 @@ pub(crate) async fn load_upstream_account_refresh_history(
             http_status
         FROM pool_upstream_account_events
         WHERE account_id = ?1
-          AND action IN (?2, ?3, ?4)
+          AND action IN (?2, ?3, ?4, ?5, ?6, ?7)
         ORDER BY occurred_at DESC, id DESC
-        LIMIT ?5
+        LIMIT ?8
         "#,
     )
     .bind(account_id)
     .bind(UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_SUCCEEDED)
     .bind(UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REFRESH_FAILED)
     .bind(UPSTREAM_ACCOUNT_ACTION_CREDENTIAL_REAUTH_REQUIRED)
+    .bind(UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_SUCCEEDED)
+    .bind(UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_PARTIAL)
+    .bind(UPSTREAM_ACCOUNT_ACTION_USAGE_WINDOWS_REFRESH_FAILED)
     .bind(limit.max(0))
     .fetch_all(pool)
     .await?;
@@ -387,6 +390,7 @@ pub(crate) async fn complete_upstream_account_refresh_success_state_with_executo
         )
         ON CONFLICT(account_id, operation) DO UPDATE SET
             state = excluded.state,
+            last_attempt_at = excluded.last_attempt_at,
             last_success_at = excluded.last_success_at,
             next_attempt_at = excluded.next_attempt_at,
             source = excluded.source,

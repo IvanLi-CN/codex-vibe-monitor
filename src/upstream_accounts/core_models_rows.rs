@@ -929,6 +929,7 @@ pub(crate) struct AccountStickyKeyInvocationPreviewRow {
 #[allow(dead_code)]
 #[derive(Debug, FromRow)]
 pub(crate) struct UpstreamAccountSampleRow {
+    pub(crate) id: i64,
     pub(crate) captured_at: String,
     pub(crate) limit_id: Option<String>,
     pub(crate) limit_name: Option<String>,
@@ -949,6 +950,7 @@ pub(crate) struct UpstreamAccountSampleRow {
 pub(crate) struct OauthLoginSessionRow {
     pub(crate) login_id: String,
     pub(crate) account_id: Option<i64>,
+    pub(crate) account_updated_at: Option<String>,
     pub(crate) display_name: Option<String>,
     #[sqlx(default)]
     pub(crate) email: Option<String>,

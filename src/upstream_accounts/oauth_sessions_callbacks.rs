@@ -570,6 +570,7 @@ pub(crate) async fn create_oauth_login_session(
     let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
 
     let mut preserved_mother_flag = false;
+    let mut preserved_account_updated_at = None;
     let mut preserved_display_name = None;
     let mut preserved_email = None;
     let mut preserved_group_name = None;
@@ -590,6 +591,7 @@ pub(crate) async fn create_oauth_login_session(
             ));
         }
         preserved_mother_flag = existing.is_mother != 0;
+        preserved_account_updated_at = Some(existing.updated_at);
         preserved_display_name = Some(existing.display_name);
         preserved_email = existing.email;
         preserved_group_name = existing.group_name;
@@ -671,16 +673,17 @@ pub(crate) async fn create_oauth_login_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            login_id, account_id, account_updated_at, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
             group_node_shunt_enabled_requested, group_single_account_rotation_enabled,
             group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note, group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, ?23, NULL, ?24, ?24)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, NULL, ?24, NULL, ?25, ?25)
         "#,
     )
     .bind(&login_id)
     .bind(payload.account_id)
+    .bind(preserved_account_updated_at)
     .bind(display_name)
     .bind(email.clone())
     .bind(&resolved_group_binding.group_name)
@@ -2391,6 +2394,17 @@ pub(crate) async fn persist_oauth_callback_inner(
                 "OAuth identity confirmation required".to_string(),
             ));
         }
+        if session
+            .account_updated_at
+            .as_deref()
+            .is_some_and(|expected| expected != account.updated_at)
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                "account changed while OAuth authorization was in progress; retry the operation"
+                    .to_string(),
+            ));
+        }
         Some(account)
     } else {
         let current_plan_type = normalize_plan_type(input.claims.chatgpt_plan_type.as_deref());
@@ -2584,6 +2598,17 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    if session
+        .account_updated_at
+        .as_deref()
+        .is_some_and(|expected| expected != account.updated_at)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "account changed while OAuth authorization was in progress; retry the operation"
+                .to_string(),
+        ));
+    }
     let encrypted_credentials = session
         .pending_encrypted_credentials
         .clone()

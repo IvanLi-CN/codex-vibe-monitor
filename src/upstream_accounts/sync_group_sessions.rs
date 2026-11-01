@@ -2028,7 +2028,7 @@ pub(crate) async fn load_login_session_by_login_id_with_executor(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            login_id, account_id, account_updated_at, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
             group_node_shunt_enabled_requested, group_single_account_rotation_enabled,
             group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
@@ -2061,7 +2061,7 @@ pub(crate) async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            login_id, account_id, account_updated_at, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
             group_node_shunt_enabled_requested, group_single_account_rotation_enabled,
             group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,

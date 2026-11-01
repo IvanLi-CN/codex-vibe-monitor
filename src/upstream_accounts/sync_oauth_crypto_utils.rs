@@ -1596,21 +1596,54 @@ pub(crate) fn extract_error_message(body: &str) -> String {
                     .and_then(value_as_string)
             });
         if let Some(message) = message {
+            let message = sanitize_extracted_error_message(&message);
             if let Some(error_code) = error_code
                 && !message.eq_ignore_ascii_case(&error_code)
             {
-                return format!("{error_code}: {message}");
+                return format!(
+                    "{}: {message}",
+                    sanitize_extracted_error_message(&error_code)
+                );
             }
             return message;
         }
         if let Some(error_code) = error_code {
-            return error_code;
+            return sanitize_extracted_error_message(&error_code);
         }
         if let Some(error) = value.get("error").and_then(value_as_string) {
-            return error;
+            return sanitize_extracted_error_message(&error);
         }
     }
-    body.trim().chars().take(240).collect()
+    "upstream returned an unstructured error response".to_string()
+}
+
+fn sanitize_extracted_error_message(message: &str) -> String {
+    let collapsed = message
+        .chars()
+        .map(|ch| {
+            if ch.is_control() && ch != '\n' && ch != '\t' {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let lower = collapsed.to_ascii_lowercase();
+    if lower.contains("authorization:")
+        || lower.contains("bearer ")
+        || lower.contains("access_token=")
+        || lower.contains("access_token:")
+        || lower.contains("refresh_token=")
+        || lower.contains("refresh_token:")
+        || lower.contains("id_token=")
+        || lower.contains("id_token:")
+    {
+        return "upstream returned a sensitive error response".to_string();
+    }
+    collapsed.chars().take(240).collect()
 }
 
 pub(crate) fn is_scope_permission_error_message(message: &str) -> bool {
