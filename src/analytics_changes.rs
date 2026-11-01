@@ -545,6 +545,15 @@ pub(crate) fn normalize_analytics_payload_text(
     payload_text(payload, key)
 }
 
+pub(crate) fn normalize_analytics_failure_kind(
+    payload: Option<&Value>,
+    column_value: Option<&str>,
+) -> Option<String> {
+    payload_text(payload, "failureKind")
+        .or_else(|| bounded_text(column_value))
+        .filter(|value| !value.eq_ignore_ascii_case("none"))
+}
+
 pub(crate) fn normalize_analytics_payload_i64(payload: Option<&Value>, key: &str) -> Option<i64> {
     payload_i64(payload, key)
 }
@@ -836,8 +845,8 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
         payload_i64(payload.as_ref(), "upstreamAccountId").or(row.upstream_account_id);
     let status = bounded_text(row.status.as_deref());
     let error_message = bounded_text(row.error_message.as_deref());
-    let stored_failure_kind = bounded_text(row.failure_kind.as_deref())
-        .filter(|value| !value.eq_ignore_ascii_case("none"));
+    let stored_failure_kind =
+        normalize_analytics_failure_kind(payload.as_ref(), row.failure_kind.as_deref());
     let stored_failure_class = bounded_text(row.failure_class.as_deref());
     let classification = crate::api::resolve_failure_classification(
         status.as_deref(),

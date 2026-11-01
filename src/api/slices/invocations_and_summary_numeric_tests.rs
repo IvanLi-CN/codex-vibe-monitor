@@ -45,11 +45,13 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
     .await
     .expect("create resolver test table");
     sqlx::query(
-        "INSERT INTO codex_invocations (status, error_message, failure_kind, failure_class, payload) VALUES
+        r#"INSERT INTO codex_invocations (status, error_message, failure_kind, failure_class, payload) VALUES
          ('completed', '', 'none', NULL, '{}'),
          ('completed', 'opaque upstream error', 'none', NULL, '{}'),
          ('warning_success', '', 'none', NULL, '{}'),
-         ('completed', '', 'unknown_legacy_kind', NULL, '{}')",
+         ('completed', '', 'unknown_legacy_kind', NULL, '{}'),
+         ('completed', '', 'none', NULL, '{"failureKind":"upstream_stream_error"}'),
+         ('completed', '', 'upstream_stream_error', NULL, '{"failureKind":"none"}')"#,
     )
     .execute(&pool)
     .await
@@ -62,6 +64,13 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
         .expect("evaluate resolver expression");
     assert_eq!(
         classes,
-        ["none", "service_failure", "none", "service_failure"]
+        [
+            "none",
+            "service_failure",
+            "none",
+            "service_failure",
+            "service_failure",
+            "none"
+        ]
     );
 }

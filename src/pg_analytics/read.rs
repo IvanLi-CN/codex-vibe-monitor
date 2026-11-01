@@ -910,6 +910,13 @@ struct AnalyticsUsageModelAggregate {
 
 impl AnalyticsSummaryAggregate {
     pub(crate) fn add_fact(&mut self, fact: &AnalyticsFact) -> AnalyticsReadResult<()> {
+        let mut candidate = self.clone();
+        candidate.add_fact_inner(fact)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn add_fact_inner(&mut self, fact: &AnalyticsFact) -> AnalyticsReadResult<()> {
         let classification = validate_fact_for_projection(fact)?;
         let success_like = analytics_fact_success_like(fact, classification.failure_class);
         let non_success =
@@ -944,6 +951,13 @@ impl AnalyticsSummaryAggregate {
     }
 
     pub(crate) fn merge(&mut self, other: &Self) -> AnalyticsReadResult<()> {
+        let mut candidate = self.clone();
+        candidate.merge_inner(other)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn merge_inner(&mut self, other: &Self) -> AnalyticsReadResult<()> {
         self.total_count = checked_add(self.total_count, other.total_count, "total count")?;
         self.success_count = checked_add(self.success_count, other.success_count, "success count")?;
         self.failure_count = checked_add(self.failure_count, other.failure_count, "failure count")?;
@@ -1323,6 +1337,36 @@ mod tests {
             validate_fact_for_projection(&fact),
             Err(AnalyticsReadError::Unavailable(_))
         ));
+    }
+
+    #[test]
+    fn summary_aggregate_numeric_failures_do_not_partially_mutate_state() {
+        let mut add_target = AnalyticsSummaryAggregate {
+            total_count: i64::MAX,
+            ..Default::default()
+        };
+        let add_before = add_target.clone();
+        let fact = fixture_fact(101, 0, "completed", "none", 1, 0.1);
+        assert!(matches!(
+            add_target.add_fact(&fact),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+        assert_eq!(add_target, add_before);
+
+        let mut merge_target = AnalyticsSummaryAggregate {
+            total_count: i64::MAX,
+            ..Default::default()
+        };
+        let merge_before = merge_target.clone();
+        let other = AnalyticsSummaryAggregate {
+            total_count: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            merge_target.merge(&other),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+        assert_eq!(merge_target, merge_before);
     }
 
     #[test]

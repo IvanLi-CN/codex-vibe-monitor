@@ -118,6 +118,14 @@ fn validate_timeseries_token_fields(
             "timeseries projection contains cache input tokens exceeding input tokens"
         )));
     }
+    if let (Some(total_tokens), Some(input_tokens), Some(output_tokens)) =
+        (total_tokens, input_tokens, output_tokens)
+        && input_tokens.checked_add(output_tokens) != Some(total_tokens)
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "timeseries projection contains inconsistent total tokens"
+        )));
+    }
     Ok(())
 }
 
@@ -402,6 +410,31 @@ pub(crate) fn overlay_runtime_timeseries_snapshot(
     bucket_seconds: i64,
     reporting_tz: Tz,
 ) -> Result<(), ApiError> {
+    let mut candidate = aggregates.clone();
+    overlay_runtime_timeseries_snapshot_inner(
+        &mut candidate,
+        runtime_records,
+        source_scope,
+        upstream_account_id,
+        start,
+        end,
+        bucket_seconds,
+        reporting_tz,
+    )?;
+    *aggregates = candidate;
+    Ok(())
+}
+
+fn overlay_runtime_timeseries_snapshot_inner(
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    runtime_records: &[ApiInvocation],
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<(), ApiError> {
     for record in runtime_records {
         if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
             continue;
@@ -463,6 +496,9 @@ pub(crate) fn overlay_runtime_timeseries_snapshot(
 }
 
 fn validate_bucket_aggregate(aggregate: &BucketAggregate) -> Result<(), ApiError> {
+    // Historical rollups can carry a trusted total with zero-filled or incomplete components.
+    // Keep those buckets usable while `timeseries_point_from_aggregate` hides the incomplete
+    // component fields; individual facts are validated more strictly before entering a bucket.
     for (field, value) in [
         ("total count", aggregate.total_count),
         ("success count", aggregate.success_count),
@@ -503,6 +539,11 @@ fn validate_bucket_aggregate(aggregate: &BucketAggregate) -> Result<(), ApiError
         if value < 0 {
             return Err(timeseries_aggregate_overflow(field));
         }
+    }
+    if aggregate.cache_input_tokens > aggregate.input_tokens {
+        return Err(ApiError::unavailable(anyhow!(
+            "timeseries aggregate cache input tokens exceed input tokens"
+        )));
     }
     for (field, value) in [
         ("total cost", aggregate.total_cost),
@@ -892,6 +933,33 @@ pub(crate) fn subtract_stale_in_flight_record_from_timeseries_aggregate(
 }
 
 pub(crate) fn overlay_runtime_timeseries_in_flight(
+    state: &AppState,
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    start_dt: DateTime<Utc>,
+    end_dt: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    db_runtime_records: &HashMap<(String, String), InvocationAggregateRecord>,
+) -> Result<(), ApiError> {
+    let mut candidate = aggregates.clone();
+    overlay_runtime_timeseries_in_flight_inner(
+        state,
+        &mut candidate,
+        source_scope,
+        upstream_account_id,
+        start_dt,
+        end_dt,
+        bucket_seconds,
+        reporting_tz,
+        db_runtime_records,
+    )?;
+    *aggregates = candidate;
+    Ok(())
+}
+
+fn overlay_runtime_timeseries_in_flight_inner(
     state: &AppState,
     aggregates: &mut BTreeMap<i64, BucketAggregate>,
     source_scope: InvocationSourceScope,

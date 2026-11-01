@@ -297,6 +297,14 @@ fn exact_records_reject_invalid_numeric_facts_before_mutating_aggregates() {
                 record.cache_input_tokens = Some(3);
             },
         ),
+        (
+            "total tokens disagree with components",
+            |record: &mut InvocationAggregateRecord| {
+                record.total_tokens = Some(3);
+                record.input_tokens = Some(1);
+                record.output_tokens = Some(1);
+            },
+        ),
         ("negative cost", |record: &mut InvocationAggregateRecord| {
             record.cost = Some(-0.1);
         }),
@@ -323,6 +331,50 @@ fn exact_records_reject_invalid_numeric_facts_before_mutating_aggregates() {
 }
 
 #[test]
+fn terminal_deltas_and_rollups_fail_closed_without_partial_mutation() {
+    let mut delta =
+        TimeseriesTerminalDelta::from(&crate::api::summary_projection_test_invocation());
+    delta.total_tokens = Some(-1);
+    let mut delta_aggregate = BucketAggregate {
+        total_count: 4,
+        ..Default::default()
+    };
+    let delta_before = delta_aggregate.clone();
+    let delta_error = super::aggregation::add_timeseries_terminal_delta_to_aggregate(
+        &mut delta_aggregate,
+        &delta,
+    )
+    .expect_err("invalid terminal delta must fail closed");
+    assert!(matches!(
+        delta_error,
+        crate::stats::ApiError::Unavailable(_)
+    ));
+    assert_eq!(format!("{delta_aggregate:?}"), format!("{delta_before:?}"));
+
+    let mut rollup_target = BucketAggregate {
+        total_count: 3,
+        ..Default::default()
+    };
+    let rollup_before = rollup_target.clone();
+    let rollup_error = super::aggregation::merge_timeseries_bucket_aggregate(
+        &mut rollup_target,
+        BucketAggregate {
+            total_count: 1,
+            input_tokens: 1,
+            cache_input_tokens: 2,
+            total_cost: f64::NAN,
+            ..Default::default()
+        },
+    )
+    .expect_err("invalid rollup must fail closed");
+    assert!(matches!(
+        rollup_error,
+        crate::stats::ApiError::Unavailable(_)
+    ));
+    assert_eq!(format!("{rollup_target:?}"), format!("{rollup_before:?}"));
+}
+
+#[test]
 fn runtime_overlay_rejects_inconsistent_tokens_and_invalid_timing() {
     let start = Utc
         .with_ymd_and_hms(2026, 10, 30, 0, 0, 0)
@@ -337,7 +389,14 @@ fn runtime_overlay_rejects_inconsistent_tokens_and_invalid_timing() {
     inconsistent.output_tokens = Some(0);
     inconsistent.total_tokens = Some(1);
     inconsistent.cache_input_tokens = Some(2);
-    let mut aggregates = BTreeMap::new();
+    let bucket_epoch =
+        align_reporting_bucket_epoch(start.timestamp(), 60, chrono_tz::Asia::Shanghai)
+            .expect("aligned runtime bucket");
+    let original_aggregate = BucketAggregate {
+        total_count: 7,
+        ..Default::default()
+    };
+    let mut aggregates = BTreeMap::from([(bucket_epoch, original_aggregate.clone())]);
     let token_error = super::aggregation::overlay_runtime_timeseries_snapshot(
         &mut aggregates,
         &[inconsistent],
@@ -353,6 +412,10 @@ fn runtime_overlay_rejects_inconsistent_tokens_and_invalid_timing() {
         token_error,
         crate::stats::ApiError::Unavailable(_)
     ));
+    assert_eq!(
+        format!("{:?}", aggregates.get(&bucket_epoch)),
+        format!("{:?}", Some(&original_aggregate))
+    );
 
     let mut invalid_timing = crate::api::summary_projection_test_invocation();
     invalid_timing.status = Some("pending".to_string());

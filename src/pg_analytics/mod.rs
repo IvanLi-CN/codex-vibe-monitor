@@ -1020,9 +1020,10 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
     let status = crate::analytics_changes::normalize_analytics_text(row.status.as_deref());
     let error_message =
         crate::analytics_changes::normalize_analytics_text(row.error_message.as_deref());
-    let stored_failure_kind =
-        crate::analytics_changes::normalize_analytics_text(row.failure_kind.as_deref())
-            .filter(|value| !value.eq_ignore_ascii_case("none"));
+    let stored_failure_kind = crate::analytics_changes::normalize_analytics_failure_kind(
+        payload.as_ref(),
+        row.failure_kind.as_deref(),
+    );
     let stored_failure_class =
         crate::analytics_changes::normalize_analytics_text(row.failure_class.as_deref());
     let classification = crate::api::resolve_failure_classification(
@@ -3891,6 +3892,47 @@ mod tests {
         assert_eq!(fact.status.as_deref(), Some("completed"));
         assert_eq!(fact.failure_kind.as_deref(), Some("failure"));
         assert_eq!(fact.failure_class.as_deref(), Some("service_failure"));
+    }
+
+    #[test]
+    fn snapshot_fact_prefers_payload_failure_kind_for_projection_parity() {
+        let payload_failure = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 43,
+            invoke_id: "invoke-43".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            status: Some("completed".to_string()),
+            failure_kind: Some("none".to_string()),
+            payload: Some(r#"{"failureKind":"upstream_stream_error"}"#.to_string()),
+            ..Default::default()
+        })
+        .expect("payload failure kind should classify before projection");
+        assert_eq!(
+            payload_failure.failure_kind.as_deref(),
+            Some("upstream_stream_error")
+        );
+        assert_eq!(
+            payload_failure.failure_class.as_deref(),
+            Some("service_failure")
+        );
+        assert!(!payload_failure.success_like);
+
+        let payload_none = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 44,
+            invoke_id: "invoke-44".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            status: Some("completed".to_string()),
+            failure_kind: Some("upstream_stream_error".to_string()),
+            payload: Some(r#"{"failureKind":"none"}"#.to_string()),
+            ..Default::default()
+        })
+        .expect("explicit payload none should retain success classification");
+        assert_eq!(payload_none.failure_kind, None);
+        assert_eq!(payload_none.failure_class, None);
+        assert!(payload_none.success_like);
     }
 
     #[test]
