@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 77,
+    "inventory_entries": 84,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -411,8 +411,50 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
       "role": "test_helper",
-      "line_budget": 7401,
-      "next_module_workstream": "Split upstream maintenance scheduler/schema fixtures by account plans, routing, and persistence."
+      "line_budget": 13,
+      "next_module_workstream": "Keep the maintenance scheduler/schema facade limited to child-module declarations and re-exports."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/account_capabilities_attempts_and_import_matching.rs",
+      "role": "test_helper",
+      "line_budget": 1542,
+      "next_module_workstream": "Maintain request capability routing, account attempt filters, import matching, and their OAuth/account fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/maintenance_dispatch_and_lifecycle.rs",
+      "role": "test_helper",
+      "line_budget": 1466,
+      "next_module_workstream": "Maintain maintenance dispatch, background synchronization, serialization, deduplication, revalidation, and panic recovery fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/schema_migrations_and_pool_routing_settings.rs",
+      "role": "test_helper",
+      "line_budget": 812,
+      "next_module_workstream": "Maintain upstream account schema seeds/migrations and pool routing settings persistence and runtime-cache fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/maintenance_due_plans_and_candidate_capacity.rs",
+      "role": "test_helper",
+      "line_budget": 1016,
+      "next_module_workstream": "Maintain maintenance due planning, cadence and reset boundaries, deferred throttles, candidate capacity, and work-status fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/effective_routing_policy_and_tag_layers.rs",
+      "role": "test_helper",
+      "line_budget": 1005,
+      "next_module_workstream": "Maintain effective routing normalization, model intersections, protected tags, inheritance, fail-closed policy, and account acceptance fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/account_policy_updates_and_details.rs",
+      "role": "test_helper",
+      "line_budget": 1185,
+      "next_module_workstream": "Maintain account routing-policy writes, validation, partial updates, details, tag listing, and layered effective-policy fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/sticky_key_previews_and_benchmarks.rs",
+      "role": "test_helper",
+      "line_budget": 372,
+      "next_module_workstream": "Maintain sticky-key previews, composite-index/no-sort contracts, and the 300,000-row benchmark fixture."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
