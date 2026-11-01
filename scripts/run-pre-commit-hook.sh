@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "${LEFTHOOK:-}" = '0' ]; then
-  exit 0
-fi
+case "${LEFTHOOK:-}" in
+  0|false)
+    exit 0
+    ;;
+esac
 
 repo_root="$(git rev-parse --show-toplevel)"
 git_dir="$(git -C "$repo_root" rev-parse --absolute-git-dir)"

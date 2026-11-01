@@ -31,8 +31,9 @@ assert_contains "$repo_root/lefthook.yml" 'name: check-rust-line-budget'
 assert_contains "$repo_root/lefthook.yml" 'check_staged_rust_line_budget.py'
 assert_contains "$repo_root/lefthook.yml" '{staged_files}'
 assert_contains "$repo_root/lefthook.yml" 'glob: "**/*.md"'
-assert_contains "$repo_root/lefthook.yml" 'parallel: true'
 assert_contains "$repo_root/lefthook.yml" 'parallel: false'
+[ "$(sed -n '2p' "$repo_root/lefthook.yml")" = '  parallel: false' ] \
+  || fail 'staged formatter jobs must serialize their shared index writes'
 assert_contains "$repo_root/lefthook.yml" 'stage_fixed: true'
 assert_not_contains "$repo_root/lefthook.yml" 'cargo '
 assert_not_contains "$repo_root/lefthook.yml" 'cargo clippy'
@@ -66,10 +67,12 @@ export FORMATTER_LOG="$formatter_log"
   CODEX_HOOK_DPRINT_BIN="$fake_bin/dprint" \
     bash scripts/format-staged-files.sh markdown README.md removed.md docs/../README.md vendor/hotpath/README.md
 )
-assert_contains "$formatter_log" $'biome\tcheck --write web/src/test-setup.ts'
+assert_contains "$formatter_log" $'biome\tcheck --write '
+assert_contains "$formatter_log" '/web/src/test-setup.ts'
 assert_contains "$formatter_log" $'rustfmt\t--edition 2024 -- '
 assert_contains "$formatter_log" '/src/main.rs'
-assert_contains "$formatter_log" $'dprint\tfmt README.md'
+assert_contains "$formatter_log" $'dprint\tfmt '
+assert_contains "$formatter_log" '/README.md'
 assert_not_contains "$formatter_log" 'missing.ts'
 assert_not_contains "$formatter_log" '../../package.json'
 assert_not_contains "$formatter_log" 'web/../package.json'
@@ -226,6 +229,10 @@ awk 'NR == 1 && $0 == "start" { next } NR == 2 && $0 == "end" { next } NR == 3 &
   || fail 'concurrent pre-commit invocations were not serialized'
 partial_git_dir="$(git -C "$partial_repo" rev-parse --absolute-git-dir)"
 pre_commit_lock_path="$partial_git_dir/pre-commit.flock"
+(
+  cd "$partial_repo"
+  LEFTHOOK=false LEFTHOOK_BIN="$fake_bin/lock-lefthook" LOCK_TEST_LOG="$lock_test_log" bash scripts/run-pre-commit-hook.sh
+)
 outside_lock="$tmp_dir/outside-pre-commit.lock"
 printf 'outside lock sentinel\n' > "$outside_lock"
 rm -f "$pre_commit_lock_path"
@@ -308,7 +315,7 @@ if (
 ); then
   fail 'formatter must reject an edit made during rustfmt'
 fi
-assert_contains "$tmp_dir/during-format.log" 'refusing to format concurrently modified file: src/sample.rs'
+assert_contains "$tmp_dir/during-format.log" 'refusing to stage concurrently modified file: src/sample.rs'
 git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/during-format-index.contents"
 cmp -s "$tmp_dir/expected-concurrent-index.contents" "$tmp_dir/during-format-index.contents" \
   || fail 'during-rustfmt edit was left staged'
@@ -319,7 +326,7 @@ mkdir -p "$race_git_bin"
 cat > "$race_git_bin/git" <<'EOF_RACE_GIT'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${1:-}" = 'add' ]; then
+if [ "${1:-}" = 'apply' ]; then
   printf '\n// concurrent editor change\n' >> "${RACE_TARGET:?}"
 fi
 exec "${REAL_GIT:?}" "$@"
@@ -345,6 +352,43 @@ EOF_EXPECTED_CONCURRENT_INDEX
 cmp -s "$tmp_dir/expected-concurrent-index.contents" "$tmp_dir/concurrent-index.contents" \
   || fail 'concurrent formatter edit was left staged'
 assert_contains "$partial_repo/src/sample.rs" '// concurrent editor change'
+
+symlink_race_git_bin="$tmp_dir/symlink-race-git-bin"
+mkdir -p "$symlink_race_git_bin"
+cat > "$symlink_race_git_bin/git" <<'EOF_SYMLINK_RACE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = 'apply' ]; then
+  rm -f "${RACE_TARGET:?}"
+  ln -s "${RACE_SYMLINK_TARGET:?}" "${RACE_TARGET:?}"
+fi
+exec "${REAL_GIT:?}" "$@"
+EOF_SYMLINK_RACE_GIT
+chmod +x "$symlink_race_git_bin/git"
+symlink_race_target="$tmp_dir/outside-during-apply.rs"
+cat > "$symlink_race_target" <<'EOF_SYMLINK_RACE_TARGET'
+fn main(){ println!("staged"); }
+EOF_SYMLINK_RACE_TARGET
+cat > "$partial_repo/src/sample.rs" <<'EOF_SYMLINK_RACE_STAGE'
+fn main(){ println!("staged"); }
+EOF_SYMLINK_RACE_STAGE
+git -C "$partial_repo" add src/sample.rs
+if (
+  cd "$partial_repo"
+  PATH="$symlink_race_git_bin:$PATH" REAL_GIT="$real_git" \
+    RACE_TARGET="$partial_repo/src/sample.rs" RACE_SYMLINK_TARGET="$symlink_race_target" \
+    CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" bash scripts/format-staged-files.sh rust src/sample.rs \
+    > "$tmp_dir/symlink-concurrent-format.log" 2>&1
+); then
+  fail 'formatter must reject a symlink replacement before applying its patch'
+fi
+assert_contains "$tmp_dir/symlink-concurrent-format.log" 'refusing to stage concurrently modified file: src/sample.rs'
+git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/symlink-concurrent-index.contents"
+cmp -s "$tmp_dir/expected-concurrent-index.contents" "$tmp_dir/symlink-concurrent-index.contents" \
+  || fail 'symlink replacement was left staged'
+[ -L "$partial_repo/src/sample.rs" ] || fail 'symlink replacement fixture did not run'
+assert_contains "$symlink_race_target" 'fn main(){ println!("staged"); }'
+rm -f "$partial_repo/src/sample.rs"
 
 partial_linked_repo="$tmp_dir/partial-stage-linked"
 git -C "$partial_repo" branch partial-stage-linked
@@ -543,6 +587,21 @@ wait "$first_installer_lock_pid" || fail 'first linked hooks:install invocation 
 wait "$second_installer_lock_pid" || fail 'second linked hooks:install invocation failed'
 [ ! -e "$installer_lock_overlap" ] || fail 'linked hooks:install invocations were not serialized'
 git -C "$partial_repo" worktree remove --force "$installer_lock_linked_repo"
+
+core_hooks_path_repo="$tmp_dir/core-hooks-path"
+mkdir -p "$core_hooks_path_repo/scripts"
+cp "$repo_root/scripts/install-lefthook-hooks.sh" "$core_hooks_path_repo/scripts/install-lefthook-hooks.sh"
+chmod +x "$core_hooks_path_repo/scripts/install-lefthook-hooks.sh"
+git -C "$core_hooks_path_repo" init -q
+git -C "$core_hooks_path_repo" config core.hooksPath "$tmp_dir/custom-hooks"
+core_hooks_path_git_dir="$(git -C "$core_hooks_path_repo" rev-parse --absolute-git-dir)"
+(
+  cd "$core_hooks_path_repo"
+  bash scripts/install-lefthook-hooks.sh > "$tmp_dir/core-hooks-path.log" 2>&1
+)
+assert_contains "$tmp_dir/core-hooks-path.log" 'core.hooksPath is set'
+[ ! -e "$core_hooks_path_git_dir/hooks-install.flock" ] \
+  || fail 'core.hooksPath no-op created the shared installer lock'
 
 pre_commit_template_repo="$tmp_dir/pre-commit-template"
 mkdir -p "$pre_commit_template_repo"

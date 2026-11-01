@@ -84,68 +84,98 @@ if [ "$check_only" -eq 1 ]; then
   exit 0
 fi
 
+original_objects=()
+original_worktree_hashes=()
+format_tmp_dir="$(mktemp -d "$repo_root/.codex-format.XXXXXX")"
+format_tmp_files=()
+cleanup_format_tmp() {
+  rm -rf "$format_tmp_dir"
+}
+trap cleanup_format_tmp EXIT
+
+for file in "${files[@]}"; do
+  if ! git diff --quiet -- "$file"; then
+    printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
+    printf 'stage or unstage all changes in this file before committing\n' >&2
+    exit 1
+  fi
+  index_entry="$(git ls-files --stage --error-unmatch -- "$file" | awk '$3 == "0" { print; exit }')"
+  read -r _ original_object _ _ <<< "$index_entry"
+  original_objects+=("$original_object")
+  original_worktree_hashes+=("$(git hash-object -- "$file")")
+  format_tmp_file="$format_tmp_dir/$file"
+  mkdir -p "$(dirname "$format_tmp_file")"
+  cp "$repo_root/$file" "$format_tmp_file"
+  format_tmp_files+=("$format_tmp_file")
+done
+
+apply_formatted_snapshot() {
+  local index="$1"
+  local file="${files[$index]}"
+  local format_tmp_file="${format_tmp_files[$index]}"
+  local current_index current_worktree_hash formatted_hash context_lines formatted_lines diff_status patch_file
+
+  current_index="$(git rev-parse --verify ":$file")"
+  current_worktree_hash="$(git hash-object -- "$file")"
+  if [ "$current_index" != "${original_objects[$index]}" ] \
+    || [ "$current_worktree_hash" != "${original_worktree_hashes[$index]}" ]; then
+    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    exit 1
+  fi
+
+  formatted_hash="$(git hash-object -- "$format_tmp_file")"
+  if [ "$formatted_hash" = "${original_worktree_hashes[$index]}" ]; then
+    return 0
+  fi
+
+  context_lines="$(wc -l < "$file")"
+  formatted_lines="$(wc -l < "$format_tmp_file")"
+  if [ "$formatted_lines" -gt "$context_lines" ]; then
+    context_lines="$formatted_lines"
+  fi
+  context_lines=$((context_lines + 1))
+  patch_file="$format_tmp_dir/.patch-$index"
+  set +e
+  diff -u -U "$context_lines" -L "a/$file" -L "b/$file" "$repo_root/$file" "$format_tmp_file" > "$patch_file"
+  diff_status=$?
+  set -e
+  if [ "$diff_status" -ne 1 ]; then
+    printf 'unable to create formatter patch for: %s\n' "$file" >&2
+    exit 1
+  fi
+
+  if ! git apply --index --binary "$patch_file"; then
+    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    exit 1
+  fi
+
+  current_index="$(git rev-parse --verify ":$file")"
+  current_worktree_hash="$(git hash-object -- "$file")"
+  if [ "$current_index" != "$formatted_hash" ] || [ "$current_worktree_hash" != "$formatted_hash" ]; then
+    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    exit 1
+  fi
+}
+
 case "$surface" in
   web)
     biome_bin="${CODEX_HOOK_BIOME_BIN:-$repo_root/node_modules/.bin/biome}"
-    "$biome_bin" check --write "${files[@]}"
+    "$biome_bin" check --write "${format_tmp_files[@]}"
     ;;
   rust)
     rustfmt_bin="${CODEX_HOOK_RUSTFMT_BIN:-rustfmt}"
-    original_modes=()
-    original_objects=()
-    original_worktree_hashes=()
-    format_tmp_dir="$(mktemp -d "$repo_root/.codex-rustfmt.XXXXXX")"
-    format_tmp_files=()
-    cleanup_format_tmp() {
-      rm -rf "$format_tmp_dir"
-    }
-    trap cleanup_format_tmp EXIT
-    for file in "${files[@]}"; do
-      if ! git diff --quiet -- "$file"; then
-        printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
-        printf 'stage or unstage all changes in this file before committing\n' >&2
-        exit 1
-      fi
-    done
-    for file in "${files[@]}"; do
-      index_entry="$(git ls-files --stage --error-unmatch -- "$file" | awk '$3 == "0" { print; exit }')"
-      read -r original_mode original_object original_stage _ <<< "$index_entry"
-      original_modes+=("$original_mode")
-      original_objects+=("$original_object")
-      original_worktree_hashes+=("$(git hash-object -- "$file")")
-      format_tmp_file="$format_tmp_dir/$file"
-      mkdir -p "$(dirname "$format_tmp_file")"
-      cp "$repo_root/$file" "$format_tmp_file"
-      format_tmp_files+=("$format_tmp_file")
-    done
     "$rustfmt_bin" --edition 2024 -- "${format_tmp_files[@]}"
-    for index in "${!files[@]}"; do
-      file="${files[$index]}"
-      if [ "$(git hash-object -- "$file")" != "${original_worktree_hashes[$index]}" ]; then
-        printf 'refusing to format concurrently modified file: %s\n' "$file" >&2
-        exit 1
-      fi
-      formatted_hash="$(git hash-object -- "${format_tmp_files[$index]}")"
-      cp "${format_tmp_files[$index]}" "$repo_root/$file"
-      if [ "$(git hash-object -- "$file")" != "$formatted_hash" ]; then
-        printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
-        exit 1
-      fi
-      git add -- "$file"
-      staged_hash="$(git rev-parse --verify ":$file")"
-      if [ "$staged_hash" != "$formatted_hash" ]; then
-        git update-index --add --cacheinfo "${original_modes[$index]},${original_objects[$index]},$file"
-        printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
-        exit 1
-      fi
-    done
     ;;
   markdown)
     dprint_bin="${CODEX_HOOK_DPRINT_BIN:-$repo_root/node_modules/.bin/dprint}"
-    "$dprint_bin" fmt "${files[@]}"
+    "$dprint_bin" fmt "${format_tmp_files[@]}"
     ;;
   *)
     printf 'unknown formatter surface: %s\n' "$surface" >&2
     exit 2
     ;;
 esac
+
+for index in "${!files[@]}"; do
+  apply_formatted_snapshot "$index"
+done

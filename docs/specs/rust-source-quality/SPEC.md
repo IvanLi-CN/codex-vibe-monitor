@@ -95,12 +95,12 @@ selected source blobs from Git's index, match exact paths from
 skip unselected and deleted paths, and report the path, actual physical line
 count, and budget for an over-budget selected path. The policy itself MUST be
 read from its stage-0 index blob so staged source and policy are evaluated as
-one candidate. The Rust formatter MUST reject partial staging, pass staged
-filenames after an option terminator, format a stable worktree snapshot,
-revalidate the original file before writing the result back, and stage its
-formatted whole-file output only when the staged index entry still matches the
-formatter result. On a concurrent mismatch it MUST restore the original
-stage-0 entry and fail. The managed pre-commit wrapper MUST
+one candidate. Each staged formatter MUST operate on a stable worktree
+snapshot and apply its formatted patch through `git apply --index` only while
+the matching index and worktree contents remain unchanged. A concurrent
+mismatch MUST fail without silently staging or overwriting the concurrent edit.
+The Rust formatter MUST reject partial staging and pass staged filenames after
+an option terminator. The managed pre-commit wrapper MUST
 serialize the complete formatter, safety-check, and Lefthook sequence with an
 advisory lock in the current worktree's Git metadata, invoke Lefthook with
 auto-install disabled, and it MUST reject symlink and

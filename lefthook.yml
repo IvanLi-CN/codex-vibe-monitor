@@ -1,5 +1,5 @@
 pre-commit:
-  parallel: true
+  parallel: false
   jobs:
     - name: format-web
       glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"

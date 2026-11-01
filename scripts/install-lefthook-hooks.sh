@@ -4,6 +4,12 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 
+custom_hooks_path="$(git -C "$repo_root" config --get core.hooksPath || true)"
+if [ -n "$custom_hooks_path" ]; then
+  printf '[worktree-bootstrap] core.hooksPath is set to %s; leaving hooks untouched\n' "$custom_hooks_path" >&2
+  exit 0
+fi
+
 if [ "${CODEX_HOOKS_INSTALL_LOCK_HELD:-}" != '1' ]; then
   common_git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)"
   install_lock_path="$common_git_dir/hooks-install.flock"
@@ -25,12 +31,6 @@ if [ "${CODEX_HOOKS_INSTALL_LOCK_HELD:-}" != '1' ]; then
     install_lock_status=$?
     exit "$install_lock_status"
   fi
-fi
-
-custom_hooks_path="$(git -C "$repo_root" config --get core.hooksPath || true)"
-if [ -n "$custom_hooks_path" ]; then
-  printf '[worktree-bootstrap] core.hooksPath is set to %s; leaving hooks untouched\n' "$custom_hooks_path" >&2
-  exit 0
 fi
 
 lefthook_path=''
