@@ -405,7 +405,8 @@ impl PgAnalyticsRuntime {
                    coverage_generation, coverage_revision, coverage_watermark,
                    consumer_checkpoint, source_acknowledged_through, service_eligible,
                    fact_date_semantics_version,
-                   last_error_code, last_error_detail, updated_at::text AS updated_at
+                   last_error_code, last_error_detail,
+                   to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
             FROM cvm_analytics.analytics_replica_state
             WHERE id = 1
             "#,
@@ -423,6 +424,7 @@ impl PgAnalyticsRuntime {
                 "analytics replica state is missing",
             )));
         };
+        validate_analytics_replica_freshness(&replica_state)?;
         if !replica_service_eligible(&replica_state) || !replica_baseline_ready(&replica_state) {
             return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
                 AnalyticsBackend::Postgres,

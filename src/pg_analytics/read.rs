@@ -6,8 +6,7 @@ pub(crate) const ANALYTICS_READ_PAGE_MAX_ENCODED_BYTES: usize =
 pub(crate) const ANALYTICS_READ_MAX_TAIL_ROWS: usize = 200_000;
 pub(crate) const ANALYTICS_READ_MAX_TAIL_ENCODED_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const ANALYTICS_READ_DEADLINE: Duration = Duration::from_secs(15);
-pub(crate) const ANALYTICS_SUMMARY_ALL_AUTHORITY_UNAVAILABLE_REASON: &str =
-    "PostgreSQL Summary All compact aggregate authority is not provisioned";
+pub(crate) const ANALYTICS_READ_MAX_STALE: Duration = Duration::from_secs(15);
 
 const ANALYTICS_FACT_SELECT_SQL: &str = r#"
     SELECT fact_version, source, source_row_id, invoke_id,
@@ -184,6 +183,7 @@ impl AnalyticsFactReadQuery {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AnalyticsFactReadSnapshot {
     pub(crate) fence: AnalyticsReadFence,
+    pub(crate) source_snapshot_id: i64,
     pub(crate) facts: Vec<AnalyticsFact>,
 }
 
@@ -228,6 +228,7 @@ pub(crate) async fn query_bounded_facts(
     )
     .await
     .map_err(|_| read_deadline_exceeded())??;
+    let source_snapshot_id = load_source_snapshot_id(&mut transaction, query, started_at).await?;
     let high_watermark = load_fact_high_watermark(&mut transaction, query, started_at).await?;
     let fence = AnalyticsReadFence {
         replica_id: state.replica_id,
@@ -307,7 +308,11 @@ pub(crate) async fn query_bounded_facts(
                 "failed to commit PostgreSQL analytics bounded fact read: {error}"
             ))
         })?;
-    Ok(AnalyticsFactReadSnapshot { fence, facts })
+    Ok(AnalyticsFactReadSnapshot {
+        fence,
+        source_snapshot_id,
+        facts,
+    })
 }
 
 async fn load_read_replica_state(
@@ -319,7 +324,8 @@ async fn load_read_replica_state(
                baseline_change_id, coverage_generation, coverage_revision,
                coverage_watermark, consumer_checkpoint, source_acknowledged_through,
                service_eligible, fact_date_semantics_version,
-               last_error_code, last_error_detail, updated_at::text AS updated_at
+               last_error_code, last_error_detail,
+               to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
         FROM cvm_analytics.analytics_replica_state
         WHERE id = 1
         "#,
@@ -358,6 +364,36 @@ async fn load_fact_high_watermark(
         ))
     })?;
     row.map(AnalyticsFactKeyRow::into_key).transpose()
+}
+
+async fn load_source_snapshot_id(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    query: AnalyticsFactReadQuery,
+    started_at: Instant,
+) -> AnalyticsReadResult<i64> {
+    let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+        "SELECT COALESCE(MAX(source_row_id), 0) FROM cvm_analytics.analytics_facts WHERE 1 = 1",
+    );
+    if matches!(
+        query.scope,
+        AnalyticsFactScope::ProxyOnly | AnalyticsFactScope::AccountProxyOnly(_)
+    ) {
+        builder.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    let remaining = remaining_read_deadline(started_at)?;
+    tokio::time::timeout(
+        remaining,
+        builder
+            .build_query_scalar::<i64>()
+            .fetch_one(&mut **transaction),
+    )
+    .await
+    .map_err(|_| read_deadline_exceeded())?
+    .map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to capture PostgreSQL analytics source snapshot id: {error}"
+        ))
+    })
 }
 
 async fn load_fact_page(
@@ -516,6 +552,27 @@ fn read_deadline_exceeded() -> AnalyticsReadError {
     ))
 }
 
+pub(crate) fn validate_analytics_replica_freshness(
+    state: &AnalyticsReplicaState,
+) -> AnalyticsReadResult<()> {
+    let updated_at = crate::stats::parse_to_utc_datetime(&state.updated_at).ok_or_else(|| {
+        AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+            AnalyticsBackend::Postgres,
+            "analytics replica freshness timestamp is invalid",
+        ))
+    })?;
+    let age = Utc::now().signed_duration_since(updated_at);
+    let stale_after = chrono::Duration::from_std(ANALYTICS_READ_MAX_STALE)
+        .expect("analytics freshness budget fits chrono duration");
+    if age > stale_after {
+        return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+            AnalyticsBackend::Postgres,
+            "analytics replica freshness exceeded 15 seconds",
+        )));
+    }
+    Ok(())
+}
+
 fn invalid_budget(detail: impl Into<String>) -> AnalyticsReadError {
     AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
         AnalyticsBackend::Postgres,
@@ -553,6 +610,9 @@ fn ensure_tail_budget_complete(
 pub(crate) fn validate_fact_for_projection(
     fact: &AnalyticsFact,
 ) -> AnalyticsReadResult<crate::api::FailureClassification> {
+    if fact.fact_version != 1 {
+        return Err(invalid_fact("analytics fact version is unsupported"));
+    }
     let occurred_at = crate::stats::parse_to_utc_datetime(&fact.occurred_at)
         .ok_or_else(|| invalid_fact("analytics fact occurred-at timestamp is invalid"))?;
     if occurred_at.timestamp_millis() != fact.occurred_at_epoch_ms {
@@ -574,47 +634,56 @@ pub(crate) fn validate_fact_for_projection(
         .status
         .as_deref()
         .map(str::trim)
-        .filter(|status| !status.is_empty())
-        .ok_or_else(|| invalid_fact("analytics fact status classification is missing"))?;
+        .filter(|status| !status.is_empty());
+    if fact.status.is_some() && status.is_none() {
+        return Err(invalid_fact(
+            "analytics fact status classification is empty",
+        ));
+    }
     if fact
         .failure_class
         .as_deref()
         .and_then(crate::api::FailureClass::from_db_str)
         .is_none()
+        && fact.failure_class.is_some()
     {
         return Err(invalid_fact(
             "analytics fact failure classification is invalid",
         ));
     }
-    let actionable = fact
-        .is_actionable
-        .ok_or_else(|| invalid_fact("analytics fact actionable classification is missing"))?;
     let classification = crate::api::resolve_failure_classification(
-        Some(status),
+        status,
         None,
         fact.failure_kind.as_deref(),
         fact.failure_class.as_deref(),
-        Some(i64::from(actionable)),
+        fact.is_actionable.map(i64::from),
     );
     let failure_class = classification.failure_class;
-    let in_flight =
-        status.eq_ignore_ascii_case("running") || status.eq_ignore_ascii_case("pending");
-    if fact.terminal == in_flight {
+    let in_flight = status.is_some_and(|status| {
+        status.eq_ignore_ascii_case("running") || status.eq_ignore_ascii_case("pending")
+    });
+    if status.is_some() && fact.terminal == in_flight {
         return Err(invalid_fact(
             "analytics fact terminal classification is inconsistent",
         ));
     }
-    let persisted_success_like = matches!(
-        status.to_ascii_lowercase().as_str(),
-        "success" | "succeeded" | "completed" | "ok"
-    );
+    let persisted_success_like = status.is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "success" | "succeeded" | "completed" | "ok"
+        )
+    });
     if fact.success_like != persisted_success_like {
         return Err(invalid_fact(
             "analytics fact success classification is inconsistent",
         ));
     }
     let success_like = analytics_fact_success_like(fact, failure_class);
-    if fact.terminal && !success_like && failure_class == crate::api::FailureClass::None {
+    if fact.terminal
+        && !success_like
+        && failure_class == crate::api::FailureClass::None
+        && (status.is_some() || fact.failure_kind.is_some())
+    {
         return Err(invalid_fact(
             "terminal analytics fact has no resolved failure classification",
         ));
@@ -666,14 +735,6 @@ pub(crate) fn validate_fact_for_projection(
         ));
     }
     Ok(classification)
-}
-
-pub(crate) fn analytics_fact_snapshot_id(facts: &[AnalyticsFact]) -> i64 {
-    facts
-        .iter()
-        .map(|fact| fact.source_row_id)
-        .max()
-        .unwrap_or_default()
 }
 
 pub(crate) fn analytics_fact_to_invocation_record(
@@ -1081,18 +1142,6 @@ fn checked_float_add(target: f64, value: f64, field: &str) -> AnalyticsReadResul
     }
 }
 
-pub(crate) fn summary_all_compact_authority_unavailable(
-    runtime: &PgAnalyticsRuntime,
-) -> AnalyticsReadError {
-    if let Err(error) = runtime.require_pool() {
-        return AnalyticsReadError::Unavailable(error);
-    }
-    AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
-        AnalyticsBackend::Postgres,
-        ANALYTICS_SUMMARY_ALL_AUTHORITY_UNAVAILABLE_REASON,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1212,6 +1261,39 @@ mod tests {
     }
 
     #[test]
+    fn nullable_legacy_classification_uses_the_operational_resolver() {
+        let mut fact = fixture_fact(101, 0, "http_200", "none", 1, 0.1);
+        fact.failure_kind = Some("upstream_stream_error".to_string());
+        fact.failure_class = None;
+        fact.is_actionable = None;
+        fact.success_like = false;
+
+        let classification = validate_fact_for_projection(&fact).expect("legacy fact is valid");
+        assert_eq!(
+            classification.failure_class,
+            crate::api::FailureClass::ServiceFailure
+        );
+        assert!(classification.is_actionable);
+
+        let mut statusless = fixture_fact(102, 1_000, "completed", "none", 1, 0.1);
+        statusless.status = None;
+        statusless.success_like = false;
+        statusless.failure_class = None;
+        statusless.is_actionable = None;
+        assert!(validate_fact_for_projection(&statusless).is_ok());
+    }
+
+    #[test]
+    fn unsupported_fact_versions_fail_closed() {
+        let mut fact = fixture_fact(101, 0, "completed", "none", 1, 0.1);
+        fact.fact_version = 2;
+        assert!(matches!(
+            validate_fact_for_projection(&fact),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+    }
+
+    #[test]
     fn legacy_success_field_and_live_phase_inference_preserve_read_parity() {
         let mut warning = fixture_fact(101, 0, "warning_success", "none", 1, 0.1);
         assert!(validate_fact_for_projection(&warning).is_ok());
@@ -1277,16 +1359,6 @@ mod tests {
     }
 
     #[test]
-    fn bounded_fact_snapshot_uses_invocation_row_cursor_domain() {
-        let facts = vec![
-            fixture_fact(101, 0, "completed", "none", 1, 0.1),
-            fixture_fact(104, 1_000, "completed", "none", 1, 0.1),
-        ];
-        assert_eq!(analytics_fact_snapshot_id(&facts), 104);
-        assert_eq!(analytics_fact_snapshot_id(&[]), 0);
-    }
-
-    #[test]
     fn changed_fence_invalidates_a_restartable_cursor() {
         let fence = AnalyticsReadFence {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
@@ -1318,6 +1390,32 @@ mod tests {
         assert_eq!(ANALYTICS_READ_MAX_TAIL_ROWS, 200_000);
         assert_eq!(ANALYTICS_READ_MAX_TAIL_ENCODED_BYTES, 32 * 1024 * 1024);
         assert_eq!(ANALYTICS_READ_DEADLINE, Duration::from_secs(15));
+        assert_eq!(ANALYTICS_READ_MAX_STALE, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn stale_replica_state_fails_closed_at_the_read_boundary() {
+        let state = AnalyticsReplicaState {
+            replica_id: ANALYTICS_REPLICA_ID.to_string(),
+            status: "caught_up".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            generation: 1,
+            baseline_generation: 1,
+            baseline_change_id: 1,
+            coverage_generation: 1,
+            coverage_revision: 1,
+            coverage_watermark: 1,
+            consumer_checkpoint: 1,
+            source_acknowledged_through: 1,
+            service_eligible: true,
+            last_error_code: None,
+            last_error_detail: None,
+            updated_at: (Utc::now() - ChronoDuration::seconds(16)).to_rfc3339(),
+        };
+        assert!(matches!(
+            validate_analytics_replica_freshness(&state),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
     }
 
     #[test]

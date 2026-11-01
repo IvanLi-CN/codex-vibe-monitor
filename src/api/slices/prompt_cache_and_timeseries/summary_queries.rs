@@ -3,10 +3,24 @@ use anyhow::anyhow;
 
 pub(crate) async fn query_postgres_summary_all(
     runtime: &PgAnalyticsRuntime,
-    _source_scope: InvocationSourceScope,
-    _upstream_account_id: Option<i64>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
 ) -> AnalyticsReadResult<StatsResponse> {
-    Err(summary_all_compact_authority_unavailable(runtime))
+    let fact_scope = match (source_scope, upstream_account_id) {
+        (InvocationSourceScope::All, None) => AnalyticsFactScope::All,
+        (InvocationSourceScope::ProxyOnly, None) => AnalyticsFactScope::ProxyOnly,
+        (InvocationSourceScope::All, Some(account_id)) => AnalyticsFactScope::Account(account_id),
+        (InvocationSourceScope::ProxyOnly, Some(account_id)) => {
+            AnalyticsFactScope::AccountProxyOnly(account_id)
+        }
+    };
+    let read_query = AnalyticsFactReadQuery::all(fact_scope)?;
+    let snapshot = query_bounded_facts(runtime, read_query).await?;
+    let mut aggregate = AnalyticsSummaryAggregate::default();
+    for fact in &snapshot.facts {
+        aggregate.add_fact(fact)?;
+    }
+    Ok(aggregate.into_response(None, true))
 }
 
 pub(crate) async fn query_hourly_backed_summary_since_with_config(
