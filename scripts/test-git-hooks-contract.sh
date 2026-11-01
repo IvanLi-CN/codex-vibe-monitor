@@ -67,7 +67,8 @@ export FORMATTER_LOG="$formatter_log"
     bash scripts/format-staged-files.sh markdown README.md removed.md docs/../README.md vendor/hotpath/README.md
 )
 assert_contains "$formatter_log" $'biome\tcheck --write web/src/test-setup.ts'
-assert_contains "$formatter_log" $'rustfmt\t--edition 2024 -- src/main.rs'
+assert_contains "$formatter_log" $'rustfmt\t--edition 2024 -- '
+assert_contains "$formatter_log" '/src/main.rs'
 assert_contains "$formatter_log" $'dprint\tfmt README.md'
 assert_not_contains "$formatter_log" 'missing.ts'
 assert_not_contains "$formatter_log" '../../package.json'
@@ -126,7 +127,10 @@ set -euo pipefail
 [ "${1:-}" = '--edition' ] && shift
 [ "${1:-}" = '2024' ] && shift
 [ "${1:-}" = '--' ] && shift
-[ "${1:-}" = '-evil.rs' ]
+case "${1:-}" in
+  */-evil.rs) ;;
+  *) exit 1 ;;
+esac
 EOF_OPTION_GUARD_RUSTFMT
 chmod +x "$fake_bin/option-guard-rustfmt"
 (
@@ -274,6 +278,41 @@ cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-index.contents
   || fail 'formatter rewrite was not staged exactly'
 cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-worktree.contents" \
   || fail 'formatter rewrite was not applied exactly'
+
+cat > "$fake_bin/during-format-rustfmt" <<'EOF_DURING_FORMAT_RUSTFMT'
+#!/usr/bin/env bash
+set -euo pipefail
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --edition|2024|--) shift ;;
+    *)
+      perl -0pi -e 's/fn main\(\)\{ println!\("staged"\); \}/fn main() {\n    println!("staged");\n}/' "$1"
+      shift
+      ;;
+  esac
+done
+printf '\n// concurrent editor change during rustfmt\n' >> "${RACE_DURING_TARGET:?}"
+EOF_DURING_FORMAT_RUSTFMT
+chmod +x "$fake_bin/during-format-rustfmt"
+cat > "$partial_repo/src/sample.rs" <<'EOF_DURING_FORMAT_STAGE'
+fn main(){ println!("staged"); }
+EOF_DURING_FORMAT_STAGE
+git -C "$partial_repo" add src/sample.rs
+cat > "$tmp_dir/expected-concurrent-index.contents" <<'EOF_EXPECTED_CONCURRENT_INDEX_BASE'
+fn main(){ println!("staged"); }
+EOF_EXPECTED_CONCURRENT_INDEX_BASE
+if (
+  cd "$partial_repo"
+  RACE_DURING_TARGET="$partial_repo/src/sample.rs" CODEX_HOOK_RUSTFMT_BIN="$fake_bin/during-format-rustfmt" \
+    bash scripts/format-staged-files.sh rust src/sample.rs > "$tmp_dir/during-format.log" 2>&1
+); then
+  fail 'formatter must reject an edit made during rustfmt'
+fi
+assert_contains "$tmp_dir/during-format.log" 'refusing to format concurrently modified file: src/sample.rs'
+git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/during-format-index.contents"
+cmp -s "$tmp_dir/expected-concurrent-index.contents" "$tmp_dir/during-format-index.contents" \
+  || fail 'during-rustfmt edit was left staged'
+assert_contains "$partial_repo/src/sample.rs" '// concurrent editor change during rustfmt'
 
 race_git_bin="$tmp_dir/race-git-bin"
 mkdir -p "$race_git_bin"

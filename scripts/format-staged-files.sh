@@ -93,6 +93,13 @@ case "$surface" in
     rustfmt_bin="${CODEX_HOOK_RUSTFMT_BIN:-rustfmt}"
     original_modes=()
     original_objects=()
+    original_worktree_hashes=()
+    format_tmp_dir="$(mktemp -d "$repo_root/.codex-rustfmt.XXXXXX")"
+    format_tmp_files=()
+    cleanup_format_tmp() {
+      rm -rf "$format_tmp_dir"
+    }
+    trap cleanup_format_tmp EXIT
     for file in "${files[@]}"; do
       if ! git diff --quiet -- "$file"; then
         printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
@@ -105,11 +112,21 @@ case "$surface" in
       read -r original_mode original_object original_stage _ <<< "$index_entry"
       original_modes+=("$original_mode")
       original_objects+=("$original_object")
+      original_worktree_hashes+=("$(git hash-object -- "$file")")
+      format_tmp_file="$format_tmp_dir/$file"
+      mkdir -p "$(dirname "$format_tmp_file")"
+      cp "$repo_root/$file" "$format_tmp_file"
+      format_tmp_files+=("$format_tmp_file")
     done
-    "$rustfmt_bin" --edition 2024 -- "${files[@]}"
+    "$rustfmt_bin" --edition 2024 -- "${format_tmp_files[@]}"
     for index in "${!files[@]}"; do
       file="${files[$index]}"
-      formatted_hash="$(git hash-object -- "$file")"
+      if [ "$(git hash-object -- "$file")" != "${original_worktree_hashes[$index]}" ]; then
+        printf 'refusing to format concurrently modified file: %s\n' "$file" >&2
+        exit 1
+      fi
+      formatted_hash="$(git hash-object -- "${format_tmp_files[$index]}")"
+      cp "${format_tmp_files[$index]}" "$repo_root/$file"
       if [ "$(git hash-object -- "$file")" != "$formatted_hash" ]; then
         printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
         exit 1
