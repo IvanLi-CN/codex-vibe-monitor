@@ -4,11 +4,9 @@ pre-commit:
     - name: format-web
       glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
       run: bash scripts/format-staged-files.sh web {staged_files}
-      stage_fixed: true
     - name: format-markdown
       glob: "**/*.md"
       run: bash scripts/format-staged-files.sh markdown {staged_files}
-      stage_fixed: true
     - name: rust-staged-checks
       glob: "*.{rs}"
       group:

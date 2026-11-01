@@ -34,7 +34,7 @@ assert_contains "$repo_root/lefthook.yml" 'glob: "**/*.md"'
 assert_contains "$repo_root/lefthook.yml" 'parallel: false'
 [ "$(sed -n '2p' "$repo_root/lefthook.yml")" = '  parallel: false' ] \
   || fail 'staged formatter jobs must serialize their shared index writes'
-assert_contains "$repo_root/lefthook.yml" 'stage_fixed: true'
+assert_not_contains "$repo_root/lefthook.yml" 'stage_fixed: true'
 assert_not_contains "$repo_root/lefthook.yml" 'cargo '
 assert_not_contains "$repo_root/lefthook.yml" 'cargo clippy'
 assert_not_contains "$repo_root/lefthook.yml" 'tsc -b'
