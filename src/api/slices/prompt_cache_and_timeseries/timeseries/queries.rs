@@ -498,7 +498,7 @@ async fn fetch_timeseries_from_postgres(
     let snapshot = query_bounded_facts(&state.pg_analytics, read_query)
         .await
         .map_err(AnalyticsReadError::into_api_error)?;
-    let snapshot_id = snapshot.fence.identity.coverage_watermark;
+    let snapshot_id = analytics_fact_snapshot_id(&snapshot.facts);
     let fact_count = snapshot.facts.len();
     let records = snapshot
         .facts

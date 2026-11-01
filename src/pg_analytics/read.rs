@@ -576,20 +576,27 @@ pub(crate) fn validate_fact_for_projection(
         .map(str::trim)
         .filter(|status| !status.is_empty())
         .ok_or_else(|| invalid_fact("analytics fact status classification is missing"))?;
-    let failure_class = fact
+    if fact
         .failure_class
         .as_deref()
         .and_then(crate::api::FailureClass::from_db_str)
-        .ok_or_else(|| invalid_fact("analytics fact failure classification is invalid"))?;
+        .is_none()
+    {
+        return Err(invalid_fact(
+            "analytics fact failure classification is invalid",
+        ));
+    }
     let actionable = fact
         .is_actionable
         .ok_or_else(|| invalid_fact("analytics fact actionable classification is missing"))?;
-    let expected_actionable = failure_class == crate::api::FailureClass::ServiceFailure;
-    if actionable != expected_actionable {
-        return Err(invalid_fact(
-            "analytics fact actionable classification is inconsistent",
-        ));
-    }
+    let classification = crate::api::resolve_failure_classification(
+        Some(status),
+        None,
+        fact.failure_kind.as_deref(),
+        fact.failure_class.as_deref(),
+        Some(i64::from(actionable)),
+    );
+    let failure_class = classification.failure_class;
     let in_flight =
         status.eq_ignore_ascii_case("running") || status.eq_ignore_ascii_case("pending");
     if fact.terminal == in_flight {
@@ -658,22 +665,38 @@ pub(crate) fn validate_fact_for_projection(
             "analytics fact cache input tokens exceed input tokens",
         ));
     }
-    Ok(crate::api::FailureClassification {
-        failure_kind: fact.failure_kind.clone(),
-        failure_class,
-        is_actionable: actionable,
-    })
+    Ok(classification)
+}
+
+pub(crate) fn analytics_fact_snapshot_id(facts: &[AnalyticsFact]) -> i64 {
+    facts
+        .iter()
+        .map(|fact| fact.source_row_id)
+        .max()
+        .unwrap_or_default()
 }
 
 pub(crate) fn analytics_fact_to_invocation_record(
     fact: AnalyticsFact,
 ) -> crate::api::InvocationAggregateRecord {
     let live_phase = analytics_fact_live_phase(&fact);
+    let status = fact.status.map(|status| {
+        if fact.success_like
+            && matches!(
+                status.trim().to_ascii_lowercase().as_str(),
+                "succeeded" | "ok"
+            )
+        {
+            "success".to_string()
+        } else {
+            status
+        }
+    });
     crate::api::InvocationAggregateRecord {
         id: fact.source_row_id,
         invoke_id: fact.invoke_id,
         occurred_at: fact.occurred_at,
-        status: fact.status,
+        status,
         total_tokens: fact.total_tokens,
         input_tokens: fact.input_tokens,
         output_tokens: fact.output_tokens,
@@ -1076,17 +1099,15 @@ mod tests {
 
     const FIXTURE_START_EPOCH_MS: i64 = 1_793_318_400_000;
 
-    #[allow(clippy::too_many_arguments)]
     fn fixture_fact(
         source_row_id: i64,
         occurred_at_epoch_ms: i64,
         status: &str,
-        success_like: bool,
-        terminal: bool,
         failure_class: &str,
         total_tokens: i64,
         cost: f64,
     ) -> AnalyticsFact {
+        let normalized_status = status.trim().to_ascii_lowercase();
         AnalyticsFact {
             fact_version: 1,
             source: "codex_invocations".to_string(),
@@ -1102,16 +1123,12 @@ mod tests {
             upstream_account_id: None,
             upstream_account_name: None,
             status: Some(status.to_string()),
-            success_like,
-            terminal,
-            failure_kind: Some(
-                if failure_class == "none" {
-                    "none"
-                } else {
-                    "fixture"
-                }
-                .to_string(),
+            success_like: matches!(
+                normalized_status.as_str(),
+                "success" | "succeeded" | "completed" | "ok"
             ),
+            terminal: !matches!(normalized_status.as_str(), "running" | "pending"),
+            failure_kind: (failure_class != "none").then(|| "fixture".to_string()),
             failure_class: Some(failure_class.to_string()),
             is_actionable: Some(failure_class == "service_failure"),
             input_tokens: Some(total_tokens),
@@ -1139,12 +1156,12 @@ mod tests {
     #[test]
     fn summary_fixture_aggregates_same_timestamp_ties_and_live_tail() {
         let historical = vec![
-            fixture_fact(101, 0, "completed", true, true, "none", 100, 1.25),
-            fixture_fact(102, 0, "http_500", false, true, "service_failure", 30, 0.50),
+            fixture_fact(101, 0, "completed", "none", 100, 1.25),
+            fixture_fact(102, 0, "http_500", "service_failure", 30, 0.50),
         ];
         let tail = vec![
-            fixture_fact(103, 0, "http_401", false, true, "client_failure", 10, 0.10),
-            fixture_fact(104, 1_000, "running", false, false, "none", 5, 0.05),
+            fixture_fact(103, 0, "http_401", "client_failure", 10, 0.10),
+            fixture_fact(104, 1_000, "running", "none", 5, 0.05),
         ];
         let mut prefix = AnalyticsSummaryAggregate::default();
         for fact in &historical {
@@ -1165,8 +1182,8 @@ mod tests {
 
     #[test]
     fn keyset_page_validation_rejects_overlap_and_crosses_no_high_watermark() {
-        let first = fixture_fact(101, 0, "completed", true, true, "none", 1, 0.1);
-        let second = fixture_fact(102, 0, "completed", true, true, "none", 1, 0.1);
+        let first = fixture_fact(101, 0, "completed", "none", 1, 0.1);
+        let second = fixture_fact(102, 0, "completed", "none", 1, 0.1);
         let first_key = AnalyticsFactKey::from_fact(&first).expect("first key");
         let second_key = AnalyticsFactKey::from_fact(&second).expect("second key");
         validate_fact_page(None, Some(&second_key), std::slice::from_ref(&first))
@@ -1180,13 +1197,13 @@ mod tests {
 
     #[test]
     fn invalid_classification_and_non_finite_numeric_values_fail_closed() {
-        let mut fact = fixture_fact(101, 0, "completed", true, true, "none", 1, 0.1);
+        let mut fact = fixture_fact(101, 0, "completed", "none", 1, 0.1);
         fact.failure_class = Some("unknown".to_string());
         assert!(matches!(
             validate_fact_for_projection(&fact),
             Err(AnalyticsReadError::Unavailable(_))
         ));
-        let mut fact = fixture_fact(102, 0, "completed", true, true, "none", 1, 0.1);
+        let mut fact = fixture_fact(102, 0, "completed", "none", 1, 0.1);
         fact.cost = Some(f64::NAN);
         assert!(matches!(
             validate_fact_for_projection(&fact),
@@ -1196,7 +1213,7 @@ mod tests {
 
     #[test]
     fn legacy_success_field_and_live_phase_inference_preserve_read_parity() {
-        let mut warning = fixture_fact(101, 0, "warning_success", false, true, "none", 1, 0.1);
+        let mut warning = fixture_fact(101, 0, "warning_success", "none", 1, 0.1);
         assert!(validate_fact_for_projection(&warning).is_ok());
         let mut summary = AnalyticsSummaryAggregate::default();
         summary.add_fact(&warning).expect("warning success fact");
@@ -1229,6 +1246,44 @@ mod tests {
                 .as_deref(),
             Some(crate::api::INVOCATION_LIVE_PHASE_RESPONDING)
         );
+    }
+
+    #[test]
+    fn legacy_failure_kind_overrides_a_none_classification_for_projection_parity() {
+        let mut fact = fixture_fact(101, 0, "http_200", "none", 1, 0.1);
+        fact.failure_kind = Some("upstream_stream_error".to_string());
+        fact.is_actionable = Some(true);
+
+        let classification = validate_fact_for_projection(&fact).expect("valid legacy fact");
+        assert_eq!(
+            classification.failure_class,
+            crate::api::FailureClass::ServiceFailure
+        );
+        let mut summary = AnalyticsSummaryAggregate::default();
+        summary.add_fact(&fact).expect("legacy failure fact");
+        assert_eq!(summary.success_count, 0);
+        assert_eq!(summary.failure_count, 1);
+    }
+
+    #[test]
+    fn persisted_success_statuses_are_normalized_for_timeseries_aggregation() {
+        for status in ["succeeded", "ok"] {
+            let fact = fixture_fact(101, 0, status, "none", 1, 0.1);
+            assert_eq!(
+                analytics_fact_to_invocation_record(fact).status.as_deref(),
+                Some("success")
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_fact_snapshot_uses_invocation_row_cursor_domain() {
+        let facts = vec![
+            fixture_fact(101, 0, "completed", "none", 1, 0.1),
+            fixture_fact(104, 1_000, "completed", "none", 1, 0.1),
+        ];
+        assert_eq!(analytics_fact_snapshot_id(&facts), 104);
+        assert_eq!(analytics_fact_snapshot_id(&[]), 0);
     }
 
     #[test]
@@ -1267,14 +1322,14 @@ mod tests {
 
     #[test]
     fn row_budget_never_returns_a_partial_tail() {
-        let fact = fixture_fact(101, 0, "completed", true, true, "none", 1, 0.1);
+        let fact = fixture_fact(101, 0, "completed", "none", 1, 0.1);
         let key = AnalyticsFactKey::from_fact(&fact).expect("fact key");
         assert!(
             ensure_tail_budget_complete(ANALYTICS_READ_MAX_TAIL_ROWS, Some(&key), Some(&key),)
                 .is_ok()
         );
 
-        let later = fixture_fact(102, 1_000, "completed", true, true, "none", 1, 0.1);
+        let later = fixture_fact(102, 1_000, "completed", "none", 1, 0.1);
         let later_key = AnalyticsFactKey::from_fact(&later).expect("later fact key");
         assert!(matches!(
             ensure_tail_budget_complete(ANALYTICS_READ_MAX_TAIL_ROWS, Some(&key), Some(&later_key),),
