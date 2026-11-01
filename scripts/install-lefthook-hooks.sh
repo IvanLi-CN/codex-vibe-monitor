@@ -223,8 +223,18 @@ cleanup_legacy_prepare_commit_msg() {
     && [ -n "$hook_identity" ] \
     && [ "$current_hook_identity" = "$hook_identity" ] \
     && cmp -s "$hook_path" "$template_path"; then
-    rm -f "$hook_path"
-    printf '[worktree-bootstrap] removed obsolete Lefthook prepare-commit-msg wrapper\n'
+    final_hook_identity=''
+    if final_hook_identity="$(stat -c '%d:%i' "$hook_path" 2>/dev/null)"; then
+      :
+    else
+      final_hook_identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
+    fi
+    if [ "$final_hook_identity" = "$hook_identity" ]; then
+      rm -f "$hook_path"
+      printf '[worktree-bootstrap] removed obsolete Lefthook prepare-commit-msg wrapper\n'
+    else
+      printf '[worktree-bootstrap] prepare-commit-msg changed during migration; leaving it untouched\n' >&2
+    fi
   else
     printf '[worktree-bootstrap] prepare-commit-msg is unmanaged; leaving it untouched\n' >&2
   fi

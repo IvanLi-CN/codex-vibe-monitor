@@ -638,6 +638,7 @@ my @after_lock_stat = lstat($lock_name) or exit 2;
 exit 3 if "$after_lock_stat[0]:$after_lock_stat[1]" ne $expected_lock_identity;
 exit 3 unless verify_index_path();
 exit 3 unless verify_targets(\@targets);
+exit 3 unless verify_index_path();
 rename($lock_name, $index_name) or exit 2;
 my @installed_stat = lstat($index_name) or exit 4;
 my $installed_identity = "$installed_stat[0]:$installed_stat[1]";
