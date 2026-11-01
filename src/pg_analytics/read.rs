@@ -466,14 +466,14 @@ fn push_key_predicate(
     operator: &str,
     key: &AnalyticsFactKey,
 ) {
-    // ISO-formatted dates retain DATE ordering when compared as text, and the current SQLx
-    // feature set intentionally does not enable chrono's PostgreSQL codec.
-    builder.push(" AND (stats_date::text, occurred_at_epoch_ms, source, source_row_id) ");
+    // Keep the DATE column native so the projection cursor indexes can serve this tuple range;
+    // SQLx binds the cursor date as text and PostgreSQL performs the explicit cast at the bind.
+    builder.push(" AND (stats_date, occurred_at_epoch_ms, source, source_row_id) ");
     builder.push(operator);
     builder.push(" (");
     builder
         .push_bind(key.stats_date.clone())
-        .push(", ")
+        .push("::date, ")
         .push_bind(key.occurred_at_epoch_ms)
         .push(", ")
         .push_bind(key.source.clone())
@@ -654,6 +654,23 @@ pub(crate) fn validate_fact_for_projection(
         fact.is_actionable.map(i64::from),
     );
     let failure_class = classification.failure_class;
+    let legacy_success_status = status.is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "http_200" | "warning_success"
+        )
+    });
+    if legacy_success_status
+        && fact.failure_class.is_none()
+        && fact.failure_kind.as_deref().is_none_or(|failure_kind| {
+            let failure_kind = failure_kind.trim();
+            failure_kind.is_empty() || failure_kind.eq_ignore_ascii_case("none")
+        })
+    {
+        return Err(invalid_fact(
+            "analytics fact legacy success status lacks persisted failure classification",
+        ));
+    }
     let in_flight = status.is_some_and(|status| {
         status.eq_ignore_ascii_case("running") || status.eq_ignore_ascii_case("pending")
     });
@@ -1276,6 +1293,21 @@ mod tests {
         statusless.failure_class = None;
         statusless.is_actionable = None;
         assert!(validate_fact_for_projection(&statusless).is_ok());
+    }
+
+    #[test]
+    fn ambiguous_legacy_success_statuses_fail_closed_without_classification() {
+        for status in ["http_200", "warning_success"] {
+            let mut fact = fixture_fact(101, 0, status, "none", 1, 0.1);
+            fact.failure_kind = None;
+            fact.failure_class = None;
+            fact.is_actionable = None;
+            fact.success_like = false;
+            assert!(matches!(
+                validate_fact_for_projection(&fact),
+                Err(AnalyticsReadError::Unavailable(_))
+            ));
+        }
     }
 
     #[test]

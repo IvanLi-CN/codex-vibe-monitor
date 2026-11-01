@@ -877,6 +877,7 @@ struct SourceInvocationSnapshotRow {
     cost_output: Option<f64>,
     cost_reasoning: Option<f64>,
     status: Option<String>,
+    error_message: Option<String>,
     failure_kind: Option<String>,
     failure_class: Option<String>,
     is_actionable: Option<i64>,
@@ -899,6 +900,7 @@ struct SourceInvocationSnapshotSizeRow {
     source_bytes: i64,
     model_bytes: Option<i64>,
     status_bytes: Option<i64>,
+    error_message_bytes: Option<i64>,
     failure_kind_bytes: Option<i64>,
     failure_class_bytes: Option<i64>,
     payload_bytes: Option<i64>,
@@ -1000,18 +1002,54 @@ fn snapshot_terminal(status: Option<&str>) -> bool {
     )
 }
 
-fn snapshot_success_like(status: Option<&str>) -> bool {
-    matches!(
-        status
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("success") | Some("succeeded") | Some("completed") | Some("ok")
-    )
+fn snapshot_success_like(
+    status: Option<&str>,
+    error_message: Option<&str>,
+    failure_class: crate::api::FailureClass,
+) -> bool {
+    crate::api::prompt_invocation_status_is_success_like(status, error_message)
+        && failure_class == crate::api::FailureClass::None
 }
 
 fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFact> {
     let payload = crate::analytics_changes::normalize_analytics_payload(row.payload.as_deref());
     let status = crate::analytics_changes::normalize_analytics_text(row.status.as_deref());
+    let error_message =
+        crate::analytics_changes::normalize_analytics_text(row.error_message.as_deref());
+    let failure_kind =
+        crate::analytics_changes::normalize_analytics_text(row.failure_kind.as_deref());
+    let stored_failure_class =
+        crate::analytics_changes::normalize_analytics_text(row.failure_class.as_deref());
+    let classification = crate::api::resolve_failure_classification(
+        status.as_deref(),
+        error_message.as_deref(),
+        failure_kind.as_deref(),
+        stored_failure_class.as_deref(),
+        row.is_actionable,
+    );
+    let failure_kind = failure_kind.or(classification.failure_kind.clone());
+    let legacy_success_status = status.as_deref().is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "http_200" | "warning_success"
+        )
+    });
+    let failure_class = match stored_failure_class {
+        Some(value)
+            if value.eq_ignore_ascii_case("none")
+                && classification.failure_class != crate::api::FailureClass::None =>
+        {
+            Some(classification.failure_class.as_str().to_string())
+        }
+        Some(value) => Some(value),
+        None => (classification.failure_class != crate::api::FailureClass::None
+            || (legacy_success_status && error_message.as_deref().is_none_or(str::is_empty)))
+        .then(|| classification.failure_class.as_str().to_string()),
+    };
+    let is_actionable = row.is_actionable.or_else(|| {
+        (classification.failure_class != crate::api::FailureClass::None)
+            .then_some(i64::from(classification.is_actionable))
+    });
     Ok(AnalyticsFact {
         fact_version: 1,
         source: crate::analytics_changes::normalize_analytics_required_text(&row.source, "source")?,
@@ -1048,15 +1086,15 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
             "upstreamAccountName",
         ),
         status: status.clone(),
-        success_like: snapshot_success_like(status.as_deref()),
+        success_like: snapshot_success_like(
+            status.as_deref(),
+            error_message.as_deref(),
+            classification.failure_class,
+        ),
         terminal: snapshot_terminal(status.as_deref()),
-        failure_kind: crate::analytics_changes::normalize_analytics_text(
-            row.failure_kind.as_deref(),
-        ),
-        failure_class: crate::analytics_changes::normalize_analytics_text(
-            row.failure_class.as_deref(),
-        ),
-        is_actionable: row.is_actionable.map(|value| value != 0),
+        failure_kind,
+        failure_class,
+        is_actionable: is_actionable.map(|value| value != 0),
         input_tokens: row.input_tokens,
         output_tokens: row.output_tokens,
         cache_input_tokens: row.cache_input_tokens,
@@ -1845,6 +1883,7 @@ async fn preflight_source_invocation_snapshot_page(
             length(CAST(source AS BLOB)) AS source_bytes,
             length(CAST(model AS BLOB)) AS model_bytes,
             length(CAST(status AS BLOB)) AS status_bytes,
+            length(CAST(error_message AS BLOB)) AS error_message_bytes,
             length(CAST(failure_kind AS BLOB)) AS failure_kind_bytes,
             length(CAST(failure_class AS BLOB)) AS failure_class_bytes,
             length(CAST(payload AS BLOB)) AS payload_bytes
@@ -1867,6 +1906,7 @@ async fn preflight_source_invocation_snapshot_page(
             ("source", Some(row.source_bytes)),
             ("model", row.model_bytes),
             ("status", row.status_bytes),
+            ("error_message", row.error_message_bytes),
             ("failure_kind", row.failure_kind_bytes),
             ("failure_class", row.failure_class_bytes),
         ] {
@@ -1923,6 +1963,7 @@ async fn load_source_invocation_snapshot_page(
             cost_output,
             cost_reasoning,
             status,
+            error_message,
             failure_kind,
             failure_class,
             is_actionable,
@@ -3458,6 +3499,12 @@ mod tests {
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("occurred_at_epoch_ms BIGINT NOT NULL"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts_projection_cursor_idx"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts_account_projection_cursor_idx"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains(
+            "ON cvm_analytics.analytics_facts (stats_date, occurred_at_epoch_ms, source, source_row_id)"
+        ));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains(
+            "upstream_account_id, stats_date, occurred_at_epoch_ms, source, source_row_id"
+        ));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("payload"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("requester_ip"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("prompt_cache"));
@@ -3838,6 +3885,27 @@ mod tests {
         assert_eq!(fact.failure_class.as_deref(), Some("class"));
     }
 
+    #[test]
+    fn snapshot_fact_resolves_legacy_error_message_before_projection() {
+        let fact = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 44,
+            invoke_id: "invoke-44".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            status: Some("http_200".to_string()),
+            error_message: Some("failed to contact upstream".to_string()),
+            failure_class: Some("none".to_string()),
+            ..Default::default()
+        })
+        .expect("legacy error message should classify before fact persistence");
+
+        assert!(!fact.success_like);
+        assert_eq!(fact.failure_class.as_deref(), Some("service_failure"));
+        assert!(fact.failure_kind.is_some());
+        assert_eq!(fact.is_actionable, Some(true));
+    }
+
     #[tokio::test]
     async fn snapshot_page_uses_shared_normalization_bounds_raw_text_and_shanghai_fact_dates() {
         let pool = SqlitePoolOptions::new()
@@ -3865,6 +3933,7 @@ mod tests {
                 cost_output REAL,
                 cost_reasoning REAL,
                 status TEXT,
+                error_message TEXT,
                 failure_kind TEXT,
                 failure_class TEXT,
                 is_actionable INTEGER,
