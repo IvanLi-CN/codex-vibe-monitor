@@ -64,6 +64,29 @@ for file in "${candidate_files[@]}"; do
   esac
 done
 
+deduplicated_files=()
+if [ "${#files[@]}" -gt 0 ]; then
+  for file in "${files[@]}"; do
+    already_selected=0
+    if [ "${#deduplicated_files[@]}" -gt 0 ]; then
+      for selected_file in "${deduplicated_files[@]}"; do
+        if [ "$selected_file" = "$file" ]; then
+          already_selected=1
+          break
+        fi
+      done
+    fi
+    if [ "$already_selected" -eq 0 ]; then
+      deduplicated_files+=("$file")
+    fi
+  done
+fi
+if [ "${#deduplicated_files[@]}" -gt 0 ]; then
+  files=("${deduplicated_files[@]}")
+else
+  files=()
+fi
+
 [ "${#files[@]}" -gt 0 ] || exit 0
 
 for file in "${files[@]}"; do
@@ -91,7 +114,90 @@ original_assume_unchanged=()
 original_skip_worktree=()
 format_tmp_dir="$(mktemp -d "$repo_root/.codex-format.XXXXXX")"
 format_tmp_files=()
+index_path="$(git rev-parse --path-format=absolute --git-path index)"
+original_index_snapshot="$format_tmp_dir/original-index"
+original_index_identity=''
+private_index_path=''
+index_file_override=''
+index_lock_path=''
+index_lock_held=0
 rollback_needed=0
+
+index_identity() {
+  local stat_identity index_hash
+
+  [ -f "$index_path" ] || return 1
+  [ ! -L "$index_path" ] || return 1
+  if stat_identity="$(stat -c '%d:%i:%s:%Y' "$index_path" 2>/dev/null)"; then
+    :
+  else
+    stat_identity="$(stat -f '%d:%i:%z:%m' "$index_path" 2>/dev/null)" || return 1
+  fi
+  index_hash="$(git hash-object -- "$index_path")" || return 1
+  printf '%s:%s\n' "$stat_identity" "$index_hash"
+}
+
+capture_index_snapshot() {
+  local snapshot_path="$1"
+  local attempt before after
+
+  for attempt in 1 2 3; do
+    before="$(index_identity)" || return 1
+    cp -p -- "$index_path" "$snapshot_path" || return 1
+    after="$(index_identity)" || return 1
+    if [ "$before" = "$after" ] && cmp -s "$index_path" "$snapshot_path"; then
+      printf '%s\n' "$after"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+index_matches_snapshot() {
+  local snapshot_path="$1"
+  local snapshot_identity="$2"
+  local current_identity
+
+  [ -n "$snapshot_identity" ] || return 1
+  current_identity="$(index_identity 2>/dev/null || true)"
+  [ "$current_identity" = "$snapshot_identity" ] \
+    && cmp -s "$index_path" "$snapshot_path"
+}
+
+acquire_index_lock() {
+  [ "$index_lock_held" -eq 0 ] || return 0
+  index_lock_path="$index_path.lock"
+  if ! perl -MFcntl=:DEFAULT -e '
+    my ($path) = @ARGV;
+    sysopen my $lock, $path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666 or exit 1;
+    if (!close $lock) {
+      unlink $path;
+      exit 1;
+    }
+  ' "$index_lock_path"; then
+    index_lock_path=''
+    return 1
+  fi
+  index_lock_held=1
+}
+
+release_index_lock() {
+  if [ "$index_lock_held" -eq 1 ]; then
+    rm -f -- "$index_lock_path"
+    index_lock_held=0
+    index_lock_path=''
+  fi
+}
+
+update_index() {
+  if [ -n "$index_file_override" ]; then
+    GIT_INDEX_FILE="$index_file_override" git update-index "$@"
+  else
+    git update-index "$@"
+  fi
+}
+
 cleanup_format_tmp() {
   local exit_code=$?
 
@@ -101,12 +207,18 @@ cleanup_format_tmp() {
     restore_original_state
     set -e
   fi
+  release_index_lock
   rm -rf "$format_tmp_dir"
   exit "$exit_code"
 }
 trap cleanup_format_tmp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if ! original_index_identity="$(capture_index_snapshot "$original_index_snapshot")"; then
+  printf 'refusing to format while the Git index is changing\n' >&2
+  exit 1
+fi
 
 for file in "${files[@]}"; do
   if ! git diff --quiet -- "$file"; then
@@ -218,42 +330,51 @@ for index in "${!files[@]}"; do
   fi
 done
 
-# Roll back only formatter-owned entries so concurrent edits remain untouched.
+# Restore the complete index only while this formatter still owns its snapshot.
 restore_index_metadata() {
   local index="$1"
   local file="${files[$index]}"
 
   if [ "${original_assume_unchanged[$index]}" -eq 1 ]; then
-    git update-index --assume-unchanged -- "$file"
+    update_index --assume-unchanged -- "$file"
   else
-    git update-index --no-assume-unchanged -- "$file"
+    update_index --no-assume-unchanged -- "$file"
   fi
   if [ "${original_skip_worktree[$index]}" -eq 1 ]; then
-    git update-index --skip-worktree -- "$file"
+    update_index --skip-worktree -- "$file"
   else
-    git update-index --no-skip-worktree -- "$file"
+    update_index --no-skip-worktree -- "$file"
   fi
 }
 
 restore_original_state() {
-  local index file current_index current_worktree_hash original_file rollback_file
-  local context_lines original_lines diff_status
-  local rollback_owned=()
+  local index file current_worktree_hash original_file rollback_file
+  local context_lines original_lines diff_status rollback_failed=0
   local rollback_patches=()
+
+  if [ "$index_lock_held" -ne 1 ] || [ -z "$private_index_path" ]; then
+    printf 'refusing to roll back formatter state without the formatter index lock\n' >&2
+    return 1
+  fi
+  if ! index_matches_snapshot "$original_index_snapshot" "$original_index_identity"; then
+    printf 'refusing to roll back formatter state after a concurrent Git index change\n' >&2
+    release_index_lock
+    return 1
+  fi
 
   for index in "${!files[@]}"; do
     file="${files[$index]}"
-    current_index="$(git rev-parse --verify ":$file" 2>/dev/null || true)"
     current_worktree_hash="$(git hash-object -- "$file" 2>/dev/null || true)"
-    if [ "$current_index" = "${formatted_hashes[$index]}" ]; then
-      rollback_owned+=(1)
-    else
-      rollback_owned+=(0)
-    fi
     rollback_patches+=("")
-    if [ "${rollback_owned[$index]}" -eq 1 ] \
-      && [ "$current_worktree_hash" = "${formatted_hashes[$index]}" ] \
-      && is_safe_worktree_path "$file"; then
+    if [ "$current_worktree_hash" = "${original_worktree_hashes[$index]}" ]; then
+      continue
+    fi
+    if [ "$current_worktree_hash" != "${formatted_hashes[$index]}" ] \
+      || ! is_safe_worktree_path "$file"; then
+      rollback_failed=1
+      continue
+    fi
+    if [ "$formatted_hashes[$index]" != "${original_worktree_hashes[$index]}" ]; then
       original_file="$format_tmp_dir/.original-$index"
       rollback_file="$format_tmp_dir/.rollback-$index.patch"
       git cat-file blob "${original_objects[$index]}" > "$original_file"
@@ -272,69 +393,150 @@ restore_original_state() {
         rollback_patches[$index]="$rollback_file"
       else
         printf 'unable to create formatter rollback patch for: %s\n' "$file" >&2
+        rollback_failed=1
       fi
     fi
   done
 
+  if [ "$rollback_failed" -ne 0 ]; then
+    printf 'refusing to roll back formatter state after a concurrent worktree change\n' >&2
+    release_index_lock
+    return 1
+  fi
+
   for index in "${!files[@]}"; do
     rollback_file="${rollback_patches[$index]:-}"
     if [ -n "$rollback_file" ] && [ -s "$rollback_file" ]; then
-      git apply --index --binary "$rollback_file" || true
+      if ! git apply --binary "$rollback_file"; then
+        rollback_failed=1
+        break
+      fi
     fi
   done
+
+  if [ "$rollback_failed" -ne 0 ]; then
+    printf 'refusing to roll back formatter state after a concurrent worktree change\n' >&2
+    release_index_lock
+    return 1
+  fi
 
   for index in "${!files[@]}"; do
     file="${files[$index]}"
-    current_index="$(git rev-parse --verify ":$file" 2>/dev/null || true)"
-    if [ "${rollback_owned[$index]}" -eq 1 ] \
-      && [ "$current_index" = "${formatted_hashes[$index]}" ]; then
-      git update-index --add --cacheinfo "${original_modes[$index]},${original_objects[$index]},$file"
-      restore_index_metadata "$index"
-    elif [ "${rollback_owned[$index]}" -eq 1 ] \
-      && [ "$current_index" = "${original_objects[$index]}" ]; then
-      restore_index_metadata "$index"
+    if [ "${formatted_hashes[$index]}" != "${original_worktree_hashes[$index]}" ] \
+      && [ "$(git hash-object -- "$file" 2>/dev/null || true)" != "${original_worktree_hashes[$index]}" ]; then
+      rollback_failed=1
+      break
     fi
   done
+  if [ "$rollback_failed" -ne 0 ]; then
+    printf 'refusing to roll back formatter state after a concurrent worktree change\n' >&2
+    release_index_lock
+    return 1
+  fi
+
+  release_index_lock
 }
 
 if [ -s "$format_patch_file" ]; then
-  rollback_needed=1
-  if ! git apply --index --binary "$format_patch_file"; then
-    restore_original_state
-    rollback_needed=0
+  if ! index_matches_snapshot "$original_index_snapshot" "$original_index_identity"; then
+    printf 'refusing to stage concurrently modified files: Git index changed during formatting\n' >&2
+    exit 1
+  fi
+  if ! acquire_index_lock; then
+    printf 'refusing to stage while the Git index is concurrently locked\n' >&2
+    exit 1
+  fi
+  if ! index_matches_snapshot "$original_index_snapshot" "$original_index_identity"; then
+    printf 'refusing to stage concurrently modified files: Git index changed during formatting\n' >&2
+    release_index_lock
+    exit 1
+  fi
+
+  private_index_path="$format_tmp_dir/formatted-index"
+  if ! cp -p -- "$original_index_snapshot" "$private_index_path"; then
+    printf 'unable to prepare the private Git index for formatting\n' >&2
+    release_index_lock
+    exit 1
+  fi
+  index_file_override="$private_index_path"
+  if ! GIT_INDEX_FILE="$private_index_path" git apply --check --index --binary "$format_patch_file"; then
+    index_file_override=''
+    private_index_path=''
+    release_index_lock
     for file in "${files[@]}"; do
       printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
     done
     exit 1
   fi
-fi
-
-verification_failed=0
-for index in "${!files[@]}"; do
-  file="${files[$index]}"
-  worktree_path="$repo_root/$file"
-  if ! is_safe_worktree_path "$file"; then
-    verification_failed=1
-    continue
-  fi
-  current_index="$(git rev-parse --verify ":$file")"
-  current_worktree_hash="$(git hash-object -- "$file")"
-  if [ "$current_index" != "${formatted_hashes[$index]}" ] \
-    || [ "$current_worktree_hash" != "${formatted_hashes[$index]}" ]; then
-    verification_failed=1
-  fi
-done
-
-if [ "$verification_failed" -ne 0 ]; then
-  restore_original_state
-  rollback_needed=0
-  for file in "${files[@]}"; do
-    printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+  for index in "${!files[@]}"; do
+    file="${files[$index]}"
+    if ! is_safe_worktree_path "$file" \
+      || [ "$(git hash-object -- "$file")" != "${original_worktree_hashes[$index]}" ]; then
+      for concurrent_file in "${files[@]}"; do
+        printf 'refusing to stage concurrently modified file: %s\n' "$concurrent_file" >&2
+      done
+      index_file_override=''
+      private_index_path=''
+      release_index_lock
+      exit 1
+    fi
   done
-  exit 1
-fi
+  rollback_needed=1
+  if ! GIT_INDEX_FILE="$private_index_path" git apply --index --binary "$format_patch_file"; then
+    restore_original_state || true
+    rollback_needed=0
+    index_file_override=''
+    private_index_path=''
+    for file in "${files[@]}"; do
+      printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    done
+    exit 1
+  fi
 
-for index in "${!files[@]}"; do
-  restore_index_metadata "$index"
-done
-rollback_needed=0
+  for index in "${!files[@]}"; do
+    restore_index_metadata "$index"
+  done
+
+  verification_failed=0
+  for index in "${!files[@]}"; do
+    file="${files[$index]}"
+    if ! is_safe_worktree_path "$file" \
+      || [ "$(git hash-object -- "$file")" != "${formatted_hashes[$index]}" ] \
+      || [ "$(GIT_INDEX_FILE="$private_index_path" git rev-parse --verify ":$file")" != "${formatted_hashes[$index]}" ]; then
+      verification_failed=1
+    fi
+  done
+
+  if [ "$verification_failed" -ne 0 ]; then
+    restore_original_state || true
+    rollback_needed=0
+    index_file_override=''
+    private_index_path=''
+    for file in "${files[@]}"; do
+      printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
+    done
+    exit 1
+  fi
+
+  if ! cp -p -- "$private_index_path" "$index_lock_path"; then
+    restore_original_state || true
+    rollback_needed=0
+    index_file_override=''
+    private_index_path=''
+    printf 'unable to prepare the formatted Git index\n' >&2
+    exit 1
+  fi
+  if ! mv -f -- "$index_lock_path" "$index_path"; then
+    restore_original_state || true
+    rollback_needed=0
+    index_file_override=''
+    private_index_path=''
+    printf 'unable to install the formatted Git index\n' >&2
+    exit 1
+  fi
+  index_lock_held=0
+  index_lock_path=''
+  index_file_override=''
+  private_index_path=''
+  rollback_needed=0
+fi

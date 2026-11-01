@@ -151,6 +151,8 @@ root_glob_formatter_log="$tmp_dir/root-glob-formatter.log"
 )
 assert_contains "$root_glob_formatter_log" $'biome\tcheck --write --stdin-file-path=web/package.json'
 assert_contains "$root_glob_formatter_log" $'dprint\tfmt --stdin README.md'
+assert_contains "$root_glob_formatter_log" $'rustfmt\t--edition 2024 --config skip_children=true -- '
+assert_contains "$root_glob_formatter_log" '/src/module_root.rs'
 cat > "$partial_repo/-evil.rs" <<'EOF_DASH_RUST'
 fn main() {}
 EOF_DASH_RUST
