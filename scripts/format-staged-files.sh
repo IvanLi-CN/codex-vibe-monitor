@@ -287,6 +287,7 @@ my $worktree_root = shift @arguments;
 exit 2 if !defined $worktree_root || !@arguments || @arguments % 4;
 my $resolved_worktree_root = abs_path($worktree_root) or exit 2;
 my @records;
+my %locked_directories;
 
 sub read_all {
   my ($handle) = @_;
@@ -321,6 +322,26 @@ sub write_all {
   return 1;
 }
 
+sub lock_directory {
+  my ($directory) = @_;
+  my @directory_stat = stat($directory) or return 0;
+  return 0 unless (($directory_stat[2] & S_IFMT) == S_IFDIR);
+  my $identity = "$directory_stat[0]:$directory_stat[1]";
+  return 1 if $locked_directories{$identity};
+  return 0 unless flock($directory, LOCK_EX);
+  $locked_directories{$identity} = 1;
+  return 1;
+}
+
+sub verify_record_path {
+  my ($record) = @_;
+  chdir $record->{directory} or return 0;
+  my @handle_stat = stat($record->{target}) or return 0;
+  my @path_stat = lstat($record->{name}) or return 0;
+  return 0 unless (($path_stat[2] & S_IFMT) == S_IFREG);
+  return "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+}
+
 sub restore_partial_contents {
   my ($handle, $expected, $attempted) = @_;
   return 0 unless defined $expected;
@@ -344,6 +365,11 @@ sub replace_contents {
     return 0 unless defined $current && $current eq $expected;
   }
   return 0 unless seek($handle, 0, 0);
+  if (defined $expected) {
+    my $current = do { local $/; <$handle> };
+    return 0 unless defined $current && $current eq $expected;
+    return 0 unless seek($handle, 0, 0);
+  }
   unless (truncate($handle, 0)) {
     restore_partial_contents($handle, $expected, $contents);
     return 0;
@@ -367,6 +393,10 @@ sub restore_written {
   my $failed = 0;
   for my $record (@{$records}) {
     next unless $record->{written};
+    unless (verify_record_path($record)) {
+      $failed = 1;
+      next;
+    }
     my $actual = read_all($record->{target});
     if (!defined $actual) {
       $failed = 1;
@@ -407,10 +437,14 @@ for (my $offset = 0; $offset < @arguments; $offset += 4) {
     chdir $next_directory or exit 2;
     push @directory_handles, $next_directory;
   }
+  exit 2 unless lock_directory($directory_handles[-1]);
   sysopen my $target, $target_name, O_RDWR | O_NOFOLLOW | O_NONBLOCK or exit 2;
   binmode $target;
   my @target_stat = stat($target) or exit 2;
   exit 3 unless (($target_stat[2] & S_IFMT) == S_IFREG);
+  my @path_stat = lstat($target_name) or exit 2;
+  exit 3 unless (($path_stat[2] & S_IFMT) == S_IFREG);
+  exit 3 unless "$target_stat[0]:$target_stat[1]" eq "$path_stat[0]:$path_stat[1]";
   flock($target, LOCK_EX) or exit 2;
   sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW or exit 2;
   binmode $source;
@@ -427,7 +461,9 @@ for (my $offset = 0; $offset < @arguments; $offset += 4) {
     before => $before,
     desired => $desired,
     directories => \@directory_handles,
+    directory => $directory_handles[-1],
     needs_write => $before_hash eq $expected_hash,
+    name => $target_name,
     source => $source,
     target => $target,
     written => 0,
@@ -437,13 +473,19 @@ for (my $offset = 0; $offset < @arguments; $offset += 4) {
 for my $record (@records) {
   next unless $record->{needs_write};
   $record->{written} = 1;
-  if (!replace_contents($record->{target}, $record->{desired}, $record->{before})) {
+  if (!verify_record_path($record)
+      || !replace_contents($record->{target}, $record->{desired}, $record->{before})
+      || !verify_record_path($record)) {
     my $restored = restore_written(\@records);
-    exit($restored ? 2 : 4);
+    exit($restored ? 3 : 4);
   }
 }
 
 for my $record (@records) {
+  unless (verify_record_path($record)) {
+    my $restored = restore_written(\@records);
+    exit($restored ? 3 : 4);
+  }
   close $record->{source} or exit 2;
   close $record->{target} or exit 2;
   for my $directory (@{$record->{directories}}) {
@@ -483,6 +525,7 @@ exit 2 if @expected_index_parts < 5;
 my $expected_index_device = $expected_index_parts[0];
 my $expected_index_inode = $expected_index_parts[1];
 my $expected_index_hash = $expected_index_parts[-1];
+my %locked_directories;
 my $expected_directory = abs_path($lock_directory) or exit 2;
 my $resolved_index_directory = abs_path($index_directory) or exit 2;
 exit 3 if $resolved_index_directory ne $expected_directory;
@@ -534,6 +577,17 @@ sub write_all {
 
 my $resolved_worktree_root = abs_path($worktree_root) or exit 2;
 
+sub lock_directory {
+  my ($directory) = @_;
+  my @directory_stat = stat($directory) or return 0;
+  return 0 unless (($directory_stat[2] & S_IFMT) == S_IFDIR);
+  my $identity = "$directory_stat[0]:$directory_stat[1]";
+  return 1 if $locked_directories{$identity};
+  return 0 unless flock($directory, LOCK_EX);
+  $locked_directories{$identity} = 1;
+  return 1;
+}
+
 sub open_worktree_target {
   my ($path, $expected_hash) = @_;
   my $root_prefix = $resolved_worktree_root eq '/' ? '/' : "$resolved_worktree_root/";
@@ -560,15 +614,29 @@ sub open_worktree_target {
     close $directory or return;
     $directory = $next_directory;
   }
+  return unless lock_directory($directory);
   sysopen my $target, $name, O_RDWR | O_NOFOLLOW | O_NONBLOCK or return;
   binmode $target;
   my @target_stat = stat($target) or return;
   return unless (($target_stat[2] & S_IFMT) == S_IFREG);
+  my @path_stat = lstat($name) or return;
+  return unless (($path_stat[2] & S_IFMT) == S_IFREG);
+  return unless "$target_stat[0]:$target_stat[1]" eq "$path_stat[0]:$path_stat[1]";
   flock($target, LOCK_EX) or return;
-  return ($target, $directory, $expected_hash);
+  return ($target, $directory, $name, $expected_hash);
+}
+
+sub verify_target_path {
+  my ($target) = @_;
+  chdir $target->{directory} or return 0;
+  my @handle_stat = stat($target->{handle}) or return 0;
+  my @path_stat = lstat($target->{name}) or return 0;
+  return 0 unless (($path_stat[2] & S_IFMT) == S_IFREG);
+  return "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
 }
 
 sub verify_index_path {
+  chdir $directory or return 0;
   my @path_stat = lstat($index_name) or return 0;
   return 0 unless (($path_stat[2] & S_IFMT) == S_IFREG);
   return 0 unless "$path_stat[0]:$path_stat[1]" eq "$expected_index_device:$expected_index_inode";
@@ -586,15 +654,18 @@ sub verify_index_path {
 sub verify_targets {
   my ($targets) = @_;
   for my $target (@{$targets}) {
+    return 0 unless verify_target_path($target);
     my $contents = read_all($target->{handle});
     my $actual_hash = hash_contents($contents);
     return 0 unless defined($actual_hash) && $actual_hash eq $target->{hash};
   }
+  chdir $directory or return 0;
   return 1;
 }
 
 sub restore_index {
   my ($snapshot_path, $lock_name, $index_name, $installed_identity) = @_;
+  chdir $directory or return 0;
   my @current_stat = lstat($index_name) or return 0;
   return 0 unless "$current_stat[0]:$current_stat[1]" eq $installed_identity;
   sysopen my $restore_lock, $lock_name,
@@ -619,9 +690,14 @@ sub restore_index {
 my @targets;
 for (my $offset = 0; $offset < @target_arguments; $offset += 2) {
   my ($path, $expected_hash) = @target_arguments[$offset .. $offset + 1];
-  my ($target, $target_directory, $hash) = open_worktree_target($path, $expected_hash);
+  my ($target, $target_directory, $target_name, $hash) = open_worktree_target($path, $expected_hash);
   exit 3 unless defined $target && defined $target_directory;
-  push @targets, { handle => $target, directory => $target_directory, hash => $hash };
+  push @targets, {
+    handle => $target,
+    directory => $target_directory,
+    hash => $hash,
+    name => $target_name,
+  };
 }
 chdir $directory or exit 2;
 exit 3 unless verify_index_path();

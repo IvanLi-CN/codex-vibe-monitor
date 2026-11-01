@@ -13,8 +13,12 @@ fi
 if [ "${CODEX_HOOKS_INSTALL_LOCK_HELD:-}" != '1' ]; then
   common_git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)"
   install_lock_path="$common_git_dir/hooks-install.flock"
+  hooks_directory="$(git -C "$repo_root" rev-parse --path-format=absolute --git-path hooks)"
+  if [ -L "$hooks_directory" ] || [ ! -d "$hooks_directory" ]; then
+    hooks_directory=''
+  fi
   if perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -e '
-    my ($lock_path, $script, @args) = @ARGV;
+    my ($lock_path, $script, $hooks_directory, @args) = @ARGV;
     my $lock_separator = rindex($lock_path, "/");
     die "unable to determine hooks install lock directory\n" if $lock_separator < 1;
     my $lock_directory = substr($lock_path, 0, $lock_separator);
@@ -51,12 +55,24 @@ if [ "${CODEX_HOOKS_INSTALL_LOCK_HELD:-}" != '1' ]; then
     verify_lock_identity($lock, $lock_name);
     flock($lock, LOCK_EX) or die "unable to acquire hooks install lock: $!\n";
     verify_lock_identity($lock, $lock_name);
+    my $hooks;
+    if (length $hooks_directory) {
+      my $expected_hooks_directory = abs_path($hooks_directory)
+        or die "unable to resolve hooks directory: $!\n";
+      sysopen $hooks, $hooks_directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+        or die "unable to open hooks directory: $!\n";
+      my $opened_hooks_directory = abs_path($hooks_directory)
+        or die "unable to resolve opened hooks directory: $!\n";
+      die "hooks directory changed while opening\n"
+        unless $opened_hooks_directory eq $expected_hooks_directory;
+      flock($hooks, LOCK_EX) or die "unable to acquire hooks directory lock: $!\n";
+    }
     chdir $caller_directory or die "unable to restore current directory: $!\n";
     $ENV{CODEX_HOOKS_INSTALL_LOCK_HELD} = 1;
     my $status = system { $script } $script, @args;
     exit 1 if $status == -1 || $status & 127;
     exit $status >> 8;
-  ' "$install_lock_path" "$script_dir/install-lefthook-hooks.sh" "$@"; then
+  ' "$install_lock_path" "$script_dir/install-lefthook-hooks.sh" "$hooks_directory" "$@"; then
     exit 0
   else
     install_lock_status=$?
@@ -229,7 +245,7 @@ cleanup_legacy_prepare_commit_msg() {
     else
       final_hook_identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
     fi
-    if [ "$final_hook_identity" = "$hook_identity" ]; then
+    if [ "$final_hook_identity" = "$hook_identity" ] && cmp -s "$hook_path" "$template_path"; then
       rm -f "$hook_path"
       printf '[worktree-bootstrap] removed obsolete Lefthook prepare-commit-msg wrapper\n'
     else
@@ -242,6 +258,49 @@ cleanup_legacy_prepare_commit_msg() {
 }
 
 cleanup_legacy_prepare_commit_msg
+
+hook_identity() {
+  local hook_path="$1"
+  local identity=''
+
+  [ -f "$hook_path" ] || return 1
+  [ ! -L "$hook_path" ] || return 1
+  if identity="$(stat -c '%d:%i' "$hook_path" 2>/dev/null)"; then
+    :
+  else
+    identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
+  fi
+  [ -n "$identity" ] || return 1
+  printf '%s\n' "$identity"
+}
+
+hook_content_hash() {
+  local hook_path="$1"
+
+  [ -f "$hook_path" ] || return 1
+  [ ! -L "$hook_path" ] || return 1
+  git -C "$repo_root" hash-object -- "$hook_path"
+}
+
+hook_matches_snapshot() {
+  local hook_path="$1"
+  local expected_identity="$2"
+  local expected_hash="$3"
+  local current_identity current_hash
+
+  current_identity="$(hook_identity "$hook_path" 2>/dev/null || true)"
+  current_hash="$(hook_content_hash "$hook_path" 2>/dev/null || true)"
+  [ "$current_identity" = "$expected_identity" ] \
+    && [ "$current_hash" = "$expected_hash" ]
+}
+
+is_installable_hook() {
+  local hook_name="$1"
+  local hook_path="$2"
+
+  is_managed_hook "$hook_name" "$hook_path" \
+    || { [ "$hook_name" = 'pre-commit' ] && is_marked_standard_pre_commit "$hook_path"; }
+}
 
 install_hooks=()
 is_marked_standard_pre_commit() {
@@ -324,8 +383,7 @@ is_managed_hook() {
 
 for hook_name in pre-commit commit-msg post-checkout; do
   hook_path="$hooks_dir/$hook_name"
-  if is_managed_hook "$hook_name" "$hook_path" \
-    || { [ "$hook_name" = 'pre-commit' ] && is_marked_standard_pre_commit "$hook_path"; }; then
+  if is_installable_hook "$hook_name" "$hook_path"; then
     install_hooks+=("$hook_name")
   else
     printf '[worktree-bootstrap] %s already exists and is unmanaged; leaving it untouched\n' "$hook_name" >&2
@@ -333,16 +391,49 @@ for hook_name in pre-commit commit-msg post-checkout; do
 done
 
 if [ "${#install_hooks[@]}" -gt 0 ]; then
+  for hook_name in "${install_hooks[@]}"; do
+    hook_path="$hooks_dir/$hook_name"
+    if ! is_installable_hook "$hook_name" "$hook_path"; then
+      printf '[worktree-bootstrap] %s changed during migration; leaving hooks untouched\n' "$hook_name" >&2
+      exit 1
+    fi
+  done
   (
     cd "$repo_root"
     "$lefthook_path" install "${install_hooks[@]}"
     for hook_name in "${install_hooks[@]}"; do
+      hook_path="$hooks_dir/$hook_name"
+      installed_identity="$(hook_identity "$hook_path" 2>/dev/null || true)"
+      installed_hash="$(hook_content_hash "$hook_path" 2>/dev/null || true)"
+      if [ -z "$installed_identity" ] || [ -z "$installed_hash" ]; then
+        printf '[worktree-bootstrap] %s was not installed as a regular hook\n' "$hook_name" >&2
+        exit 1
+      fi
+      if ! hook_matches_snapshot "$hook_path" "$installed_identity" "$installed_hash"; then
+        printf '[worktree-bootstrap] %s changed after Lefthook install; leaving it untouched\n' "$hook_name" >&2
+        exit 1
+      fi
       if [ "$hook_name" = 'pre-commit' ] \
-        && ! customize_pre_commit_template "$hooks_dir/$hook_name"; then
+        && ! customize_pre_commit_template "$hook_path"; then
         printf '[worktree-bootstrap] could not install pre-commit safety check\n' >&2
         exit 1
       fi
-      printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$hooks_dir/$hook_name"
+      marker_identity="$(hook_identity "$hook_path" 2>/dev/null || true)"
+      marker_hash="$(hook_content_hash "$hook_path" 2>/dev/null || true)"
+      if [ -z "$marker_identity" ] || [ -z "$marker_hash" ]; then
+        printf '[worktree-bootstrap] %s changed before marker installation; leaving it untouched\n' "$hook_name" >&2
+        exit 1
+      fi
+      if ! hook_matches_snapshot "$hook_path" "$marker_identity" "$marker_hash"; then
+        printf '[worktree-bootstrap] %s changed before marker installation; leaving it untouched\n' "$hook_name" >&2
+        exit 1
+      fi
+      if [ "$hook_name" != 'pre-commit' ] \
+        && { [ "$marker_identity" != "$installed_identity" ] || [ "$marker_hash" != "$installed_hash" ]; }; then
+        printf '[worktree-bootstrap] %s changed before marker installation; leaving it untouched\n' "$hook_name" >&2
+        exit 1
+      fi
+      printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$hook_path"
     done
   )
 fi
