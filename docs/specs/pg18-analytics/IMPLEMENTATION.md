@@ -16,6 +16,13 @@
 - `REQ-PG18-004`: `AnalyticsRange`、`AnalyticsDimension`、metrics、projection state、overview/series DTO 和 `AnalyticsReadStore` 定义未来读取边界。
 - `REQ-PG18-005`: `AppState` 仅增加可选 runtime 入口；现有 SQLite pool、TerminalJournal、long-term projection 和 retention 代码未改写。
 
+## FU02 Summary All Design Boundary
+
+- The operational `GET /api/stats/summary?window=all` contract is captured by [ADR 0052](../../adr/0052-summary-all-bounded-read-contract.md). It is distinct from the long-term `AnalyticsOverview.global` aggregate.
+- A bounded PostgreSQL Summary All read requires a verified compact historical authority plus a keyset-paged live tail under one snapshot fence. A one-row aggregate over all facts is not bounded, and the current long-term daily/hourly rollups do not contain every operational Summary field.
+- This follow-up is design-only. It does not implement `AnalyticsReadStore`, change the public `StatsResponse`, add schema/rollup columns, alter fact derivation, switch routes, or introduce SQLite fallback after explicit PostgreSQL selection.
+- The required evidence is deterministic synthetic parity and fail-closed boundary coverage only; no pressure, throughput, scale, production-data, or p95 conclusion is part of this follow-up.
+
 ## Verification Commands
 
 - `cargo fmt --all`
@@ -36,6 +43,7 @@
 
 - A future task must implement the fact ingestion/backfill adapter from existing SQLite/TerminalJournal sources.
 - A future task must implement concrete `AnalyticsReadStore` query methods and wire only the intended read surfaces to the selected backend.
+- A future Summary All implementation must first select a reviewed compact authority for the operational success/failure/non-success-cost and usage fields; without it, the PostgreSQL path remains unavailable and the existing SQLite path remains the source of truth.
 - The ignored `pg_analytics::tests::postgres_analytics_fixture_verifies_role_separation_and_bounded_reset` test requires an explicitly authorized disposable PostgreSQL database whose name ends with `_fixture`, plus owner, app, and maintenance URLs; when explicitly provisioned, it verifies role separation, catalog visibility, identity-only maintenance reads, production fact/key/applied-change DML (including conflict and tombstone paths), owner/bootstrap eligibility fences, advisory-lock contention, and bounded target reset.
 
 ## Related Changes
