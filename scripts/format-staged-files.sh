@@ -147,7 +147,7 @@ case "$surface" in
     ;;
   rust)
     rustfmt_bin="${CODEX_HOOK_RUSTFMT_BIN:-rustfmt}"
-    "$rustfmt_bin" --edition 2024 -- "${format_tmp_files[@]}"
+    "$rustfmt_bin" --edition 2024 --config skip_children=true -- "${format_tmp_files[@]}"
     ;;
   markdown)
     dprint_bin="${CODEX_HOOK_DPRINT_BIN:-$repo_root/node_modules/.bin/dprint}"

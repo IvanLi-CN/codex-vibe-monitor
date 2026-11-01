@@ -71,7 +71,7 @@ export FORMATTER_LOG="$formatter_log"
     bash scripts/format-staged-files.sh markdown README.md removed.md docs/../README.md vendor/hotpath/README.md
 )
 assert_contains "$formatter_log" $'biome\tcheck --write --stdin-file-path=web/src/test-setup.ts'
-assert_contains "$formatter_log" $'rustfmt\t--edition 2024 -- '
+assert_contains "$formatter_log" $'rustfmt\t--edition 2024 --config skip_children=true -- '
 assert_contains "$formatter_log" '/src/main.rs'
 assert_contains "$formatter_log" $'dprint\tfmt --stdin README.md'
 assert_not_contains "$formatter_log" 'missing.ts'
@@ -116,11 +116,25 @@ fn main() {
     println!("base");
 }
 EOF_RUST
+cat > "$partial_repo/src/module_root.rs" <<'EOF_MODULE_ROOT'
+mod child;
+
+fn main(){ child::run(); }
+EOF_MODULE_ROOT
+cat > "$partial_repo/src/child.rs" <<'EOF_MODULE_CHILD'
+pub fn run(){ println!("child"); }
+EOF_MODULE_CHILD
 git -C "$partial_repo" init -q
 git -C "$partial_repo" config user.name 'Codex Test'
 git -C "$partial_repo" config user.email 'codex-test@example.com'
 git -C "$partial_repo" add .
 git -C "$partial_repo" commit -qm 'fixture'
+(
+  cd "$partial_repo"
+  CODEX_HOOK_RUSTFMT_BIN=rustfmt bash scripts/format-staged-files.sh rust src/module_root.rs
+)
+grep -Fqx 'fn main() {' "$partial_repo/src/module_root.rs" \
+  || fail 'rustfmt must format a module root without resolving temporary children'
 cat > "$partial_repo/-evil.rs" <<'EOF_DASH_RUST'
 fn main() {}
 EOF_DASH_RUST
@@ -130,11 +144,14 @@ cat > "$fake_bin/option-guard-rustfmt" <<'EOF_OPTION_GUARD_RUSTFMT'
 set -euo pipefail
 [ "${1:-}" = '--edition' ] && shift
 [ "${1:-}" = '2024' ] && shift
+[ "${1:-}" = '--config' ] && shift
+[ "${1:-}" = 'skip_children=true' ] && shift
 [ "${1:-}" = '--' ] && shift
 case "${1:-}" in
   */-evil.rs) ;;
   *) exit 1 ;;
 esac
+cat "$1"
 EOF_OPTION_GUARD_RUSTFMT
 chmod +x "$fake_bin/option-guard-rustfmt"
 (
@@ -161,12 +178,16 @@ git -C "$partial_repo" apply --cached "$tmp_dir/staged.patch"
 cat > "$fake_bin/partial-rustfmt" <<'EOF_PARTIAL_RUSTFMT'
 #!/usr/bin/env bash
 set -euo pipefail
+format_path=''
 for path in "$@"; do
-  [ "$path" = '--edition' ] && shift && continue
-  [ "$path" = '2024' ] && continue
+  case "$path" in
+    --edition|2024|--config|skip_children=true|--) continue ;;
+  esac
   [ -f "$path" ] || continue
+  format_path="$path"
   perl -0pi -e 's/fn main\(\)\{ println!\("staged"\); \}/fn main() {\n    println!("staged");\n}/' "$path"
 done
+cat "$format_path"
 EOF_PARTIAL_RUSTFMT
 chmod +x "$fake_bin/partial-rustfmt"
 if (
@@ -290,16 +311,19 @@ cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-worktree.conte
 cat > "$fake_bin/during-format-rustfmt" <<'EOF_DURING_FORMAT_RUSTFMT'
 #!/usr/bin/env bash
 set -euo pipefail
+format_path=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --edition|2024|--) shift ;;
+    --edition|2024|--config|skip_children=true|--) shift ;;
     *)
+      format_path="$1"
       perl -0pi -e 's/fn main\(\)\{ println!\("staged"\); \}/fn main() {\n    println!("staged");\n}/' "$1"
       shift
       ;;
   esac
 done
 printf '\n// concurrent editor change during rustfmt\n' >> "${RACE_DURING_TARGET:?}"
+cat "$format_path"
 EOF_DURING_FORMAT_RUSTFMT
 chmod +x "$fake_bin/during-format-rustfmt"
 cat > "$partial_repo/src/sample.rs" <<'EOF_DURING_FORMAT_STAGE'
@@ -487,7 +511,33 @@ assert_not_contains "$formatter_log" 'src/external/escape.rs'
 
 legacy_repo="$tmp_dir/legacy-wrapper"
 mkdir -p "$legacy_repo/scripts"
-cp "$repo_root/lefthook.yml" "$legacy_repo/lefthook.yml"
+cat > "$legacy_repo/lefthook.yml" <<'EOF_LEGACY_CONFIG'
+pre-commit:
+  parallel: true
+  commands:
+    format-web:
+      glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
+      run: bash scripts/format-staged-files.sh web {staged_files}
+      stage_fixed: true
+    format-markdown:
+      glob: "**/*.md"
+      run: bash scripts/format-staged-files.sh markdown {staged_files}
+      stage_fixed: true
+    format-rust:
+      glob: "*.{rs}"
+      run: bash scripts/format-staged-files.sh rust {staged_files}
+      stage_fixed: true
+
+commit-msg:
+  commands:
+    commitlint:
+      run: ./node_modules/.bin/commitlint --edit {1}
+
+post-checkout:
+  commands:
+    worktree-bootstrap:
+      run: 'if [ -x ./scripts/run-lefthook-hook.sh ]; then ./scripts/run-lefthook-hook.sh post-checkout; fi'
+EOF_LEGACY_CONFIG
 cp "$repo_root/scripts/install-lefthook-hooks.sh" "$legacy_repo/scripts/install-lefthook-hooks.sh"
 cp "$repo_root/scripts/format-staged-files.sh" "$legacy_repo/scripts/format-staged-files.sh"
 cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$legacy_repo/scripts/check-staged-formatter-safety.sh"
@@ -509,9 +559,9 @@ prepare-commit-msg:
       run: "true"
 EOF_LEGACY_HOOK
   PATH="$(dirname "$lefthook_bin"):$PATH" "$lefthook_bin" install prepare-commit-msg >/dev/null
-  cp "$repo_root/lefthook.yml" lefthook.yml
   PATH="$(dirname "$lefthook_bin"):$PATH" "$lefthook_bin" install pre-commit >/dev/null
   printf '\n# managed by codex-vibe-monitor hooks:install\n' >> .git/hooks/pre-commit
+  cp "$repo_root/lefthook.yml" lefthook.yml
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
 )
 legacy_hook="$legacy_repo/.git/hooks/prepare-commit-msg"

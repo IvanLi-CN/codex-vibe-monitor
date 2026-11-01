@@ -141,6 +141,22 @@ def index_blob(
     return run_git(repo_root, "cat-file", "blob", object_id.decode("ascii"))
 
 
+def ensure_index_snapshot(
+    repo_root: Path,
+    staged_paths: list[bytes],
+    blobs: dict[bytes, tuple[bytes, bytes]],
+    relevant_paths: set[bytes],
+) -> None:
+    current_staged_paths = staged_rust_paths(repo_root)
+    if current_staged_paths != staged_paths:
+        raise CheckError("Git index changed during staged Rust line-budget check; retry the check")
+
+    current_blobs = index_blobs(repo_root)
+    for raw_path in relevant_paths:
+        if current_blobs.get(raw_path) != blobs.get(raw_path):
+            raise CheckError("Git index changed during staged Rust line-budget check; retry the check")
+
+
 def staged_source(
     repo_root: Path,
     blobs: dict[bytes, tuple[bytes, bytes]],
@@ -202,6 +218,12 @@ def main() -> int:
             validate_relative_path(path, "staged path")
             selected_paths.append((raw_path, path, budgets[path]))
         if not selected_paths:
+            ensure_index_snapshot(
+                repo_root,
+                staged_paths,
+                blobs,
+                {policy_relative_path.encode("utf-8")},
+            )
             return 0
         failures: list[str] = []
         for raw_path, path, budget in selected_paths:
@@ -210,6 +232,13 @@ def main() -> int:
                 failures.append(
                     f"{path}: {actual} physical lines exceeds explicit budget {budget}"
                 )
+        ensure_index_snapshot(
+            repo_root,
+            staged_paths,
+            blobs,
+            {policy_relative_path.encode("utf-8")}
+            | {raw_path for raw_path, _, _ in selected_paths},
+        )
     except CheckError as error:
         print(f"rust-source-quality: {error}", file=sys.stderr)
         return 1
