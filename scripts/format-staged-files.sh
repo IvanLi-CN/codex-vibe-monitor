@@ -120,6 +120,7 @@ original_index_identity=''
 private_index_path=''
 index_file_override=''
 index_lock_path=''
+index_lock_identity=''
 index_lock_held=0
 rollback_needed=0
 
@@ -143,7 +144,7 @@ capture_index_snapshot() {
 
   for attempt in 1 2 3; do
     before="$(index_identity)" || return 1
-    cp -p -- "$index_path" "$snapshot_path" || return 1
+    cp -p "$index_path" "$snapshot_path" || return 1
     after="$(index_identity)" || return 1
     if [ "$before" = "$after" ] && cmp -s "$index_path" "$snapshot_path"; then
       printf '%s\n' "$after"
@@ -152,6 +153,28 @@ capture_index_snapshot() {
   done
 
   return 1
+}
+
+lock_identity() {
+  local stat_identity
+
+  [ -f "$index_lock_path" ] || return 1
+  [ ! -L "$index_lock_path" ] || return 1
+  if stat_identity="$(stat -c '%d:%i' "$index_lock_path" 2>/dev/null)"; then
+    :
+  else
+    stat_identity="$(stat -f '%d:%i' "$index_lock_path" 2>/dev/null)" || return 1
+  fi
+  printf '%s\n' "$stat_identity"
+}
+
+index_lock_owned() {
+  local current_identity
+
+  [ "$index_lock_held" -eq 1 ] || return 1
+  [ -n "$index_lock_identity" ] || return 1
+  current_identity="$(lock_identity 2>/dev/null || true)"
+  [ "$current_identity" = "$index_lock_identity" ]
 }
 
 index_matches_snapshot() {
@@ -168,15 +191,18 @@ index_matches_snapshot() {
 acquire_index_lock() {
   [ "$index_lock_held" -eq 0 ] || return 0
   index_lock_path="$index_path.lock"
-  if ! perl -MFcntl=:DEFAULT -e '
+  if ! index_lock_identity="$(perl -MFcntl=:DEFAULT -e '
     my ($path) = @ARGV;
     sysopen my $lock, $path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666 or exit 1;
+    my @stat = stat($lock) or do { unlink $path; exit 1; };
+    print "$stat[0]:$stat[1]\n";
     if (!close $lock) {
       unlink $path;
       exit 1;
     }
-  ' "$index_lock_path"; then
+  ' "$index_lock_path")"; then
     index_lock_path=''
+    index_lock_identity=''
     return 1
   fi
   index_lock_held=1
@@ -184,9 +210,14 @@ acquire_index_lock() {
 
 release_index_lock() {
   if [ "$index_lock_held" -eq 1 ]; then
-    rm -f -- "$index_lock_path"
+    if index_lock_owned; then
+      unlink "$index_lock_path" || printf 'unable to remove the formatter Git index lock\n' >&2
+    else
+      printf 'leaving a replaced Git index lock untouched\n' >&2
+    fi
     index_lock_held=0
     index_lock_path=''
+    index_lock_identity=''
   fi
 }
 
@@ -352,7 +383,7 @@ restore_original_state() {
   local context_lines original_lines diff_status rollback_failed=0
   local rollback_patches=()
 
-  if [ "$index_lock_held" -ne 1 ] || [ -z "$private_index_path" ]; then
+  if ! index_lock_owned || [ -z "$private_index_path" ]; then
     printf 'refusing to roll back formatter state without the formatter index lock\n' >&2
     return 1
   fi
@@ -453,7 +484,7 @@ if [ -s "$format_patch_file" ]; then
   fi
 
   private_index_path="$format_tmp_dir/formatted-index"
-  if ! cp -p -- "$original_index_snapshot" "$private_index_path"; then
+  if ! cp -p "$original_index_snapshot" "$private_index_path"; then
     printf 'unable to prepare the private Git index for formatting\n' >&2
     release_index_lock
     exit 1
@@ -518,7 +549,15 @@ if [ -s "$format_patch_file" ]; then
     exit 1
   fi
 
-  if ! cp -p -- "$private_index_path" "$index_lock_path"; then
+  if ! index_lock_owned; then
+    restore_original_state || true
+    rollback_needed=0
+    index_file_override=''
+    private_index_path=''
+    printf 'refusing to install the formatted Git index after losing lock ownership\n' >&2
+    exit 1
+  fi
+  if ! cp -p "$private_index_path" "$index_lock_path"; then
     restore_original_state || true
     rollback_needed=0
     index_file_override=''
@@ -526,7 +565,20 @@ if [ -s "$format_patch_file" ]; then
     printf 'unable to prepare the formatted Git index\n' >&2
     exit 1
   fi
-  if ! mv -f -- "$index_lock_path" "$index_path"; then
+  if ! index_lock_owned; then
+    restore_original_state || true
+    rollback_needed=0
+    index_file_override=''
+    private_index_path=''
+    printf 'refusing to install the formatted Git index after losing lock ownership\n' >&2
+    exit 1
+  fi
+  commit_signal_status=0
+  trap 'commit_signal_status=130' INT
+  trap 'commit_signal_status=143' TERM
+  if ! mv -f "$index_lock_path" "$index_path"; then
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     restore_original_state || true
     rollback_needed=0
     index_file_override=''
@@ -536,7 +588,13 @@ if [ -s "$format_patch_file" ]; then
   fi
   index_lock_held=0
   index_lock_path=''
+  index_lock_identity=''
   index_file_override=''
   private_index_path=''
   rollback_needed=0
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if [ "$commit_signal_status" -ne 0 ]; then
+    exit "$commit_signal_status"
+  fi
 fi
