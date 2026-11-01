@@ -48,6 +48,9 @@ pub(crate) async fn fetch_timeseries_query(
         &range_window,
         state.config.invocation_max_days,
     )?;
+    // The public cursor is the source-wide SQLite invocation watermark. The PostgreSQL fact
+    // replica may legitimately lag it or omit an in-flight invocation that has no fact yet.
+    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     if state.pg_analytics.backend() == AnalyticsBackend::Postgres {
         return fetch_timeseries_from_postgres(
             state,
@@ -56,10 +59,10 @@ pub(crate) async fn fetch_timeseries_query(
             range_window,
             bucket_selection,
             params.upstream_account_id,
+            snapshot_id,
         )
         .await;
     }
-    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     if let Some(upstream_account_id) = params.upstream_account_id {
         return fetch_timeseries_for_account(
             state,
@@ -483,6 +486,7 @@ async fn fetch_timeseries_from_postgres(
     range_window: RangeWindow,
     bucket_selection: TimeseriesBucketSelection,
     upstream_account_id: Option<i64>,
+    snapshot_id: i64,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     let fact_scope = match (source_scope, upstream_account_id) {
         (InvocationSourceScope::All, None) => AnalyticsFactScope::All,
@@ -498,7 +502,6 @@ async fn fetch_timeseries_from_postgres(
     let snapshot = query_bounded_facts(&state.pg_analytics, read_query)
         .await
         .map_err(AnalyticsReadError::into_api_error)?;
-    let snapshot_id = snapshot.source_snapshot_id;
     let fact_count = snapshot.facts.len();
     let records = snapshot
         .facts

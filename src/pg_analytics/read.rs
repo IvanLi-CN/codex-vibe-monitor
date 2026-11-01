@@ -183,7 +183,6 @@ impl AnalyticsFactReadQuery {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AnalyticsFactReadSnapshot {
     pub(crate) fence: AnalyticsReadFence,
-    pub(crate) source_snapshot_id: i64,
     pub(crate) facts: Vec<AnalyticsFact>,
 }
 
@@ -228,7 +227,6 @@ pub(crate) async fn query_bounded_facts(
     )
     .await
     .map_err(|_| read_deadline_exceeded())??;
-    let source_snapshot_id = load_source_snapshot_id(&mut transaction, query, started_at).await?;
     let high_watermark = load_fact_high_watermark(&mut transaction, query, started_at).await?;
     let fence = AnalyticsReadFence {
         replica_id: state.replica_id,
@@ -308,11 +306,7 @@ pub(crate) async fn query_bounded_facts(
                 "failed to commit PostgreSQL analytics bounded fact read: {error}"
             ))
         })?;
-    Ok(AnalyticsFactReadSnapshot {
-        fence,
-        source_snapshot_id,
-        facts,
-    })
+    Ok(AnalyticsFactReadSnapshot { fence, facts })
 }
 
 async fn load_read_replica_state(
@@ -364,36 +358,6 @@ async fn load_fact_high_watermark(
         ))
     })?;
     row.map(AnalyticsFactKeyRow::into_key).transpose()
-}
-
-async fn load_source_snapshot_id(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    query: AnalyticsFactReadQuery,
-    started_at: Instant,
-) -> AnalyticsReadResult<i64> {
-    let mut builder = QueryBuilder::<sqlx::Postgres>::new(
-        "SELECT COALESCE(MAX(source_row_id), 0) FROM cvm_analytics.analytics_facts WHERE 1 = 1",
-    );
-    if matches!(
-        query.scope,
-        AnalyticsFactScope::ProxyOnly | AnalyticsFactScope::AccountProxyOnly(_)
-    ) {
-        builder.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    let remaining = remaining_read_deadline(started_at)?;
-    tokio::time::timeout(
-        remaining,
-        builder
-            .build_query_scalar::<i64>()
-            .fetch_one(&mut **transaction),
-    )
-    .await
-    .map_err(|_| read_deadline_exceeded())?
-    .map_err(|error| {
-        AnalyticsReadError::Internal(anyhow!(
-            "failed to capture PostgreSQL analytics source snapshot id: {error}"
-        ))
-    })
 }
 
 async fn load_fact_page(
@@ -467,6 +431,9 @@ fn append_fact_filters(
     }
 }
 
+// Fact timestamps are stored at integer-millisecond precision. Ceil both bounds so a
+// sub-millisecond start excludes its containing millisecond, while a half-open sub-millisecond
+// end still includes that containing millisecond and excludes the next one.
 fn query_epoch_millis(value: DateTime<Utc>) -> i64 {
     value.timestamp_millis().saturating_add(i64::from(
         !value.timestamp_subsec_nanos().is_multiple_of(1_000_000),
@@ -561,9 +528,16 @@ pub(crate) fn validate_analytics_replica_freshness(
             "analytics replica freshness timestamp is invalid",
         ))
     })?;
-    let age = Utc::now().signed_duration_since(updated_at);
+    let now = Utc::now();
     let stale_after = chrono::Duration::from_std(ANALYTICS_READ_MAX_STALE)
         .expect("analytics freshness budget fits chrono duration");
+    if updated_at.signed_duration_since(now) > stale_after {
+        return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+            AnalyticsBackend::Postgres,
+            "analytics replica freshness timestamp is too far in the future",
+        )));
+    }
+    let age = now.signed_duration_since(updated_at);
     if age > stale_after {
         return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
             AnalyticsBackend::Postgres,
@@ -1419,6 +1393,31 @@ mod tests {
     }
 
     #[test]
+    fn materially_future_replica_state_fails_closed_at_the_read_boundary() {
+        let state = AnalyticsReplicaState {
+            replica_id: ANALYTICS_REPLICA_ID.to_string(),
+            status: "caught_up".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            generation: 1,
+            baseline_generation: 1,
+            baseline_change_id: 1,
+            coverage_generation: 1,
+            coverage_revision: 1,
+            coverage_watermark: 1,
+            consumer_checkpoint: 1,
+            source_acknowledged_through: 1,
+            service_eligible: true,
+            last_error_code: None,
+            last_error_detail: None,
+            updated_at: (Utc::now() + ChronoDuration::seconds(16)).to_rfc3339(),
+        };
+        assert!(matches!(
+            validate_analytics_replica_freshness(&state),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+    }
+
+    #[test]
     fn row_budget_never_returns_a_partial_tail() {
         let fact = fixture_fact(101, 0, "completed", "none", 1, 0.1);
         let key = AnalyticsFactKey::from_fact(&fact).expect("fact key");
@@ -1444,6 +1443,11 @@ mod tests {
         assert_eq!(query_epoch_millis(exact), FIXTURE_START_EPOCH_MS);
         assert_eq!(
             query_epoch_millis(exact + ChronoDuration::microseconds(1)),
+            FIXTURE_START_EPOCH_MS + 1
+        );
+        assert_eq!(query_epoch_millis(exact), FIXTURE_START_EPOCH_MS);
+        assert_eq!(
+            query_epoch_millis(exact + ChronoDuration::milliseconds(1)),
             FIXTURE_START_EPOCH_MS + 1
         );
     }
