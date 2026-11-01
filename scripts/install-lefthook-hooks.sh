@@ -13,14 +13,45 @@ fi
 if [ "${CODEX_HOOKS_INSTALL_LOCK_HELD:-}" != '1' ]; then
   common_git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)"
   install_lock_path="$common_git_dir/hooks-install.flock"
-  if perl -MFcntl=:DEFAULT -MFcntl=:flock -e '
+  if perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -e '
     my ($lock_path, $script, @args) = @ARGV;
-    die "hooks install lock must not be a symlink\n" if -l $lock_path;
-    die "hooks install lock must be a regular file\n" if -e $lock_path && !-f $lock_path;
-    sysopen my $lock, $lock_path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0600
+    my $lock_separator = rindex($lock_path, "/");
+    die "unable to determine hooks install lock directory\n" if $lock_separator < 1;
+    my $lock_directory = substr($lock_path, 0, $lock_separator);
+    my $lock_name = substr($lock_path, $lock_separator + 1);
+    my $caller_directory = abs_path(".")
+      or die "unable to resolve current directory: $!\n";
+    my $expected_directory = abs_path($lock_directory)
+      or die "unable to resolve hooks install lock directory: $!\n";
+    sysopen my $directory, $lock_directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+      or die "unable to open hooks install lock directory: $!\n";
+    flock($directory, LOCK_EX) or die "unable to acquire hooks install lock directory: $!\n";
+    chdir $directory or die "unable to enter hooks install lock directory: $!\n";
+    my $opened_directory = abs_path(".")
+      or die "unable to resolve opened hooks install lock directory: $!\n";
+    die "hooks install lock directory changed while opening\n"
+      unless $opened_directory eq $expected_directory;
+    die "hooks install lock must not be a symlink\n" if -l $lock_name;
+    die "hooks install lock must be a regular file\n" if -e $lock_name && !-f $lock_name;
+    sysopen my $lock, $lock_name, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0600
       or die "unable to open hooks install lock: $!\n";
-    die "hooks install lock must be a regular file\n" unless -f $lock;
+    sub verify_lock_identity {
+      my ($handle, $name) = @_;
+      my @handle_stat = stat($handle)
+        or die "hooks install lock must be a regular file\n";
+      my @path_stat = lstat($name)
+        or die "hooks install lock must be a regular file\n";
+      die "hooks install lock must not be a symlink\n"
+        if (($path_stat[2] & S_IFMT) == S_IFLNK);
+      die "hooks install lock must be a regular file\n"
+        unless (($path_stat[2] & S_IFMT) == S_IFREG);
+      die "hooks install lock path changed while opening\n"
+        unless "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+    }
+    verify_lock_identity($lock, $lock_name);
     flock($lock, LOCK_EX) or die "unable to acquire hooks install lock: $!\n";
+    verify_lock_identity($lock, $lock_name);
+    chdir $caller_directory or die "unable to restore current directory: $!\n";
     $ENV{CODEX_HOOKS_INSTALL_LOCK_HELD} = 1;
     my $status = system { $script } $script, @args;
     exit 1 if $status == -1 || $status & 127;

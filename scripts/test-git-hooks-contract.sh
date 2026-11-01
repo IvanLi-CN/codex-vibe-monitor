@@ -47,9 +47,14 @@ assert_not_contains "$repo_root/scripts/format-staged-files.sh" 'git apply --ind
 assert_contains "$repo_root/scripts/format-staged-files.sh" 'git apply --cached'
 assert_contains "$repo_root/scripts/format-staged-files.sh" 'O_NOFOLLOW'
 assert_contains "$repo_root/scripts/format-staged-files.sh" 'write_worktree_files'
+assert_contains "$repo_root/scripts/format-staged-files.sh" '$current eq $expected'
 assert_contains "$repo_root/scripts/check-staged-formatter-safety.sh" 'format-staged-files.sh" --check'
 assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" 'pre-commit.flock'
 assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" "'--no-auto-install'"
+assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" 'O_DIRECTORY'
+assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" 'lstat($name)'
+assert_contains "$repo_root/scripts/install-lefthook-hooks.sh" 'O_DIRECTORY'
+assert_contains "$repo_root/scripts/install-lefthook-hooks.sh" 'lstat($name)'
 
 fake_bin="$tmp_dir/fake-bin"
 formatter_log="$tmp_dir/formatter.log"

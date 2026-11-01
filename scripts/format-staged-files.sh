@@ -21,48 +21,50 @@ repo_root="$(cd "$script_dir/.." && pwd -P)"
 cd "$repo_root"
 files=()
 
-for file in "${candidate_files[@]}"; do
-  # Preserve the pinned third-party snapshot and its upstream hash manifest.
-  # Its two Rust patches are formatted by cargo fmt using the crate's edition.
-  case "$file" in vendor/hotpath/*) continue ;; esac
-  # Deleted paths are still present in Git's staged-file list, but cannot be formatted.
-  case "$file" in
-    /*|..|../*|*/..|*/../*) continue ;;
-  esac
-  path="$repo_root/$file"
-  # Formatters follow symlinks, so no path component may escape the worktree.
-  [ -L "$path" ] && continue
-  [ -f "$path" ] || continue
-  resolved_path="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
-  case "$resolved_path" in
-    "$repo_root"/*) ;;
-    *) continue ;;
-  esac
-  [ "$resolved_path" = "$path" ] || continue
+if [ "${#candidate_files[@]}" -gt 0 ]; then
+  for file in "${candidate_files[@]}"; do
+    # Preserve the pinned third-party snapshot and its upstream hash manifest.
+    # Its two Rust patches are formatted by cargo fmt using the crate's edition.
+    case "$file" in vendor/hotpath/*) continue ;; esac
+    # Deleted paths are still present in Git's staged-file list, but cannot be formatted.
+    case "$file" in
+      /*|..|../*|*/..|*/../*) continue ;;
+    esac
+    path="$repo_root/$file"
+    # Formatters follow symlinks, so no path component may escape the worktree.
+    [ -L "$path" ] && continue
+    [ -f "$path" ] || continue
+    resolved_path="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+    case "$resolved_path" in
+      "$repo_root"/*) ;;
+      *) continue ;;
+    esac
+    [ "$resolved_path" = "$path" ] || continue
 
-  case "$surface" in
-    web)
-      case "$file" in
-        web/*.js|web/*.ts|web/*.cjs|web/*.mjs|web/*.d.cts|web/*.d.mts|web/*.jsx|web/*.tsx|web/*.json|web/*.jsonc)
-          files+=("$file")
-          ;;
-      esac
-      ;;
-    rust)
-      case "$file" in *.rs) files+=("$file") ;; esac
-      ;;
-    markdown)
-      case "$file" in *.md) files+=("$file") ;; esac
-      ;;
-    all)
-      case "$file" in
-        web/*.js|web/*.ts|web/*.cjs|web/*.mjs|web/*.d.cts|web/*.d.mts|web/*.jsx|web/*.tsx|web/*.json|web/*.jsonc|*.rs|*.md)
-          files+=("$file")
-          ;;
-      esac
-      ;;
-  esac
-done
+    case "$surface" in
+      web)
+        case "$file" in
+          web/*.js|web/*.ts|web/*.cjs|web/*.mjs|web/*.d.cts|web/*.d.mts|web/*.jsx|web/*.tsx|web/*.json|web/*.jsonc)
+            files+=("$file")
+            ;;
+        esac
+        ;;
+      rust)
+        case "$file" in *.rs) files+=("$file") ;; esac
+        ;;
+      markdown)
+        case "$file" in *.md) files+=("$file") ;; esac
+        ;;
+      all)
+        case "$file" in
+          web/*.js|web/*.ts|web/*.cjs|web/*.mjs|web/*.d.cts|web/*.d.mts|web/*.jsx|web/*.tsx|web/*.json|web/*.jsonc|*.rs|*.md)
+            files+=("$file")
+            ;;
+        esac
+        ;;
+    esac
+  done
+fi
 
 deduplicated_files=()
 if [ "${#files[@]}" -gt 0 ]; then
@@ -312,7 +314,11 @@ sub write_all {
 }
 
 sub replace_contents {
-  my ($handle, $contents) = @_;
+  my ($handle, $contents, $expected) = @_;
+  if (defined $expected) {
+    my $current = read_all($handle);
+    return 0 unless defined $current && $current eq $expected;
+  }
   return 0 unless seek($handle, 0, 0);
   return 0 unless truncate($handle, 0);
   return 0 unless write_all($handle, $contents);
@@ -335,7 +341,7 @@ sub restore_written {
       next;
     }
     if ($actual eq $record->{desired}) {
-      $failed = 1 unless replace_contents($record->{target}, $record->{before});
+      $failed = 1 unless replace_contents($record->{target}, $record->{before}, $record->{desired});
     } else {
       $failed = 1;
     }
@@ -382,7 +388,7 @@ for (my $offset = 0; $offset < @arguments; $offset += 4) {
 for my $record (@records) {
   next unless $record->{needs_write};
   $record->{written} = 1;
-  if (!replace_contents($record->{target}, $record->{desired})) {
+  if (!replace_contents($record->{target}, $record->{desired}, $record->{before})) {
     my $restored = restore_written(\@records);
     exit($restored ? 2 : 4);
   }
