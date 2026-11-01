@@ -66,6 +66,13 @@ done
 
 [ "${#files[@]}" -gt 0 ] || exit 0
 
+for file in "${files[@]}"; do
+  if ! git ls-files --stage --error-unmatch -- "$file" 2>/dev/null | awk '$3 == "0" { found = 1 } END { exit found ? 0 : 1 }'; then
+    printf 'refusing to format a file that is not staged: %s\n' "$file" >&2
+    exit 1
+  fi
+done
+
 if [ "$check_only" -eq 1 ]; then
   for file in "${files[@]}"; do
     if ! git diff --quiet -- "$file"; then

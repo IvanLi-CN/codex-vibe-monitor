@@ -99,7 +99,8 @@ one candidate. The Rust formatter MUST reject partial staging, pass staged
 filenames after an option terminator, and stage its formatted whole-file output
 before the guard reads the index. The managed pre-commit wrapper MUST
 serialize the complete formatter, safety-check, and Lefthook sequence with an
-advisory lock in the current worktree's Git metadata; it MUST reject symlink and
+advisory lock in the current worktree's Git metadata, invoke Lefthook with
+auto-install disabled, and it MUST reject symlink and
 non-regular lock targets without following or blocking on them. The installer
 MUST migrate only marker-bearing, byte-exact legacy standard or inline-safety
 pre-commit templates to the wrapper and preserve other hooks. The guard MUST

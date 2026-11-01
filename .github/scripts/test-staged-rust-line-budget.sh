@@ -120,4 +120,19 @@ git -C "$fixture_repo" add src/selected.rs
 git -C "$fixture_repo" rm -q -f 'src/selected with spaces.rs'
 run_checker
 
+rm -f "$fixture_repo/src/selected.rs"
+ln -s selected-target.rs "$fixture_repo/src/selected.rs"
+git -C "$fixture_repo" add -- src/selected.rs
+if run_checker >"$tmp_dir/symlink-source.stdout" 2>"$tmp_dir/symlink-source.stderr"; then
+  fail 'selected staged Rust symlink must fail closed'
+fi
+assert_contains "$tmp_dir/symlink-source.stderr" 'src/selected.rs: staged index entry must be a regular file'
+rm -f "$fixture_repo/src/selected.rs"
+cat > "$fixture_repo/src/selected.rs" <<'EOF_RESTORED_SELECTED'
+fn selected_one() {}
+fn selected_two() {}
+fn selected_three() {}
+EOF_RESTORED_SELECTED
+git -C "$fixture_repo" add src/selected.rs
+
 printf 'staged Rust line-budget contract: passed\n'

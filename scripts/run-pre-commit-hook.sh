@@ -33,6 +33,6 @@ my $safety_code = $safety_status >> 8;
 exit $safety_code if $safety_code != 0;
 
 my $lefthook = $ENV{LEFTHOOK_BIN} || 'lefthook';
-exec {$lefthook} $lefthook, 'run', 'pre-commit', @hook_args;
+exec {$lefthook} $lefthook, 'run', 'pre-commit', '--no-auto-install', @hook_args;
 die "unable to run Lefthook: $!\n";
 EOF_PRE_COMMIT_LOCK

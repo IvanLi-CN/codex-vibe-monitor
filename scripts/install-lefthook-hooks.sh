@@ -4,6 +4,29 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 
+if [ "${CODEX_HOOKS_INSTALL_LOCK_HELD:-}" != '1' ]; then
+  common_git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)"
+  install_lock_path="$common_git_dir/hooks-install.flock"
+  if perl -MFcntl=:DEFAULT -MFcntl=:flock -e '
+    my ($lock_path, $script, @args) = @ARGV;
+    die "hooks install lock must not be a symlink\n" if -l $lock_path;
+    die "hooks install lock must be a regular file\n" if -e $lock_path && !-f $lock_path;
+    sysopen my $lock, $lock_path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0600
+      or die "unable to open hooks install lock: $!\n";
+    die "hooks install lock must be a regular file\n" unless -f $lock;
+    flock($lock, LOCK_EX) or die "unable to acquire hooks install lock: $!\n";
+    $ENV{CODEX_HOOKS_INSTALL_LOCK_HELD} = 1;
+    my $status = system { $script } $script, @args;
+    exit 1 if $status == -1 || $status & 127;
+    exit $status >> 8;
+  ' "$install_lock_path" "$script_dir/install-lefthook-hooks.sh" "$@"; then
+    exit 0
+  else
+    install_lock_status=$?
+    exit "$install_lock_status"
+  fi
+fi
+
 custom_hooks_path="$(git -C "$repo_root" config --get core.hooksPath || true)"
 if [ -n "$custom_hooks_path" ]; then
   printf '[worktree-bootstrap] core.hooksPath is set to %s; leaving hooks untouched\n' "$custom_hooks_path" >&2
@@ -130,6 +153,10 @@ cleanup_legacy_prepare_commit_msg() {
     printf '[worktree-bootstrap] prepare-commit-msg is a symlink; leaving it untouched\n' >&2
     return 0
   fi
+  if [ ! -f "$hook_path" ]; then
+    printf '[worktree-bootstrap] prepare-commit-msg is not a regular file; leaving it untouched\n' >&2
+    return 0
+  fi
   if config_declares_prepare_commit_msg; then
     printf '[worktree-bootstrap] prepare-commit-msg is configured; leaving it untouched\n' >&2
     return 0
@@ -166,6 +193,7 @@ is_marked_standard_pre_commit() {
   local template_dir template_path
 
   [ -L "$existing_hook_path" ] && return 1
+  [ -f "$existing_hook_path" ] || return 1
   template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-lefthook.XXXXXX")" || return 1
   if ! git -C "$template_dir" init -q \
     || ! cp "$repo_root/lefthook.yml" "$template_dir/lefthook.yml" \
@@ -194,6 +222,9 @@ is_managed_hook() {
     return 0
   fi
   if [ -L "$hook_path" ]; then
+    return 1
+  fi
+  if [ ! -f "$hook_path" ]; then
     return 1
   fi
 

@@ -42,6 +42,7 @@ assert_not_contains "$repo_root/scripts/install-lefthook-hooks.sh" 'lefthook uni
 assert_not_contains "$repo_root/scripts/format-staged-files.sh" 'lefthook-unstaged.patch'
 assert_contains "$repo_root/scripts/check-staged-formatter-safety.sh" 'format-staged-files.sh" --check'
 assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" 'pre-commit.flock'
+assert_contains "$repo_root/scripts/run-pre-commit-hook.sh" "'--no-auto-install'"
 
 fake_bin="$tmp_dir/fake-bin"
 formatter_log="$tmp_dir/formatter.log"
@@ -117,6 +118,7 @@ git -C "$partial_repo" commit -qm 'fixture'
 cat > "$partial_repo/-evil.rs" <<'EOF_DASH_RUST'
 fn main() {}
 EOF_DASH_RUST
+git -C "$partial_repo" add -- -evil.rs
 cat > "$fake_bin/option-guard-rustfmt" <<'EOF_OPTION_GUARD_RUSTFMT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -131,6 +133,7 @@ chmod +x "$fake_bin/option-guard-rustfmt"
   CODEX_HOOK_RUSTFMT_BIN="$fake_bin/option-guard-rustfmt" bash scripts/format-staged-files.sh rust -evil.rs
 )
 rm -f "$partial_repo/-evil.rs"
+git -C "$partial_repo" rm -q --cached -- -evil.rs
 (
   cd "$partial_repo"
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
@@ -189,6 +192,9 @@ git -C "$partial_repo" add src/sample.rs
 cat > "$fake_bin/lock-lefthook" <<'EOF_LOCK_LEFTHOOK'
 #!/usr/bin/env bash
 set -euo pipefail
+[ "${1:-}" = 'run' ]
+[ "${2:-}" = 'pre-commit' ]
+[ "${3:-}" = '--no-auto-install' ]
 printf 'start\n' >> "${LOCK_TEST_LOG:?}"
 sleep 0.4
 printf 'end\n' >> "${LOCK_TEST_LOG:?}"
@@ -386,6 +392,85 @@ printf '\necho custom-pre-commit\n' >> "$pre_commit_hook"
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
 )
 assert_contains "$pre_commit_hook" 'echo custom-pre-commit'
+
+fifo_hooks_repo="$tmp_dir/fifo-hooks"
+mkdir -p "$fifo_hooks_repo/scripts"
+cp "$repo_root/lefthook.yml" "$fifo_hooks_repo/lefthook.yml"
+cp "$repo_root/scripts/install-lefthook-hooks.sh" "$fifo_hooks_repo/scripts/install-lefthook-hooks.sh"
+chmod +x "$fifo_hooks_repo/scripts/install-lefthook-hooks.sh"
+git -C "$fifo_hooks_repo" init -q
+mkfifo "$fifo_hooks_repo/.git/hooks/pre-commit"
+mkfifo "$fifo_hooks_repo/.git/hooks/prepare-commit-msg"
+(
+  cd "$fifo_hooks_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh > "$tmp_dir/fifo-hooks.log" 2>&1
+) &
+fifo_hooks_pid=$!
+fifo_hooks_done=0
+for attempt in {1..100}; do
+  if ! kill -0 "$fifo_hooks_pid" 2>/dev/null; then
+    fifo_hooks_done=1
+    break
+  fi
+  sleep 0.05
+done
+if [ "$fifo_hooks_done" -ne 1 ]; then
+  kill "$fifo_hooks_pid" 2>/dev/null || true
+  wait "$fifo_hooks_pid" 2>/dev/null || true
+  fail 'hooks:install must not block on FIFO hooks'
+fi
+wait "$fifo_hooks_pid" || fail 'hooks:install failed while preserving FIFO hooks'
+[ -p "$fifo_hooks_repo/.git/hooks/pre-commit" ] || fail 'FIFO pre-commit hook was modified'
+[ -p "$fifo_hooks_repo/.git/hooks/prepare-commit-msg" ] || fail 'FIFO prepare-commit-msg hook was modified'
+
+installer_lock_linked_repo="$tmp_dir/installer-lock-linked"
+installer_lock_fake_bin="$tmp_dir/installer-lock-fake-bin"
+mkdir -p "$installer_lock_fake_bin"
+git -C "$partial_repo" branch installer-lock-base
+git -C "$partial_repo" worktree add -q "$installer_lock_linked_repo" installer-lock-base
+cat > "$installer_lock_fake_bin/lefthook" <<'EOF_INSTALLER_LOCK_LEFTHOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = 'version' ]; then
+  exec "${REAL_LEFTHOOK:?}" "$@"
+fi
+if [ "${1:-}" = 'install' ]; then
+  if [ -e "${INSTALL_LOCK_ACTIVE:?}" ]; then
+    : > "${INSTALL_LOCK_OVERLAP:?}"
+    exit 91
+  fi
+  : > "$INSTALL_LOCK_ACTIVE"
+  sleep 0.2
+  set +e
+  "${REAL_LEFTHOOK:?}" "$@"
+  install_status=$?
+  set -e
+  unlink "$INSTALL_LOCK_ACTIVE"
+  exit "$install_status"
+fi
+exec "${REAL_LEFTHOOK:?}" "$@"
+EOF_INSTALLER_LOCK_LEFTHOOK
+chmod +x "$installer_lock_fake_bin/lefthook"
+installer_lock_active="$tmp_dir/installer-lock.active"
+installer_lock_overlap="$tmp_dir/installer-lock.overlap"
+(
+  cd "$partial_repo"
+  PATH="$installer_lock_fake_bin:$PATH" REAL_LEFTHOOK="$lefthook_bin" \
+    INSTALL_LOCK_ACTIVE="$installer_lock_active" INSTALL_LOCK_OVERLAP="$installer_lock_overlap" \
+    bash scripts/install-lefthook-hooks.sh >/dev/null 2>&1
+) &
+first_installer_lock_pid=$!
+(
+  cd "$installer_lock_linked_repo"
+  PATH="$installer_lock_fake_bin:$PATH" REAL_LEFTHOOK="$lefthook_bin" \
+    INSTALL_LOCK_ACTIVE="$installer_lock_active" INSTALL_LOCK_OVERLAP="$installer_lock_overlap" \
+    bash scripts/install-lefthook-hooks.sh >/dev/null 2>&1
+) &
+second_installer_lock_pid=$!
+wait "$first_installer_lock_pid" || fail 'first linked hooks:install invocation failed'
+wait "$second_installer_lock_pid" || fail 'second linked hooks:install invocation failed'
+[ ! -e "$installer_lock_overlap" ] || fail 'linked hooks:install invocations were not serialized'
+git -C "$partial_repo" worktree remove --force "$installer_lock_linked_repo"
 
 pre_commit_template_repo="$tmp_dir/pre-commit-template"
 mkdir -p "$pre_commit_template_repo"

@@ -95,7 +95,7 @@ def staged_rust_paths(repo_root: Path) -> list[bytes]:
         "diff",
         "--cached",
         "--name-only",
-        "--diff-filter=ACMR",
+        "--diff-filter=ACMRT",
         "--no-renames",
         "-z",
         "--",
@@ -110,30 +110,43 @@ def staged_rust_paths(repo_root: Path) -> list[bytes]:
     return paths
 
 
-def index_blobs(repo_root: Path) -> dict[bytes, bytes]:
+def index_blobs(repo_root: Path) -> dict[bytes, tuple[bytes, bytes]]:
     output = run_git(repo_root, "ls-files", "--stage", "-z", "--")
-    blobs: dict[bytes, bytes] = {}
+    blobs: dict[bytes, tuple[bytes, bytes]] = {}
     for record in output.split(b"\0"):
         if not record:
             continue
         try:
             metadata, raw_path = record.split(b"\t", 1)
-            _mode, object_id, stage = metadata.split()
+            mode, object_id, stage = metadata.split()
         except ValueError as error:
             raise CheckError("unable to parse the Git index") from error
         if stage == b"0":
-            blobs[raw_path] = object_id
+            blobs[raw_path] = (object_id, mode)
     return blobs
 
 
-def index_blob(repo_root: Path, blobs: dict[bytes, bytes], raw_path: bytes, path: str) -> bytes:
-    object_id = blobs.get(raw_path)
-    if object_id is None:
+def index_blob(
+    repo_root: Path,
+    blobs: dict[bytes, tuple[bytes, bytes]],
+    raw_path: bytes,
+    path: str,
+) -> bytes:
+    entry = blobs.get(raw_path)
+    if entry is None:
         raise CheckError(f"{path}: staged path has no stage-0 Git index blob")
+    object_id, mode = entry
+    if mode not in {b"100644", b"100755"}:
+        raise CheckError(f"{path}: staged index entry must be a regular file")
     return run_git(repo_root, "cat-file", "blob", object_id.decode("ascii"))
 
 
-def staged_source(repo_root: Path, blobs: dict[bytes, bytes], raw_path: bytes, path: str) -> str:
+def staged_source(
+    repo_root: Path,
+    blobs: dict[bytes, tuple[bytes, bytes]],
+    raw_path: bytes,
+    path: str,
+) -> str:
     content = index_blob(repo_root, blobs, raw_path, path)
     try:
         return content.decode("utf-8")
