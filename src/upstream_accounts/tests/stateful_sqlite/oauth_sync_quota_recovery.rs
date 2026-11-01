@@ -228,8 +228,8 @@ async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers()
                 "primaryWindow": {
                     "usedPercent": 42,
                     "windowDurationMins": 300,
-                    "resetsAt": 1771322400
-                }
+                    "resetsAt": 1771322400},
+                "secondaryWindow": {"usedPercent": 42, "windowDurationMins": 10080, "resetsAt": 1771927200}
             }
         }),
     )
@@ -681,7 +681,7 @@ async fn oauth_sync_usage_failure_preserves_quota_marker_from_current_db_state()
 }
 
 #[tokio::test]
-async fn oauth_sync_refresh_failure_preserves_quota_marker_from_current_db_state() {
+async fn oauth_sync_usage_auth_failure_preserves_quota_marker_from_current_db_state() {
     let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
         spawn_sequenced_oauth_sync_server(
             vec![(
@@ -743,12 +743,12 @@ async fn oauth_sync_refresh_failure_preserves_quota_marker_from_current_db_state
         after.last_action_reason_code.as_deref(),
         Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
     );
-    assert_eq!(after.last_action_http_status, None);
+    assert_eq!(after.last_action_http_status, Some(401));
     assert!(
         after
             .last_error
             .as_deref()
-            .is_some_and(|message| message.contains("failed to decode OAuth token response"))
+            .is_some_and(|message| message == "上游返回 HTTP 401，等待下一分钟重试。")
     );
     assert_eq!(
         after.last_route_failure_kind.as_deref(),
@@ -789,7 +789,7 @@ async fn oauth_sync_refresh_failure_preserves_quota_marker_from_current_db_state
     assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
     assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(token_requests.load(Ordering::SeqCst), 0);
     server.abort();
 }
 
@@ -851,12 +851,9 @@ async fn oauth_sync_direct_fetch_failure_preserves_quota_marker_from_current_db_
         Some("upstream_http_5xx")
     );
     assert_eq!(after.last_action_http_status, Some(502));
-    assert!(
-        after
-            .last_error
-            .as_deref()
-            .is_some_and(|message| message.contains("502 Bad Gateway"))
-    );
+    assert!(after.last_error.as_deref().is_some_and(|message| {
+        message == "上游返回 HTTP 502: 上游返回 502: 等待下一分钟重试。"
+    }));
     assert_eq!(
         after.last_route_failure_kind.as_deref(),
         Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)

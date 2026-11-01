@@ -138,8 +138,7 @@ pub(crate) async fn spawn_proxy_only_oauth_sync_server()
                                 "primaryWindow": {
                                     "usedPercent": 8,
                                     "windowDurationMins": 300,
-                                    "resetsAt": 1771322400
-                                }
+                                    "resetsAt": 1771322400}, "secondaryWindow": {"usedPercent": 8, "windowDurationMins": 10080, "resetsAt": 1771927200}
                             }
                         })
                         .to_string(),
