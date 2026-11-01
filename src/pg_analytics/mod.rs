@@ -1,4 +1,5 @@
 use super::*;
+use percent_encoding::percent_decode_str;
 
 mod schema;
 pub(crate) use schema::*;
@@ -7,9 +8,16 @@ const ANALYTICS_UNAVAILABLE_CODE: &str = "analytics_backend_unavailable";
 const POSTGRES_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const REDACTED_SECRET: &str = "<redacted>";
 pub(crate) const ANALYTICS_REPLICA_ID: &str = "pg-analytics";
+pub(crate) const ANALYTICS_FACT_DATE_SEMANTICS_VERSION: i64 =
+    crate::analytics_changes::ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION;
 pub(crate) const ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH: usize = 256;
 pub(crate) const ANALYTICS_REPLICA_MAX_ENCODED_BATCH_BYTES: usize = 1024 * 1024;
 pub(crate) const ANALYTICS_SOURCE_RETENTION_BOUND_BYTES: i64 = 256 * 1024 * 1024;
+const ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY: i64 = 0x4356_4d5f_5047_414c;
+const PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL: &str = "SELECT pg_try_advisory_lock($1)";
+const PG_ANALYTICS_BOOTSTRAP_LOCK_RELEASE_SQL: &str = "SELECT pg_advisory_unlock($1)";
+const PG_ANALYTICS_READ_TRANSACTION_SQL: &str =
+    "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY";
 const ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES: i64 = 64 * 1024;
 const ANALYTICS_REPLICA_MAX_SOURCE_PAYLOAD_BYTES: i64 = 4 * 1024 * 1024;
 const ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN: usize = 4096;
@@ -54,14 +62,17 @@ pub(crate) struct PostgresDatabaseUrl(String);
 
 impl PostgresDatabaseUrl {
     pub(crate) fn parse(raw: &str) -> Result<Self> {
+        Self::parse_for(raw, ENV_POSTGRES_DATABASE_URL)
+    }
+
+    pub(crate) fn parse_for(raw: &str, env_name: &str) -> Result<Self> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            bail!("{ENV_POSTGRES_DATABASE_URL} must not be empty");
+            bail!("{env_name} must not be empty");
         }
-        let parsed = Url::parse(trimmed)
-            .map_err(|_| anyhow!("invalid {ENV_POSTGRES_DATABASE_URL} value"))?;
+        let parsed = Url::parse(trimmed).map_err(|_| anyhow!("invalid {env_name} value"))?;
         if !matches!(parsed.scheme(), "postgres" | "postgresql") {
-            bail!("{ENV_POSTGRES_DATABASE_URL} must use a postgres:// or postgresql:// scheme");
+            bail!("{env_name} must use a postgres:// or postgresql:// scheme");
         }
         Ok(Self(trimmed.to_string()))
     }
@@ -69,6 +80,54 @@ impl PostgresDatabaseUrl {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn effective_username(&self) -> Result<String> {
+        let parsed =
+            Url::parse(&self.0).expect("PostgresDatabaseUrl was validated during construction");
+        let mut username = percent_decode_str(parsed.username())
+            .decode_utf8()
+            .map_err(|_| anyhow!("invalid PostgreSQL login role encoding"))?
+            .into_owned();
+        for (key, value) in parsed.query_pairs() {
+            if key == "user" {
+                username = value.into_owned();
+            }
+        }
+        Ok(username)
+    }
+}
+
+pub(crate) fn validate_postgres_role_separation(
+    application_url: Option<&PostgresDatabaseUrl>,
+    maintenance_url: Option<&PostgresDatabaseUrl>,
+) -> Result<()> {
+    let Some((application_url, maintenance_url)) = application_url.zip(maintenance_url) else {
+        return Ok(());
+    };
+    if application_url.as_str() == maintenance_url.as_str() {
+        bail!(
+            "{ENV_POSTGRES_DATABASE_URL} and {ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must not be identical"
+        );
+    }
+    let application_role = application_url.effective_username().with_context(|| {
+        format!("{ENV_POSTGRES_DATABASE_URL} must specify a valid PostgreSQL login role")
+    })?;
+    let maintenance_role = maintenance_url.effective_username().with_context(|| {
+        format!(
+            "{ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must specify a valid PostgreSQL login role"
+        )
+    })?;
+    if application_role.is_empty() || maintenance_role.is_empty() {
+        bail!(
+            "{ENV_POSTGRES_DATABASE_URL} and {ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must specify distinct PostgreSQL login roles"
+        );
+    }
+    if application_role == maintenance_role {
+        bail!(
+            "{ENV_POSTGRES_DATABASE_URL} and {ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} must use different PostgreSQL login roles"
+        );
+    }
+    Ok(())
 }
 
 impl fmt::Debug for PostgresDatabaseUrl {
@@ -144,12 +203,47 @@ impl PgAnalyticsPool {
             .postgres_database_url
             .as_ref()
             .context("PostgreSQL analytics URL is not configured")?;
+        Self::connect_url(
+            database_url,
+            config.postgres_max_connections,
+            "failed to connect to the PostgreSQL analytics backend",
+        )
+        .await
+    }
+
+    async fn connect_maintenance(config: &AppConfig) -> Result<Self> {
+        let database_url = config.postgres_analytics_maintenance_url.as_ref().context(
+            "POSTGRES_ANALYTICS_MAINTENANCE_URL is required for analytics replica control",
+        )?;
+        validate_postgres_role_separation(
+            config.postgres_database_url.as_ref(),
+            Some(database_url),
+        )?;
+        Self::connect_url(
+            database_url,
+            config.postgres_max_connections,
+            "failed to connect to the PostgreSQL analytics maintenance backend",
+        )
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "failed to connect to the PostgreSQL analytics maintenance backend: {}",
+                sanitize_postgres_error(&error, Some(database_url.as_str()))
+            )
+        })
+    }
+
+    async fn connect_url(
+        database_url: &PostgresDatabaseUrl,
+        max_connections: u32,
+        error_context: &str,
+    ) -> Result<Self> {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(config.postgres_max_connections)
+            .max_connections(max_connections)
             .acquire_timeout(POSTGRES_CONNECTION_TIMEOUT)
             .connect(database_url.as_str())
             .await
-            .context("failed to connect to the PostgreSQL analytics backend")?;
+            .with_context(|| error_context.to_string())?;
         Ok(Self { pool })
     }
 
@@ -171,13 +265,15 @@ impl PgAnalyticsPool {
             .iter()
             .chain(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.iter())
         {
-            let present: Option<String> = sqlx::query_scalar("SELECT to_regclass($1::text)::text")
-                .bind(relation)
-                .fetch_one(&self.pool)
-                .await
-                .with_context(|| format!("failed to inspect required relation {relation}"))?;
-            if present.is_none() {
+            if !relation_exists(&self.pool, relation).await? {
                 bail!("required PostgreSQL analytics relation is missing: {relation}");
+            }
+        }
+        for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
+            if !column_exists(&self.pool, relation, column).await? {
+                bail!(
+                    "required PostgreSQL analytics column is missing: {relation}.{column}; apply the reviewed schema contract as the schema owner before selecting the backend"
+                );
             }
         }
         Ok(())
@@ -185,7 +281,7 @@ impl PgAnalyticsPool {
 
     async fn verify_read_transaction(&self) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION READ ONLY")
+        sqlx::query(PG_ANALYTICS_READ_TRANSACTION_SQL)
             .execute(&mut *transaction)
             .await?;
         sqlx::query("SELECT 1").execute(&mut *transaction).await?;
@@ -282,21 +378,37 @@ impl PgAnalyticsRuntime {
         }))
     }
 
-    async fn require_read_pool(&self) -> AnalyticsReadResult<&sqlx::PgPool> {
+    pub(crate) async fn require_read_transaction(
+        &self,
+    ) -> AnalyticsReadResult<sqlx::Transaction<'_, sqlx::Postgres>> {
         let pool = self
             .require_pool()
             .map_err(AnalyticsReadError::Unavailable)?;
+        let mut transaction = pool.inner().begin().await.map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to begin PostgreSQL analytics read transaction: {error}"
+            ))
+        })?;
+        sqlx::query(PG_ANALYTICS_READ_TRANSACTION_SQL)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| {
+                AnalyticsReadError::Internal(anyhow!(
+                    "failed to configure PostgreSQL analytics read transaction: {error}"
+                ))
+            })?;
         let replica_state = sqlx::query_as::<_, AnalyticsReplicaState>(
             r#"
             SELECT replica_id, status, generation, baseline_generation, baseline_change_id,
                    coverage_generation, coverage_revision, coverage_watermark,
                    consumer_checkpoint, source_acknowledged_through, service_eligible,
+                   fact_date_semantics_version,
                    last_error_code, last_error_detail, updated_at::text AS updated_at
             FROM cvm_analytics.analytics_replica_state
             WHERE id = 1
             "#,
         )
-        .fetch_optional(pool.inner())
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
@@ -321,7 +433,7 @@ impl PgAnalyticsRuntime {
         let projection_status = sqlx::query_scalar::<_, String>(
             "SELECT status FROM cvm_analytics.analytics_state WHERE id = 1",
         )
-        .fetch_optional(pool.inner())
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
@@ -337,7 +449,7 @@ impl PgAnalyticsRuntime {
                 ),
             )));
         }
-        Ok(pool.inner())
+        Ok(transaction)
     }
 }
 
@@ -361,7 +473,13 @@ fn sanitize_postgres_error(error: &anyhow::Error, database_url: Option<&str>) ->
         .replace_all(&reason, redacted_userinfo.as_str())
         .into_owned();
     if reason.len() > 512 {
-        reason.truncate(512);
+        let truncate_at = reason
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= 512)
+            .last()
+            .unwrap_or(0);
+        reason.truncate(truncate_at);
         reason.push_str("...");
     }
     reason
@@ -465,7 +583,7 @@ pub(crate) async fn query_account_window_usage(
     if account_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let pool = runtime.require_read_pool().await?;
+    let mut transaction = runtime.require_read_transaction().await?;
     let mut query = QueryBuilder::<sqlx::Postgres>::new(
         r#"
         SELECT source_row_id, occurred_at_epoch_ms, upstream_account_id,
@@ -486,15 +604,21 @@ pub(crate) async fn query_account_window_usage(
         .push(" AND occurred_at_epoch_ms <= ")
         .push_bind(end_at.timestamp_millis())
         .push(" ORDER BY occurred_at_epoch_ms ASC, source_row_id ASC");
-    query
+    let rows = query
         .build_query_as::<AnalyticsAccountUsageRow>()
-        .fetch_all(pool)
+        .fetch_all(&mut *transaction)
         .await
         .map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
                 "failed to query PostgreSQL analytics account usage facts: {error}"
             ))
-        })
+        })?;
+    transaction.commit().await.map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to commit PostgreSQL analytics account usage read transaction: {error}"
+        ))
+    })?;
+    Ok(rows)
 }
 
 pub(crate) async fn query_parallel_work_key_rows(
@@ -504,7 +628,30 @@ pub(crate) async fn query_parallel_work_key_rows(
     proxy_only: bool,
     upstream_account_id: Option<i64>,
 ) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkKeyRow>> {
-    let pool = runtime.require_read_pool().await?;
+    let mut transaction = runtime.require_read_transaction().await?;
+    let rows = query_parallel_work_key_rows_on_connection(
+        &mut transaction,
+        start_at,
+        end_at,
+        proxy_only,
+        upstream_account_id,
+    )
+    .await?;
+    transaction.commit().await.map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to commit PostgreSQL analytics parallel-work key read transaction: {error}"
+        ))
+    })?;
+    Ok(rows)
+}
+
+pub(crate) async fn query_parallel_work_key_rows_on_connection(
+    connection: &mut sqlx::PgConnection,
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+    proxy_only: bool,
+    upstream_account_id: Option<i64>,
+) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkKeyRow>> {
     let mut query = QueryBuilder::<sqlx::Postgres>::new(
         r#"
         SELECT occurred_at_epoch_ms, key_digest, upstream_account_id
@@ -524,15 +671,16 @@ pub(crate) async fn query_parallel_work_key_rows(
             .push_bind(upstream_account_id);
     }
     query.push(" ORDER BY occurred_at_epoch_ms ASC, source_row_id ASC");
-    query
+    let rows = query
         .build_query_as::<AnalyticsParallelWorkKeyRow>()
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
                 "failed to query PostgreSQL analytics parallel-work keys: {error}"
             ))
-        })
+        })?;
+    Ok(rows)
 }
 
 pub(crate) async fn query_parallel_work_conversation_rows(
@@ -542,7 +690,30 @@ pub(crate) async fn query_parallel_work_conversation_rows(
     proxy_only: bool,
     upstream_account_id: Option<i64>,
 ) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkConversationRow>> {
-    let pool = runtime.require_read_pool().await?;
+    let mut transaction = runtime.require_read_transaction().await?;
+    let rows = query_parallel_work_conversation_rows_on_connection(
+        &mut transaction,
+        start_at,
+        end_at,
+        proxy_only,
+        upstream_account_id,
+    )
+    .await?;
+    transaction.commit().await.map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to commit PostgreSQL analytics conversation read transaction: {error}"
+        ))
+    })?;
+    Ok(rows)
+}
+
+pub(crate) async fn query_parallel_work_conversation_rows_on_connection(
+    connection: &mut sqlx::PgConnection,
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+    proxy_only: bool,
+    upstream_account_id: Option<i64>,
+) -> AnalyticsReadResult<Vec<AnalyticsParallelWorkConversationRow>> {
     let mut query = QueryBuilder::<sqlx::Postgres>::new(
         r#"
         SELECT key_digest,
@@ -568,15 +739,16 @@ pub(crate) async fn query_parallel_work_conversation_rows(
         " GROUP BY key_digest ORDER BY last_occurred_at_epoch_ms DESC, request_count DESC LIMIT ",
     );
     query.push_bind(80_i64);
-    query
+    let rows = query
         .build_query_as::<AnalyticsParallelWorkConversationRow>()
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
                 "failed to query PostgreSQL analytics parallel-work conversations: {error}"
             ))
-        })
+        })?;
+    Ok(rows)
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -584,6 +756,7 @@ pub(crate) async fn query_parallel_work_conversation_rows(
 pub(crate) struct AnalyticsReplicaState {
     pub(crate) replica_id: String,
     pub(crate) status: String,
+    pub(crate) fact_date_semantics_version: i64,
     pub(crate) generation: i64,
     pub(crate) baseline_generation: i64,
     pub(crate) baseline_change_id: i64,
@@ -639,6 +812,8 @@ enum SourceAckRecoveryPlan {
 #[derive(Debug, Clone, FromRow)]
 struct SourceChangeRow {
     change_id: i64,
+    event_version: i64,
+    fact_date_semantics_version: i64,
     event_kind: String,
     entity_kind: String,
     source: String,
@@ -923,9 +1098,23 @@ fn unconsumed_source_bytes_exceed_retention_bound(lag_bytes: i64) -> bool {
 }
 
 fn replica_service_eligible(state: &AnalyticsReplicaState) -> bool {
-    state.status == "caught_up"
-        && state.service_eligible
+    // Keep the shared flag false so pre-FU01 programs fail closed when they ignore the
+    // additive semantic-version column. Current code derives eligibility from the v2 marker,
+    // lifecycle state, and matching checkpoints instead.
+    fact_date_semantics_compatible(state)
+        && state.status == "caught_up"
         && state.consumer_checkpoint == state.source_acknowledged_through
+}
+
+fn fact_date_semantics_compatible(state: &AnalyticsReplicaState) -> bool {
+    state.fact_date_semantics_version == ANALYTICS_FACT_DATE_SEMANTICS_VERSION
+}
+
+fn fact_date_semantics_mismatch_detail(state: &AnalyticsReplicaState) -> String {
+    format!(
+        "analytics replica fact-date semantics version {} is incompatible with required version {}; run explicit bootstrap to rebuild the bounded target snapshot",
+        state.fact_date_semantics_version, ANALYTICS_FACT_DATE_SEMANTICS_VERSION
+    )
 }
 
 fn replica_service_eligible_for_latest_change(
@@ -1061,38 +1250,75 @@ fn bounded_batch_end(encoded_sizes: &[usize], start: usize) -> Result<usize> {
     Ok(end)
 }
 
-async fn execute_postgres_schema(pool: &sqlx::PgPool) -> Result<()> {
-    let mut transaction = pool
-        .begin()
-        .await
-        .context("failed to start PostgreSQL analytics bootstrap transaction")?;
-    for statement in PG_ANALYTICS_SCHEMA_SQL
-        .split(';')
-        .map(str::trim)
-        .filter(|statement| !statement.is_empty())
-    {
-        sqlx::query(statement)
-            .execute(&mut *transaction)
-            .await
-            .with_context(|| {
-                format!("failed to execute PostgreSQL analytics bootstrap statement: {statement}")
-            })?;
-    }
-    transaction
-        .commit()
-        .await
-        .context("failed to commit PostgreSQL analytics bootstrap")?;
-    Ok(())
-}
-
 async fn relation_exists(pool: &sqlx::PgPool, relation: &str) -> Result<bool> {
-    let present: Option<String> = sqlx::query_scalar("SELECT to_regclass($1::text)::text")
+    sqlx::query_scalar(PG_ANALYTICS_RELATION_EXISTS_SQL)
         .bind(relation)
         .fetch_one(pool)
         .await
-        .with_context(|| format!("failed to inspect PostgreSQL relation {relation}"))?;
-    Ok(present.is_some())
+        .with_context(|| format!("failed to inspect PostgreSQL relation {relation}"))
 }
+
+async fn relation_exists_on_connection(
+    connection: &mut sqlx::postgres::PgConnection,
+    relation: &str,
+) -> Result<bool> {
+    sqlx::query_scalar(PG_ANALYTICS_RELATION_EXISTS_SQL)
+        .bind(relation)
+        .fetch_one(&mut *connection)
+        .await
+        .with_context(|| format!("failed to inspect PostgreSQL relation {relation}"))
+}
+
+const PG_ANALYTICS_RELATION_EXISTS_SQL: &str = r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = split_part($1::text, '.', 1)
+              AND relation.relname = split_part($1::text, '.', 2)
+        )
+        "#;
+
+async fn column_exists(pool: &sqlx::PgPool, relation: &str, column: &str) -> Result<bool> {
+    // information_schema hides columns unavailable to the current role. The catalog query keeps
+    // startup validation compatible with the documented least-privilege application role.
+    sqlx::query_scalar(PG_ANALYTICS_COLUMN_EXISTS_SQL)
+        .bind(relation)
+        .bind(column)
+        .fetch_one(pool)
+        .await
+        .with_context(|| format!("failed to inspect PostgreSQL column {relation}.{column}"))
+}
+
+async fn column_exists_on_connection(
+    connection: &mut sqlx::postgres::PgConnection,
+    relation: &str,
+    column: &str,
+) -> Result<bool> {
+    sqlx::query_scalar(PG_ANALYTICS_COLUMN_EXISTS_SQL)
+        .bind(relation)
+        .bind(column)
+        .fetch_one(&mut *connection)
+        .await
+        .with_context(|| format!("failed to inspect PostgreSQL column {relation}.{column}"))
+}
+
+const PG_ANALYTICS_COLUMN_EXISTS_SQL: &str = r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM pg_catalog.pg_attribute AS attribute
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.oid = attribute.attrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = split_part($1::text, '.', 1)
+              AND relation.relname = split_part($1::text, '.', 2)
+              AND attribute.attname = $2
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+        )
+        "#;
 
 async fn verify_replica_schema(pool: &sqlx::PgPool) -> Result<()> {
     for relation in PG_ANALYTICS_REQUIRED_RELATIONS
@@ -1101,6 +1327,34 @@ async fn verify_replica_schema(pool: &sqlx::PgPool) -> Result<()> {
     {
         if !relation_exists(pool, relation).await? {
             bail!("required PostgreSQL analytics relation is missing: {relation}");
+        }
+    }
+    for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
+        if !column_exists(pool, relation, column).await? {
+            bail!(
+                "required PostgreSQL analytics column is missing: {relation}.{column}; apply the reviewed schema contract as the schema owner before running analytics-replica bootstrap"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn verify_replica_schema_on_connection(
+    connection: &mut sqlx::postgres::PgConnection,
+) -> Result<()> {
+    for relation in PG_ANALYTICS_REQUIRED_RELATIONS
+        .iter()
+        .chain(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.iter())
+    {
+        if !relation_exists_on_connection(connection, relation).await? {
+            bail!("required PostgreSQL analytics relation is missing: {relation}");
+        }
+    }
+    for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
+        if !column_exists_on_connection(connection, relation, column).await? {
+            bail!(
+                "required PostgreSQL analytics column is missing: {relation}.{column}; apply the reviewed schema contract as the schema owner before running analytics-replica bootstrap"
+            );
         }
     }
     Ok(())
@@ -1112,6 +1366,7 @@ async fn load_replica_state(pool: &sqlx::PgPool) -> Result<AnalyticsReplicaState
         SELECT replica_id, status, generation, baseline_generation, baseline_change_id,
                coverage_generation, coverage_revision, coverage_watermark,
                consumer_checkpoint, source_acknowledged_through, service_eligible,
+               fact_date_semantics_version,
                last_error_code, last_error_detail, updated_at::text AS updated_at
         FROM cvm_analytics.analytics_replica_state
         WHERE id = 1
@@ -1201,7 +1456,6 @@ fn source_status(source: &SourceContext) -> AnalyticsSourceStatus {
 async fn mark_replica_state(
     pool: &sqlx::PgPool,
     status: &str,
-    service_eligible: bool,
     error_code: Option<&str>,
     error_detail: Option<&str>,
     projection_status: &str,
@@ -1211,15 +1465,53 @@ async fn mark_replica_state(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET status = $1,
-            service_eligible = $2,
-            last_error_code = $3,
-            last_error_detail = $4,
+            service_eligible = FALSE,
+            last_error_code = $2,
+            last_error_detail = $3,
             updated_at = NOW()
         WHERE id = 1
         "#,
     )
     .bind(status)
-    .bind(service_eligible)
+    .bind(error_code)
+    .bind(error_detail)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE cvm_analytics.analytics_state
+        SET status = $1, last_error_code = $2, updated_at = NOW()
+        WHERE id = 1
+        "#,
+    )
+    .bind(projection_status)
+    .bind(error_code)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn mark_replica_state_on_connection(
+    connection: &mut sqlx::postgres::PgConnection,
+    status: &str,
+    error_code: Option<&str>,
+    error_detail: Option<&str>,
+    projection_status: &str,
+) -> Result<()> {
+    let mut transaction = connection.begin().await?;
+    sqlx::query(
+        r#"
+        UPDATE cvm_analytics.analytics_replica_state
+        SET status = $1,
+            service_eligible = FALSE,
+            last_error_code = $2,
+            last_error_detail = $3,
+            updated_at = NOW()
+        WHERE id = 1
+        "#,
+    )
+    .bind(status)
     .bind(error_code)
     .bind(error_detail)
     .execute(&mut *transaction)
@@ -1247,7 +1539,6 @@ async fn mark_replica_invalidated(
     mark_replica_state(
         pool,
         "invalidated",
-        false,
         Some("source_retention_exhausted"),
         Some(&detail),
         "unavailable",
@@ -1264,7 +1555,6 @@ async fn mark_replica_blocked(
     mark_replica_state(
         pool,
         "blocked",
-        false,
         Some(error_code),
         Some(&detail),
         "unavailable",
@@ -1272,8 +1562,76 @@ async fn mark_replica_blocked(
     .await
 }
 
+async fn mark_replica_blocked_on_connection(
+    connection: &mut sqlx::postgres::PgConnection,
+    error_code: &str,
+    error_detail: impl Into<String>,
+) -> Result<()> {
+    let detail = error_detail.into();
+    mark_replica_state_on_connection(
+        connection,
+        "blocked",
+        Some(error_code),
+        Some(&detail),
+        "unavailable",
+    )
+    .await
+}
+
+async fn invalidate_legacy_fact_date_semantics(
+    pool: &sqlx::PgPool,
+    observed: &AnalyticsReplicaState,
+    detail: &str,
+) -> Result<AnalyticsReplicaState> {
+    let mut transaction = pool.begin().await?;
+    let updated = sqlx::query(PG_ANALYTICS_LEGACY_INVALIDATION_SQL)
+        .bind(detail)
+        .bind(observed.fact_date_semantics_version)
+        .bind(&observed.status)
+        .bind(observed.generation)
+        .bind(observed.consumer_checkpoint)
+        .execute(&mut *transaction)
+        .await?;
+    if updated.rows_affected() == 1 {
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_state SET status = 'unavailable', last_error_code = 'fact_date_semantics_mismatch', updated_at = NOW() WHERE id = 1",
+        )
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    load_replica_state(pool).await
+}
+
+const PG_ANALYTICS_LEGACY_INVALIDATION_SQL: &str = r#"
+        UPDATE cvm_analytics.analytics_replica_state
+        SET status = 'invalidated', service_eligible = FALSE,
+            last_error_code = 'fact_date_semantics_mismatch',
+            last_error_detail = $1, updated_at = NOW()
+        WHERE id = 1
+          AND fact_date_semantics_version = $2
+          AND status = $3
+          AND generation = $4
+          AND consumer_checkpoint = $5
+        "#;
+
+async fn ensure_fact_date_semantics_compatible(
+    pool: &sqlx::PgPool,
+    state: &AnalyticsReplicaState,
+) -> Result<AnalyticsReplicaState> {
+    if state.status == "unbootstrapped" || fact_date_semantics_compatible(state) {
+        return Ok(state.clone());
+    }
+    let detail = fact_date_semantics_mismatch_detail(state);
+    let current = invalidate_legacy_fact_date_semantics(pool, state, &detail).await?;
+    if !fact_date_semantics_compatible(&current) {
+        return Err(anyhow!(fact_date_semantics_mismatch_detail(&current)));
+    }
+    Ok(current)
+}
+
 async fn set_replica_running(pool: &sqlx::PgPool) -> Result<()> {
-    mark_replica_state(pool, "running", false, None, None, "preparing").await
+    mark_replica_state(pool, "running", None, None, "preparing").await
 }
 
 async fn set_replica_acknowledged(
@@ -1289,7 +1647,7 @@ async fn set_replica_acknowledged(
         UPDATE cvm_analytics.analytics_replica_state
         SET source_acknowledged_through = $1,
             status = $2,
-            service_eligible = $3,
+            service_eligible = FALSE,
             last_error_code = NULL,
             last_error_detail = NULL,
             updated_at = NOW()
@@ -1298,7 +1656,6 @@ async fn set_replica_acknowledged(
     )
     .bind(through_change_id)
     .bind(status)
-    .bind(caught_up)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
@@ -1311,8 +1668,60 @@ async fn set_replica_acknowledged(
     Ok(())
 }
 
-async fn clear_replica_target(pool: &sqlx::PgPool, generation: i64) -> Result<()> {
-    let mut transaction = pool.begin().await?;
+async fn set_replica_acknowledged_on_connection(
+    connection: &mut sqlx::postgres::PgConnection,
+    through_change_id: i64,
+    caught_up: bool,
+) -> Result<()> {
+    let status = if caught_up { "caught_up" } else { "running" };
+    let projection_status = if caught_up { "ready" } else { "preparing" };
+    let mut transaction = connection.begin().await?;
+    sqlx::query(
+        r#"
+        UPDATE cvm_analytics.analytics_replica_state
+        SET source_acknowledged_through = $1,
+            status = $2,
+            service_eligible = FALSE,
+            last_error_code = NULL,
+            last_error_detail = NULL,
+            updated_at = NOW()
+        WHERE id = 1
+        "#,
+    )
+    .bind(through_change_id)
+    .bind(status)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE cvm_analytics.analytics_state SET status = $1, last_error_code = NULL, updated_at = NOW() WHERE id = 1",
+    )
+    .bind(projection_status)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn fence_replica_service_eligibility_on_connection(
+    connection: &mut sqlx::postgres::PgConnection,
+) -> Result<()> {
+    let result = sqlx::query(
+        "UPDATE cvm_analytics.analytics_replica_state SET service_eligible = FALSE, status = CASE WHEN status = 'caught_up' THEN 'bootstrapping' ELSE status END, updated_at = NOW() WHERE id = 1",
+    )
+    .execute(&mut *connection)
+    .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "PostgreSQL analytics replica state row is missing while applying the rollback fence"
+    );
+    Ok(())
+}
+
+async fn clear_replica_target(
+    connection: &mut sqlx::postgres::PgConnection,
+    generation: i64,
+) -> Result<()> {
+    let mut transaction = connection.begin().await?;
     sqlx::query("DELETE FROM cvm_analytics.analytics_replica_applied_changes")
         .execute(&mut *transaction)
         .await?;
@@ -1326,6 +1735,7 @@ async fn clear_replica_target(pool: &sqlx::PgPool, generation: i64) -> Result<()
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET status = 'bootstrapping', generation = $1,
+            fact_date_semantics_version = $2,
             baseline_generation = 0, baseline_change_id = 0,
             coverage_generation = 0, coverage_revision = 0,
             coverage_watermark = 0, consumer_checkpoint = 0,
@@ -1335,6 +1745,7 @@ async fn clear_replica_target(pool: &sqlx::PgPool, generation: i64) -> Result<()
         "#,
     )
     .bind(generation)
+    .bind(ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
@@ -1346,12 +1757,16 @@ async fn clear_replica_target(pool: &sqlx::PgPool, generation: i64) -> Result<()
     Ok(())
 }
 
-async fn set_replica_baseline(pool: &sqlx::PgPool, source: &SourceContext) -> Result<()> {
-    let mut transaction = pool.begin().await?;
+async fn set_replica_baseline(
+    connection: &mut sqlx::postgres::PgConnection,
+    source: &SourceContext,
+) -> Result<()> {
+    let mut transaction = connection.begin().await?;
     sqlx::query(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET status = 'running', generation = $1,
+            fact_date_semantics_version = $4,
             baseline_generation = $1, baseline_change_id = $2,
             coverage_generation = $1, coverage_revision = $3,
             coverage_watermark = $2, consumer_checkpoint = $2,
@@ -1363,6 +1778,7 @@ async fn set_replica_baseline(pool: &sqlx::PgPool, source: &SourceContext) -> Re
     .bind(source.state.generation)
     .bind(source.latest_change_id)
     .bind(source.state.coverage_revision)
+    .bind(ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
@@ -1380,7 +1796,8 @@ async fn load_source_changes(
 ) -> Result<Vec<SourceChangeRow>> {
     sqlx::query_as::<_, SourceChangeRow>(
         r#"
-        SELECT change_id, event_kind, entity_kind, source, source_row_id,
+        SELECT change_id, event_version, fact_date_semantics_version,
+               event_kind, entity_kind, source, source_row_id,
                entity_key, generation, coverage_revision, fact_json
         FROM analytics_change_events
         WHERE change_id > ?1
@@ -1484,7 +1901,10 @@ async fn load_source_invocation_snapshot_page(
                 occurred_at,
                 CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
             ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
-            substr(occurred_at, 1, 10) AS stats_date,
+            date(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+8 hours' ELSE '+0 hours' END
+            ) AS stats_date,
             source,
             model,
             input_tokens,
@@ -1536,9 +1956,25 @@ async fn upsert_analytics_fact(
     connection: &mut sqlx::postgres::PgConnection,
     fact: &AnalyticsFact,
 ) -> Result<()> {
+    // ON CONFLICT DO UPDATE requires SELECT on every EXCLUDED column in PostgreSQL. MERGE keeps
+    // the maintenance role's read surface limited to the source identity match columns.
     sqlx::query(
         r#"
-        INSERT INTO cvm_analytics.analytics_facts (
+        MERGE INTO cvm_analytics.analytics_facts AS target
+        USING (
+            VALUES (
+                $1::smallint, $2::text, $3::bigint, $4::text,
+                to_timestamp($5::double precision / 1000.0), $5::bigint, $6::date,
+                $7::text, $8::text, $9::text, $10::text, $11::bigint, $12::text,
+                $13::text, $14::boolean, $15::boolean, $16::text, $17::text,
+                $18::boolean, $19::bigint, $20::bigint, $21::bigint, $22::bigint,
+                $23::bigint, $24::double precision, $25::double precision,
+                $26::double precision, $27::double precision, $28::double precision,
+                $29::double precision, $30::double precision, $31::double precision,
+                $32::double precision, $33::double precision, $34::double precision,
+                $35::double precision, $36::double precision, $37::double precision
+            )
+        ) AS incoming(
             fact_version, source, source_row_id, invoke_id, occurred_at,
             occurred_at_epoch_ms, stats_date, model, request_model, response_model,
             reasoning_effort, upstream_account_id, upstream_account_name, status,
@@ -1549,50 +1985,70 @@ async fn upsert_analytics_fact(
             t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms,
             first_token_ms, t_resp_parse_ms
         )
-        VALUES (
-            $1, $2, $3, $4,
-            to_timestamp($5::double precision / 1000.0), $5, $6::date, $7, $8, $9,
-            $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-            $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
-            $34, $35, $36, $37
+        ON target.source = incoming.source
+           AND target.source_row_id = incoming.source_row_id
+        WHEN MATCHED THEN UPDATE SET
+            fact_version = incoming.fact_version,
+            invoke_id = incoming.invoke_id,
+            occurred_at = incoming.occurred_at,
+            occurred_at_epoch_ms = incoming.occurred_at_epoch_ms,
+            stats_date = incoming.stats_date,
+            model = incoming.model,
+            request_model = incoming.request_model,
+            response_model = incoming.response_model,
+            reasoning_effort = incoming.reasoning_effort,
+            upstream_account_id = incoming.upstream_account_id,
+            upstream_account_name = incoming.upstream_account_name,
+            status = incoming.status,
+            success_like = incoming.success_like,
+            terminal = incoming.terminal,
+            failure_kind = incoming.failure_kind,
+            failure_class = incoming.failure_class,
+            is_actionable = incoming.is_actionable,
+            input_tokens = incoming.input_tokens,
+            output_tokens = incoming.output_tokens,
+            cache_input_tokens = incoming.cache_input_tokens,
+            reasoning_tokens = incoming.reasoning_tokens,
+            total_tokens = incoming.total_tokens,
+            cost = incoming.cost,
+            cost_input = incoming.cost_input,
+            cost_cache_write = incoming.cost_cache_write,
+            cost_cache_read = incoming.cost_cache_read,
+            cost_output = incoming.cost_output,
+            cost_reasoning = incoming.cost_reasoning,
+            t_total_ms = incoming.t_total_ms,
+            t_req_read_ms = incoming.t_req_read_ms,
+            t_req_parse_ms = incoming.t_req_parse_ms,
+            t_upstream_connect_ms = incoming.t_upstream_connect_ms,
+            t_upstream_ttfb_ms = incoming.t_upstream_ttfb_ms,
+            t_upstream_stream_ms = incoming.t_upstream_stream_ms,
+            first_token_ms = incoming.first_token_ms,
+            t_resp_parse_ms = incoming.t_resp_parse_ms
+        WHEN NOT MATCHED THEN INSERT (
+            fact_version, source, source_row_id, invoke_id, occurred_at,
+            occurred_at_epoch_ms, stats_date, model, request_model, response_model,
+            reasoning_effort, upstream_account_id, upstream_account_name, status,
+            success_like, terminal, failure_kind, failure_class, is_actionable,
+            input_tokens, output_tokens, cache_input_tokens, reasoning_tokens,
+            total_tokens, cost, cost_input, cost_cache_write, cost_cache_read,
+            cost_output, cost_reasoning, t_total_ms, t_req_read_ms, t_req_parse_ms,
+            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms,
+            first_token_ms, t_resp_parse_ms
+        ) VALUES (
+            incoming.fact_version, incoming.source, incoming.source_row_id, incoming.invoke_id,
+            incoming.occurred_at, incoming.occurred_at_epoch_ms, incoming.stats_date,
+            incoming.model, incoming.request_model, incoming.response_model,
+            incoming.reasoning_effort, incoming.upstream_account_id,
+            incoming.upstream_account_name, incoming.status, incoming.success_like,
+            incoming.terminal, incoming.failure_kind, incoming.failure_class,
+            incoming.is_actionable, incoming.input_tokens, incoming.output_tokens,
+            incoming.cache_input_tokens, incoming.reasoning_tokens, incoming.total_tokens,
+            incoming.cost, incoming.cost_input, incoming.cost_cache_write,
+            incoming.cost_cache_read, incoming.cost_output, incoming.cost_reasoning,
+            incoming.t_total_ms, incoming.t_req_read_ms, incoming.t_req_parse_ms,
+            incoming.t_upstream_connect_ms, incoming.t_upstream_ttfb_ms,
+            incoming.t_upstream_stream_ms, incoming.first_token_ms, incoming.t_resp_parse_ms
         )
-        ON CONFLICT (source, source_row_id) DO UPDATE SET
-            fact_version = EXCLUDED.fact_version,
-            invoke_id = EXCLUDED.invoke_id,
-            occurred_at = EXCLUDED.occurred_at,
-            occurred_at_epoch_ms = EXCLUDED.occurred_at_epoch_ms,
-            stats_date = EXCLUDED.stats_date,
-            model = EXCLUDED.model,
-            request_model = EXCLUDED.request_model,
-            response_model = EXCLUDED.response_model,
-            reasoning_effort = EXCLUDED.reasoning_effort,
-            upstream_account_id = EXCLUDED.upstream_account_id,
-            upstream_account_name = EXCLUDED.upstream_account_name,
-            status = EXCLUDED.status,
-            success_like = EXCLUDED.success_like,
-            terminal = EXCLUDED.terminal,
-            failure_kind = EXCLUDED.failure_kind,
-            failure_class = EXCLUDED.failure_class,
-            is_actionable = EXCLUDED.is_actionable,
-            input_tokens = EXCLUDED.input_tokens,
-            output_tokens = EXCLUDED.output_tokens,
-            cache_input_tokens = EXCLUDED.cache_input_tokens,
-            reasoning_tokens = EXCLUDED.reasoning_tokens,
-            total_tokens = EXCLUDED.total_tokens,
-            cost = EXCLUDED.cost,
-            cost_input = EXCLUDED.cost_input,
-            cost_cache_write = EXCLUDED.cost_cache_write,
-            cost_cache_read = EXCLUDED.cost_cache_read,
-            cost_output = EXCLUDED.cost_output,
-            cost_reasoning = EXCLUDED.cost_reasoning,
-            t_total_ms = EXCLUDED.t_total_ms,
-            t_req_read_ms = EXCLUDED.t_req_read_ms,
-            t_req_parse_ms = EXCLUDED.t_req_parse_ms,
-            t_upstream_connect_ms = EXCLUDED.t_upstream_connect_ms,
-            t_upstream_ttfb_ms = EXCLUDED.t_upstream_ttfb_ms,
-            t_upstream_stream_ms = EXCLUDED.t_upstream_stream_ms,
-            first_token_ms = EXCLUDED.first_token_ms,
-            t_resp_parse_ms = EXCLUDED.t_resp_parse_ms
         "#,
     )
     .bind(fact.fact_version)
@@ -1665,16 +2121,25 @@ async fn replace_parallel_work_key(
             key.source == source && key.source_row_id == source_row_id,
             "parallel-work key identity disagrees with source change"
         );
+        // Keep conflict matching on identity columns without granting reads on the key payload.
         sqlx::query(
             r#"
-            INSERT INTO cvm_analytics.analytics_parallel_work_keys (
+            MERGE INTO cvm_analytics.analytics_parallel_work_keys AS target
+            USING (
+                VALUES ($1::text, $2::bigint, $3::bigint, $4::text, $5::bigint)
+            ) AS incoming(source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id)
+            ON target.source = incoming.source
+               AND target.source_row_id = incoming.source_row_id
+            WHEN MATCHED THEN UPDATE SET
+                occurred_at_epoch_ms = incoming.occurred_at_epoch_ms,
+                key_digest = incoming.key_digest,
+                upstream_account_id = incoming.upstream_account_id
+            WHEN NOT MATCHED THEN INSERT (
                 source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id
+            ) VALUES (
+                incoming.source, incoming.source_row_id, incoming.occurred_at_epoch_ms,
+                incoming.key_digest, incoming.upstream_account_id
             )
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (source, source_row_id) DO UPDATE SET
-                occurred_at_epoch_ms = EXCLUDED.occurred_at_epoch_ms,
-                key_digest = EXCLUDED.key_digest,
-                upstream_account_id = EXCLUDED.upstream_account_id
             "#,
         )
         .bind(&key.source)
@@ -1708,6 +2173,31 @@ fn coverage_event_is_live_mirror(change: &SourceChangeRow) -> bool {
 
 fn coverage_event_requires_replay(change: &SourceChangeRow) -> bool {
     change.source == "codex_invocations" && !coverage_event_is_live_mirror(change)
+}
+
+fn validate_source_change_compatibility(
+    change: &SourceChangeRow,
+    required_fact_date_semantics_version: i64,
+) -> Result<()> {
+    anyhow::ensure!(
+        change.event_version == crate::analytics_changes::ANALYTICS_SOURCE_EVENT_VERSION,
+        "analytics source change {} uses unsupported journal event version {}; expected {}",
+        change.change_id,
+        change.event_version,
+        crate::analytics_changes::ANALYTICS_SOURCE_EVENT_VERSION
+    );
+    if change.entity_kind == "invocation"
+        && matches!(change.event_kind.as_str(), "upsert" | "tombstone")
+    {
+        anyhow::ensure!(
+            change.fact_date_semantics_version == required_fact_date_semantics_version,
+            "analytics source change {} uses fact-date semantics version {}; target requires {}; run explicit bootstrap to rebuild the bounded target snapshot",
+            change.change_id,
+            change.fact_date_semantics_version,
+            required_fact_date_semantics_version
+        );
+    }
+    Ok(())
 }
 
 async fn apply_replica_change(
@@ -1810,6 +2300,9 @@ async fn apply_replica_batch(
         state.consumer_checkpoint.saturating_add(1)
     );
     for change in batch {
+        validate_source_change_compatibility(change, state.fact_date_semantics_version)?;
+    }
+    for change in batch {
         anyhow::ensure!(
             change.generation == source.state.generation,
             "analytics source change {} belongs to generation {}, expected {}",
@@ -1898,7 +2391,7 @@ async fn apply_replica_batch(
 }
 
 async fn apply_snapshot_batch(
-    pool: &sqlx::PgPool,
+    connection: &mut sqlx::postgres::PgConnection,
     facts: &[AnalyticsFact],
     parallel_work_keys: &[AnalyticsParallelWorkKey],
 ) -> Result<()> {
@@ -1906,7 +2399,7 @@ async fn apply_snapshot_batch(
         !facts.is_empty(),
         "analytics snapshot batch must not be empty"
     );
-    let mut transaction = pool.begin().await?;
+    let mut transaction = connection.begin().await?;
     for fact in facts {
         upsert_analytics_fact(&mut transaction, fact).await?;
     }
@@ -1953,12 +2446,29 @@ async fn load_status_report(
             all_relations_ready = false;
         }
     }
+    let mut all_columns_ready = all_relations_ready;
+    if all_columns_ready {
+        for (relation, column) in PG_ANALYTICS_REQUIRED_COLUMNS {
+            if !column_exists(pool, relation, column).await? {
+                all_columns_ready = false;
+            }
+        }
+    }
+    let schema_ready = all_relations_ready && all_columns_ready;
     let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-    let mut state = if all_relations_ready {
+    let mut state = if schema_ready {
         Some(load_replica_state(pool).await?)
     } else {
         None
     };
+    if let Some(current_state) = state.as_ref()
+        && current_state.status != "unbootstrapped"
+        && current_state.status != "invalidated"
+        && !fact_date_semantics_compatible(current_state)
+    {
+        let detail = fact_date_semantics_mismatch_detail(current_state);
+        state = Some(invalidate_legacy_fact_date_semantics(pool, current_state, &detail).await?);
+    }
     let lag_bytes = if let Some(current_state) = state.as_ref()
         && current_state.status != "unbootstrapped"
     {
@@ -1992,7 +2502,7 @@ async fn load_status_report(
         })
         .unwrap_or(false);
     Ok(AnalyticsReplicaStatusReport {
-        schema_ready: all_relations_ready,
+        schema_ready,
         replica_id: ANALYTICS_REPLICA_ID.to_string(),
         service_eligible,
         state,
@@ -2001,7 +2511,7 @@ async fn load_status_report(
 }
 
 async fn snapshot_facts_into_target(
-    pool: &sqlx::PgPool,
+    connection: &mut sqlx::postgres::PgConnection,
     facts: &[AnalyticsFact],
     parallel_work_keys: &[AnalyticsParallelWorkKey],
 ) -> Result<()> {
@@ -2026,7 +2536,7 @@ async fn snapshot_facts_into_target(
             .filter(|key| source_row_ids.contains(&key.source_row_id))
             .cloned()
             .collect::<Vec<_>>();
-        apply_snapshot_batch(pool, &facts[offset..end], &parallel_work_keys).await?;
+        apply_snapshot_batch(connection, &facts[offset..end], &parallel_work_keys).await?;
         offset = end;
     }
     Ok(())
@@ -2034,7 +2544,7 @@ async fn snapshot_facts_into_target(
 
 async fn snapshot_invocations_into_target(
     source_pool: &Pool<Sqlite>,
-    pool: &sqlx::PgPool,
+    connection: &mut sqlx::postgres::PgConnection,
 ) -> Result<()> {
     let mut source_transaction = source_pool
         .begin()
@@ -2053,7 +2563,7 @@ async fn snapshot_invocations_into_target(
         )
         .await?;
         let parallel_work_keys = parallel_work_keys_for_snapshot(&facts, metadata);
-        snapshot_facts_into_target(pool, &facts, &parallel_work_keys).await?;
+        snapshot_facts_into_target(connection, &facts, &parallel_work_keys).await?;
         after_id = next_after_id;
     }
     source_transaction
@@ -2106,34 +2616,92 @@ async fn bootstrap_replica(
     pool: &sqlx::PgPool,
     acknowledge_unverified_history: bool,
 ) -> Result<AnalyticsReplicaStatusReport> {
-    execute_postgres_schema(pool).await?;
-    verify_replica_schema(pool).await?;
+    let mut connection = pool
+        .acquire()
+        .await
+        .context("failed to acquire the PostgreSQL analytics bootstrap connection")?;
+    // Session advisory locks survive PoolConnection::drop. Close this connection on cancellation
+    // so a held lock can never be returned to the pool for a later retry.
+    connection.close_on_drop();
+    let acquired = sqlx::query_scalar::<_, bool>(PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL)
+        .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
+        .fetch_one(&mut *connection)
+        .await
+        .context("failed to acquire the PostgreSQL analytics bootstrap lock")?;
+    if !acquired {
+        bail!("analytics replica bootstrap is already running");
+    }
+    let result =
+        bootstrap_replica_locked(source_pool, &mut connection, acknowledge_unverified_history)
+            .await;
+    let unlock_result = sqlx::query_scalar::<_, bool>(PG_ANALYTICS_BOOTSTRAP_LOCK_RELEASE_SQL)
+        .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
+        .fetch_one(&mut *connection)
+        .await;
+    match unlock_result {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = connection.close().await;
+            return match result {
+                Ok(()) => Err(anyhow!(
+                    "PostgreSQL analytics bootstrap lock was not held during release"
+                )),
+                Err(error) => Err(error
+                    .context("PostgreSQL analytics bootstrap lock was not held during release")),
+            };
+        }
+        Err(unlock_error) => {
+            let _ = connection.close().await;
+            return match result {
+                Ok(()) => Err(anyhow!(
+                    "failed to release the PostgreSQL analytics bootstrap lock: {unlock_error}"
+                )),
+                Err(error) => Err(error.context(format!(
+                    "also failed to release the PostgreSQL analytics bootstrap lock: {unlock_error}"
+                ))),
+            };
+        }
+    }
+    drop(connection);
+    result?;
+    load_status_report(pool, source_pool).await
+}
+
+async fn bootstrap_replica_locked(
+    source_pool: &Pool<Sqlite>,
+    connection: &mut sqlx::postgres::PgConnection,
+    acknowledge_unverified_history: bool,
+) -> Result<()> {
+    fence_replica_service_eligibility_on_connection(connection).await?;
+    verify_replica_schema_on_connection(connection).await?;
     let mut source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     if source_before.state.historical_replay_required != 0
         || source_has_historical_invocation_archives(source_pool).await?
     {
         let detail = "SQLite historical invocation coverage requires archive replay before PostgreSQL analytics bootstrap can declare complete history";
-        mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
+        mark_replica_blocked_on_connection(connection, "historical_source_unavailable", detail)
+            .await?;
         return Err(anyhow!(detail));
     }
     if source_before.state.historical_history_unknown != 0 {
         if !acknowledge_unverified_history {
             let detail = "SQLite historical coverage predates the analytics source journal and cannot be proven complete; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
-            mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
+            mark_replica_blocked_on_connection(connection, "historical_source_unavailable", detail)
+                .await?;
             return Err(anyhow!(detail));
         }
         acknowledge_unverified_legacy_history(source_pool).await?;
         source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     }
-    clear_replica_target(pool, source_before.state.generation).await?;
-    if let Err(error) = snapshot_invocations_into_target(source_pool, pool).await {
+    clear_replica_target(connection, source_before.state.generation).await?;
+    if let Err(error) = snapshot_invocations_into_target(source_pool, connection).await {
         let detail = error.to_string();
         let error_code = if detail.contains("oversized analytics replica") {
             "oversized_fact"
         } else {
             "snapshot_failed"
         };
-        mark_replica_blocked(pool, error_code, detail.clone()).await?;
+        mark_replica_blocked_on_connection(connection, error_code, detail.clone()).await?;
         return Err(anyhow!(detail));
     }
     let source_after = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
@@ -2150,10 +2718,15 @@ async fn bootstrap_replica(
             source_after.latest_change_id,
             source_after.state.coverage_revision,
         );
-        mark_replica_blocked(pool, "source_changed_during_snapshot", detail.clone()).await?;
+        mark_replica_blocked_on_connection(
+            connection,
+            "source_changed_during_snapshot",
+            detail.clone(),
+        )
+        .await?;
         return Err(anyhow!(detail));
     }
-    set_replica_baseline(pool, &source_after).await?;
+    set_replica_baseline(connection, &source_after).await?;
     if let Err(error) = crate::analytics_changes::acknowledge_analytics_change_generation(
         source_pool,
         ANALYTICS_REPLICA_ID,
@@ -2163,11 +2736,11 @@ async fn bootstrap_replica(
     .await
     {
         let detail = error.to_string();
-        mark_replica_blocked(pool, "source_ack_failed", detail.clone()).await?;
+        mark_replica_blocked_on_connection(connection, "source_ack_failed", detail.clone()).await?;
         return Err(anyhow!(detail));
     }
-    set_replica_acknowledged(pool, source_after.latest_change_id, true).await?;
-    load_status_report(pool, source_pool).await
+    set_replica_acknowledged_on_connection(connection, source_after.latest_change_id, true).await?;
+    Ok(())
 }
 
 async fn resume_replica(
@@ -2176,6 +2749,7 @@ async fn resume_replica(
 ) -> Result<AnalyticsReplicaStatusReport> {
     verify_replica_schema(pool).await?;
     let mut state = load_replica_state(pool).await?;
+    state = ensure_fact_date_semantics_compatible(pool, &state).await?;
     anyhow::ensure!(
         state.status != "unbootstrapped",
         "analytics replica is not bootstrapped; run maintenance analytics-replica bootstrap"
@@ -2355,6 +2929,13 @@ async fn resume_replica(
             }
         };
         let batch = &rows[..end];
+        if let Some(error) = batch.iter().find_map(|change| {
+            validate_source_change_compatibility(change, state.fact_date_semantics_version).err()
+        }) {
+            let detail = error.to_string();
+            invalidate_legacy_fact_date_semantics(pool, &state, &detail).await?;
+            return Err(anyhow!(detail));
+        }
         let last_change_id =
             match apply_replica_batch(source_pool, pool, &state, &source, batch).await {
                 Ok(change_id) => change_id,
@@ -2392,6 +2973,7 @@ async fn pause_replica(
 ) -> Result<AnalyticsReplicaStatusReport> {
     verify_replica_schema(pool).await?;
     let state = load_replica_state(pool).await?;
+    let state = ensure_fact_date_semantics_compatible(pool, &state).await?;
     anyhow::ensure!(
         state.status != "unbootstrapped",
         "analytics replica is not bootstrapped; run maintenance analytics-replica bootstrap"
@@ -2417,7 +2999,7 @@ async fn pause_replica(
         replica_baseline_ready(&state),
         "analytics replica baseline is not established; run explicit bootstrap before pause"
     );
-    mark_replica_state(pool, "paused", false, None, None, "preparing").await?;
+    mark_replica_state(pool, "paused", None, None, "preparing").await?;
     load_status_report(pool, source_pool).await
 }
 
@@ -2429,6 +3011,15 @@ async fn verify_replica(
     let mut state = load_replica_state(pool).await?;
     let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     let mut errors = Vec::new();
+    if state.status != "unbootstrapped" && !fact_date_semantics_compatible(&state) {
+        let detail = fact_date_semantics_mismatch_detail(&state);
+        if state.status != "invalidated" {
+            state = invalidate_legacy_fact_date_semantics(pool, &state, &detail).await?;
+        }
+        if !fact_date_semantics_compatible(&state) {
+            errors.push(fact_date_semantics_mismatch_detail(&state));
+        }
+    }
     let lag_bytes = load_source_lag_bytes(source_pool, state.consumer_checkpoint).await?;
     if state.status == "bootstrapping" {
         errors.push("replica baseline is incomplete; run explicit bootstrap".to_string());
@@ -2521,7 +3112,7 @@ pub(crate) async fn pg_analytics_replica_control(
     source_pool: &Pool<Sqlite>,
     command: AnalyticsReplicaCommand,
 ) -> Result<()> {
-    let postgres = PgAnalyticsPool::connect_raw(config).await?;
+    let postgres = PgAnalyticsPool::connect_maintenance(config).await?;
     match command {
         AnalyticsReplicaCommand::Bootstrap {
             acknowledge_unverified_history,
@@ -2797,6 +3388,13 @@ mod tests {
     }
 
     #[test]
+    fn postgres_error_sanitization_truncates_at_a_utf8_boundary() {
+        let error = anyhow!("{}", "界".repeat(600));
+        let sanitized = sanitize_postgres_error(&error, None);
+        assert_eq!(sanitized, format!("{}...", "界".repeat(170)));
+    }
+
+    #[test]
     fn disabled_runtime_does_not_expose_a_pool() {
         let runtime = PgAnalyticsRuntime::disabled();
         assert_eq!(
@@ -2810,17 +3408,111 @@ mod tests {
     fn schema_contract_is_separate_from_runtime_verification() {
         assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 5);
         assert_eq!(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.len(), 2);
+        assert_eq!(PG_ANALYTICS_REQUIRED_COLUMNS.len(), 1);
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("CREATE SCHEMA IF NOT EXISTS cvm_analytics"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_daily_rollups"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_hourly_rollups"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_state"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_parallel_work_keys"));
+        assert!(
+            PG_ANALYTICS_SCHEMA_SQL.contains("service_eligible BOOLEAN NOT NULL DEFAULT FALSE")
+        );
+        assert!(
+            PG_ANALYTICS_SCHEMA_SQL
+                .contains("fact_date_semantics_version BIGINT NOT NULL DEFAULT 2")
+        );
+        assert!(
+            PG_ANALYTICS_SCHEMA_SQL
+                .contains("ADD COLUMN IF NOT EXISTS fact_date_semantics_version")
+        );
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains(
+            "status = CASE WHEN status = 'caught_up' THEN 'bootstrapping' ELSE status END"
+        ));
+        assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.pg_attribute"));
+        assert!(PG_ANALYTICS_RELATION_EXISTS_SQL.contains("pg_catalog.pg_class"));
+        assert!(PG_ANALYTICS_RELATION_EXISTS_SQL.contains("pg_catalog.pg_namespace"));
+        assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.pg_class"));
+        assert!(PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("pg_catalog.pg_namespace"));
+        assert!(!PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("to_regclass"));
+        assert!(!PG_ANALYTICS_COLUMN_EXISTS_SQL.contains("information_schema.columns"));
+        assert_ne!(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY, 0);
+        assert!(PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL.contains("pg_try_advisory_lock"));
+        assert!(PG_ANALYTICS_BOOTSTRAP_LOCK_RELEASE_SQL.contains("pg_advisory_unlock"));
+        assert!(PG_ANALYTICS_READ_TRANSACTION_SQL.contains("REPEATABLE READ"));
+        assert!(PG_ANALYTICS_READ_TRANSACTION_SQL.contains("READ ONLY"));
+        assert!(PG_ANALYTICS_LEGACY_INVALIDATION_SQL.contains("fact_date_semantics_version = $2"));
+        assert!(PG_ANALYTICS_LEGACY_INVALIDATION_SQL.contains("status = $3"));
+        assert!(PG_ANALYTICS_LEGACY_INVALIDATION_SQL.contains("generation = $4"));
+        assert!(PG_ANALYTICS_LEGACY_INVALIDATION_SQL.contains("consumer_checkpoint = $5"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("occurred_at_epoch_ms BIGINT NOT NULL"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("payload"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("requester_ip"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("prompt_cache"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("last_error TEXT"));
+    }
+
+    #[test]
+    fn current_fact_date_semantics_uses_versioned_state_and_legacy_fence() {
+        let mut state = AnalyticsReplicaState {
+            replica_id: ANALYTICS_REPLICA_ID.to_string(),
+            status: "caught_up".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            generation: 4,
+            baseline_generation: 4,
+            baseline_change_id: 12,
+            coverage_generation: 4,
+            coverage_revision: 13,
+            coverage_watermark: 12,
+            consumer_checkpoint: 12,
+            source_acknowledged_through: 12,
+            service_eligible: false,
+            last_error_code: None,
+            last_error_detail: None,
+            updated_at: String::new(),
+        };
+        assert!(fact_date_semantics_compatible(&state));
+        assert!(!state.service_eligible);
+        assert!(replica_service_eligible(&state));
+
+        state.status = "bootstrapping".to_string();
+        assert!(!replica_service_eligible(&state));
+
+        state.fact_date_semantics_version = 1;
+        assert!(!fact_date_semantics_compatible(&state));
+        assert!(!replica_service_eligible(&state));
+        assert!(fact_date_semantics_mismatch_detail(&state).contains("run explicit bootstrap"));
+    }
+
+    #[test]
+    fn invocation_source_changes_require_current_fact_date_semantics() {
+        let mut change = SourceChangeRow {
+            change_id: 7,
+            event_version: crate::analytics_changes::ANALYTICS_SOURCE_EVENT_VERSION,
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            event_kind: "upsert".to_string(),
+            entity_kind: "invocation".to_string(),
+            source: "codex_invocations".to_string(),
+            source_row_id: Some(42),
+            entity_key: "invocation:proxy:42".to_string(),
+            generation: 1,
+            coverage_revision: 1,
+            fact_json: "{}".to_string(),
+        };
+        validate_source_change_compatibility(&change, ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
+            .expect("current invocation source change should be accepted");
+
+        change.fact_date_semantics_version = 1;
+        let error =
+            validate_source_change_compatibility(&change, ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
+                .expect_err("legacy invocation source change should fail closed");
+        assert!(error.to_string().contains("run explicit bootstrap"));
+
+        change.event_kind = "tombstone".to_string();
+        let error =
+            validate_source_change_compatibility(&change, ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
+                .expect_err("legacy invocation tombstone should fail closed");
+        assert!(error.to_string().contains("fact-date semantics version"));
     }
 
     #[test]
@@ -2900,6 +3592,7 @@ mod tests {
         let state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "caught_up".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 3,
             baseline_generation: 3,
             baseline_change_id: 10,
@@ -2908,7 +3601,7 @@ mod tests {
             coverage_watermark: 10,
             consumer_checkpoint: 10,
             source_acknowledged_through: 10,
-            service_eligible: true,
+            service_eligible: false,
             last_error_code: None,
             last_error_detail: None,
             updated_at: String::new(),
@@ -2958,6 +3651,7 @@ mod tests {
         let mut state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "running".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 1,
             baseline_generation: 1,
             baseline_change_id: 4,
@@ -2994,7 +3688,7 @@ mod tests {
 
         state.status = "caught_up".to_string();
         state.source_acknowledged_through = 7;
-        state.service_eligible = true;
+        assert!(!state.service_eligible);
         assert!(replica_service_eligible(&state));
         assert!(replica_service_eligible_for_latest_change(&state, 7));
         assert!(!replica_service_eligible_for_latest_change(&state, 8));
@@ -3024,6 +3718,7 @@ mod tests {
         let mut state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "running".to_string(),
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 2,
             baseline_generation: 2,
             baseline_change_id: 4,
@@ -3132,7 +3827,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_page_uses_shared_rust_normalization_and_bounds_raw_text() {
+    async fn snapshot_page_uses_shared_normalization_bounds_raw_text_and_shanghai_fact_dates() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -3199,9 +3894,33 @@ mod tests {
         assert_eq!(fact.request_model.as_deref(), Some("requestmodel"));
         assert_eq!(fact.upstream_account_name.as_deref(), Some("accountname"));
         assert_eq!(fact.upstream_account_id, None);
+        assert_eq!(fact.stats_date, "2026-10-31");
 
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (2, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
+            r#"
+            INSERT INTO codex_invocations (id, invoke_id, occurred_at, source)
+            VALUES
+                (2, 'invoke-shanghai-before-boundary', '2026-10-30T15:59:59Z', 'proxy'),
+                (3, 'invoke-shanghai-at-boundary', '2026-10-30T16:00:00Z', 'proxy'),
+                (4, 'invoke-shanghai-naive', '2026-10-31 00:00:00', 'proxy')
+            "#,
+        )
+        .execute(connection.as_mut())
+        .await
+        .expect("insert Shanghai fact-date boundary rows");
+        let boundary_facts = load_source_invocation_snapshot_page(connection.as_mut(), 1)
+            .await
+            .expect("load Shanghai fact-date boundary rows");
+        assert_eq!(
+            boundary_facts
+                .iter()
+                .map(|fact| (fact.source_row_id, fact.stats_date.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, "2026-10-30"), (3, "2026-10-31"), (4, "2026-10-31"),]
+        );
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (5, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
         )
         .bind("x".repeat((ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES + 1) as usize))
         .execute(connection.as_mut())
@@ -3215,6 +3934,501 @@ mod tests {
                 .to_string()
                 .contains("oversized analytics replica source field model")
         );
+    }
+
+    async fn apply_fixture_schema(
+        owner: &mut sqlx::postgres::PgConnection,
+        context: &str,
+    ) -> Result<()> {
+        let mut transaction = owner.begin().await?;
+        for statement in PG_ANALYTICS_SCHEMA_SQL
+            .split(';')
+            .map(str::trim)
+            .filter(|statement| !statement.is_empty())
+        {
+            sqlx::query(statement)
+                .execute(&mut *transaction)
+                .await
+                .with_context(|| format!("{context}: {statement}"))?;
+        }
+        transaction
+            .commit()
+            .await
+            .with_context(|| format!("commit {context}"))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly authorized disposable PostgreSQL *_fixture database and owner/app/maintenance URLs"]
+    async fn postgres_analytics_fixture_verifies_role_separation_and_bounded_reset() -> Result<()> {
+        let reset_authorization = env::var("PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET").context(
+            "PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET=1 is required for the destructive fixture",
+        )?;
+        anyhow::ensure!(
+            reset_authorization == "1",
+            "PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET must equal 1 for the destructive fixture"
+        );
+        let owner_url = env::var("PG_ANALYTICS_TEST_OWNER_URL")
+            .context("PG_ANALYTICS_TEST_OWNER_URL is required for the PostgreSQL fixture")?;
+        let app_url = env::var("PG_ANALYTICS_TEST_APP_URL")
+            .context("PG_ANALYTICS_TEST_APP_URL is required for the PostgreSQL fixture")?;
+        let maintenance_url = env::var("PG_ANALYTICS_TEST_MAINTENANCE_URL")
+            .context("PG_ANALYTICS_TEST_MAINTENANCE_URL is required for the PostgreSQL fixture")?;
+
+        let mut owner = sqlx::postgres::PgConnection::connect(&owner_url)
+            .await
+            .context("connect PostgreSQL fixture owner")?;
+        let database_name: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&mut owner)
+            .await
+            .context("inspect PostgreSQL fixture database name")?;
+        anyhow::ensure!(
+            database_name.ends_with("_fixture"),
+            "PostgreSQL fixture owner URL must target a database whose name ends with _fixture"
+        );
+        sqlx::query("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
+            .execute(&mut owner)
+            .await
+            .context("reset PostgreSQL fixture schema")?;
+        // Keep cleanup outside the fallible body so every setup/assertion error drops the
+        // fixture pools before the destructive schema is removed.
+        let fixture_result = async {
+            apply_fixture_schema(&mut owner, "apply PostgreSQL fixture schema").await?;
+            for statement in [
+                "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_reader",
+                "GRANT SELECT (source_row_id, occurred_at_epoch_ms, upstream_account_id, input_tokens, output_tokens, cache_input_tokens, total_tokens, cost) ON TABLE cvm_analytics.analytics_facts TO cvm_analytics_reader",
+                "GRANT SELECT (source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id) ON TABLE cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_reader",
+                "GRANT SELECT (id, replica_id, status, generation, baseline_generation, baseline_change_id, coverage_generation, coverage_revision, coverage_watermark, consumer_checkpoint, source_acknowledged_through, service_eligible, fact_date_semantics_version, last_error_code, last_error_detail, updated_at) ON TABLE cvm_analytics.analytics_replica_state TO cvm_analytics_reader",
+                "GRANT SELECT (id, status) ON TABLE cvm_analytics.analytics_state TO cvm_analytics_reader",
+                "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
+                "GRANT INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
+                "GRANT SELECT (source, source_row_id) ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
+                "GRANT SELECT, UPDATE ON TABLE cvm_analytics.analytics_replica_state, cvm_analytics.analytics_state TO cvm_analytics_maintenance",
+                "GRANT INSERT, DELETE ON TABLE cvm_analytics.analytics_replica_applied_changes TO cvm_analytics_maintenance",
+                "GRANT SELECT (change_id) ON TABLE cvm_analytics.analytics_replica_applied_changes TO cvm_analytics_maintenance",
+                "GRANT USAGE ON SEQUENCE cvm_analytics.analytics_facts_fact_id_seq TO cvm_analytics_maintenance",
+            ] {
+                sqlx::query(statement)
+                    .execute(&mut owner)
+                    .await
+                    .with_context(|| {
+                        format!("grant PostgreSQL fixture maintenance privilege: {statement}")
+                    })?;
+            }
+
+            let app_pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect(&app_url)
+                .await
+                .context("connect PostgreSQL fixture application role")?;
+            let maintenance_pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect(&maintenance_url)
+                .await
+                .context("connect PostgreSQL fixture maintenance role")?;
+            let body_result = async {
+            let app = PgAnalyticsPool {
+            pool: app_pool.clone(),
+            };
+            app.verify_schema().await?;
+            app.verify_read_transaction().await?;
+            let app_inherits_reader: bool = sqlx::query_scalar(
+                "SELECT pg_has_role(current_user, 'cvm_analytics_reader', 'USAGE')",
+            )
+            .fetch_one(&app_pool)
+            .await?;
+            anyhow::ensure!(
+                app_inherits_reader,
+                "application role does not inherit the PostgreSQL analytics reader role"
+            );
+            let app_runtime = PgAnalyticsRuntime {
+                backend: AnalyticsBackend::Postgres,
+                pool: Some(PgAnalyticsPool {
+                    pool: app_pool.clone(),
+                }),
+                unavailable: None,
+            };
+
+        let app_ddl = sqlx::query("CREATE TABLE cvm_analytics.app_must_not_ddl (id INTEGER)")
+            .execute(&app_pool)
+            .await;
+        anyhow::ensure!(
+            app_ddl.is_err(),
+            "application role unexpectedly retained schema DDL privilege"
+        );
+
+        let mut maintenance = maintenance_pool.acquire().await?;
+        let maintenance_ddl =
+            sqlx::query("CREATE TABLE cvm_analytics.maintenance_must_not_ddl (id INTEGER)")
+                .execute(&mut *maintenance)
+                .await;
+        anyhow::ensure!(
+            maintenance_ddl.is_err(),
+            "maintenance role unexpectedly retained schema DDL privilege"
+        );
+        let maintenance_rollup_dml = sqlx::query(
+            "INSERT INTO cvm_analytics.analytics_daily_rollups (stats_date, dimension, series_key, display_name) VALUES ('1970-01-01', 'overall', 'fixture', 'Fixture')",
+        )
+        .execute(&mut *maintenance)
+        .await;
+        anyhow::ensure!(
+            maintenance_rollup_dml.is_err(),
+            "maintenance role unexpectedly retained unrelated rollup DML privilege"
+        );
+        let maintenance_fact_read =
+            sqlx::query("SELECT invoke_id FROM cvm_analytics.analytics_facts LIMIT 1")
+                .execute(&mut *maintenance)
+                .await;
+        anyhow::ensure!(
+            maintenance_fact_read.is_err(),
+            "maintenance role unexpectedly retained analytics fact-content read privilege"
+        );
+        let maintenance_identity_read = sqlx::query(
+            "SELECT source, source_row_id FROM cvm_analytics.analytics_facts LIMIT 1",
+        )
+        .fetch_optional(&mut *maintenance)
+        .await;
+        anyhow::ensure!(
+            maintenance_identity_read.is_ok(),
+            "maintenance role could not read the identity columns required by replica DML"
+        );
+        let replica_state_insert: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_replica_state', 'INSERT')",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        let replica_state_delete: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_replica_state', 'DELETE')",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        let analytics_state_insert: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_state', 'INSERT')",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        let analytics_state_delete: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'cvm_analytics.analytics_state', 'DELETE')",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        anyhow::ensure!(
+            !replica_state_insert && !replica_state_delete,
+            "maintenance role retained unnecessary replica-state INSERT/DELETE privileges"
+        );
+        anyhow::ensure!(
+            !analytics_state_insert && !analytics_state_delete,
+            "maintenance role retained unnecessary analytics-state INSERT/DELETE privileges"
+        );
+        let fact = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 1,
+            invoke_id: "fixture-1".to_string(),
+            occurred_at: "1970-01-01T00:00:00Z".to_string(),
+            occurred_at_epoch_ms: 0,
+            stats_date: "1970-01-01".to_string(),
+            source: "fixture".to_string(),
+            ..Default::default()
+        })?;
+        upsert_analytics_fact(&mut maintenance, &fact).await?;
+        let mut corrected_fact = fact.clone();
+        corrected_fact.invoke_id = "fixture-1-corrected".to_string();
+        upsert_analytics_fact(&mut maintenance, &corrected_fact).await?;
+
+        let key = AnalyticsParallelWorkKey {
+            source: fact.source.clone(),
+            source_row_id: fact.source_row_id,
+            occurred_at_epoch_ms: fact.occurred_at_epoch_ms,
+            key_digest: "sha256:fixture".to_string(),
+            upstream_account_id: None,
+        };
+        replace_parallel_work_key(&mut maintenance, &key.source, key.source_row_id, Some(&key))
+            .await?;
+        let mut corrected_key = key.clone();
+        corrected_key.key_digest = "sha256:fixture-corrected".to_string();
+        replace_parallel_work_key(
+            &mut maintenance,
+            &corrected_key.source,
+            corrected_key.source_row_id,
+            Some(&corrected_key),
+        )
+        .await?;
+        delete_analytics_fact(&mut maintenance, &corrected_fact.source, corrected_fact.source_row_id)
+            .await?;
+        replace_parallel_work_key(
+            &mut maintenance,
+            &corrected_key.source,
+            corrected_key.source_row_id,
+            None,
+        )
+        .await?;
+        upsert_analytics_fact(&mut maintenance, &corrected_fact).await?;
+        replace_parallel_work_key(
+            &mut maintenance,
+            &corrected_key.source,
+            corrected_key.source_row_id,
+            Some(&corrected_key),
+        )
+        .await?;
+
+        let change = SourceChangeRow {
+            change_id: 1,
+            event_version: crate::analytics_changes::ANALYTICS_SOURCE_EVENT_VERSION,
+            fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            event_kind: "upsert".to_string(),
+            entity_kind: "invocation".to_string(),
+            source: "fixture".to_string(),
+            source_row_id: Some(1),
+            entity_key: "fixture-1".to_string(),
+            generation: 1,
+            coverage_revision: 1,
+            fact_json: "{}".to_string(),
+        };
+        record_applied_change(&mut maintenance, &change).await?;
+        record_applied_change(&mut maintenance, &change).await?;
+        sqlx::query(
+            r#"
+            UPDATE cvm_analytics.analytics_replica_state
+            SET status = 'caught_up', fact_date_semantics_version = 2,
+                generation = 1, baseline_generation = 1, baseline_change_id = 1,
+                coverage_generation = 1, coverage_revision = 1, coverage_watermark = 1,
+                consumer_checkpoint = 1, source_acknowledged_through = 1,
+                service_eligible = TRUE
+            WHERE id = 1
+            "#,
+        )
+        .execute(&mut *maintenance)
+        .await?;
+        sqlx::query("UPDATE cvm_analytics.analytics_state SET status = 'ready' WHERE id = 1")
+            .execute(&mut *maintenance)
+            .await?;
+        let read_start = Utc
+            .timestamp_millis_opt(-1)
+            .single()
+            .context("build PostgreSQL fixture read start")?;
+        let read_end = Utc
+            .timestamp_millis_opt(1)
+            .single()
+            .context("build PostgreSQL fixture read end")?;
+        let mut production_read = app_runtime.require_read_transaction().await?;
+        let production_key_rows = query_parallel_work_key_rows_on_connection(
+            &mut production_read,
+            read_start,
+            read_end,
+            false,
+            None,
+        )
+        .await?;
+        anyhow::ensure!(
+            production_key_rows.len() == 1,
+            "production PostgreSQL key query did not read the fixture row"
+        );
+        let production_conversation_rows = query_parallel_work_conversation_rows_on_connection(
+            &mut production_read,
+            read_start,
+            read_end,
+            false,
+            None,
+        )
+        .await?;
+        anyhow::ensure!(
+            production_conversation_rows.len() == 1,
+            "production PostgreSQL conversation query did not read the fixture row"
+        );
+        production_read.commit().await?;
+        let mut in_flight_reader = app_runtime.require_read_transaction().await?;
+        fence_replica_service_eligibility_on_connection(&mut maintenance).await?;
+        clear_replica_target(&mut maintenance, 2).await?;
+        let snapshot_fact_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cvm_analytics.analytics_facts",
+        )
+        .fetch_one(&mut *in_flight_reader)
+        .await?;
+        anyhow::ensure!(
+            snapshot_fact_count == 1,
+            "repeatable-read analytics reader did not retain the pre-fence snapshot"
+        );
+        in_flight_reader.rollback().await?;
+        let post_fence_reader = app_runtime.require_read_transaction().await;
+        anyhow::ensure!(
+            post_fence_reader.is_err(),
+            "PostgreSQL reader admitted a new transaction after the rebuild fence"
+        );
+        sqlx::query(
+            r#"
+            UPDATE cvm_analytics.analytics_replica_state
+            SET status = 'caught_up', fact_date_semantics_version = 1,
+                generation = 1, baseline_generation = 1, baseline_change_id = 1,
+                coverage_generation = 1, coverage_revision = 1, coverage_watermark = 1,
+                consumer_checkpoint = 1, source_acknowledged_through = 1,
+                service_eligible = TRUE
+            WHERE id = 1
+            "#,
+        )
+        .execute(&mut *maintenance)
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE cvm_analytics.analytics_replica_state DROP COLUMN fact_date_semantics_version",
+        )
+        .execute(&mut owner)
+        .await?;
+        apply_fixture_schema(&mut owner, "reapply PostgreSQL fixture schema").await?;
+        let owner_fenced: bool = sqlx::query_scalar(
+            "SELECT service_eligible FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut owner)
+        .await?;
+        anyhow::ensure!(
+            !owner_fenced,
+            "owner-applied compatibility contract did not fence legacy eligibility"
+        );
+        let owner_status: String = sqlx::query_scalar(
+            "SELECT status FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut owner)
+        .await?;
+        anyhow::ensure!(
+            owner_status == "bootstrapping",
+            "owner-applied compatibility contract did not fence current eligibility"
+        );
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_replica_state SET status = 'caught_up', service_eligible = TRUE WHERE id = 1",
+        )
+        .execute(&mut *maintenance)
+        .await?;
+        fence_replica_service_eligibility_on_connection(&mut maintenance).await?;
+        let bootstrap_fenced: bool = sqlx::query_scalar(
+            "SELECT service_eligible FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        anyhow::ensure!(
+            !bootstrap_fenced,
+            "bootstrap preflight did not persist the rollback fence"
+        );
+        let bootstrap_status: String = sqlx::query_scalar(
+            "SELECT status FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut *maintenance)
+        .await?;
+        anyhow::ensure!(
+            bootstrap_status == "bootstrapping",
+            "bootstrap preflight did not fence current eligibility"
+        );
+
+        let app_dml = sqlx::query("DELETE FROM cvm_analytics.analytics_facts")
+            .execute(&app_pool)
+            .await;
+        anyhow::ensure!(
+            app_dml.is_err(),
+            "application role unexpectedly retained analytics DML privilege"
+        );
+
+        clear_replica_target(&mut maintenance, 7).await?;
+        drop(maintenance);
+        let fact_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cvm_analytics.analytics_facts")
+                .fetch_one(&mut owner)
+                .await?;
+        let applied_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cvm_analytics.analytics_replica_applied_changes",
+        )
+        .fetch_one(&mut owner)
+        .await?;
+        let parallel_work_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cvm_analytics.analytics_parallel_work_keys")
+                .fetch_one(&mut owner)
+                .await?;
+        let state = load_replica_state(&maintenance_pool).await?;
+        anyhow::ensure!(fact_count == 0, "bounded reset retained analytics facts");
+        anyhow::ensure!(applied_count == 0, "bounded reset retained applied changes");
+        anyhow::ensure!(
+            parallel_work_count == 0,
+            "bounded reset retained parallel-work keys"
+        );
+        anyhow::ensure!(
+            state.status == "bootstrapping",
+            "bounded reset did not gate state"
+        );
+        anyhow::ensure!(
+            state.fact_date_semantics_version == ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
+            "bounded reset did not promote current fact-date semantics"
+        );
+        anyhow::ensure!(
+            state.consumer_checkpoint == 0,
+            "bounded reset retained checkpoint"
+        );
+        anyhow::ensure!(
+            !state.service_eligible,
+            "bounded reset left service eligibility set"
+        );
+
+        let mut maintenance = maintenance_pool.acquire().await?;
+        let first_locked: bool = sqlx::query_scalar(PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL)
+            .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
+            .fetch_one(&mut *maintenance)
+            .await?;
+        anyhow::ensure!(
+            first_locked,
+            "fixture could not acquire bootstrap advisory lock"
+        );
+        let second_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&maintenance_url)
+            .await?;
+        let second_locked: bool = sqlx::query_scalar(PG_ANALYTICS_BOOTSTRAP_LOCK_ACQUIRE_SQL)
+            .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
+            .fetch_one(&second_pool)
+            .await?;
+        anyhow::ensure!(!second_locked, "bootstrap advisory lock was not exclusive");
+        let released: bool = sqlx::query_scalar(PG_ANALYTICS_BOOTSTRAP_LOCK_RELEASE_SQL)
+            .bind(ANALYTICS_REPLICA_BOOTSTRAP_LOCK_KEY)
+            .fetch_one(&mut *maintenance)
+            .await?;
+        anyhow::ensure!(
+            released,
+            "fixture could not release bootstrap advisory lock"
+        );
+        drop(maintenance);
+        second_pool.close().await;
+
+        sqlx::query(
+            "ALTER TABLE cvm_analytics.analytics_replica_state DROP COLUMN fact_date_semantics_version",
+        )
+        .execute(&mut owner)
+        .await?;
+        let missing_column = app.verify_schema().await;
+        anyhow::ensure!(
+            missing_column.is_err(),
+            "application schema verification accepted a missing compatibility column"
+        );
+        sqlx::query(
+            "ALTER TABLE cvm_analytics.analytics_replica_state ADD COLUMN fact_date_semantics_version BIGINT NOT NULL DEFAULT 1",
+        )
+        .execute(&mut owner)
+        .await?;
+        app.verify_schema().await?;
+
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+            app_pool.close().await;
+            maintenance_pool.close().await;
+            body_result
+        }
+        .await;
+        let cleanup_result = sqlx::query("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
+            .execute(&mut owner)
+            .await
+            .context("clean up PostgreSQL fixture schema");
+        let owner_close_result = owner.close().await;
+        fixture_result?;
+        cleanup_result?;
+        owner_close_result?;
+        Ok(())
     }
 
     #[test]

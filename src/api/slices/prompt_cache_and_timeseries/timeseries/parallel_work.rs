@@ -218,7 +218,7 @@ pub(crate) async fn load_parallel_work_projection_baseline_at_on_connection(
 }
 
 async fn query_parallel_work_key_sets_from_postgres(
-    state: &Arc<AppState>,
+    connection: &mut sqlx::PgConnection,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
     bucket_seconds: i64,
@@ -226,8 +226,8 @@ async fn query_parallel_work_key_sets_from_postgres(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<BTreeMap<i64, HashSet<String>>, ApiError> {
-    let rows = query_parallel_work_key_rows(
-        state.pg_analytics.as_ref(),
+    let rows = query_parallel_work_key_rows_on_connection(
+        connection,
         range_start,
         range_end,
         source_scope == InvocationSourceScope::ProxyOnly,
@@ -252,7 +252,7 @@ async fn query_parallel_work_key_sets_from_postgres(
 }
 
 async fn query_parallel_work_conversations_from_postgres(
-    state: &Arc<AppState>,
+    connection: &mut sqlx::PgConnection,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
     bucket_seconds: i64,
@@ -260,8 +260,8 @@ async fn query_parallel_work_conversations_from_postgres(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<Vec<ParallelWorkConversation>, ApiError> {
-    let rows = query_parallel_work_conversation_rows(
-        state.pg_analytics.as_ref(),
+    let rows = query_parallel_work_conversation_rows_on_connection(
+        connection,
         range_start,
         range_end,
         source_scope == InvocationSourceScope::ProxyOnly,
@@ -355,8 +355,13 @@ async fn load_parallel_work_projection_baseline_at_postgres(
         .single()
         .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work PG fill end epoch")))?;
 
+    let mut transaction = state
+        .pg_analytics
+        .require_read_transaction()
+        .await
+        .map_err(AnalyticsReadError::into_api_error)?;
     let bucket_keys = query_parallel_work_key_sets_from_postgres(
-        state,
+        &mut transaction,
         range_window.start,
         range_window.end,
         bucket_seconds,
@@ -371,7 +376,7 @@ async fn load_parallel_work_projection_baseline_at_postgres(
         .collect::<BTreeMap<_, _>>();
     let conversations = if range_window.duration <= ChronoDuration::hours(24) {
         query_parallel_work_conversations_from_postgres(
-            state,
+            &mut transaction,
             range_window.start,
             range_window.end,
             bucket_seconds,
@@ -399,7 +404,7 @@ async fn load_parallel_work_projection_baseline_at_postgres(
             .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work PG minute end")))?;
         ParallelWorkActiveMinuteStats::from_key_sets(
             query_parallel_work_key_sets_from_postgres(
-                state,
+                &mut transaction,
                 complete_start,
                 complete_end,
                 60,
@@ -421,6 +426,12 @@ async fn load_parallel_work_projection_baseline_at_postgres(
         time_zone_fallback,
         conversations,
     )?;
+    transaction.commit().await.map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to commit PostgreSQL parallel-work read transaction: {error}"
+        ))
+        .into_api_error()
+    })?;
     Ok(ParallelWorkProjectionBaseline {
         response: ParallelWorkStatsResponse {
             current: current.clone(),
