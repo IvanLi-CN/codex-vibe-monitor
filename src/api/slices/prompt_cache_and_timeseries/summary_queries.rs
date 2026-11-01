@@ -358,6 +358,14 @@ mod tests {
         assert_eq!(response.in_progress_conversation_count, Some(2));
         assert_eq!(response.in_progress_retry_conversation_count, Some(1));
         assert_eq!(response.in_progress_avg_wait_ms, Some(12.5));
+        assert_eq!(
+            response.in_progress_phase_counts,
+            Some(InvocationPhaseCountsResponse {
+                queued: 1,
+                requesting: 1,
+                responding: 0,
+            })
+        );
         assert_eq!(response.maintenance, Some(maintenance));
         assert_eq!(response.non_success_tokens, None);
         assert_eq!(response.usage_breakdown, Some(expected_usage));

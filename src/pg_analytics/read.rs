@@ -1461,6 +1461,41 @@ mod tests {
     }
 
     #[test]
+    fn fact_filter_sql_contract_keeps_fences_and_native_date_keysets() {
+        let start = Utc
+            .timestamp_opt(FIXTURE_START_EPOCH_MS / 1_000, 0)
+            .single()
+            .expect("exact fixture start");
+        let end = start + ChronoDuration::milliseconds(2);
+        let query =
+            AnalyticsFactReadQuery::for_range(AnalyticsFactScope::AccountProxyOnly(42), start, end)
+                .expect("bounded account query")
+                .with_source_snapshot_id(104)
+                .expect("source snapshot fence");
+        let after_key = AnalyticsFactKey {
+            stats_date: "2026-10-29".to_string(),
+            occurred_at_epoch_ms: FIXTURE_START_EPOCH_MS,
+            source: SOURCE_PROXY.to_string(),
+            source_row_id: 100,
+        };
+        let high_watermark = AnalyticsFactKey {
+            stats_date: "2026-10-31".to_string(),
+            occurred_at_epoch_ms: FIXTURE_START_EPOCH_MS + 2,
+            source: SOURCE_PROXY.to_string(),
+            source_row_id: 104,
+        };
+        let mut builder = QueryBuilder::<sqlx::Postgres>::new("SELECT 1 WHERE 1 = 1");
+        append_fact_filters(&mut builder, query, Some(&after_key), Some(&high_watermark));
+        let sql = builder.sql().to_string();
+        assert!(sql.contains("source_row_id <="));
+        assert!(sql.contains("occurred_at_epoch_ms >="));
+        assert!(sql.contains("occurred_at_epoch_ms <"));
+        assert!(sql.contains("(stats_date, occurred_at_epoch_ms, source, source_row_id) >"));
+        assert!(sql.contains("(stats_date, occurred_at_epoch_ms, source, source_row_id) <="));
+        assert!(sql.contains("::date"));
+    }
+
+    #[test]
     fn read_budget_constants_preserve_the_ingestion_page_and_summary_limits() {
         assert_eq!(ANALYTICS_READ_PAGE_MAX_ROWS, 256);
         assert_eq!(ANALYTICS_READ_PAGE_MAX_ENCODED_BYTES, 1024 * 1024);

@@ -107,6 +107,7 @@ struct InvocationAnalyticsRow {
     stats_date: String,
     source: String,
     model: Option<String>,
+    upstream_account_id: Option<i64>,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
     cache_input_tokens: Option<i64>,
@@ -119,6 +120,7 @@ struct InvocationAnalyticsRow {
     cost_output: Option<f64>,
     cost_reasoning: Option<f64>,
     status: Option<String>,
+    error_message: Option<String>,
     failure_kind: Option<String>,
     failure_class: Option<String>,
     is_actionable: Option<i64>,
@@ -556,15 +558,6 @@ fn terminal_status(status: Option<&str>) -> bool {
     )
 }
 
-fn success_like_status(status: Option<&str>) -> bool {
-    matches!(
-        status
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("success") | Some("succeeded") | Some("completed") | Some("ok")
-    )
-}
-
 async fn load_analytics_change_state(tx: &mut SqliteConnection) -> Result<AnalyticsChangeStateRow> {
     sqlx::query_as::<_, AnalyticsChangeStateRow>(
         r#"
@@ -778,7 +771,9 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
     tx: &mut SqliteConnection,
     row_id: i64,
 ) -> Result<AnalyticsChangeReceipt> {
-    let row = sqlx::query_as::<_, InvocationAnalyticsRow>(
+    let attempt_upstream_account_id_sql =
+        crate::api::invocation_upstream_account_id_from_attempt_fallback_sql("codex_invocations");
+    let row_query = format!(
         r#"
         SELECT
             id,
@@ -793,6 +788,7 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
                 CASE WHEN instr(occurred_at, 'T') > 0 THEN '+8 hours' ELSE '+0 hours' END
             ) AS stats_date,
             source,
+            {attempt_upstream_account_id_sql} AS upstream_account_id,
             model,
             input_tokens,
             output_tokens,
@@ -806,6 +802,7 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
             cost_output,
             cost_reasoning,
             status,
+            error_message,
             failure_kind,
             failure_class,
             is_actionable,
@@ -820,24 +817,61 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
             t_resp_parse_ms
         FROM codex_invocations
         WHERE id = ?1
-        "#,
-    )
-    .bind(row_id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| {
-        anyhow!("cannot publish analytics invocation change for missing row {row_id}")
-    })?;
+        "#
+    );
+    let row = sqlx::query_as::<_, InvocationAnalyticsRow>(&row_query)
+        .bind(row_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            anyhow!("cannot publish analytics invocation change for missing row {row_id}")
+        })?;
 
     let payload = normalized_payload(row.payload.as_deref());
     let request_model = payload_text(payload.as_ref(), "requestModel");
     let response_model = payload_text(payload.as_ref(), "responseModel");
     let reasoning_effort = payload_text(payload.as_ref(), "reasoningEffort");
     let upstream_account_name = payload_text(payload.as_ref(), "upstreamAccountName");
-    let upstream_account_id = payload_i64(payload.as_ref(), "upstreamAccountId");
+    let upstream_account_id =
+        payload_i64(payload.as_ref(), "upstreamAccountId").or(row.upstream_account_id);
     let status = bounded_text(row.status.as_deref());
+    let error_message = bounded_text(row.error_message.as_deref());
     let failure_kind = bounded_text(row.failure_kind.as_deref());
-    let failure_class = bounded_text(row.failure_class.as_deref());
+    let stored_failure_class = bounded_text(row.failure_class.as_deref());
+    let classification = crate::api::resolve_failure_classification(
+        status.as_deref(),
+        error_message.as_deref(),
+        failure_kind.as_deref(),
+        stored_failure_class.as_deref(),
+        row.is_actionable,
+    );
+    let failure_kind = failure_kind.or(classification.failure_kind.clone());
+    let legacy_success_status = status.as_deref().is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "http_200" | "warning_success"
+        )
+    });
+    let failure_class = match stored_failure_class {
+        Some(value)
+            if value.eq_ignore_ascii_case("none")
+                && classification.failure_class != crate::api::FailureClass::None =>
+        {
+            Some(classification.failure_class.as_str().to_string())
+        }
+        Some(value) => Some(value),
+        None => (classification.failure_class != crate::api::FailureClass::None
+            || (legacy_success_status && error_message.as_deref().is_none_or(str::is_empty)))
+        .then(|| classification.failure_class.as_str().to_string()),
+    };
+    let is_actionable = row.is_actionable.or_else(|| {
+        (classification.failure_class != crate::api::FailureClass::None)
+            .then_some(i64::from(classification.is_actionable))
+    });
+    let success_like = crate::api::prompt_invocation_status_is_success_like(
+        status.as_deref(),
+        error_message.as_deref(),
+    ) && classification.failure_class == crate::api::FailureClass::None;
     let source = bounded_required_text(&row.source, "source")?;
     let invoke_id = bounded_required_text(&row.invoke_id, "invoke_id")?;
     let entity_key = format!("invocation:{}:{}", source, row.id);
@@ -856,11 +890,11 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
         "upstreamAccountId": upstream_account_id,
         "upstreamAccountName": upstream_account_name,
         "status": status.clone(),
-        "successLike": success_like_status(status.as_deref()),
+        "successLike": success_like,
         "terminal": terminal_status(status.as_deref()),
         "failureKind": failure_kind,
         "failureClass": failure_class,
-        "isActionable": row.is_actionable.map(|value| value != 0),
+        "isActionable": is_actionable.map(|value| value != 0),
         "inputTokens": row.input_tokens,
         "outputTokens": row.output_tokens,
         "cacheInputTokens": row.cache_input_tokens,
@@ -1438,6 +1472,60 @@ mod tests {
             assert_eq!(fact["sourceRowId"], row_id);
             assert_eq!(fact["statsDate"], expected_stats_date);
         }
+    }
+
+    #[tokio::test]
+    async fn invocation_upsert_resolves_attempt_account_and_legacy_failure_classification() {
+        let pool = test_pool().await;
+        let row_id = sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, error_message, failure_class, payload, raw_response
+            ) VALUES ('incremental-attempt-account', '2026-10-30 12:00:00', 'proxy',
+                      'completed', 'failed to contact upstream', 'none',
+                      '{"upstreamAccountName":"attempt-account"}', '{}')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert incremental legacy invocation")
+        .last_insert_rowid();
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                invoke_id, occurred_at, endpoint, route_mode, attempt_index,
+                distinct_account_index, same_account_retry_index, upstream_account_id, status
+            ) VALUES ('incremental-attempt-account', '2026-10-30 12:00:00', '/v1/responses',
+                      'pool', 1, 1, 0, 42, 'success')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert incremental attempt account");
+
+        let mut tx = pool
+            .begin()
+            .await
+            .expect("begin incremental invocation transaction");
+        append_invocation_upsert_for_row_tx(tx.as_mut(), row_id)
+            .await
+            .expect("append incremental invocation event");
+        tx.commit()
+            .await
+            .expect("commit incremental invocation transaction");
+
+        let fact_json: String = sqlx::query_scalar(
+            "SELECT fact_json FROM analytics_change_events WHERE source_row_id = ?1",
+        )
+        .bind(row_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load incremental invocation fact");
+        let fact: Value = serde_json::from_str(&fact_json).expect("parse incremental fact");
+        assert_eq!(fact["upstreamAccountId"], 42);
+        assert_eq!(fact["successLike"], false);
+        assert_eq!(fact["failureClass"], "service_failure");
+        assert_eq!(fact["isActionable"], false);
     }
 
     #[tokio::test]

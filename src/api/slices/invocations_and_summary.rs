@@ -16950,7 +16950,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
         upstream_account_id: None,
         ..filter.clone()
     };
-    let mut db_ttfb_sum = avg_wait_ms.unwrap_or_default() * avg_wait_sample_count as f64;
+    let mut db_ttfb_sum = summary_live_sum_from_average(avg_wait_ms, avg_wait_sample_count)?;
     for row in &db_runtime_rows {
         let key = (row.invoke_id.clone(), row.occurred_at.clone());
         let Some(runtime_record) = runtime_by_key.get(&key) else {
@@ -16975,8 +16975,12 @@ pub(crate) async fn load_in_progress_summary_snapshot(
             {
                 db_ttfb_sum = (db_ttfb_sum
                     - normalized_wait_ms(row.upstream_ttfb_ms).unwrap_or_default())
-                .max(0.0)
-                    + normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).unwrap_or_default();
+                .max(0.0);
+                checked_summary_live_add(
+                    &mut db_ttfb_sum,
+                    normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).unwrap_or_default(),
+                    "runtime replacement wait sum",
+                )?;
                 avg_wait_sample_count =
                     avg_wait_sample_count.saturating_sub(i64::from(
                         normalized_wait_ms(row.upstream_ttfb_ms).is_some(),
@@ -17033,7 +17037,9 @@ pub(crate) async fn load_in_progress_summary_snapshot(
                 counts
             },
         );
-    let (ttfb_sum, ttfb_count) = runtime_records
+    let mut ttfb_sum = 0.0;
+    let mut ttfb_count = 0_i64;
+    for value in runtime_records
         .iter()
         .filter(|record| {
             !db_runtime_keys.contains_key(&(record.invoke_id.clone(), record.occurred_at.clone()))
@@ -17043,10 +17049,24 @@ pub(crate) async fn load_in_progress_summary_snapshot(
                 .t_upstream_ttfb_ms
                 .filter(|value| value.is_finite() && *value >= 0.0)
         })
-        .fold((0.0, 0_i64), |(sum, count), value| (sum + value, count + 1));
+    {
+        checked_summary_live_add(&mut ttfb_sum, value, "runtime wait sum")?;
+        ttfb_count = ttfb_count
+            .checked_add(1)
+            .ok_or_else(|| summary_live_numeric_overflow("runtime wait sample count"))?;
+    }
     let combined_avg_wait_ms = match (avg_wait_sample_count, ttfb_count) {
         (db_sample_count, runtime_count) if db_sample_count > 0 || runtime_count > 0 => {
-            Some((db_ttfb_sum + ttfb_sum) / (db_sample_count + runtime_count) as f64)
+            let sample_count = db_sample_count
+                .checked_add(runtime_count)
+                .ok_or_else(|| summary_live_numeric_overflow("combined wait sample count"))?;
+            let mut total_sum = db_ttfb_sum;
+            checked_summary_live_add(&mut total_sum, ttfb_sum, "combined wait sum")?;
+            let average = total_sum / sample_count as f64;
+            if !average.is_finite() || average < 0.0 {
+                return Err(summary_live_numeric_overflow("combined wait average"));
+            }
+            Some(average)
         }
         _ => None,
     };
@@ -17678,6 +17698,60 @@ impl UpstreamAccountInProgressSummary {
 
 pub(crate) fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn summary_live_numeric_overflow(field: &str) -> ApiError {
+    ApiError::unavailable(anyhow!(
+        "summary live augmentation exceeded its numeric budget while adding {field}"
+    ))
+}
+
+fn checked_summary_live_add(target: &mut f64, value: f64, field: &str) -> Result<(), ApiError> {
+    let next = *target + value;
+    if !next.is_finite() || next < 0.0 {
+        return Err(summary_live_numeric_overflow(field));
+    }
+    *target = next;
+    Ok(())
+}
+
+fn summary_live_sum_from_average(average: Option<f64>, sample_count: i64) -> Result<f64, ApiError> {
+    if sample_count < 0 {
+        return Err(summary_live_numeric_overflow("database wait sample count"));
+    }
+    match (average, sample_count) {
+        (None, 0) => Ok(0.0),
+        (Some(average), sample_count)
+            if average.is_finite() && average >= 0.0 && sample_count > 0 =>
+        {
+            let sum = average * sample_count as f64;
+            if sum.is_finite() {
+                Ok(sum)
+            } else {
+                Err(summary_live_numeric_overflow("database wait sum"))
+            }
+        }
+        _ => Err(summary_live_numeric_overflow("database wait average")),
+    }
+}
+
+#[cfg(test)]
+mod summary_live_numeric_tests {
+    use super::*;
+
+    #[test]
+    fn summary_live_wait_arithmetic_fails_closed_on_non_finite_values() {
+        assert!(matches!(
+            summary_live_sum_from_average(Some(f64::MAX), 2),
+            Err(ApiError::Unavailable(_))
+        ));
+
+        let mut sum = f64::MAX;
+        assert!(matches!(
+            checked_summary_live_add(&mut sum, f64::MAX, "test wait sum"),
+            Err(ApiError::Unavailable(_))
+        ));
+    }
 }
 
 fn runtime_record_ttfb_differs(left: Option<f64>, right: Option<f64>) -> bool {

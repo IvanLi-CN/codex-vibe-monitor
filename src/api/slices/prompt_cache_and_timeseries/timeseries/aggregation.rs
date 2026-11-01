@@ -79,6 +79,32 @@ fn add_optional_token_components_checked(
     }
     Ok(())
 }
+
+fn validate_runtime_timeseries_numeric_fields(record: &ApiInvocation) -> Result<(), ApiError> {
+    for (field, value) in [
+        ("total tokens", record.total_tokens),
+        ("input tokens", record.input_tokens),
+        ("output tokens", record.output_tokens),
+        ("cache input tokens", record.cache_input_tokens),
+        ("reasoning tokens", record.reasoning_tokens),
+    ] {
+        if value.is_some_and(|value| value < 0) {
+            return Err(ApiError::unavailable(anyhow!(
+                "timeseries runtime overlay contains invalid {field}"
+            )));
+        }
+    }
+    if record
+        .cost
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "timeseries runtime overlay contains invalid cost"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn fold_minute_projection_aggregates(
     minute_aggregates: BTreeMap<i64, BucketAggregate>,
     bucket_seconds: i64,
@@ -326,6 +352,7 @@ pub(crate) fn overlay_runtime_timeseries_snapshot(
         if occurred < start || occurred >= end {
             continue;
         }
+        validate_runtime_timeseries_numeric_fields(record)?;
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred.timestamp(), bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
@@ -702,6 +729,7 @@ pub(crate) fn overlay_runtime_timeseries_in_flight(
             }
             continue;
         }
+        validate_runtime_timeseries_numeric_fields(&record)?;
         if let Some(db_record) = db_runtime_records.get(&key) {
             subtract_stale_db_runtime_record(
                 aggregates,
