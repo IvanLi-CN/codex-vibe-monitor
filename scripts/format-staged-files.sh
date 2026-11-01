@@ -91,10 +91,22 @@ original_assume_unchanged=()
 original_skip_worktree=()
 format_tmp_dir="$(mktemp -d "$repo_root/.codex-format.XXXXXX")"
 format_tmp_files=()
+rollback_needed=0
 cleanup_format_tmp() {
+  local exit_code=$?
+
+  trap - EXIT INT TERM
+  if [ "$rollback_needed" -eq 1 ] && declare -F restore_original_state >/dev/null 2>&1; then
+    set +e
+    restore_original_state
+    set -e
+  fi
   rm -rf "$format_tmp_dir"
+  exit "$exit_code"
 }
 trap cleanup_format_tmp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for file in "${files[@]}"; do
   if ! git diff --quiet -- "$file"; then
@@ -224,16 +236,13 @@ restore_index_metadata() {
 }
 
 restore_original_state() {
-  local index file worktree_path current_index current_worktree_hash original_file
-  local context_lines original_lines diff_status rollback_patch
+  local index file current_index current_worktree_hash original_file rollback_file
+  local context_lines original_lines diff_status
   local rollback_owned=()
-
-  rollback_patch="$format_tmp_dir/rollback.patch"
-  : > "$rollback_patch"
+  local rollback_patches=()
 
   for index in "${!files[@]}"; do
     file="${files[$index]}"
-    worktree_path="$repo_root/$file"
     current_index="$(git rev-parse --verify ":$file" 2>/dev/null || true)"
     current_worktree_hash="$(git hash-object -- "$file" 2>/dev/null || true)"
     if [ "$current_index" = "${formatted_hashes[$index]}" ]; then
@@ -241,10 +250,12 @@ restore_original_state() {
     else
       rollback_owned+=(0)
     fi
+    rollback_patches+=("")
     if [ "${rollback_owned[$index]}" -eq 1 ] \
       && [ "$current_worktree_hash" = "${formatted_hashes[$index]}" ] \
       && is_safe_worktree_path "$file"; then
       original_file="$format_tmp_dir/.original-$index"
+      rollback_file="$format_tmp_dir/.rollback-$index.patch"
       git cat-file blob "${original_objects[$index]}" > "$original_file"
       context_lines="$(wc -l < "${format_tmp_files[$index]}")"
       original_lines="$(wc -l < "$original_file")"
@@ -254,18 +265,23 @@ restore_original_state() {
       context_lines=$((context_lines + 1))
       set +e
       diff -u -U "$context_lines" -L "a/$file" -L "b/$file" \
-        "${format_tmp_files[$index]}" "$original_file" >> "$rollback_patch"
+        "${format_tmp_files[$index]}" "$original_file" > "$rollback_file"
       diff_status=$?
       set -e
-      if [ "$diff_status" -ne 1 ]; then
+      if [ "$diff_status" -eq 1 ]; then
+        rollback_patches[$index]="$rollback_file"
+      else
         printf 'unable to create formatter rollback patch for: %s\n' "$file" >&2
       fi
     fi
   done
 
-  if [ -s "$rollback_patch" ]; then
-    git apply --index --binary "$rollback_patch" || true
-  fi
+  for index in "${!files[@]}"; do
+    rollback_file="${rollback_patches[$index]:-}"
+    if [ -n "$rollback_file" ] && [ -s "$rollback_file" ]; then
+      git apply --index --binary "$rollback_file" || true
+    fi
+  done
 
   for index in "${!files[@]}"; do
     file="${files[$index]}"
@@ -282,8 +298,10 @@ restore_original_state() {
 }
 
 if [ -s "$format_patch_file" ]; then
+  rollback_needed=1
   if ! git apply --index --binary "$format_patch_file"; then
     restore_original_state
+    rollback_needed=0
     for file in "${files[@]}"; do
       printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
     done
@@ -309,6 +327,7 @@ done
 
 if [ "$verification_failed" -ne 0 ]; then
   restore_original_state
+  rollback_needed=0
   for file in "${files[@]}"; do
     printf 'refusing to stage concurrently modified file: %s\n' "$file" >&2
   done
@@ -318,3 +337,4 @@ fi
 for index in "${!files[@]}"; do
   restore_index_metadata "$index"
 done
+rollback_needed=0
