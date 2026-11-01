@@ -836,16 +836,17 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
         payload_i64(payload.as_ref(), "upstreamAccountId").or(row.upstream_account_id);
     let status = bounded_text(row.status.as_deref());
     let error_message = bounded_text(row.error_message.as_deref());
-    let failure_kind = bounded_text(row.failure_kind.as_deref());
+    let stored_failure_kind = bounded_text(row.failure_kind.as_deref())
+        .filter(|value| !value.eq_ignore_ascii_case("none"));
     let stored_failure_class = bounded_text(row.failure_class.as_deref());
     let classification = crate::api::resolve_failure_classification(
         status.as_deref(),
         error_message.as_deref(),
-        failure_kind.as_deref(),
+        stored_failure_kind.as_deref(),
         stored_failure_class.as_deref(),
         row.is_actionable,
     );
-    let failure_kind = failure_kind.or(classification.failure_kind.clone());
+    let failure_kind = stored_failure_kind.or(classification.failure_kind.clone());
     let legacy_success_status = status.as_deref().is_some_and(|status| {
         matches!(
             status.to_ascii_lowercase().as_str(),
@@ -1073,7 +1074,7 @@ async fn append_attempt_analytics_row_tx(
         "streamLatencyMs": row.stream_latency_ms,
     })
     .to_string();
-    append_analytics_change_tx(
+    let receipt = append_analytics_change_tx(
         tx,
         AnalyticsChangeInput {
             event_kind: "upsert",
@@ -1085,7 +1086,32 @@ async fn append_attempt_analytics_row_tx(
             fact_json: &fact_json,
         },
     )
-    .await
+    .await?;
+
+    // Attempt rows can be corrected after the terminal invocation fact was published. Re-publish
+    // the matching invocation so the projector can recompute account fallback and final timing.
+    let exact_invocation_ids = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2 ORDER BY id",
+    )
+    .bind(&row.invoke_id)
+    .bind(&row.occurred_at)
+    .fetch_all(&mut *tx)
+    .await?;
+    let invocation_ids = if exact_invocation_ids.is_empty() {
+        // Older source rows can carry equivalent timestamps with different textual precision.
+        sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM codex_invocations WHERE invoke_id = ?1 ORDER BY id",
+        )
+        .bind(&row.invoke_id)
+        .fetch_all(&mut *tx)
+        .await?
+    } else {
+        exact_invocation_ids
+    };
+    for invocation_id in invocation_ids {
+        append_invocation_upsert_for_row_tx(tx, invocation_id).await?;
+    }
+    Ok(receipt)
 }
 
 pub(crate) async fn append_archive_coverage_for_file_tx(
@@ -1337,7 +1363,7 @@ mod tests {
             INSERT INTO codex_invocations (
                 invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
             ) VALUES (?1, '2026-10-30 12:00:00', 'proxy', ?2, 7, 0.07,
-                      '{"requestModel":"gpt-5","upstreamAccountId":42}', '{}')
+                      '{"requestModel":"gpt-5"}', '{}')
             "#,
         )
         .bind(invoke_id)
@@ -1989,9 +2015,9 @@ mod tests {
             r#"
             INSERT INTO pool_upstream_request_attempts (
                 attempt_public_id, invoke_id, occurred_at, endpoint, route_mode,
-                attempt_index, distinct_account_index, same_account_retry_index, status, phase
+                attempt_index, distinct_account_index, same_account_retry_index, upstream_account_id, status, phase
             ) VALUES ('attempt-replacement', 'replacement', '2026-10-30 12:00:00',
-                      '/v1/responses', 'pool', 0, 0, 0, 'pending', 'sending_request')
+                      '/v1/responses', 'pool', 0, 0, 0, 41, 'pending', 'sending_request')
             "#,
         )
         .execute(&pool)
@@ -2004,7 +2030,9 @@ mod tests {
             .expect("append attempt event");
         tx.commit().await.expect("commit attempt transaction");
 
-        sqlx::query("UPDATE pool_upstream_request_attempts SET status = 'success', phase = 'completed' WHERE id = ?1")
+        sqlx::query(
+            "UPDATE pool_upstream_request_attempts SET status = 'success', phase = 'completed', upstream_account_id = 42 WHERE id = ?1",
+        )
             .bind(attempt_id)
             .execute(&pool)
             .await
@@ -2061,7 +2089,7 @@ mod tests {
         .expect("load event counts");
         assert_eq!(
             counts,
-            vec![("coverage".to_string(), 2), ("upsert".to_string(), 4)]
+            vec![("coverage".to_string(), 2), ("upsert".to_string(), 6)]
         );
         let fact_json: String = sqlx::query_scalar(
             "SELECT fact_json FROM analytics_change_events WHERE entity_kind = 'invocation' ORDER BY change_id DESC LIMIT 1",

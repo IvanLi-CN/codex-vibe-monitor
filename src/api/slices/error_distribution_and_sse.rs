@@ -940,7 +940,7 @@ pub(crate) fn resolve_failure_classification(
     };
     let resolved_kind = failure_kind
         .map(str::trim)
-        .filter(|v| !v.is_empty())
+        .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("none"))
         .map(ToOwned::to_owned)
         .or(derived.failure_kind);
     let expected_actionable = resolved_class == FailureClass::ServiceFailure;

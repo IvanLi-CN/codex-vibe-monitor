@@ -45,8 +45,10 @@ fn contract_test_timeseries_topic_materializer_preserves_exact_p95() {
         t_upstream_ttfb_ms: Some(ttfb_ms),
         first_token_ms: Some(first_token_ms),
     };
-    base.apply_terminal_delta(1, Some(1), &delta(10.0, 10.0));
-    base.apply_terminal_delta(2, Some(2), &delta(100.0, 100.0));
+    base.apply_terminal_delta(1, Some(1), &delta(10.0, 10.0))
+        .expect("apply first terminal delta");
+    base.apply_terminal_delta(2, Some(2), &delta(100.0, 100.0))
+        .expect("apply second terminal delta");
 
     let payload: serde_json::Value =
         serde_json::from_slice(&base.serialize(&[]).expect("serialize materialized topic"))
@@ -108,8 +110,10 @@ fn timeseries_topic_applies_terminal_replacement_at_snapshot_once() {
     };
 
     // A terminal write can replace a running row without changing its SQLite ID.
-    base.apply_terminal_delta(1, Some(17), &delta);
-    base.apply_terminal_delta(1, Some(17), &delta);
+    base.apply_terminal_delta(1, Some(17), &delta)
+        .expect("apply terminal delta");
+    base.apply_terminal_delta(1, Some(17), &delta)
+        .expect("ignore duplicate terminal delta");
 
     assert_eq!(
         base.aggregates

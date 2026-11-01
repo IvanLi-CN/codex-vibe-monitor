@@ -434,10 +434,10 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "    THEN LOWER(TRIM(COALESCE(failure_class, ''))) ",
     "  ELSE ",
     "    CASE ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok') ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', 'warning_success') ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('', 'none') ",
     "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'warning_success' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
@@ -449,7 +449,7 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('', 'none') ",
     "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' ",
@@ -483,12 +483,10 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' ",
     "        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' ",
     "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', 'warning_success') ",
-    "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('', 'none') ",
     "        THEN 'none' ",
     "      ELSE 'service_failure' ",
     "    END ",
@@ -1528,9 +1526,9 @@ pub(crate) fn runtime_overlay_total_delta(
     runtime_records: &[ApiInvocation],
     db_runtime_keys: &HashSet<(String, String)>,
     db_terminal_keys: &HashSet<(String, String)>,
-) -> (RuntimeSummaryOverlayDelta, usize, usize) {
+) -> Result<(RuntimeSummaryOverlayDelta, usize, usize), ApiError> {
     if runtime_records.is_empty() {
-        return (RuntimeSummaryOverlayDelta::default(), 0, 0);
+        return Ok((RuntimeSummaryOverlayDelta::default(), 0, 0));
     }
     let runtime_by_key = runtime_records
         .iter()
@@ -1549,8 +1547,10 @@ pub(crate) fn runtime_overlay_total_delta(
             })
         })
         .count();
+    let stale_db_runtime_count = i64::try_from(stale_db_runtime_count)
+        .map_err(|_| summary_live_numeric_overflow("stale runtime count"))?;
     let mut delta = RuntimeSummaryOverlayDelta {
-        total_count: -(stale_db_runtime_count as i64),
+        total_count: -stale_db_runtime_count,
         ..RuntimeSummaryOverlayDelta::default()
     };
     let mut runtime_new_count = 0_usize;
@@ -1562,15 +1562,17 @@ pub(crate) fn runtime_overlay_total_delta(
         }
         let has_db_runtime_row = db_runtime_keys.contains(key);
         if !has_db_runtime_row {
-            delta.total_count += 1;
-            runtime_new_count += 1;
+            checked_summary_live_add_i64(&mut delta.total_count, 1, "runtime total count")?;
+            runtime_new_count = runtime_new_count
+                .checked_add(1)
+                .ok_or_else(|| summary_live_numeric_overflow("runtime new count"))?;
         }
         if runtime_record_is_in_flight(record) {
             continue;
         }
-        delta.add_terminal_record(record);
+        delta.add_terminal_record(record)?;
     }
-    (delta, runtime_new_count, stale_db_runtime_count)
+    Ok((delta, runtime_new_count, stale_db_runtime_count as usize))
 }
 
 #[derive(Debug, Default)]
@@ -1591,29 +1593,69 @@ pub(crate) struct RuntimeSummaryOverlayDelta {
 }
 
 impl RuntimeSummaryOverlayDelta {
-    fn add_terminal_record(&mut self, record: &ApiInvocation) {
-        self.total_tokens += record.total_tokens.unwrap_or_default();
-        self.total_cost += record.cost.unwrap_or_default();
-        self.cache_write_tokens +=
-            resolve_invocation_cache_write_tokens(record).unwrap_or_default();
-        self.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
-        self.output_tokens += record.output_tokens.unwrap_or_default();
+    fn add_terminal_record(&mut self, record: &ApiInvocation) -> Result<(), ApiError> {
+        for (field, value) in [
+            ("runtime total tokens", record.total_tokens),
+            ("runtime cache input tokens", record.cache_input_tokens),
+            ("runtime output tokens", record.output_tokens),
+        ] {
+            if value.is_some_and(|value| value < 0) {
+                return Err(summary_live_numeric_overflow(field));
+            }
+        }
+        let cost = record.cost.unwrap_or_default();
+        if !cost.is_finite() || cost < 0.0 {
+            return Err(summary_live_numeric_overflow("runtime total cost"));
+        }
+        checked_summary_live_add_i64(
+            &mut self.total_tokens,
+            record.total_tokens.unwrap_or_default(),
+            "runtime total tokens",
+        )?;
+        checked_summary_live_add(&mut self.total_cost, cost, "runtime total cost")?;
+        checked_summary_live_add_i64(
+            &mut self.cache_write_tokens,
+            resolve_invocation_cache_write_tokens(record).unwrap_or_default(),
+            "runtime cache write tokens",
+        )?;
+        checked_summary_live_add_i64(
+            &mut self.cache_input_tokens,
+            record.cache_input_tokens.unwrap_or_default(),
+            "runtime cache input tokens",
+        )?;
+        checked_summary_live_add_i64(
+            &mut self.output_tokens,
+            record.output_tokens.unwrap_or_default(),
+            "runtime output tokens",
+        )?;
         let failure_class = normalized_runtime_text(record.failure_class.as_deref());
         if failure_class == "none" && runtime_record_is_success_for_summary(record) {
-            self.success_count += 1;
+            checked_summary_live_add_i64(&mut self.success_count, 1, "runtime success count")?;
         }
         match failure_class.as_str() {
             "service_failure" => {
-                self.failure_count += 1;
-                self.service_failure_count += 1;
+                checked_summary_live_add_i64(&mut self.failure_count, 1, "runtime failure count")?;
+                checked_summary_live_add_i64(
+                    &mut self.service_failure_count,
+                    1,
+                    "runtime service failure count",
+                )?;
             }
             "client_failure" => {
-                self.failure_count += 1;
-                self.client_failure_count += 1;
+                checked_summary_live_add_i64(&mut self.failure_count, 1, "runtime failure count")?;
+                checked_summary_live_add_i64(
+                    &mut self.client_failure_count,
+                    1,
+                    "runtime client failure count",
+                )?;
             }
             "client_abort" => {
-                self.failure_count += 1;
-                self.client_abort_count += 1;
+                checked_summary_live_add_i64(&mut self.failure_count, 1, "runtime failure count")?;
+                checked_summary_live_add_i64(
+                    &mut self.client_abort_count,
+                    1,
+                    "runtime client abort count",
+                )?;
             }
             _ => {}
         }
@@ -1634,6 +1676,7 @@ impl RuntimeSummaryOverlayDelta {
                 None => Some(total_ms),
             };
         }
+        Ok(())
     }
 }
 
@@ -3035,7 +3078,7 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
             &runtime_records,
             &db_runtime_keys,
             &db_terminal_keys,
-        );
+        )?;
         if runtime_new_count > 0 || stale_db_runtime_count > 0 {
             debug!(
                 endpoint = "invocation_summary",
@@ -3048,16 +3091,15 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
     } else {
         RuntimeSummaryOverlayDelta::default()
     };
-    let total_count = (totals.total_count + runtime_overlay_delta.total_count).max(0);
-    let success_count = (totals.success_count + runtime_overlay_delta.success_count).max(0);
-    let failure_count = (totals.failure_count + runtime_overlay_delta.failure_count).max(0);
-    let total_tokens = (totals.total_tokens + runtime_overlay_delta.total_tokens).max(0);
-    let total_cost = totals.total_cost + runtime_overlay_delta.total_cost;
-    let cache_write_tokens =
-        (totals.cache_write_tokens + runtime_overlay_delta.cache_write_tokens).max(0);
-    let cache_input_tokens =
-        (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
-    let output_tokens = (totals.output_tokens + runtime_overlay_delta.output_tokens).max(0);
+    let merged = merge_invocation_summary_totals(&totals, &exception, &runtime_overlay_delta)?;
+    let total_count = merged.total_count;
+    let success_count = merged.success_count;
+    let failure_count = merged.failure_count;
+    let total_tokens = merged.total_tokens;
+    let total_cost = merged.total_cost;
+    let cache_write_tokens = merged.cache_write_tokens;
+    let cache_input_tokens = merged.cache_input_tokens;
+    let output_tokens = merged.output_tokens;
     let max_tokens_per_request = match (
         totals.max_total_tokens,
         runtime_overlay_delta.max_total_tokens,
@@ -3078,21 +3120,7 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
     } else {
         total_tokens as f64 / total_count as f64
     };
-    let exception_summary = InvocationExceptionSummary {
-        failure_count: (exception.failure_count + runtime_overlay_delta.failure_count).max(0),
-        service_failure_count: (exception.service_failure_count
-            + runtime_overlay_delta.service_failure_count)
-            .max(0),
-        client_failure_count: (exception.client_failure_count
-            + runtime_overlay_delta.client_failure_count)
-            .max(0),
-        client_abort_count: (exception.client_abort_count
-            + runtime_overlay_delta.client_abort_count)
-            .max(0),
-        actionable_failure_count: (exception.actionable_failure_count
-            + runtime_overlay_delta.service_failure_count)
-            .max(0),
-    };
+    let exception_summary = merged.exception;
 
     let response = InvocationSummaryResponse {
         snapshot_id,
@@ -3198,21 +3226,20 @@ async fn build_invocation_summary_on_connection(
             runtime_records,
             &db_runtime_keys,
             &db_terminal_keys,
-        )
+        )?
         .0
     } else {
         RuntimeSummaryOverlayDelta::default()
     };
-    let total_count = (totals.total_count + runtime_overlay_delta.total_count).max(0);
-    let success_count = (totals.success_count + runtime_overlay_delta.success_count).max(0);
-    let failure_count = (totals.failure_count + runtime_overlay_delta.failure_count).max(0);
-    let total_tokens = (totals.total_tokens + runtime_overlay_delta.total_tokens).max(0);
-    let total_cost = totals.total_cost + runtime_overlay_delta.total_cost;
-    let cache_write_tokens =
-        (totals.cache_write_tokens + runtime_overlay_delta.cache_write_tokens).max(0);
-    let cache_input_tokens =
-        (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
-    let output_tokens = (totals.output_tokens + runtime_overlay_delta.output_tokens).max(0);
+    let merged = merge_invocation_summary_totals(&totals, &exception, &runtime_overlay_delta)?;
+    let total_count = merged.total_count;
+    let success_count = merged.success_count;
+    let failure_count = merged.failure_count;
+    let total_tokens = merged.total_tokens;
+    let total_cost = merged.total_cost;
+    let cache_write_tokens = merged.cache_write_tokens;
+    let cache_input_tokens = merged.cache_input_tokens;
+    let output_tokens = merged.output_tokens;
     let max_tokens_per_request = match (
         totals.max_total_tokens,
         runtime_overlay_delta.max_total_tokens,
@@ -3233,21 +3260,7 @@ async fn build_invocation_summary_on_connection(
     } else {
         total_tokens as f64 / total_count as f64
     };
-    let exception = InvocationExceptionSummary {
-        failure_count: (exception.failure_count + runtime_overlay_delta.failure_count).max(0),
-        service_failure_count: (exception.service_failure_count
-            + runtime_overlay_delta.service_failure_count)
-            .max(0),
-        client_failure_count: (exception.client_failure_count
-            + runtime_overlay_delta.client_failure_count)
-            .max(0),
-        client_abort_count: (exception.client_abort_count
-            + runtime_overlay_delta.client_abort_count)
-            .max(0),
-        actionable_failure_count: (exception.actionable_failure_count
-            + runtime_overlay_delta.service_failure_count)
-            .max(0),
-    };
+    let exception = merged.exception;
     Ok(InvocationSummaryResponse {
         snapshot_id,
         new_records_count,
@@ -17704,57 +17717,12 @@ pub(crate) fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite() && *value >= 0.0)
 }
 
-fn summary_live_numeric_overflow(field: &str) -> ApiError {
-    ApiError::unavailable(anyhow!(
-        "summary live augmentation exceeded its numeric budget while adding {field}"
-    ))
-}
-
-fn checked_summary_live_add(target: &mut f64, value: f64, field: &str) -> Result<(), ApiError> {
-    let next = *target + value;
-    if !next.is_finite() || next < 0.0 {
-        return Err(summary_live_numeric_overflow(field));
-    }
-    *target = next;
-    Ok(())
-}
-
-fn checked_summary_live_subtract(
-    target: &mut f64,
-    value: f64,
-    field: &str,
-) -> Result<(), ApiError> {
-    if !target.is_finite() || *target < 0.0 || !value.is_finite() || value < 0.0 {
-        return Err(summary_live_numeric_overflow(field));
-    }
-    let next = *target - value;
-    let rounding_tolerance = f64::EPSILON * target.abs().max(value.abs()).max(1.0) * 8.0;
-    if !next.is_finite() || next < -rounding_tolerance {
-        return Err(summary_live_numeric_overflow(field));
-    }
-    *target = next.max(0.0);
-    Ok(())
-}
-
-fn summary_live_sum_from_average(average: Option<f64>, sample_count: i64) -> Result<f64, ApiError> {
-    if sample_count < 0 {
-        return Err(summary_live_numeric_overflow("database wait sample count"));
-    }
-    match (average, sample_count) {
-        (None, 0) => Ok(0.0),
-        (Some(average), sample_count)
-            if average.is_finite() && average >= 0.0 && sample_count > 0 =>
-        {
-            let sum = average * sample_count as f64;
-            if sum.is_finite() {
-                Ok(sum)
-            } else {
-                Err(summary_live_numeric_overflow("database wait sum"))
-            }
-        }
-        _ => Err(summary_live_numeric_overflow("database wait average")),
-    }
-}
+#[path = "invocations_and_summary_numeric.rs"]
+mod summary_numeric;
+use summary_numeric::{
+    checked_summary_live_add, checked_summary_live_add_i64, checked_summary_live_subtract,
+    merge_invocation_summary_totals, summary_live_numeric_overflow, summary_live_sum_from_average,
+};
 
 #[cfg(test)]
 #[path = "invocations_and_summary_numeric_tests.rs"]

@@ -710,41 +710,67 @@ pub(crate) fn validate_fact_for_projection(
             "in-flight analytics fact has a terminal failure classification",
         ));
     }
+    validate_projection_numeric_fields(
+        fact.input_tokens,
+        fact.output_tokens,
+        fact.cache_input_tokens,
+        fact.reasoning_tokens,
+        fact.total_tokens,
+        fact.cost,
+        &[
+            ("cost_input", fact.cost_input),
+            ("cost_cache_write", fact.cost_cache_write),
+            ("cost_cache_read", fact.cost_cache_read),
+            ("cost_output", fact.cost_output),
+            ("cost_reasoning", fact.cost_reasoning),
+            ("t_total_ms", fact.t_total_ms),
+            ("t_req_read_ms", fact.t_req_read_ms),
+            ("t_req_parse_ms", fact.t_req_parse_ms),
+            ("t_upstream_connect_ms", fact.t_upstream_connect_ms),
+            ("t_upstream_ttfb_ms", fact.t_upstream_ttfb_ms),
+            ("t_upstream_stream_ms", fact.t_upstream_stream_ms),
+            ("first_token_ms", fact.first_token_ms),
+            ("t_resp_parse_ms", fact.t_resp_parse_ms),
+        ],
+    )?;
+    Ok(classification)
+}
+
+pub(crate) fn validate_account_window_usage_row(
+    row: &AnalyticsAccountUsageRow,
+) -> AnalyticsReadResult<()> {
+    validate_projection_numeric_fields(
+        row.input_tokens,
+        row.output_tokens,
+        row.cache_input_tokens,
+        None,
+        row.total_tokens,
+        row.cost,
+        &[],
+    )
+}
+
+fn validate_projection_numeric_fields(
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    cost: Option<f64>,
+    scalar_values: &[(&str, Option<f64>)],
+) -> AnalyticsReadResult<()> {
     for (name, value) in [
-        ("cost", fact.cost),
-        ("cost_input", fact.cost_input),
-        ("cost_cache_write", fact.cost_cache_write),
-        ("cost_cache_read", fact.cost_cache_read),
-        ("cost_output", fact.cost_output),
-        ("cost_reasoning", fact.cost_reasoning),
-        ("t_total_ms", fact.t_total_ms),
-        ("t_req_read_ms", fact.t_req_read_ms),
-        ("t_req_parse_ms", fact.t_req_parse_ms),
-        ("t_upstream_connect_ms", fact.t_upstream_connect_ms),
-        ("t_upstream_ttfb_ms", fact.t_upstream_ttfb_ms),
-        ("t_upstream_stream_ms", fact.t_upstream_stream_ms),
-        ("first_token_ms", fact.first_token_ms),
-        ("t_resp_parse_ms", fact.t_resp_parse_ms),
-    ] {
-        if let Some(value) = value
-            && (!value.is_finite() || value < 0.0)
-        {
-            return Err(invalid_fact(format!("analytics fact {name} is invalid")));
-        }
-    }
-    for (name, value) in [
-        ("input_tokens", fact.input_tokens),
-        ("output_tokens", fact.output_tokens),
-        ("cache_input_tokens", fact.cache_input_tokens),
-        ("reasoning_tokens", fact.reasoning_tokens),
-        ("total_tokens", fact.total_tokens),
+        ("input_tokens", input_tokens),
+        ("output_tokens", output_tokens),
+        ("cache_input_tokens", cache_input_tokens),
+        ("reasoning_tokens", reasoning_tokens),
+        ("total_tokens", total_tokens),
     ] {
         if value.is_some_and(|value| value < 0) {
             return Err(invalid_fact(format!("analytics fact {name} is invalid")));
         }
     }
-    if let (Some(input_tokens), Some(cache_input_tokens)) =
-        (fact.input_tokens, fact.cache_input_tokens)
+    if let (Some(input_tokens), Some(cache_input_tokens)) = (input_tokens, cache_input_tokens)
         && cache_input_tokens > input_tokens
     {
         return Err(invalid_fact(
@@ -752,14 +778,21 @@ pub(crate) fn validate_fact_for_projection(
         ));
     }
     if let (Some(total_tokens), Some(input_tokens), Some(output_tokens)) =
-        (fact.total_tokens, fact.input_tokens, fact.output_tokens)
+        (total_tokens, input_tokens, output_tokens)
         && input_tokens.checked_add(output_tokens) != Some(total_tokens)
     {
         return Err(invalid_fact(
             "analytics fact total tokens disagree with input and output tokens",
         ));
     }
-    Ok(classification)
+    for (name, value) in std::iter::once(("cost", cost)).chain(scalar_values.iter().copied()) {
+        if let Some(value) = value
+            && (!value.is_finite() || value < 0.0)
+        {
+            return Err(invalid_fact(format!("analytics fact {name} is invalid")));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn analytics_fact_to_invocation_record(
@@ -1288,6 +1321,39 @@ mod tests {
         fact.output_tokens = Some(1);
         assert!(matches!(
             validate_fact_for_projection(&fact),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn account_window_usage_numeric_values_fail_closed() {
+        let mut row = AnalyticsAccountUsageRow {
+            source_row_id: 101,
+            occurred_at_epoch_ms: FIXTURE_START_EPOCH_MS,
+            upstream_account_id: 7,
+            input_tokens: Some(2),
+            output_tokens: Some(1),
+            cache_input_tokens: Some(1),
+            total_tokens: Some(3),
+            cost: Some(0.1),
+        };
+        assert!(validate_account_window_usage_row(&row).is_ok());
+
+        row.cache_input_tokens = Some(3);
+        assert!(matches!(
+            validate_account_window_usage_row(&row),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+        row.cache_input_tokens = Some(1);
+        row.total_tokens = Some(4);
+        assert!(matches!(
+            validate_account_window_usage_row(&row),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+        row.total_tokens = Some(3);
+        row.cost = Some(f64::NAN);
+        assert!(matches!(
+            validate_account_window_usage_row(&row),
             Err(AnalyticsReadError::Unavailable(_))
         ));
     }

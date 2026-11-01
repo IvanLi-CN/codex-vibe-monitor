@@ -1540,7 +1540,7 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator_and_canc
                         let mut aggregate = aggregate;
                         let mut max_row_id = existing_max_row_id;
                         for (row_id, delta) in deltas {
-                            add_timeseries_terminal_delta_to_aggregate(&mut aggregate, delta);
+                            add_timeseries_terminal_delta_to_aggregate(&mut aggregate, delta)?;
                             max_row_id = max_row_id.max(*row_id);
                         }
                         (aggregate, max_row_id)

@@ -30,6 +30,17 @@ fn require_recorded_sample(recorded: bool, field: &str) -> Result<(), ApiError> 
         .ok_or_else(|| timeseries_aggregate_overflow(field))
 }
 
+fn checked_increment_phase_counts(
+    counts: &mut InvocationPhaseCountsResponse,
+    phase: Option<&str>,
+) -> Result<(), ApiError> {
+    match normalized_runtime_text(phase).as_str() {
+        "requesting" => checked_add_i64(&mut counts.requesting, 1, "requesting count"),
+        "responding" => checked_add_i64(&mut counts.responding, 1, "responding count"),
+        _ => checked_add_i64(&mut counts.queued, 1, "queued count"),
+    }
+}
+
 fn add_optional_token_components_checked(
     entry: &mut BucketAggregate,
     total_tokens: Option<i64>,
@@ -80,28 +91,44 @@ fn add_optional_token_components_checked(
     Ok(())
 }
 
-fn validate_runtime_timeseries_numeric_fields(record: &ApiInvocation) -> Result<(), ApiError> {
+fn validate_timeseries_token_fields(
+    total_tokens: Option<i64>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+) -> Result<(), ApiError> {
     for (field, value) in [
-        ("total tokens", record.total_tokens),
-        ("input tokens", record.input_tokens),
-        ("output tokens", record.output_tokens),
-        ("cache input tokens", record.cache_input_tokens),
-        ("reasoning tokens", record.reasoning_tokens),
+        ("total tokens", total_tokens),
+        ("input tokens", input_tokens),
+        ("output tokens", output_tokens),
+        ("cache input tokens", cache_input_tokens),
+        ("reasoning tokens", reasoning_tokens),
     ] {
         if value.is_some_and(|value| value < 0) {
             return Err(ApiError::unavailable(anyhow!(
-                "timeseries runtime overlay contains invalid {field}"
+                "timeseries projection contains invalid {field}"
             )));
         }
     }
-    if let (Some(input_tokens), Some(cache_input_tokens)) =
-        (record.input_tokens, record.cache_input_tokens)
+    if let (Some(input_tokens), Some(cache_input_tokens)) = (input_tokens, cache_input_tokens)
         && cache_input_tokens > input_tokens
     {
         return Err(ApiError::unavailable(anyhow!(
-            "timeseries runtime overlay contains cache input tokens exceeding input tokens"
+            "timeseries projection contains cache input tokens exceeding input tokens"
         )));
     }
+    Ok(())
+}
+
+fn validate_runtime_timeseries_numeric_fields(record: &ApiInvocation) -> Result<(), ApiError> {
+    validate_timeseries_token_fields(
+        record.total_tokens,
+        record.input_tokens,
+        record.output_tokens,
+        record.cache_input_tokens,
+        record.reasoning_tokens,
+    )?;
     if record
         .cost
         .is_some_and(|value| !value.is_finite() || value < 0.0)
@@ -139,7 +166,7 @@ pub(crate) fn fold_minute_projection_aggregates(
     for (minute_epoch, aggregate) in minute_aggregates {
         let bucket_epoch =
             align_reporting_bucket_epoch(minute_epoch, bucket_seconds, reporting_tz)?;
-        merge_timeseries_bucket_aggregate(buckets.entry(bucket_epoch).or_default(), aggregate);
+        merge_timeseries_bucket_aggregate(buckets.entry(bucket_epoch).or_default(), aggregate)?;
     }
     Ok(buckets)
 }
@@ -147,8 +174,33 @@ pub(crate) fn fold_minute_projection_aggregates(
 pub(crate) fn add_timeseries_terminal_delta_to_aggregate(
     entry: &mut BucketAggregate,
     delta: &TimeseriesTerminalDelta,
-) {
-    entry.total_count += 1;
+) -> Result<(), ApiError> {
+    let mut candidate = entry.clone();
+    add_timeseries_terminal_delta_to_aggregate_inner(&mut candidate, delta)?;
+    *entry = candidate;
+    Ok(())
+}
+
+fn add_timeseries_terminal_delta_to_aggregate_inner(
+    entry: &mut BucketAggregate,
+    delta: &TimeseriesTerminalDelta,
+) -> Result<(), ApiError> {
+    validate_timeseries_token_fields(
+        delta.total_tokens,
+        delta.input_tokens,
+        delta.output_tokens,
+        delta.cache_input_tokens,
+        delta.reasoning_tokens,
+    )?;
+    if delta
+        .cost
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "timeseries projection contains invalid cost"
+        )));
+    }
+    checked_add_i64(&mut entry.total_count, 1, "total count")?;
     let classification = resolve_failure_classification(
         delta.status.as_deref(),
         delta.error_message.as_deref(),
@@ -161,35 +213,47 @@ pub(crate) fn add_timeseries_terminal_delta_to_aggregate(
         delta.error_message.as_deref(),
     ) && classification.failure_class == FailureClass::None;
     if is_success_like {
-        entry.success_count += 1;
+        checked_add_i64(&mut entry.success_count, 1, "success count")?;
     } else if prompt_shared::prompt_invocation_status_counts_toward_terminal_totals(
         delta.status.as_deref(),
     ) && classification.failure_class != FailureClass::None
     {
-        entry.failure_count += 1;
+        checked_add_i64(&mut entry.failure_count, 1, "failure count")?;
     }
     let latency_status = is_success_like
         .then_some("success")
         .or(delta.status.as_deref());
-    entry.record_total_latency_sample(delta.t_total_ms);
-    entry.record_exact_ttfb_sample(latency_status, delta.t_upstream_ttfb_ms);
-    entry.record_exact_first_response_byte_total_sample(
-        delta.t_req_read_ms,
-        delta.t_req_parse_ms,
-        delta.t_upstream_connect_ms,
-        delta.t_upstream_ttfb_ms,
-    );
-    entry.record_first_token_sample(delta.first_token_ms);
-    add_optional_token_components(
+    require_recorded_sample(
+        entry.try_record_total_latency_sample(delta.t_total_ms),
+        "total latency",
+    )?;
+    require_recorded_sample(
+        entry.try_record_ttfb_sample(latency_status, delta.t_upstream_ttfb_ms),
+        "first-byte latency",
+    )?;
+    require_recorded_sample(
+        entry.try_record_first_response_byte_total_sample(
+            delta.t_req_read_ms,
+            delta.t_req_parse_ms,
+            delta.t_upstream_connect_ms,
+            delta.t_upstream_ttfb_ms,
+        ),
+        "first-response-byte latency",
+    )?;
+    require_recorded_sample(
+        entry.try_record_first_token_sample(delta.first_token_ms),
+        "first-token latency",
+    )?;
+    add_optional_token_components_checked(
         entry,
         delta.total_tokens,
         delta.input_tokens,
         delta.output_tokens,
         delta.cache_input_tokens,
         delta.reasoning_tokens,
-    );
+    )?;
     let cost = delta.cost.unwrap_or_default();
-    entry.total_cost += cost;
+    checked_add_f64(&mut entry.total_cost, cost, "total cost")?;
     if invocation_counts_toward_non_success_usage(
         delta.status.as_deref(),
         delta.error_message.as_deref(),
@@ -197,34 +261,9 @@ pub(crate) fn add_timeseries_terminal_delta_to_aggregate(
         delta.failure_class.as_deref(),
         delta.is_actionable.map(i64::from),
     ) {
-        entry.non_success_cost += cost;
+        checked_add_f64(&mut entry.non_success_cost, cost, "non-success cost")?;
     }
-}
-
-pub(crate) fn add_optional_token_components(
-    entry: &mut BucketAggregate,
-    total_tokens: Option<i64>,
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-    cache_input_tokens: Option<i64>,
-    reasoning_tokens: Option<i64>,
-) {
-    entry.total_tokens += total_tokens.unwrap_or_default();
-    entry.input_tokens += input_tokens.unwrap_or_default();
-    entry.output_tokens += output_tokens.unwrap_or_default();
-    entry.cache_input_tokens += cache_input_tokens.unwrap_or_default();
-    entry.reasoning_tokens += reasoning_tokens.unwrap_or_default();
-
-    if total_tokens.unwrap_or_default() > 0 {
-        entry.token_components_observed = true;
-        if input_tokens.is_none()
-            || output_tokens.is_none()
-            || cache_input_tokens.is_none()
-            || reasoning_tokens.is_none()
-        {
-            entry.token_component_incomplete_count += 1;
-        }
-    }
+    Ok(())
 }
 
 pub(crate) fn subtract_optional_token_components(
@@ -269,7 +308,7 @@ pub(crate) fn add_pending_timeseries_deltas(
     max_row_id: Option<i64>,
     snapshot_id: i64,
 ) -> Result<usize, ApiError> {
-    let mut applied = 0;
+    let mut applied = 0_usize;
     let selection = TimeseriesProjectionSelection {
         source_scope: timeseries_projection_scope(source_scope),
         upstream_account_id,
@@ -304,8 +343,10 @@ pub(crate) fn add_pending_timeseries_deltas(
         add_timeseries_terminal_delta_to_aggregate(
             aggregates.entry(bucket_epoch).or_default(),
             &delta,
-        );
-        applied += 1;
+        )?;
+        applied = applied
+            .checked_add(1)
+            .ok_or_else(|| timeseries_aggregate_overflow("pending delta count"))?;
     }
     Ok(applied)
 }
@@ -383,9 +424,10 @@ pub(crate) fn overlay_runtime_timeseries_snapshot(
         let entry = aggregates.entry(bucket_epoch).or_default();
         checked_add_i64(&mut entry.total_count, 1, "total count")?;
         checked_add_i64(&mut entry.in_flight_count, 1, "in-flight count")?;
-        entry
-            .in_flight_phase_counts
-            .increment_phase_name(runtime_record_live_phase(record));
+        checked_increment_phase_counts(
+            &mut entry.in_flight_phase_counts,
+            runtime_record_live_phase(record),
+        )?;
         require_recorded_sample(
             entry.try_record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms),
             "first-byte latency",
@@ -420,37 +462,170 @@ pub(crate) fn overlay_runtime_timeseries_snapshot(
     Ok(())
 }
 
+fn validate_bucket_aggregate(aggregate: &BucketAggregate) -> Result<(), ApiError> {
+    for (field, value) in [
+        ("total count", aggregate.total_count),
+        ("success count", aggregate.success_count),
+        ("failure count", aggregate.failure_count),
+        ("in-flight count", aggregate.in_flight_count),
+        ("queued count", aggregate.in_flight_phase_counts.queued),
+        (
+            "requesting count",
+            aggregate.in_flight_phase_counts.requesting,
+        ),
+        (
+            "responding count",
+            aggregate.in_flight_phase_counts.responding,
+        ),
+        ("total tokens", aggregate.total_tokens),
+        ("input tokens", aggregate.input_tokens),
+        ("output tokens", aggregate.output_tokens),
+        ("cache input tokens", aggregate.cache_input_tokens),
+        ("reasoning tokens", aggregate.reasoning_tokens),
+        (
+            "incomplete token component count",
+            aggregate.token_component_incomplete_count,
+        ),
+        (
+            "total latency sample count",
+            aggregate.total_latency_sample_count,
+        ),
+        ("first-byte sample count", aggregate.first_byte_sample_count),
+        (
+            "first-response-byte sample count",
+            aggregate.first_response_byte_total_sample_count,
+        ),
+        (
+            "first-token sample count",
+            aggregate.first_token_sample_count,
+        ),
+    ] {
+        if value < 0 {
+            return Err(timeseries_aggregate_overflow(field));
+        }
+    }
+    for (field, value) in [
+        ("total cost", aggregate.total_cost),
+        ("non-success cost", aggregate.non_success_cost),
+        ("total latency sum", aggregate.total_latency_sum_ms),
+        ("first-byte latency sum", aggregate.first_byte_ttfb_sum_ms),
+        (
+            "first-response-byte latency sum",
+            aggregate.first_response_byte_total_sum_ms,
+        ),
+        ("first-token latency sum", aggregate.first_token_sum_ms),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            return Err(timeseries_aggregate_overflow(field));
+        }
+    }
+    for (field, histogram) in [
+        ("first-byte histogram", &aggregate.first_byte_histogram),
+        (
+            "first-response-byte histogram",
+            &aggregate.first_response_byte_total_histogram,
+        ),
+        ("first-token histogram", &aggregate.first_token_histogram),
+    ] {
+        if histogram.iter().any(|value| *value < 0) {
+            return Err(timeseries_aggregate_overflow(field));
+        }
+    }
+    Ok(())
+}
+
+fn merge_histogram_counts(
+    target: &mut ApproxHistogramCounts,
+    source: ApproxHistogramCounts,
+    field: &str,
+) -> Result<(), ApiError> {
+    if target.is_empty() {
+        *target = source;
+        return Ok(());
+    }
+    if target.len() != source.len() {
+        return Err(timeseries_aggregate_overflow(field));
+    }
+    for (target_value, source_value) in target.iter_mut().zip(source) {
+        checked_add_i64(target_value, source_value, field)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn merge_timeseries_bucket_aggregate(
     target: &mut BucketAggregate,
     source: BucketAggregate,
-) {
-    target.total_count += source.total_count;
-    target.success_count += source.success_count;
-    target.failure_count += source.failure_count;
-    target.in_flight_count += source.in_flight_count;
-    target.in_flight_phase_counts.queued += source.in_flight_phase_counts.queued;
-    target.in_flight_phase_counts.requesting += source.in_flight_phase_counts.requesting;
-    target.in_flight_phase_counts.responding += source.in_flight_phase_counts.responding;
-    target.total_tokens += source.total_tokens;
-    target.input_tokens += source.input_tokens;
-    target.output_tokens += source.output_tokens;
-    target.cache_input_tokens += source.cache_input_tokens;
-    target.reasoning_tokens += source.reasoning_tokens;
+) -> Result<(), ApiError> {
+    let mut candidate = target.clone();
+    merge_timeseries_bucket_aggregate_inner(&mut candidate, source)?;
+    *target = candidate;
+    Ok(())
+}
+
+fn merge_timeseries_bucket_aggregate_inner(
+    target: &mut BucketAggregate,
+    source: BucketAggregate,
+) -> Result<(), ApiError> {
+    validate_bucket_aggregate(target)?;
+    validate_bucket_aggregate(&source)?;
+    macro_rules! add_i64 {
+        ($field:ident, $label:literal) => {
+            checked_add_i64(&mut target.$field, source.$field, $label)?;
+        };
+    }
+    macro_rules! add_f64 {
+        ($field:ident, $label:literal) => {
+            checked_add_f64(&mut target.$field, source.$field, $label)?;
+        };
+    }
+    add_i64!(total_count, "total count");
+    add_i64!(success_count, "success count");
+    add_i64!(failure_count, "failure count");
+    add_i64!(in_flight_count, "in-flight count");
+    checked_add_i64(
+        &mut target.in_flight_phase_counts.queued,
+        source.in_flight_phase_counts.queued,
+        "queued count",
+    )?;
+    checked_add_i64(
+        &mut target.in_flight_phase_counts.requesting,
+        source.in_flight_phase_counts.requesting,
+        "requesting count",
+    )?;
+    checked_add_i64(
+        &mut target.in_flight_phase_counts.responding,
+        source.in_flight_phase_counts.responding,
+        "responding count",
+    )?;
+    add_i64!(total_tokens, "total tokens");
+    add_i64!(input_tokens, "input tokens");
+    add_i64!(output_tokens, "output tokens");
+    add_i64!(cache_input_tokens, "cache input tokens");
+    add_i64!(reasoning_tokens, "reasoning tokens");
     target.token_components_observed |= source.token_components_observed;
-    target.token_component_incomplete_count += source.token_component_incomplete_count;
-    target.total_cost += source.total_cost;
-    target.non_success_cost += source.non_success_cost;
-    target.total_latency_sum_ms += source.total_latency_sum_ms;
-    target.total_latency_sample_count += source.total_latency_sample_count;
+    add_i64!(
+        token_component_incomplete_count,
+        "incomplete token component count"
+    );
+    add_f64!(total_cost, "total cost");
+    add_f64!(non_success_cost, "non-success cost");
+    add_f64!(total_latency_sum_ms, "total latency sum");
+    add_i64!(total_latency_sample_count, "total latency sample count");
     target
         .total_latency_values
         .extend(source.total_latency_values);
-    target.first_byte_ttfb_sum_ms += source.first_byte_ttfb_sum_ms;
-    target.first_byte_sample_count += source.first_byte_sample_count;
-    target.first_response_byte_total_sum_ms += source.first_response_byte_total_sum_ms;
-    target.first_response_byte_total_sample_count += source.first_response_byte_total_sample_count;
-    target.first_token_sum_ms += source.first_token_sum_ms;
-    target.first_token_sample_count += source.first_token_sample_count;
+    add_f64!(first_byte_ttfb_sum_ms, "first-byte latency sum");
+    add_i64!(first_byte_sample_count, "first-byte sample count");
+    add_f64!(
+        first_response_byte_total_sum_ms,
+        "first-response-byte latency sum"
+    );
+    add_i64!(
+        first_response_byte_total_sample_count,
+        "first-response-byte sample count"
+    );
+    add_f64!(first_token_sum_ms, "first-token latency sum");
+    add_i64!(first_token_sample_count, "first-token sample count");
     target
         .first_byte_ttfb_values
         .extend(source.first_byte_ttfb_values);
@@ -458,42 +633,22 @@ pub(crate) fn merge_timeseries_bucket_aggregate(
         .first_response_byte_total_values
         .extend(source.first_response_byte_total_values);
     target.first_token_values.extend(source.first_token_values);
-    let first_byte_histogram = source.first_byte_histogram;
-    if target.first_byte_histogram.is_empty() {
-        target.first_byte_histogram = first_byte_histogram;
-    } else {
-        for (target_value, source_value) in target
-            .first_byte_histogram
-            .iter_mut()
-            .zip(first_byte_histogram)
-        {
-            *target_value += source_value;
-        }
-    }
-    let first_response_byte_total_histogram = source.first_response_byte_total_histogram;
-    if target.first_response_byte_total_histogram.is_empty() {
-        target.first_response_byte_total_histogram = first_response_byte_total_histogram;
-    } else {
-        for (target_value, source_value) in target
-            .first_response_byte_total_histogram
-            .iter_mut()
-            .zip(first_response_byte_total_histogram)
-        {
-            *target_value += source_value;
-        }
-    }
-    let first_token_histogram = source.first_token_histogram;
-    if target.first_token_histogram.is_empty() {
-        target.first_token_histogram = first_token_histogram;
-    } else {
-        for (target_value, source_value) in target
-            .first_token_histogram
-            .iter_mut()
-            .zip(first_token_histogram)
-        {
-            *target_value += source_value;
-        }
-    }
+    merge_histogram_counts(
+        &mut target.first_byte_histogram,
+        source.first_byte_histogram,
+        "first-byte histogram",
+    )?;
+    merge_histogram_counts(
+        &mut target.first_response_byte_total_histogram,
+        source.first_response_byte_total_histogram,
+        "first-response-byte histogram",
+    )?;
+    merge_histogram_counts(
+        &mut target.first_token_histogram,
+        source.first_token_histogram,
+        "first-token histogram",
+    )?;
+    Ok(())
 }
 
 pub(crate) fn add_rollup_rows_to_timeseries_aggregates(
@@ -506,60 +661,84 @@ pub(crate) fn add_rollup_rows_to_timeseries_aggregates(
         let bucket_epoch =
             align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
         if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            entry.total_count += row.total_count;
-            entry.success_count += row.success_count;
-            entry.failure_count += row.failure_count;
-            entry.in_flight_count += row.in_flight_count;
-            entry.total_tokens += row.total_tokens;
-            entry.input_tokens += row.input_tokens;
-            entry.output_tokens += row.output_tokens;
-            entry.cache_input_tokens += row.cache_input_tokens;
-            entry.reasoning_tokens += row.reasoning_tokens;
-            if row.total_tokens > 0 {
-                entry.token_components_observed = true;
-            }
-            entry.total_cost += row.total_cost;
-            entry.non_success_cost += row.non_success_cost;
-            entry.total_latency_sample_count += row.total_latency_sample_count;
-            entry.total_latency_sum_ms += row.total_latency_sum_ms;
-            entry.first_byte_sample_count += row.first_byte_sample_count;
-            entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
-            entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
-                decode_approx_histogram(&row.first_byte_histogram)
-            } else {
-                let mut merged = entry.first_byte_histogram.clone();
-                merge_approx_histogram_into(
-                    &mut merged,
-                    &decode_approx_histogram(&row.first_byte_histogram),
-                )?;
-                merged
-            };
-            entry.first_response_byte_total_sample_count +=
-                row.first_response_byte_total_sample_count;
-            entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
-            entry.first_response_byte_total_histogram =
-                if entry.first_response_byte_total_histogram.is_empty() {
-                    decode_approx_histogram(&row.first_response_byte_total_histogram)
-                } else {
-                    let mut merged = entry.first_response_byte_total_histogram.clone();
-                    merge_approx_histogram_into(
-                        &mut merged,
-                        &decode_approx_histogram(&row.first_response_byte_total_histogram),
-                    )?;
-                    merged
-                };
-            entry.first_token_sample_count += row.first_token_sample_count;
-            entry.first_token_sum_ms += row.first_token_sum_ms;
-            entry.first_token_histogram = if entry.first_token_histogram.is_empty() {
-                decode_approx_histogram(&row.first_token_histogram)
-            } else {
-                let mut merged = entry.first_token_histogram.clone();
-                merge_approx_histogram_into(
-                    &mut merged,
-                    &decode_approx_histogram(&row.first_token_histogram),
-                )?;
-                merged
-            };
+            merge_timeseries_bucket_aggregate(
+                entry,
+                BucketAggregate {
+                    total_count: row.total_count,
+                    success_count: row.success_count,
+                    failure_count: row.failure_count,
+                    in_flight_count: row.in_flight_count,
+                    total_tokens: row.total_tokens,
+                    input_tokens: row.input_tokens,
+                    output_tokens: row.output_tokens,
+                    cache_input_tokens: row.cache_input_tokens,
+                    reasoning_tokens: row.reasoning_tokens,
+                    token_components_observed: row.total_tokens > 0,
+                    total_cost: row.total_cost,
+                    non_success_cost: row.non_success_cost,
+                    total_latency_sample_count: row.total_latency_sample_count,
+                    total_latency_sum_ms: row.total_latency_sum_ms,
+                    first_byte_sample_count: row.first_byte_sample_count,
+                    first_byte_ttfb_sum_ms: row.first_byte_sum_ms,
+                    first_byte_histogram: decode_approx_histogram(&row.first_byte_histogram),
+                    first_response_byte_total_sample_count: row
+                        .first_response_byte_total_sample_count,
+                    first_response_byte_total_sum_ms: row.first_response_byte_total_sum_ms,
+                    first_response_byte_total_histogram: decode_approx_histogram(
+                        &row.first_response_byte_total_histogram,
+                    ),
+                    first_token_sample_count: row.first_token_sample_count,
+                    first_token_sum_ms: row.first_token_sum_ms,
+                    first_token_histogram: decode_approx_histogram(&row.first_token_histogram),
+                    ..BucketAggregate::default()
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn add_invocation_rollup_rows_to_timeseries_aggregates(
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    rows: Vec<InvocationHourlyRollupRecord>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<(), ApiError> {
+    for row in rows {
+        let bucket_epoch =
+            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
+        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+            merge_timeseries_bucket_aggregate(
+                entry,
+                BucketAggregate {
+                    total_count: row.total_count,
+                    success_count: row.success_count,
+                    failure_count: row.failure_count,
+                    total_tokens: row.total_tokens,
+                    input_tokens: row.input_tokens,
+                    output_tokens: row.output_tokens,
+                    cache_input_tokens: row.cache_input_tokens,
+                    reasoning_tokens: row.reasoning_tokens,
+                    token_components_observed: row.total_tokens > 0,
+                    total_cost: row.total_cost,
+                    non_success_cost: row.non_success_cost,
+                    total_latency_sample_count: row.total_latency_sample_count,
+                    total_latency_sum_ms: row.total_latency_sum_ms,
+                    first_byte_sample_count: row.first_byte_sample_count,
+                    first_byte_ttfb_sum_ms: row.first_byte_sum_ms,
+                    first_byte_histogram: decode_approx_histogram(&row.first_byte_histogram),
+                    first_response_byte_total_sample_count: row
+                        .first_response_byte_total_sample_count,
+                    first_response_byte_total_sum_ms: row.first_response_byte_total_sum_ms,
+                    first_response_byte_total_histogram: decode_approx_histogram(
+                        &row.first_response_byte_total_histogram,
+                    ),
+                    first_token_sample_count: row.first_token_sample_count,
+                    first_token_sum_ms: row.first_token_sum_ms,
+                    first_token_histogram: decode_approx_histogram(&row.first_token_histogram),
+                    ..BucketAggregate::default()
+                },
+            )?;
         }
     }
     Ok(())
@@ -588,6 +767,31 @@ pub(crate) fn add_exact_record_to_timeseries_aggregate(
     entry: &mut BucketAggregate,
     record: &InvocationAggregateRecord,
 ) -> Result<(), ApiError> {
+    let mut candidate = entry.clone();
+    add_exact_record_to_timeseries_aggregate_inner(&mut candidate, record)?;
+    *entry = candidate;
+    Ok(())
+}
+
+fn add_exact_record_to_timeseries_aggregate_inner(
+    entry: &mut BucketAggregate,
+    record: &InvocationAggregateRecord,
+) -> Result<(), ApiError> {
+    validate_timeseries_token_fields(
+        record.total_tokens,
+        record.input_tokens,
+        record.output_tokens,
+        record.cache_input_tokens,
+        record.reasoning_tokens,
+    )?;
+    if record
+        .cost
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "timeseries projection contains invalid cost"
+        )));
+    }
     checked_add_i64(&mut entry.total_count, 1, "total count")?;
     let classification = resolve_failure_classification(
         record.status.as_deref(),
@@ -604,9 +808,10 @@ pub(crate) fn add_exact_record_to_timeseries_aggregate(
         checked_add_i64(&mut entry.success_count, 1, "success count")?;
     } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
         checked_add_i64(&mut entry.in_flight_count, 1, "in-flight count")?;
-        entry
-            .in_flight_phase_counts
-            .increment_phase_name(record.live_phase.as_deref());
+        checked_increment_phase_counts(
+            &mut entry.in_flight_phase_counts,
+            record.live_phase.as_deref(),
+        )?;
     } else if prompt_shared::prompt_invocation_status_counts_toward_terminal_totals(
         record.status.as_deref(),
     ) && classification.failure_class != FailureClass::None
@@ -770,9 +975,7 @@ pub(crate) fn overlay_runtime_timeseries_in_flight(
         checked_add_i64(&mut entry.total_count, 1, "total count")?;
         checked_add_i64(&mut entry.in_flight_count, 1, "in-flight count")?;
         let runtime_phase = runtime_record_live_phase(&record);
-        entry
-            .in_flight_phase_counts
-            .increment_phase_name(runtime_phase);
+        checked_increment_phase_counts(&mut entry.in_flight_phase_counts, runtime_phase)?;
         require_recorded_sample(
             entry.try_record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms),
             "first-byte latency",
@@ -835,7 +1038,9 @@ pub(crate) fn subtract_stale_db_runtime_record(
         align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
     if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
         subtract_stale_in_flight_record_from_timeseries_aggregate(entry, record);
-        *stale_db_runtime_row_count += 1;
+        *stale_db_runtime_row_count = stale_db_runtime_row_count
+            .checked_add(1)
+            .ok_or_else(|| timeseries_aggregate_overflow("stale runtime row count"))?;
     }
     Ok(())
 }
@@ -949,7 +1154,7 @@ pub(crate) fn build_materialized_timeseries_response(
         ) {
             (Some(base), Some(overlay)) => {
                 let mut combined = base.clone();
-                merge_timeseries_bucket_aggregate(&mut combined, overlay.clone());
+                merge_timeseries_bucket_aggregate(&mut combined, overlay.clone())?;
                 timeseries_point_from_aggregate(start, end, &combined)
             }
             (Some(base), None) => timeseries_point_from_aggregate(start, end, base),

@@ -32,3 +32,36 @@ fn projection_sql_keeps_success_aliases_and_invocation_identity() {
     let sql = invocation_upstream_account_id_from_attempt_fallback_sql("inv");
     assert!(sql.contains("attempt.occurred_at = inv.occurred_at"));
 }
+
+#[tokio::test]
+async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect resolver test database");
+    sqlx::query(
+        "CREATE TABLE codex_invocations (status TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT, payload TEXT)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create resolver test table");
+    sqlx::query(
+        "INSERT INTO codex_invocations (status, error_message, failure_kind, failure_class, payload) VALUES
+         ('completed', '', 'none', NULL, '{}'),
+         ('completed', 'opaque upstream error', 'none', NULL, '{}'),
+         ('warning_success', '', 'none', NULL, '{}'),
+         ('completed', '', 'unknown_legacy_kind', NULL, '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert resolver fixtures");
+
+    let sql = format!("SELECT {INVOCATION_RESOLVED_FAILURE_CLASS_SQL} FROM codex_invocations");
+    let classes = sqlx::query_scalar::<_, String>(&sql)
+        .fetch_all(&pool)
+        .await
+        .expect("evaluate resolver expression");
+    assert_eq!(
+        classes,
+        ["none", "service_failure", "none", "service_failure"]
+    );
+}

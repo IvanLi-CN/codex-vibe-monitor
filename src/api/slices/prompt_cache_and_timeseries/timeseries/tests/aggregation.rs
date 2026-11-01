@@ -282,6 +282,47 @@ fn exact_records_fail_closed_on_numeric_overflow() {
 }
 
 #[test]
+fn exact_records_reject_invalid_numeric_facts_before_mutating_aggregates() {
+    type InvalidFactCase = (&'static str, fn(&mut InvocationAggregateRecord));
+    let cases: &[InvalidFactCase] = &[
+        (
+            "negative tokens",
+            |record: &mut InvocationAggregateRecord| {
+                record.total_tokens = Some(-1);
+            },
+        ),
+        (
+            "cache exceeds input",
+            |record: &mut InvocationAggregateRecord| {
+                record.cache_input_tokens = Some(3);
+            },
+        ),
+        ("negative cost", |record: &mut InvocationAggregateRecord| {
+            record.cost = Some(-0.1);
+        }),
+        (
+            "non-finite cost",
+            |record: &mut InvocationAggregateRecord| {
+                record.cost = Some(f64::NAN);
+            },
+        ),
+    ];
+    for (label, mutate) in cases {
+        let mut aggregate = BucketAggregate::default();
+        let mut record = record(104, "2026-10-30T00:00:12Z");
+        mutate(&mut record);
+        let error =
+            super::aggregation::add_exact_record_to_timeseries_aggregate(&mut aggregate, &record)
+                .expect_err(label);
+        assert!(matches!(error, crate::stats::ApiError::Unavailable(_)));
+        assert_eq!(
+            aggregate.total_count, 0,
+            "{label} must not partially mutate"
+        );
+    }
+}
+
+#[test]
 fn runtime_overlay_rejects_inconsistent_tokens_and_invalid_timing() {
     let start = Utc
         .with_ymd_and_hms(2026, 10, 30, 0, 0, 0)

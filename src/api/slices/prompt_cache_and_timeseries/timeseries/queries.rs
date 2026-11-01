@@ -1,6 +1,6 @@
 use super::aggregation::{
     add_exact_record_to_timeseries_aggregate, add_exact_records_to_timeseries_aggregates,
-    add_optional_token_components, add_pending_timeseries_deltas,
+    add_invocation_rollup_rows_to_timeseries_aggregates, add_pending_timeseries_deltas,
     add_rollup_rows_to_timeseries_aggregates, add_terminal_timeseries_records,
     build_timeseries_response, collect_in_flight_aggregate_records, fill_timeseries_buckets,
     fold_minute_projection_aggregates, overlay_runtime_timeseries_in_flight,
@@ -360,67 +360,10 @@ pub(crate) async fn fetch_timeseries_query(
             .map(|dt| dt.with_timezone(&Utc).timestamp())
             .unwrap_or_else(|| naive.and_utc().timestamp());
         let bucket_epoch = align_reporting_bucket_epoch(epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += 1;
-        let classification = resolve_failure_classification(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-            record.failure_kind.as_deref(),
-            record.failure_class.as_deref(),
-            record.is_actionable,
-        );
-        let is_success_like = prompt_shared::prompt_invocation_status_is_success_like(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-        ) && classification.failure_class == FailureClass::None;
-        if is_success_like {
-            entry.success_count += 1;
-        } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-            entry.in_flight_count += 1;
-            entry
-                .in_flight_phase_counts
-                .increment_phase_name(record.live_phase.as_deref());
-        } else if prompt_shared::prompt_invocation_status_counts_toward_terminal_totals(
-            record.status.as_deref(),
-        ) && classification.failure_class != FailureClass::None
-        {
-            entry.failure_count += 1;
-        }
-        let latency_status = if is_success_like {
-            Some("success")
-        } else {
-            record.status.as_deref()
-        };
-        if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-            entry.record_total_latency_sample(record.t_total_ms);
-        }
-        entry.record_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
-        entry.record_first_response_byte_total_sample(
-            record.t_req_read_ms,
-            record.t_req_parse_ms,
-            record.t_upstream_connect_ms,
-            record.t_upstream_ttfb_ms,
-        );
-        entry.record_first_token_sample(record.first_token_ms);
-        add_optional_token_components(
-            entry,
-            record.total_tokens,
-            record.input_tokens,
-            record.output_tokens,
-            record.cache_input_tokens,
-            record.reasoning_tokens,
-        );
-        let cost = record.cost.unwrap_or(0.0);
-        entry.total_cost += cost;
-        if invocation_counts_toward_non_success_usage(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-            record.failure_kind.as_deref(),
-            record.failure_class.as_deref(),
-            record.is_actionable,
-        ) {
-            entry.non_success_cost += cost;
-        }
+        add_exact_record_to_timeseries_aggregate(
+            aggregates.entry(bucket_epoch).or_default(),
+            &record,
+        )?;
     }
 
     // Fill every bucket that intersects the requested range using reporting-timezone
@@ -505,11 +448,11 @@ async fn fetch_timeseries_from_postgres(
         .await
         .map_err(AnalyticsReadError::into_api_error)?;
     let fact_count = snapshot.facts.len();
-    let records = snapshot
-        .facts
-        .into_iter()
-        .map(analytics_fact_to_invocation_record)
-        .collect::<Vec<_>>();
+    let mut records = Vec::with_capacity(snapshot.facts.len());
+    for fact in snapshot.facts {
+        validate_fact_for_projection(&fact).map_err(AnalyticsReadError::into_api_error)?;
+        records.push(analytics_fact_to_invocation_record(fact));
+    }
     let db_runtime_records = collect_in_flight_aggregate_records(&records);
     let mut aggregates = BTreeMap::new();
     let (fill_start_epoch, fill_end_epoch) = fill_timeseries_buckets(
@@ -1033,66 +976,12 @@ pub(crate) async fn fetch_timeseries_for_account(
                 upstream_account_id,
             )
             .await?;
-        for row in archived_rows {
-            let bucket_epoch =
-                align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-            if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                entry.total_count += row.total_count;
-                entry.success_count += row.success_count;
-                entry.failure_count += row.failure_count;
-                entry.in_flight_count += row.in_flight_count;
-                entry.total_tokens += row.total_tokens;
-                entry.input_tokens += row.input_tokens;
-                entry.output_tokens += row.output_tokens;
-                entry.cache_input_tokens += row.cache_input_tokens;
-                entry.reasoning_tokens += row.reasoning_tokens;
-                if row.total_tokens > 0 {
-                    entry.token_components_observed = true;
-                }
-                entry.total_cost += row.total_cost;
-                entry.non_success_cost += row.non_success_cost;
-                entry.total_latency_sample_count += row.total_latency_sample_count;
-                entry.total_latency_sum_ms += row.total_latency_sum_ms;
-                entry.first_byte_sample_count += row.first_byte_sample_count;
-                entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
-                entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
-                    decode_approx_histogram(&row.first_byte_histogram)
-                } else {
-                    let mut merged = entry.first_byte_histogram.clone();
-                    merge_approx_histogram_into(
-                        &mut merged,
-                        &decode_approx_histogram(&row.first_byte_histogram),
-                    )?;
-                    merged
-                };
-                entry.first_response_byte_total_sample_count +=
-                    row.first_response_byte_total_sample_count;
-                entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
-                entry.first_response_byte_total_histogram =
-                    if entry.first_response_byte_total_histogram.is_empty() {
-                        decode_approx_histogram(&row.first_response_byte_total_histogram)
-                    } else {
-                        let mut merged = entry.first_response_byte_total_histogram.clone();
-                        merge_approx_histogram_into(
-                            &mut merged,
-                            &decode_approx_histogram(&row.first_response_byte_total_histogram),
-                        )?;
-                        merged
-                    };
-                entry.first_token_sample_count += row.first_token_sample_count;
-                entry.first_token_sum_ms += row.first_token_sum_ms;
-                entry.first_token_histogram = if entry.first_token_histogram.is_empty() {
-                    decode_approx_histogram(&row.first_token_histogram)
-                } else {
-                    let mut merged = entry.first_token_histogram.clone();
-                    merge_approx_histogram_into(
-                        &mut merged,
-                        &decode_approx_histogram(&row.first_token_histogram),
-                    )?;
-                    merged
-                };
-            }
-        }
+        add_rollup_rows_to_timeseries_aggregates(
+            &mut aggregates,
+            archived_rows,
+            bucket_seconds,
+            reporting_tz,
+        )?;
     }
     overlay_runtime_timeseries_in_flight(
         state.as_ref(),
@@ -1213,63 +1102,15 @@ pub(crate) async fn build_timeseries_hourly_rollup_baseline(
         Vec::new()
     };
 
-    for row in hourly_rows.into_iter().chain(archived_hourly_rows) {
-        let bucket_epoch =
-            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += row.total_count;
-        entry.success_count += row.success_count;
-        entry.failure_count += row.failure_count;
-        entry.total_tokens += row.total_tokens;
-        entry.input_tokens += row.input_tokens;
-        entry.output_tokens += row.output_tokens;
-        entry.cache_input_tokens += row.cache_input_tokens;
-        entry.reasoning_tokens += row.reasoning_tokens;
-        if row.total_tokens > 0 {
-            entry.token_components_observed = true;
-        }
-        entry.total_cost += row.total_cost;
-        entry.non_success_cost += row.non_success_cost;
-        entry.total_latency_sample_count += row.total_latency_sample_count;
-        entry.total_latency_sum_ms += row.total_latency_sum_ms;
-        entry.first_byte_sample_count += row.first_byte_sample_count;
-        entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
-        entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
-            decode_approx_histogram(&row.first_byte_histogram)
-        } else {
-            let mut merged = entry.first_byte_histogram.clone();
-            merge_approx_histogram_into(
-                &mut merged,
-                &decode_approx_histogram(&row.first_byte_histogram),
-            )?;
-            merged
-        };
-        entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
-        entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
-        entry.first_response_byte_total_histogram =
-            if entry.first_response_byte_total_histogram.is_empty() {
-                decode_approx_histogram(&row.first_response_byte_total_histogram)
-            } else {
-                let mut merged = entry.first_response_byte_total_histogram.clone();
-                merge_approx_histogram_into(
-                    &mut merged,
-                    &decode_approx_histogram(&row.first_response_byte_total_histogram),
-                )?;
-                merged
-            };
-        entry.first_token_sample_count += row.first_token_sample_count;
-        entry.first_token_sum_ms += row.first_token_sum_ms;
-        entry.first_token_histogram = if entry.first_token_histogram.is_empty() {
-            decode_approx_histogram(&row.first_token_histogram)
-        } else {
-            let mut merged = entry.first_token_histogram.clone();
-            merge_approx_histogram_into(
-                &mut merged,
-                &decode_approx_histogram(&row.first_token_histogram),
-            )?;
-            merged
-        };
-    }
+    add_invocation_rollup_rows_to_timeseries_aggregates(
+        &mut aggregates,
+        hourly_rows
+            .into_iter()
+            .chain(archived_hourly_rows)
+            .collect(),
+        bucket_seconds,
+        reporting_tz,
+    )?;
     let db_runtime_records = if include_runtime {
         collect_in_flight_aggregate_records(&exact_records)
     } else {

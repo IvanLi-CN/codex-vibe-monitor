@@ -617,6 +617,9 @@ pub(crate) async fn query_account_window_usage(
                 "failed to query PostgreSQL analytics account usage facts: {error}"
             ))
         })?;
+    for row in &rows {
+        validate_account_window_usage_row(row)?;
+    }
     transaction.commit().await.map_err(|error| {
         AnalyticsReadError::Internal(anyhow!(
             "failed to commit PostgreSQL analytics account usage read transaction: {error}"
@@ -1017,18 +1020,19 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
     let status = crate::analytics_changes::normalize_analytics_text(row.status.as_deref());
     let error_message =
         crate::analytics_changes::normalize_analytics_text(row.error_message.as_deref());
-    let failure_kind =
-        crate::analytics_changes::normalize_analytics_text(row.failure_kind.as_deref());
+    let stored_failure_kind =
+        crate::analytics_changes::normalize_analytics_text(row.failure_kind.as_deref())
+            .filter(|value| !value.eq_ignore_ascii_case("none"));
     let stored_failure_class =
         crate::analytics_changes::normalize_analytics_text(row.failure_class.as_deref());
     let classification = crate::api::resolve_failure_classification(
         status.as_deref(),
         error_message.as_deref(),
-        failure_kind.as_deref(),
+        stored_failure_kind.as_deref(),
         stored_failure_class.as_deref(),
         row.is_actionable,
     );
-    let failure_kind = failure_kind.or(classification.failure_kind.clone());
+    let failure_kind = stored_failure_kind.or(classification.failure_kind.clone());
     let legacy_success_status = status.as_deref().is_some_and(|status| {
         matches!(
             status.to_ascii_lowercase().as_str(),

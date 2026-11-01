@@ -66,7 +66,7 @@ impl TimeseriesTopicMaterializedBase {
         base.apply_terminal_slice(Some(&DashboardTerminalProjectionSlice {
             revision: 0,
             deltas: pending_terminal_deltas,
-        }));
+        }))?;
         // All durable terminal records in the baseline and every pending record replayed above
         // are covered by this watermark. Future terminal slices may therefore safely reconcile
         // an older persisted row exactly once.
@@ -310,17 +310,18 @@ impl TimeseriesTopicMaterializedBase {
     pub(crate) fn apply_terminal_slice(
         &mut self,
         terminal: Option<&DashboardTerminalProjectionSlice>,
-    ) {
+    ) -> Result<(), ApiError> {
         let Some(terminal) = terminal else {
-            return;
+            return Ok(());
         };
         for delta in &terminal.deltas {
             self.apply_terminal_delta(
                 delta.terminal_sequence,
                 delta.persisted_row_id,
                 &delta.timeseries,
-            );
+            )?;
         }
+        Ok(())
     }
 
     pub(crate) fn apply_terminal_delta(
@@ -328,13 +329,13 @@ impl TimeseriesTopicMaterializedBase {
         terminal_sequence: u64,
         persisted_row_id: Option<i64>,
         delta: &TimeseriesTerminalDelta,
-    ) {
+    ) -> Result<(), ApiError> {
         if terminal_sequence <= self.terminal_sequence {
-            return;
+            return Ok(());
         }
-        self.terminal_sequence = terminal_sequence;
         if self.source_scope == InvocationSourceScope::ProxyOnly && delta.source != SOURCE_PROXY {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         }
         if let Some(row_id) = persisted_row_id {
             self.snapshot_id = self.snapshot_id.max(row_id);
@@ -343,25 +344,31 @@ impl TimeseriesTopicMaterializedBase {
             .upstream_account_id
             .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
         {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         }
         let Some(occurred) = parse_to_utc_datetime(&delta.occurred_at) else {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         };
         if occurred < self.range_start || occurred >= Utc::now().max(self.range_end) {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         }
         let Ok(bucket_epoch) = align_reporting_bucket_epoch(
             occurred.timestamp(),
             self.bucket_selection.bucket_seconds,
             self.reporting_tz,
         ) else {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         };
         add_timeseries_terminal_delta_to_aggregate(
             self.aggregates.entry(bucket_epoch).or_default(),
             delta,
-        );
+        )?;
+        self.terminal_sequence = terminal_sequence;
+        Ok(())
     }
 
     pub(crate) fn serialize(&self, runtime_records: &[ApiInvocation]) -> Result<Vec<u8>, ApiError> {
