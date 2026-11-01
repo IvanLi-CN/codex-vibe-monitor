@@ -2010,6 +2010,18 @@ fn manual_refresh_response(detail: UpstreamAccountDetail, operation: &str) -> Re
         .into_response()
 }
 
+fn manual_refresh_request_error_tuple(err: impl ToString) -> (StatusCode, String) {
+    let message = err.to_string();
+    match message.as_str() {
+        "account not found" => (StatusCode::NOT_FOUND, message),
+        "usage window refresh only supports OAuth accounts"
+        | "credential refresh only supports OAuth accounts"
+        | "disabled accounts cannot refresh usage windows"
+        | "disabled accounts cannot refresh credentials" => (StatusCode::BAD_REQUEST, message),
+        _ => request_runtime_error_tuple(message),
+    }
+}
+
 pub(crate) async fn refresh_upstream_account_usage(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2026,7 +2038,7 @@ pub(crate) async fn refresh_upstream_account_usage(
         .account_ops
         .run_manual_usage_refresh(state.clone(), id)
         .await
-        .map_err(request_runtime_error_tuple)?;
+        .map_err(manual_refresh_request_error_tuple)?;
     Ok(manual_refresh_response(
         detail,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
@@ -2049,7 +2061,7 @@ pub(crate) async fn refresh_upstream_account_credentials(
         .account_ops
         .run_manual_credential_refresh(state.clone(), id)
         .await
-        .map_err(request_runtime_error_tuple)?;
+        .map_err(manual_refresh_request_error_tuple)?;
     Ok(manual_refresh_response(
         detail,
         UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,

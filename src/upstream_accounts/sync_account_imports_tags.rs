@@ -1286,23 +1286,7 @@ pub(crate) async fn refresh_upstream_account_usage_by_id(
     } else {
         outcome_row.status.as_str()
     };
-    let credential_reauth_required = load_upstream_account_refresh_status(
-        &state.pool,
-        id,
-        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
-    )
-    .await?
-    .state
-        == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
-        || outcome_row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
-    apply_manual_usage_refresh_outcome(
-        state,
-        &outcome_row,
-        deferred_status,
-        credential_reauth_required,
-        usage_outcome,
-    )
-    .await?;
+    apply_manual_usage_refresh_outcome(state, &outcome_row, deferred_status, usage_outcome).await?;
     let refreshed_row = load_upstream_account_row(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow!("account disappeared after manual usage refresh"))?;
@@ -1318,9 +1302,23 @@ async fn apply_manual_usage_refresh_outcome(
     state: &AppState,
     row: &UpstreamAccountRow,
     deferred_status: &str,
-    credential_reauth_required: bool,
     usage_outcome: OAuthUsageRefreshOutcome,
 ) -> Result<()> {
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(row.id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
+    let current_row = load_upstream_account_row(&state.pool, row.id)
+        .await?
+        .ok_or_else(|| anyhow!("account disappeared before applying manual usage refresh"))?;
+    let row = &current_row;
+    let credential_reauth_required = load_upstream_account_refresh_status(
+        &state.pool,
+        row.id,
+        UPSTREAM_ACCOUNT_REFRESH_OPERATION_CREDENTIALS,
+    )
+    .await?
+    .state
+        == UPSTREAM_ACCOUNT_REFRESH_STATE_NEEDS_REAUTH
+        || row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
     let lease_token = usage_outcome.lease_token().map(str::to_owned);
     if let Some(lease_token) = lease_token.as_deref()
         && !touch_upstream_account_refresh_lease(
@@ -1616,6 +1614,8 @@ pub(crate) async fn sync_oauth_account(
         .await?
         .ok_or_else(|| anyhow!("account disappeared during usage window refresh"))?;
     let usage_outcome = refresh_oauth_usage_windows(state, &usage_row, sync_source).await?;
+    let credential_refresh_lock = state.upstream_accounts.credential_refresh_lock(row.id);
+    let _credential_refresh_guard = credential_refresh_lock.lock().await;
     let outcome_row = load_upstream_account_row(&state.pool, row.id)
         .await?
         .ok_or_else(|| anyhow!("account disappeared after usage window refresh"))?;
