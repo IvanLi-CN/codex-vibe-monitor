@@ -803,7 +803,7 @@ pub(crate) fn classify_invocation_failure_with_kind(
     let err_lower = err.to_ascii_lowercase();
     let explicit_failure_kind = explicit_failure_kind
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"));
 
     if (status_norm == "success"
         || status_norm == "succeeded"

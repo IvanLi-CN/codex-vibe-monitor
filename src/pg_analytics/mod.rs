@@ -3962,6 +3962,7 @@ mod tests {
             CREATE TABLE pool_upstream_request_attempts (
                 id INTEGER PRIMARY KEY,
                 invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
                 attempt_index INTEGER NOT NULL,
                 upstream_account_id INTEGER
             )
@@ -4031,8 +4032,8 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO pool_upstream_request_attempts
-                (id, invoke_id, attempt_index, upstream_account_id)
-            VALUES (1, 'invoke-attempt-account', 1, 42)
+                (id, invoke_id, occurred_at, attempt_index, upstream_account_id)
+            VALUES (1, 'invoke-attempt-account', '2026-10-31T00:00:00Z', 1, 42)
             "#,
         )
         .execute(connection.as_mut())

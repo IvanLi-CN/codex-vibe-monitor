@@ -7,6 +7,10 @@ fn success_status_aliases_are_not_classified_as_failures() {
         assert_eq!(classification.failure_class, FailureClass::None);
         assert!(!classification.is_actionable);
     }
+    assert_eq!(
+        classify_invocation_failure_with_kind(Some("succeeded"), None, Some("none")).failure_class,
+        FailureClass::None
+    );
 }
 
 #[test]

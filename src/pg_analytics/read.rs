@@ -751,6 +751,14 @@ pub(crate) fn validate_fact_for_projection(
             "analytics fact cache input tokens exceed input tokens",
         ));
     }
+    if let (Some(total_tokens), Some(input_tokens), Some(output_tokens)) =
+        (fact.total_tokens, fact.input_tokens, fact.output_tokens)
+        && input_tokens.checked_add(output_tokens) != Some(total_tokens)
+    {
+        return Err(invalid_fact(
+            "analytics fact total tokens disagree with input and output tokens",
+        ));
+    }
     Ok(classification)
 }
 
@@ -1271,6 +1279,13 @@ mod tests {
         ));
         let mut fact = fixture_fact(102, 0, "completed", "none", 1, 0.1);
         fact.cost = Some(f64::NAN);
+        assert!(matches!(
+            validate_fact_for_projection(&fact),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+        let mut fact = fixture_fact(103, 0, "completed", "none", 3, 0.1);
+        fact.input_tokens = Some(1);
+        fact.output_tokens = Some(1);
         assert!(matches!(
             validate_fact_for_projection(&fact),
             Err(AnalyticsReadError::Unavailable(_))

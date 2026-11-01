@@ -434,7 +434,7 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "    THEN LOWER(TRIM(COALESCE(failure_class, ''))) ",
     "  ELSE ",
     "    CASE ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok') ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
@@ -483,7 +483,7 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' ",
     "        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' ",
     "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', 'warning_success') ",
     "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
@@ -1640,7 +1640,9 @@ impl RuntimeSummaryOverlayDelta {
 pub(crate) fn runtime_record_is_success_for_summary(record: &ApiInvocation) -> bool {
     let status = normalized_runtime_text(record.status.as_deref());
     status == "success"
+        || status == "succeeded"
         || status == "completed"
+        || status == "ok"
         || status == INVOCATION_STATUS_WARNING_SUCCESS
         || (status == "http_200"
             && normalized_runtime_text(record.error_message.as_deref()).is_empty())
@@ -2964,7 +2966,7 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
     let totals_sql = format!(
         "SELECT \
          COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'completed', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
@@ -3130,7 +3132,7 @@ async fn build_invocation_summary_on_connection(
     let totals_sql = format!(
         "SELECT \
          COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'completed', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
@@ -5796,7 +5798,7 @@ fn runtime_record_is_success_for_summary_row(row: &UpstreamAccountInvocationPrev
     let status = normalized_runtime_text(Some(row.status.as_str()));
     matches!(
         status.as_str(),
-        "success" | "completed" | INVOCATION_STATUS_WARNING_SUCCESS
+        "success" | "succeeded" | "completed" | "ok" | INVOCATION_STATUS_WARNING_SUCCESS
     ) || (status == "http_200" && normalized_runtime_text(row.error_message.as_deref()).is_empty())
 }
 
@@ -17755,34 +17757,8 @@ fn summary_live_sum_from_average(average: Option<f64>, sample_count: i64) -> Res
 }
 
 #[cfg(test)]
-mod summary_live_numeric_tests {
-    use super::*;
-
-    #[test]
-    fn summary_live_wait_arithmetic_fails_closed_on_non_finite_values() {
-        assert!(matches!(
-            summary_live_sum_from_average(Some(f64::MAX), 2),
-            Err(ApiError::Unavailable(_))
-        ));
-
-        let mut sum = f64::MAX;
-        assert!(matches!(
-            checked_summary_live_add(&mut sum, f64::MAX, "test wait sum"),
-            Err(ApiError::Unavailable(_))
-        ));
-
-        let mut rounded = 0.1;
-        checked_summary_live_subtract(&mut rounded, 0.1, "test wait subtraction")
-            .expect("equal values should subtract cleanly");
-        assert_eq!(rounded, 0.0);
-
-        let mut inconsistent = 0.1;
-        assert!(matches!(
-            checked_summary_live_subtract(&mut inconsistent, 4.0, "test wait subtraction"),
-            Err(ApiError::Unavailable(_))
-        ));
-    }
-}
+#[path = "invocations_and_summary_numeric_tests.rs"]
+mod summary_live_numeric_tests;
 
 fn runtime_record_ttfb_differs(left: Option<f64>, right: Option<f64>) -> bool {
     normalized_wait_ms(left) != normalized_wait_ms(right)
@@ -18329,7 +18305,7 @@ pub(crate) fn invocation_upstream_account_id_from_attempt_fallback_sql(
     format!(
         "(SELECT attempt.upstream_account_id \
            FROM pool_upstream_request_attempts attempt \
-          WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+          WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at \
             AND attempt.upstream_account_id IS NOT NULL \
           ORDER BY attempt.attempt_index DESC, attempt.id DESC \
           LIMIT 1)"
@@ -19346,7 +19322,7 @@ where
     };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none'",
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') AND ({failure_class_sql}) = 'none'",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let failure_sql = format!(
@@ -20163,7 +20139,7 @@ where
     };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_like_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none'",
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') AND ({failure_class_sql}) = 'none'",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let success_billed_sql = format!("{success_like_sql} AND cost IS NOT NULL");
@@ -20340,7 +20316,7 @@ async fn query_live_model_performance_duration_overrides(
     let occurred_at_epoch_ms_sql = "(CAST(CASE WHEN instr(occurred_at, 'T') > 0 THEN strftime('%s', occurred_at) ELSE strftime('%s', occurred_at || '+08:00') END AS REAL) * 1000.0)";
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_billed_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL",
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let range_end_epoch_ms = range.end.timestamp_millis() as f64;
