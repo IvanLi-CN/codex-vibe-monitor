@@ -1046,7 +1046,7 @@ pub(crate) async fn load_duplicate_info_for_account(
                 NULLIF(TRIM(account.plan_type), '')
             ) AS plan_type
         FROM pool_upstream_accounts account
-        WHERE account.kind = 
+        WHERE account.kind =
         "#,
     );
     query
