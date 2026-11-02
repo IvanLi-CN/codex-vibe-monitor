@@ -333,11 +333,38 @@ sub lock_directory {
   return 1;
 }
 
+sub open_child_directory {
+  my ($parent, $component) = @_;
+  chdir $parent or return;
+  sysopen my $child, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
+  my @handle_stat = stat($child);
+  my @path_stat = lstat($component);
+  return unless @handle_stat && @path_stat;
+  return unless (($handle_stat[2] & S_IFMT) == S_IFDIR);
+  return unless (($path_stat[2] & S_IFMT) == S_IFDIR);
+  return unless "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+  return $child;
+}
+
+sub verify_directory_chain {
+  my ($record) = @_;
+  for my $edge (@{$record->{edges}}) {
+    chdir $edge->{parent} or return 0;
+    my @handle_stat = stat($edge->{handle}) or return 0;
+    my @path_stat = lstat($edge->{name}) or return 0;
+    return 0 unless (($handle_stat[2] & S_IFMT) == S_IFDIR);
+    return 0 unless (($path_stat[2] & S_IFMT) == S_IFDIR);
+    return 0 unless "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+  }
+  return chdir $record->{directory} ? 1 : 0;
+}
+
 sub verify_record_path {
   my ($record) = @_;
-  chdir $record->{directory} or return 0;
+  return 0 unless verify_directory_chain($record);
   my @handle_stat = stat($record->{target}) or return 0;
   my @path_stat = lstat($record->{name}) or return 0;
+  return 0 unless (($handle_stat[2] & S_IFMT) == S_IFREG);
   return 0 unless (($path_stat[2] & S_IFMT) == S_IFREG);
   return "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
 }
@@ -423,20 +450,32 @@ for (my $offset = 0; $offset < @arguments; $offset += 4) {
   exit 2 if !@target_components || grep { $_ eq '' || $_ eq '.' || $_ eq '..' } @target_components;
   my $target_name = pop @target_components;
   my @directory_handles;
+  my @directory_edges;
   sysopen my $root_handle, '/', O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
   push @directory_handles, $root_handle;
-  chdir $root_handle or exit 2;
+  my $parent_directory = $root_handle;
   for my $component (grep { length $_ } split('/', $resolved_worktree_root)) {
     exit 2 if $component eq '.' || $component eq '..';
-    sysopen my $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
-    chdir $next_directory or exit 2;
+    my $next_directory = open_child_directory($parent_directory, $component) or exit 2;
+    push @directory_edges, {
+      handle => $next_directory,
+      name => $component,
+      parent => $parent_directory,
+    };
     push @directory_handles, $next_directory;
+    $parent_directory = $next_directory;
   }
   for my $component (@target_components) {
-    sysopen my $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or exit 2;
-    chdir $next_directory or exit 2;
+    my $next_directory = open_child_directory($parent_directory, $component) or exit 2;
+    push @directory_edges, {
+      handle => $next_directory,
+      name => $component,
+      parent => $parent_directory,
+    };
     push @directory_handles, $next_directory;
+    $parent_directory = $next_directory;
   }
+  chdir $parent_directory or exit 2;
   exit 2 unless lock_directory($directory_handles[-1]);
   sysopen my $target, $target_name, O_RDWR | O_NOFOLLOW | O_NONBLOCK or exit 2;
   binmode $target;
@@ -446,8 +485,13 @@ for (my $offset = 0; $offset < @arguments; $offset += 4) {
   exit 3 unless (($path_stat[2] & S_IFMT) == S_IFREG);
   exit 3 unless "$target_stat[0]:$target_stat[1]" eq "$path_stat[0]:$path_stat[1]";
   flock($target, LOCK_EX) or exit 2;
-  sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW or exit 2;
+  sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK or exit 2;
   binmode $source;
+  my @source_stat = stat($source) or exit 2;
+  my @source_path_stat = lstat($source_path) or exit 2;
+  exit 3 unless (($source_stat[2] & S_IFMT) == S_IFREG);
+  exit 3 unless (($source_path_stat[2] & S_IFMT) == S_IFREG);
+  exit 3 unless "$source_stat[0]:$source_stat[1]" eq "$source_path_stat[0]:$source_path_stat[1]";
 
   my $before = read_all($target);
   my $desired = read_all($source);
@@ -462,6 +506,7 @@ for (my $offset = 0; $offset < @arguments; $offset += 4) {
     desired => $desired,
     directories => \@directory_handles,
     directory => $directory_handles[-1],
+    edges => \@directory_edges,
     needs_write => $before_hash eq $expected_hash,
     name => $target_name,
     source => $source,
@@ -588,6 +633,19 @@ sub lock_directory {
   return 1;
 }
 
+sub open_child_directory {
+  my ($parent, $component) = @_;
+  chdir $parent or return;
+  sysopen my $child, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
+  my @handle_stat = stat($child);
+  my @path_stat = lstat($component);
+  return unless @handle_stat && @path_stat;
+  return unless (($handle_stat[2] & S_IFMT) == S_IFDIR);
+  return unless (($path_stat[2] & S_IFMT) == S_IFDIR);
+  return unless "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+  return $child;
+}
+
 sub open_worktree_target {
   my ($path, $expected_hash) = @_;
   my $root_prefix = $resolved_worktree_root eq '/' ? '/' : "$resolved_worktree_root/";
@@ -596,25 +654,34 @@ sub open_worktree_target {
   my @components = split('/', $relative_path, -1);
   return if !@components || grep { $_ eq '' || $_ eq '.' || $_ eq '..' } @components;
   my $name = pop @components;
-  my $directory;
-  sysopen $directory, '/', O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
-  chdir $directory or return;
+  my @directories;
+  my @edges;
+  sysopen my $root_directory, '/', O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
+  push @directories, $root_directory;
+  my $parent_directory = $root_directory;
   for my $component (grep { length $_ } split('/', $resolved_worktree_root)) {
     return if $component eq '.' || $component eq '..';
-    my $next_directory;
-    sysopen $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
-    chdir $next_directory or return;
-    close $directory or return;
-    $directory = $next_directory;
+    my $next_directory = open_child_directory($parent_directory, $component) or return;
+    push @edges, {
+      handle => $next_directory,
+      name => $component,
+      parent => $parent_directory,
+    };
+    push @directories, $next_directory;
+    $parent_directory = $next_directory;
   }
   for my $component (@components) {
-    my $next_directory;
-    sysopen $next_directory, $component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW or return;
-    chdir $next_directory or return;
-    close $directory or return;
-    $directory = $next_directory;
+    my $next_directory = open_child_directory($parent_directory, $component) or return;
+    push @edges, {
+      handle => $next_directory,
+      name => $component,
+      parent => $parent_directory,
+    };
+    push @directories, $next_directory;
+    $parent_directory = $next_directory;
   }
-  return unless lock_directory($directory);
+  chdir $parent_directory or return;
+  return unless lock_directory($parent_directory);
   sysopen my $target, $name, O_RDWR | O_NOFOLLOW | O_NONBLOCK or return;
   binmode $target;
   my @target_stat = stat($target) or return;
@@ -623,14 +690,28 @@ sub open_worktree_target {
   return unless (($path_stat[2] & S_IFMT) == S_IFREG);
   return unless "$target_stat[0]:$target_stat[1]" eq "$path_stat[0]:$path_stat[1]";
   flock($target, LOCK_EX) or return;
-  return ($target, $directory, $name, $expected_hash);
+  return ($target, $parent_directory, $name, $expected_hash, \@directories, \@edges);
+}
+
+sub verify_directory_chain {
+  my ($target) = @_;
+  for my $edge (@{$target->{edges}}) {
+    chdir $edge->{parent} or return 0;
+    my @handle_stat = stat($edge->{handle}) or return 0;
+    my @path_stat = lstat($edge->{name}) or return 0;
+    return 0 unless (($handle_stat[2] & S_IFMT) == S_IFDIR);
+    return 0 unless (($path_stat[2] & S_IFMT) == S_IFDIR);
+    return 0 unless "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+  }
+  return chdir $target->{directory} ? 1 : 0;
 }
 
 sub verify_target_path {
   my ($target) = @_;
-  chdir $target->{directory} or return 0;
+  return 0 unless verify_directory_chain($target);
   my @handle_stat = stat($target->{handle}) or return 0;
   my @path_stat = lstat($target->{name}) or return 0;
+  return 0 unless (($handle_stat[2] & S_IFMT) == S_IFREG);
   return 0 unless (($path_stat[2] & S_IFMT) == S_IFREG);
   return "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
 }
@@ -707,12 +788,21 @@ sub restore_index {
   return $renamed;
 }
 
+sub fail_after_install {
+  my ($installed_identity) = @_;
+  my $restored = restore_index($original_index_snapshot, $lock_name, $index_name, $installed_identity);
+  exit($restored ? 4 : 5);
+}
+
 my @targets;
 for (my $offset = 0; $offset < @target_arguments; $offset += 2) {
   my ($path, $expected_hash) = @target_arguments[$offset .. $offset + 1];
-  my ($target, $target_directory, $target_name, $hash) = open_worktree_target($path, $expected_hash);
+  my ($target, $target_directory, $target_name, $hash, $directories, $edges)
+    = open_worktree_target($path, $expected_hash);
   exit 3 unless defined $target && defined $target_directory;
   push @targets, {
+    directories => $directories,
+    edges => $edges,
     handle => $target,
     directory => $target_directory,
     hash => $hash,
@@ -724,7 +814,16 @@ exit 3 unless verify_index_path();
 exit 3 unless verify_targets(\@targets);
 sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK or exit 2;
 binmode $source;
+my @source_stat = stat($source) or exit 2;
+my @source_path_stat = lstat($source_path) or exit 2;
+exit 3 unless (($source_stat[2] & S_IFMT) == S_IFREG);
+exit 3 unless (($source_path_stat[2] & S_IFMT) == S_IFREG);
+exit 3 unless "$source_stat[0]:$source_stat[1]" eq "$source_path_stat[0]:$source_path_stat[1]";
 my $contents = read_all($source);
+my @source_after_stat = stat($source) or exit 2;
+my @source_after_path_stat = lstat($source_path) or exit 2;
+exit 3 unless "$source_after_stat[0]:$source_after_stat[1]" eq "$source_stat[0]:$source_stat[1]";
+exit 3 unless "$source_after_path_stat[0]:$source_after_path_stat[1]" eq "$source_stat[0]:$source_stat[1]";
 close $source or exit 2;
 defined $contents or exit 2;
 binmode $lock;
@@ -739,13 +838,20 @@ rename($lock_name, $index_name) or exit 2;
 my @installed_stat = lstat($index_name) or exit 4;
 my $installed_identity = "$installed_stat[0]:$installed_stat[1]";
 if (!verify_targets(\@targets)) {
-  my $restored = restore_index($original_index_snapshot, $lock_name, $index_name, $installed_identity);
-  exit($restored ? 4 : 5);
+  fail_after_install($installed_identity);
 }
-close $lock or exit 2;
+unless (close $lock) {
+  fail_after_install($installed_identity);
+}
 for my $target (@targets) {
-  close $target->{handle} or exit 2;
-  close $target->{directory} or exit 2;
+  unless (close $target->{handle}) {
+    fail_after_install($installed_identity);
+  }
+  for my $directory_handle (@{$target->{directories}}) {
+    unless (close $directory_handle) {
+      fail_after_install($installed_identity);
+    }
+  }
 }
 EOF_INSTALL_INDEX
 }
