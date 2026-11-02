@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.15.2",
+  "base_stable_version": "4.15.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-02T05:18:39Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.15.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2f3ecf13dfcc624770b03c43a4e5a5df4b640484",
+  "pr_number": 1268,
+  "pr_title": "fix(pool): clarify OAuth token lifecycle and quota windows",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.15.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.15.2",
+  "target_sha": "524341345a5f038ce02b1382ee82c7fbf59ade54",
+  "type_label": "type:patch"
+}
