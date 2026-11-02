@@ -111,7 +111,9 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
          ('completed', '', 'upstream_stream_error', NULL, '{"failureKind":""}'),
          ('completed', '', 'none', NULL, '{"downstreamErrorMessage":"downstream closed while streaming upstream response"}'),
          ('completed', '', 'none', NULL, '{"failureKind":0}'),
-         ('completed', '', 'none', NULL, '{"downstreamErrorMessage":false}')"#,
+         ('completed', '', 'none', NULL, '{"downstreamErrorMessage":false}'),
+         ('completed', '', 'none', NULL, '{"downstreamErrorMessage":"upstream stream error"}'),
+         ('completed', '[invalid_api_key] invalid key', 'none', NULL, '{}')"#,
     )
     .execute(&pool)
     .await
@@ -134,7 +136,9 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
             "service_failure",
             "client_abort",
             "none",
-            "none"
+            "none",
+            "service_failure",
+            "client_failure"
         ]
     );
 
@@ -156,7 +160,55 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
             Some("upstream_stream_error".to_string()),
             Some("downstream_closed".to_string()),
             None,
-            None
+            None,
+            Some("upstream_stream_error".to_string()),
+            Some("invalid_api_key".to_string())
         ]
     );
+
+    let fixtures = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT status, error_message, failure_kind, failure_class, payload FROM codex_invocations",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load resolver fixtures for Rust parity");
+    let expected = fixtures
+        .iter()
+        .map(
+            |(status, error_message, failure_kind, failure_class, payload)| {
+                let payload =
+                    crate::analytics_changes::normalize_analytics_payload(payload.as_deref());
+                let failure_kind = crate::analytics_changes::normalize_analytics_failure_kind(
+                    payload.as_ref(),
+                    failure_kind.as_deref(),
+                );
+                let classification_error_message =
+                    crate::analytics_changes::normalize_analytics_classification_error_message(
+                        payload.as_ref(),
+                        error_message.as_deref(),
+                    );
+                let classification = resolve_failure_classification(
+                    status.as_deref(),
+                    classification_error_message.as_deref(),
+                    failure_kind.as_deref(),
+                    failure_class.as_deref(),
+                    None,
+                );
+                (
+                    classification.failure_class.as_str().to_string(),
+                    classification.failure_kind,
+                )
+            },
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(classes.into_iter().zip(kinds).collect::<Vec<_>>(), expected);
 }

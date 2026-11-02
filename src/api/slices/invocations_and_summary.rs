@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 use std::{fs, io};
 use tracing::{debug, info};
 
+mod invocation_projection_sql;
 mod invocation_query;
 #[path = "invocation_timeline.rs"]
 mod invocation_timeline;
@@ -172,6 +173,10 @@ pub(crate) use invocation_query::{
     resolve_invocation_snapshot_id, resolve_invocation_snapshot_id_on_connection,
 };
 
+pub(crate) use invocation_projection_sql::{
+    INVOCATION_FAILURE_KIND_SQL, INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    invocation_resolved_failure_class_sql_for,
+};
 pub(crate) use invocation_query::build_invocation_filters;
 pub(crate) use invocation_timeline::*;
 pub(crate) use invocation_timing::{
@@ -189,7 +194,6 @@ pub(crate) const INVOCATION_COMPACTION_REQUEST_KIND_SQL: &str = "CASE WHEN json_
 pub(crate) const INVOCATION_COMPACTION_RESPONSE_KIND_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionResponseKind') AS TEXT) END";
 pub(crate) const INVOCATION_IMAGE_INTENT_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.imageIntent') AS TEXT) END";
-pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = "CASE WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) NOT IN ('', 'none') THEN TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''))) WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%' THEN 'downstream_closed' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' THEN 'request_body_stream_error_client_closed' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%' THEN 'invalid_api_key' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%' THEN 'api_key_not_found' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%' THEN 'api_key_missing' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response stream reported failure%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response failed%' THEN 'upstream_response_failed' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' THEN 'upstream_stream_error' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' THEN 'failed_contact_upstream' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%' THEN 'upstream_handshake_timeout' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%' THEN 'request_body_read_timeout' WHEN LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_%' THEN LOWER(TRIM(status)) WHEN LOWER(TRIM(COALESCE(error_message, ''))) <> '' OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) <> '' THEN 'untyped_failure' ELSE NULL END";
 pub(crate) const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
 pub(crate) const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
@@ -423,90 +427,6 @@ fn load_invocation_anchor_runtime_records(
         )));
     }
     Ok(Some(snapshot.runtime_records.clone()))
-}
-
-// Legacy records can carry `failure_class=none` or NULL while still representing failures.
-// Keep classification consistent with `resolve_failure_classification` without requiring a
-// backfill pass to complete before the summary + filters become accurate.
-pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
-    "CASE ",
-    "  WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort') ",
-    "    THEN LOWER(TRIM(COALESCE(failure_class, ''))) ",
-    "  ELSE ",
-    "    CASE ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', 'warning_success') ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('', 'none') ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'warning_success' ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) = 'downstream_closed' ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('', 'none') ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) = 'downstream_closed' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%' ",
-    "        OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%' ",
-    "        THEN 'client_abort' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429' ",
-    "        OR LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) = 'upstream_http_429' ",
-    "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing') ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%' ",
-    "        OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429') ",
-    "        OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') ",
-    "        THEN 'client_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response stream reported failure%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' ",
-    "        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' ",
-    "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('', 'none') ",
-    "        THEN 'none' ",
-    "      ELSE 'service_failure' ",
-    "    END ",
-    "END"
-);
-
-fn invocation_resolved_failure_class_sql_for(invocation_ref: &str) -> String {
-    // The shared expression is unqualified for its many single-table callers. This query joins
-    // attempt rows, so every invocation column must be bound to the invocation alias.
-    let mut sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL.to_string();
-    for column in [
-        "failure_class",
-        "failure_kind",
-        "error_message",
-        "payload",
-        "status",
-    ] {
-        sql = sql.replace(column, &format!("{invocation_ref}.{column}"));
-    }
-    sql
 }
 
 fn has_positive_timing(values: &[Option<f64>]) -> bool {
@@ -3018,8 +2938,8 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens, \
-         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens, \
+         COALESCE(SUM(CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0) ELSE 0 END), 0) AS cache_write_tokens, \
+         COALESCE(SUM(CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(cache_input_tokens, 0) ELSE 0 END), 0) AS cache_input_tokens, \
          COALESCE(SUM(output_tokens), 0) AS output_tokens, \
          MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
          FROM codex_invocations WHERE 1 = 1",
@@ -3169,8 +3089,8 @@ async fn build_invocation_summary_on_connection(
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens, \
-         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens, \
+         COALESCE(SUM(CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0) ELSE 0 END), 0) AS cache_write_tokens, \
+         COALESCE(SUM(CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(cache_input_tokens, 0) ELSE 0 END), 0) AS cache_input_tokens, \
          COALESCE(SUM(output_tokens), 0) AS output_tokens, \
          MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
          FROM codex_invocations WHERE 1 = 1",

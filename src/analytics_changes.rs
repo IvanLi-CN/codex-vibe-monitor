@@ -562,7 +562,7 @@ pub(crate) fn normalize_analytics_classification_error_message(
     let downstream_value = payload_text(payload, "downstreamErrorMessage");
     let combined = match (column_value, downstream_value) {
         (Some(column_value), Some(downstream_value)) => {
-            Some(format!("{column_value} {downstream_value}"))
+            Some(format!("{downstream_value} {column_value}"))
         }
         (Some(column_value), None) => Some(column_value),
         (None, Some(downstream_value)) => Some(downstream_value),
@@ -1385,6 +1385,36 @@ mod tests {
             .await
             .expect("ensure analytics changes schema");
         pool
+    }
+
+    #[test]
+    fn classification_message_preserves_downstream_kind_before_long_column_error() {
+        let payload = serde_json::json!({
+            "downstreamErrorMessage": "upstream stream error"
+        });
+        let column_error = "x".repeat(ANALYTICS_CHANGE_TEXT_MAX_CHARS);
+        let message = normalize_analytics_classification_error_message(
+            Some(&payload),
+            Some(column_error.as_str()),
+        )
+        .expect("classification message");
+        assert!(message.starts_with("upstream stream error"));
+
+        let classification = crate::api::resolve_failure_classification(
+            Some("completed"),
+            Some(message.as_str()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            classification.failure_kind.as_deref(),
+            Some("upstream_stream_error")
+        );
+        assert_eq!(
+            classification.failure_class,
+            crate::api::FailureClass::ServiceFailure
+        );
     }
 
     async fn insert_invocation(pool: &Pool<Sqlite>, invoke_id: &str, status: &str) -> i64 {

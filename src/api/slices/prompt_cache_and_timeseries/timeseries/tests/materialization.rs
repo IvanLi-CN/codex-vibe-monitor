@@ -1,8 +1,14 @@
 use super::*;
 
+fn fixed_materialization_now() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 10, 31, 12, 34, 0)
+        .single()
+        .expect("valid fixed materialization timestamp")
+}
+
 #[test]
 fn contract_test_timeseries_topic_materializer_preserves_exact_p95() {
-    let now = Utc::now();
+    let now = fixed_materialization_now();
     let start = now - ChronoDuration::seconds(10);
     let end = now + ChronoDuration::seconds(60);
     let occurred_at = format_naive(now.with_timezone(&Shanghai).naive_local());
@@ -67,7 +73,7 @@ fn contract_test_timeseries_topic_materializer_preserves_exact_p95() {
 
 #[test]
 fn timeseries_topic_applies_terminal_replacement_at_snapshot_once() {
-    let now = Utc::now();
+    let now = fixed_materialization_now();
     let occurred_at = format_naive(now.with_timezone(&Shanghai).naive_local());
     let mut base = TimeseriesTopicMaterializedBase {
         range_start: now - ChronoDuration::seconds(10),
@@ -128,7 +134,7 @@ fn timeseries_topic_applies_terminal_replacement_at_snapshot_once() {
 
 #[test]
 fn timeseries_topic_keeps_watermarks_and_aggregates_when_delta_is_rejected() {
-    let now = Utc::now();
+    let now = fixed_materialization_now();
     let occurred_at = format_naive(now.with_timezone(&Shanghai).naive_local());
     let bucket_epoch = align_reporting_bucket_epoch(now.timestamp(), 60, Shanghai)
         .expect("aligned materializer bucket");
@@ -174,7 +180,7 @@ fn timeseries_topic_keeps_watermarks_and_aggregates_when_delta_is_rejected() {
 
 #[test]
 fn timeseries_topic_routes_hour_aligned_history_through_rollup_baseline() {
-    let end = Utc::now();
+    let end = fixed_materialization_now();
     let range_window = RangeWindow {
         start: end - ChronoDuration::days(60),
         end,

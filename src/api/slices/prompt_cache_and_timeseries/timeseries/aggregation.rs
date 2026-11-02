@@ -1011,7 +1011,9 @@ fn overlay_runtime_timeseries_in_flight_inner(
         if let Some(expected_upstream_account_id) = upstream_account_id
             && record.upstream_account_id != Some(expected_upstream_account_id)
         {
-            if let Some(db_record) = db_runtime_records.get(&key) {
+            if record.upstream_account_id.is_some()
+                && let Some(db_record) = db_runtime_records.get(&key)
+            {
                 subtract_stale_db_runtime_record(
                     aggregates,
                     db_record,
