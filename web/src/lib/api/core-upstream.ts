@@ -89,6 +89,22 @@ export interface UpstreamAccountRefreshStatus {
   errorMessage?: string | null;
 }
 
+export interface UpstreamTokenLifecycleEntry {
+  expiresAt?: string | null;
+  state: string;
+  source?: string | null;
+  observedAt?: string | null;
+}
+
+export interface UpstreamRefreshTokenLifecycleEntry extends UpstreamTokenLifecycleEntry {
+  present: boolean;
+}
+
+export interface UpstreamTokenLifecycle {
+  accessToken: UpstreamTokenLifecycleEntry;
+  refreshToken: UpstreamRefreshTokenLifecycleEntry;
+}
+
 export interface UpstreamAccountRefreshRecord {
   id: number;
   occurredAt: string;
@@ -464,6 +480,7 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   lastRefreshedAt?: string | null;
   credentialRefresh?: UpstreamAccountRefreshStatus;
   usageWindowRefresh?: UpstreamAccountRefreshStatus;
+  tokenLifecycle?: UpstreamTokenLifecycle | null;
   credentialRefreshHistory?: UpstreamAccountRefreshRecord[];
   history: UpstreamAccountHistoryPoint[];
   recentActions?: UpstreamAccountActionEvent[];
@@ -1643,6 +1660,38 @@ function normalizeUpstreamAccountRefreshStatus(raw: unknown): UpstreamAccountRef
   };
 }
 
+function normalizeUpstreamTokenLifecycleEntry(raw: unknown): UpstreamTokenLifecycleEntry | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const state = typeof payload.state === "string" && payload.state.trim() ? payload.state : null;
+  if (!state) return null;
+  return {
+    expiresAt: typeof payload.expiresAt === "string" ? payload.expiresAt : null,
+    state,
+    source: typeof payload.source === "string" ? payload.source : null,
+    observedAt: typeof payload.observedAt === "string" ? payload.observedAt : null,
+  };
+}
+
+function normalizeUpstreamRefreshTokenLifecycleEntry(
+  raw: unknown,
+): UpstreamRefreshTokenLifecycleEntry | null {
+  const entry = normalizeUpstreamTokenLifecycleEntry(raw);
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  if (!entry || typeof payload.present !== "boolean") return null;
+  return {
+    ...entry,
+    present: payload.present,
+  };
+}
+
+function normalizeUpstreamTokenLifecycle(raw: unknown): UpstreamTokenLifecycle | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const accessToken = normalizeUpstreamTokenLifecycleEntry(payload.accessToken);
+  const refreshToken = normalizeUpstreamRefreshTokenLifecycleEntry(payload.refreshToken);
+  if (!accessToken || !refreshToken) return null;
+  return { accessToken, refreshToken };
+}
+
 function normalizeUpstreamAccountRefreshRecord(raw: unknown): UpstreamAccountRefreshRecord | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
@@ -1879,6 +1928,7 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
     lastRefreshedAt: typeof payload.lastRefreshedAt === "string" ? payload.lastRefreshedAt : null,
     credentialRefresh: normalizeUpstreamAccountRefreshStatus(payload.credentialRefresh),
     usageWindowRefresh: normalizeUpstreamAccountRefreshStatus(payload.usageWindowRefresh),
+    tokenLifecycle: normalizeUpstreamTokenLifecycle(payload.tokenLifecycle),
     credentialRefreshHistory: Array.isArray(payload.credentialRefreshHistory)
       ? payload.credentialRefreshHistory
           .map(normalizeUpstreamAccountRefreshRecord)

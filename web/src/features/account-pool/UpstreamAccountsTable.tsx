@@ -1134,14 +1134,6 @@ export function UpstreamAccountsTable({
           const secondaryLabel =
             formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ??
             labels.secondaryShort.toUpperCase();
-          const primaryWindowUnexpected =
-            item.primaryWindow != null &&
-            Number.isFinite(item.primaryWindow.windowDurationMins) &&
-            Math.round(item.primaryWindow.windowDurationMins) !== 300;
-          const secondaryWindowUnexpected =
-            item.secondaryWindow != null &&
-            Number.isFinite(item.secondaryWindow.windowDurationMins) &&
-            Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
           const selected = item.id === selectedId;
           const routingBlockMessage =
             labels.routingBlockReason?.(item) ?? item.routingBlockReasonMessage?.trim() ?? null;
@@ -1294,7 +1286,6 @@ export function UpstreamAccountsTable({
                             cacheInputTokens: labels.cacheInputTokensMetric,
                           }}
                           missing={primaryWindowMissing}
-                          labelClassName={primaryWindowUnexpected ? "text-warning/78" : undefined}
                         />
                         <CompactWindowLine
                           window={item.secondaryWindow}
@@ -1312,7 +1303,6 @@ export function UpstreamAccountsTable({
                           missing={secondaryWindowMissing}
                           hideLabelWhenMissing={item.localLimits?.secondaryLimit === null}
                           accentClassName="bg-secondary"
-                          labelClassName={secondaryWindowUnexpected ? "text-warning/78" : undefined}
                         />
                         {reserveText ? (
                           <CompactTimestampLine
@@ -1386,14 +1376,6 @@ export function UpstreamAccountsTable({
               const secondaryLabel =
                 formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ??
                 labels.secondaryShort.toUpperCase();
-              const primaryWindowUnexpected =
-                item.primaryWindow != null &&
-                Number.isFinite(item.primaryWindow.windowDurationMins) &&
-                Math.round(item.primaryWindow.windowDurationMins) !== 300;
-              const secondaryWindowUnexpected =
-                item.secondaryWindow != null &&
-                Number.isFinite(item.secondaryWindow.windowDurationMins) &&
-                Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
               const selected = item.id === selectedId;
               const routingBlockMessage =
                 labels.routingBlockReason?.(item) ?? item.routingBlockReasonMessage?.trim() ?? null;
@@ -1545,7 +1527,6 @@ export function UpstreamAccountsTable({
                         }}
                         missing={primaryWindowMissing}
                         title={primaryWindowTitle}
-                        labelClassName={primaryWindowUnexpected ? "text-warning/78" : undefined}
                       />
                       <CompactWindowLine
                         window={item.secondaryWindow}
@@ -1564,7 +1545,6 @@ export function UpstreamAccountsTable({
                         hideLabelWhenMissing={item.localLimits?.secondaryLimit === null}
                         accentClassName="bg-secondary"
                         title={secondaryWindowTitle}
-                        labelClassName={secondaryWindowUnexpected ? "text-warning/78" : undefined}
                       />
                       {reserveText ? (
                         <CompactTimestampLine

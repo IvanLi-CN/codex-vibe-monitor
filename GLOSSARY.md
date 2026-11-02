@@ -152,6 +152,18 @@ _Avoid_: account when the distinction between an OAuth identity and an API key c
 An upstream account backed by a ChatGPT login identity and its OAuth credentials.
 _Avoid_: API Key transit, which uses a different credential type and management model.
 
+**Quota Window**:
+An upstream-reported usage window containing usage, limit, reset, and optional duration metadata. `Primary` and `secondary` identify the upstream roles only; neither role implies a fixed duration.
+_Avoid_: five-hour window, seven-day window, or another inferred duration when the upstream did not report it.
+
+**Token Lifecycle Metadata**:
+The non-secret observation of an OAuth credential's lifecycle: token presence where applicable, expiry time when supported, lifecycle state, source, and observation time. It never includes an access token, refresh token, JWT, or raw token response.
+_Avoid_: credential value, token payload, or inferred Refresh Token expiry.
+
+**Explicit Refresh Token Expiry**:
+A Refresh Token expiry supplied by the upstream as `refresh_token_expires_at` or `refresh_token_expires_in`. Missing explicit data is reported as not provided and is not replaced by an assumed validity period.
+_Avoid_: an expiry inferred from Access Token lifetime or an undocumented fixed number of days.
+
 **sub2api Account Record**:
 An exported representation of one sub2api account, including its platform, credential type, credentials, and associated management settings.
 _Avoid_: export package when referring to one account record.

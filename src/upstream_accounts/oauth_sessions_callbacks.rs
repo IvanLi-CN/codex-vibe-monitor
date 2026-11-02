@@ -2231,6 +2231,11 @@ pub(crate) async fn complete_oauth_login_session_with_query(
     };
     let claims = parse_chatgpt_jwt_claims(&id_token)
         .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
+    let token_lifecycle_metadata = oauth_token_response_lifecycle_metadata(
+        &token_response,
+        &token_response.access_token,
+        Utc::now(),
+    );
     let crypto_key = state.upstream_accounts.crypto_key.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2298,6 +2303,10 @@ pub(crate) async fn complete_oauth_login_session_with_query(
         publish_new_account_routing_availability_if_selectable(state.as_ref(), account_id).await;
         account_id
     };
+
+    persist_oauth_token_lifecycle_metadata(&state.pool, account_id, &token_lifecycle_metadata)
+        .await
+        .map_err(internal_error_tuple)?;
 
     if is_new_account
         && let Err(err) = publish_account_effective_routing_rules_changed(

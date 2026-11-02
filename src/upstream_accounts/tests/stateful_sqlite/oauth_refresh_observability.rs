@@ -192,8 +192,8 @@ async fn stale_usage_refresh_lease_cannot_persist_snapshot() {
         }),
         credits: None,
         reserve: None,
+        ..Default::default()
     };
-
     assert!(
         !persist_usage_snapshot_with_lease(
             &pool,

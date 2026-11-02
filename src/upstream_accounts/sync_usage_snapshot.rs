@@ -127,6 +127,7 @@ pub(crate) async fn persist_unknown_reserve_usage_snapshot_with_lease(
             primary_available_percent: None,
             secondary_available_percent: None,
         }),
+        ..Default::default()
     };
     persist_usage_snapshot_with_versions(
         pool,

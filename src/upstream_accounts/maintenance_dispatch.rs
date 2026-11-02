@@ -1356,6 +1356,10 @@ pub(crate) async fn probe_imported_oauth_credentials(
     let mut credentials = imported.credentials.clone();
     let mut claims = imported.claims.clone();
     let mut token_expires_at = imported.token_expires_at.clone();
+    let mut refresh_token_expires_at = imported.refresh_token_expires_at.clone();
+    let mut refresh_token_expiry_source = imported.refresh_token_expiry_source.clone();
+    let mut refresh_token_metadata_update = imported.refresh_token_metadata_update;
+    let mut refresh_attempted = false;
     let expires_at = parse_rfc3339_utc(&token_expires_at);
     let refresh_due = expires_at
         .map(|expires| {
@@ -1368,9 +1372,24 @@ pub(crate) async fn probe_imported_oauth_credentials(
         .unwrap_or(true);
 
     if refresh_due && let Some(refresh_token) = oauth_refresh_token(&credentials) {
+        refresh_attempted = true;
+        refresh_token_metadata_update = false;
         let response =
             refresh_oauth_tokens_for_required_scope(state, refresh_scope, refresh_token).await?;
+        let response_token_metadata =
+            oauth_token_response_lifecycle_metadata(&response, &response.access_token, Utc::now());
         let id_token_changed = response.id_token.is_some();
+        if response_token_metadata.refresh_token_rotated
+            || response.refresh_token_expires_at.is_some()
+            || response.refresh_token_expires_in.is_some()
+        {
+            refresh_token_expires_at = response_token_metadata.refresh_token_expires_at.clone();
+            refresh_token_expiry_source = response_token_metadata
+                .refresh_token_source
+                .clone()
+                .unwrap_or_else(|| "not_provided".to_string());
+            refresh_token_metadata_update = true;
+        }
         token_expires_at = apply_oauth_token_response(&mut credentials, response);
         if id_token_changed {
             claims = parse_chatgpt_jwt_claims(&credentials.id_token)?;
@@ -1399,11 +1418,30 @@ pub(crate) async fn probe_imported_oauth_credentials(
             if (err.to_string().contains("401") || err.to_string().contains("403"))
                 && oauth_refresh_token(&credentials).is_some() =>
         {
+            if !refresh_attempted {
+                refresh_token_metadata_update = false;
+            }
             let refresh_token = oauth_refresh_token(&credentials).expect("checked refresh token");
             let response =
                 refresh_oauth_tokens_for_required_scope(state, refresh_scope, refresh_token)
                     .await?;
+            let response_token_metadata = oauth_token_response_lifecycle_metadata(
+                &response,
+                &response.access_token,
+                Utc::now(),
+            );
             let id_token_changed = response.id_token.is_some();
+            if response_token_metadata.refresh_token_rotated
+                || response.refresh_token_expires_at.is_some()
+                || response.refresh_token_expires_in.is_some()
+            {
+                refresh_token_expires_at = response_token_metadata.refresh_token_expires_at.clone();
+                refresh_token_expiry_source = response_token_metadata
+                    .refresh_token_source
+                    .clone()
+                    .unwrap_or_else(|| "not_provided".to_string());
+                refresh_token_metadata_update = true;
+            }
             token_expires_at = apply_oauth_token_response(&mut credentials, response);
             if id_token_changed {
                 claims = parse_chatgpt_jwt_claims(&credentials.id_token)?;
@@ -1452,6 +1490,9 @@ pub(crate) async fn probe_imported_oauth_credentials(
 
     Ok(ImportedOauthProbeOutcome {
         token_expires_at,
+        refresh_token_expires_at,
+        refresh_token_expiry_source,
+        refresh_token_metadata_update,
         credentials,
         claims,
         usage_snapshot: snapshot.clone(),

@@ -27,6 +27,7 @@ function renderCard(overrides: Partial<Parameters<typeof UpstreamAccountUsageCar
       history={[]}
       historyKey="secondaryUsedPercent"
       emptyLabel={emptyLabel}
+      windowDurationLabel="Reported duration: 168h"
       accentClassName="text-info"
       {...overrides}
     />,
@@ -50,6 +51,7 @@ describe("UpstreamAccountUsageCard", () => {
 
     expect(html).toContain("18 requests");
     expect(html).toContain("500 requests");
+    expect(html).toContain("Reported duration: 168h");
     expect(html).toContain(emptyLabel);
   });
 

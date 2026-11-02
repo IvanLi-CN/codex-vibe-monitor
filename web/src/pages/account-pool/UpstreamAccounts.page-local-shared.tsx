@@ -56,6 +56,7 @@ import { UpstreamAccountAttemptTimeline } from "../../features/account-pool/Upst
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { resolveRoutingBlockCountdown } from "../../features/account-pool/UpstreamAccountsTable";
 import {
+  formatUsageWindowDuration,
   ReserveQuotaCard,
   UpstreamAccountUsageCard,
 } from "../../features/account-pool/UpstreamAccountUsageCard";
@@ -1820,6 +1821,8 @@ function SharedUpstreamAccountDetailDrawerInner({
   }, [stickyConversationStats]);
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
+  const selectedUsageWindowCount =
+    Number(selectedDetail?.primaryWindow != null) + Number(selectedDetail?.secondaryWindow != null);
   const selected = selectedDetail ?? selectedSummary;
   const availableModelCatalog = useMemo(
     () =>
@@ -2175,6 +2178,29 @@ function SharedUpstreamAccountDetailDrawerInner({
     const key = `accountPool.upstreamAccounts.refresh.state.${normalized}`;
     const translated = t(key);
     return translated === key ? t("accountPool.upstreamAccounts.refresh.state.error") : translated;
+  };
+  const tokenLifecycleStateLabel = (status?: string | null) => {
+    const normalized = status?.trim() || "unknown";
+    const key = `accountPool.upstreamAccounts.tokenLifecycle.state.${normalized}`;
+    const translated = t(key);
+    return translated === key
+      ? t("accountPool.upstreamAccounts.tokenLifecycle.state.unknown")
+      : translated;
+  };
+  const tokenLifecycleSourceLabel = (source?: string | null) => {
+    const normalized = source?.trim() || "unknown";
+    const key = `accountPool.upstreamAccounts.tokenLifecycle.source.${normalized}`;
+    const translated = t(key);
+    return translated === key
+      ? t("accountPool.upstreamAccounts.tokenLifecycle.source.unknown")
+      : translated;
+  };
+  const tokenLifecycleExpiryLabel = (expiresAt?: string | null, state?: string | null) => {
+    if (expiresAt) return formatDateTime(expiresAt);
+    if (state === "not_provided") {
+      return t("accountPool.upstreamAccounts.tokenLifecycle.notProvided");
+    }
+    return t("accountPool.upstreamAccounts.unavailable");
   };
   const accountActionLabel = (action?: string | null) => {
     if (!action) return null;
@@ -3535,24 +3561,65 @@ function SharedUpstreamAccountDetailDrawerInner({
                     ) : null}
                   </div>
                   {selectedDetail.kind === "oauth_codex" ? (
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <UpstreamAccountUsageCard
-                        title={t("accountPool.upstreamAccounts.primaryWindowLabel")}
-                        description={t("accountPool.upstreamAccounts.usage.primaryDescription")}
-                        window={selectedDetail.primaryWindow}
-                        history={selectedDetail.history}
-                        historyKey="primaryUsedPercent"
-                        emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
-                      />
-                      <UpstreamAccountUsageCard
-                        title={t("accountPool.upstreamAccounts.secondaryWindowLabel")}
-                        description={t("accountPool.upstreamAccounts.usage.secondaryDescription")}
-                        window={selectedDetail.secondaryWindow}
-                        history={selectedDetail.history}
-                        historyKey="secondaryUsedPercent"
-                        emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
-                        accentClassName="text-secondary"
-                      />
+                    <div
+                      className={
+                        selectedUsageWindowCount > 1 ? "grid gap-4 lg:grid-cols-2" : "grid gap-4"
+                      }
+                    >
+                      {selectedDetail.primaryWindow ? (
+                        <UpstreamAccountUsageCard
+                          title={t("accountPool.upstreamAccounts.primaryWindowLabel")}
+                          description={t("accountPool.upstreamAccounts.usage.primaryDescription")}
+                          window={selectedDetail.primaryWindow}
+                          windowDurationLabel={t(
+                            "accountPool.upstreamAccounts.usage.windowDuration",
+                            {
+                              duration:
+                                formatUsageWindowDuration(
+                                  selectedDetail.primaryWindow.windowDurationMins,
+                                ) ?? t("accountPool.upstreamAccounts.usage.windowDurationUnknown"),
+                            },
+                          )}
+                          history={selectedDetail.history}
+                          historyKey="primaryUsedPercent"
+                          emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
+                          noteLabel={
+                            usageWindowRefresh?.state === "succeeded"
+                              ? undefined
+                              : t("accountPool.upstreamAccounts.refresh.windowPending")
+                          }
+                        />
+                      ) : null}
+                      {selectedDetail.secondaryWindow ? (
+                        <UpstreamAccountUsageCard
+                          title={t("accountPool.upstreamAccounts.secondaryWindowLabel")}
+                          description={t("accountPool.upstreamAccounts.usage.secondaryDescription")}
+                          window={selectedDetail.secondaryWindow}
+                          windowDurationLabel={t(
+                            "accountPool.upstreamAccounts.usage.windowDuration",
+                            {
+                              duration:
+                                formatUsageWindowDuration(
+                                  selectedDetail.secondaryWindow.windowDurationMins,
+                                ) ?? t("accountPool.upstreamAccounts.usage.windowDurationUnknown"),
+                            },
+                          )}
+                          history={selectedDetail.history}
+                          historyKey="secondaryUsedPercent"
+                          emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
+                          noteLabel={
+                            usageWindowRefresh?.state === "succeeded"
+                              ? undefined
+                              : t("accountPool.upstreamAccounts.refresh.windowPending")
+                          }
+                          accentClassName="text-secondary"
+                        />
+                      ) : null}
+                      {selectedUsageWindowCount === 0 ? (
+                        <p className="text-sm text-base-content/60">
+                          {t("accountPool.upstreamAccounts.usage.noWindows")}
+                        </p>
+                      ) : null}
                       <ReserveQuotaCard
                         title={t("accountPool.upstreamAccounts.reserve.label")}
                         description={t("accountPool.upstreamAccounts.reserve.detailDescription")}
@@ -4618,6 +4685,106 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   }
                                 />
                               </dl>
+                              {selectedDetail.tokenLifecycle ? (
+                                <div className="mt-3 grid gap-3 border-t border-base-300/60 pt-3 md:grid-cols-2">
+                                  <div className="min-w-0">
+                                    <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/60">
+                                      {t("accountPool.upstreamAccounts.tokenLifecycle.accessToken")}
+                                    </h4>
+                                    <dl className="mt-2 grid gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.expiresAt",
+                                        )}
+                                        value={tokenLifecycleExpiryLabel(
+                                          selectedDetail.tokenLifecycle.accessToken.expiresAt,
+                                          selectedDetail.tokenLifecycle.accessToken.state,
+                                        )}
+                                      />
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.stateLabel",
+                                        )}
+                                        value={tokenLifecycleStateLabel(
+                                          selectedDetail.tokenLifecycle.accessToken.state,
+                                        )}
+                                      />
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.sourceLabel",
+                                        )}
+                                        value={tokenLifecycleSourceLabel(
+                                          selectedDetail.tokenLifecycle.accessToken.source,
+                                        )}
+                                      />
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.observedAt",
+                                        )}
+                                        value={formatDateTime(
+                                          selectedDetail.tokenLifecycle.accessToken.observedAt,
+                                        )}
+                                      />
+                                    </dl>
+                                  </div>
+                                  <div className="min-w-0">
+                                    <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/60">
+                                      {t(
+                                        "accountPool.upstreamAccounts.tokenLifecycle.refreshToken",
+                                      )}
+                                    </h4>
+                                    <dl className="mt-2 grid gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.present",
+                                        )}
+                                        value={
+                                          selectedDetail.tokenLifecycle.refreshToken.present
+                                            ? t(
+                                                "accountPool.upstreamAccounts.tokenLifecycle.presentYes",
+                                              )
+                                            : t(
+                                                "accountPool.upstreamAccounts.tokenLifecycle.presentNo",
+                                              )
+                                        }
+                                      />
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.expiresAt",
+                                        )}
+                                        value={tokenLifecycleExpiryLabel(
+                                          selectedDetail.tokenLifecycle.refreshToken.expiresAt,
+                                          selectedDetail.tokenLifecycle.refreshToken.state,
+                                        )}
+                                      />
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.stateLabel",
+                                        )}
+                                        value={tokenLifecycleStateLabel(
+                                          selectedDetail.tokenLifecycle.refreshToken.state,
+                                        )}
+                                      />
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.sourceLabel",
+                                        )}
+                                        value={tokenLifecycleSourceLabel(
+                                          selectedDetail.tokenLifecycle.refreshToken.source,
+                                        )}
+                                      />
+                                      <FlatDetailField
+                                        label={t(
+                                          "accountPool.upstreamAccounts.tokenLifecycle.observedAt",
+                                        )}
+                                        value={formatDateTime(
+                                          selectedDetail.tokenLifecycle.refreshToken.observedAt,
+                                        )}
+                                      />
+                                    </dl>
+                                  </div>
+                                </div>
+                              ) : null}
                             </section>
                             <section className="space-y-2 py-3">
                               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -4743,10 +4910,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                           </span>
                         </summary>
                         <dl className="mt-2 grid gap-x-5 text-sm sm:grid-cols-2 xl:grid-cols-4">
-                          <FlatDetailField
-                            label={t("accountPool.upstreamAccounts.fields.tokenExpiresAt")}
-                            value={formatDateTime(selectedDetail.tokenExpiresAt)}
-                          />
                           <FlatDetailField
                             label={t("accountPool.upstreamAccounts.fields.compactSupport")}
                             value={

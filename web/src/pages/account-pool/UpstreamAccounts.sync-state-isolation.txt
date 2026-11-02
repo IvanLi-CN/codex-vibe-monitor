@@ -238,11 +238,11 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     ).find((candidate) => /Overview/i.test(candidate.textContent || ""));
     expect(overviewTab?.getAttribute("aria-selected")).toBe("true");
     expect(document.body.textContent).toContain("Last successful sync");
-    expect(document.body.textContent).toContain("5h window");
+    expect(document.body.textContent).toContain("Primary quota window");
     expect(document.body.textContent).not.toContain("Latest account action");
   });
 
-  it("renders missing secondary windows as weak dash placeholders inside the detail drawer", async () => {
+  it("does not render an absent secondary window as an empty detail card", async () => {
     mockAccountsPage({
       item: {
         displayName: "Missing weekly limit key",
@@ -314,9 +314,8 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     expect(dialog).not.toBeNull();
     expect(document.body.textContent).toContain("18 requests");
     expect(document.body.textContent).not.toContain("No quota history yet");
-    expect(
-      findExactTextElements("-", dialog ?? document.body).length,
-    ).toBeGreaterThanOrEqual(4);
+    expect(dialog?.textContent).toContain("Primary quota window");
+    expect(dialog?.textContent).not.toContain("Secondary quota window");
   });
 
   it("keeps refresh enabled while an account action is pending", () => {

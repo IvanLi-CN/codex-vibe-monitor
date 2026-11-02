@@ -221,14 +221,6 @@ function GroupMemberRow({
   const secondaryLabel =
     formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ??
     labels.secondaryShort.toUpperCase();
-  const primaryWindowUnexpected =
-    item.primaryWindow != null &&
-    Number.isFinite(item.primaryWindow.windowDurationMins) &&
-    Math.round(item.primaryWindow.windowDurationMins) !== 300;
-  const secondaryWindowUnexpected =
-    item.secondaryWindow != null &&
-    Number.isFinite(item.secondaryWindow.windowDurationMins) &&
-    Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
   const routingBlockMessage =
     labels.routingBlockReason?.(item) ?? item.routingBlockReasonMessage?.trim() ?? null;
   const routingBlockCountdown = item.routingBlockUntil
@@ -377,7 +369,6 @@ function GroupMemberRow({
               }}
               missing={primaryWindowMissing}
               title={primaryWindowTitle}
-              labelClassName={primaryWindowUnexpected ? "text-warning/78" : undefined}
             />
             <CompactWindowLine
               window={item.secondaryWindow}
@@ -396,7 +387,6 @@ function GroupMemberRow({
               hideLabelWhenMissing={item.localLimits?.secondaryLimit === null}
               accentClassName="bg-secondary"
               title={secondaryWindowTitle}
-              labelClassName={secondaryWindowUnexpected ? "text-warning/78" : undefined}
             />
             {reserveText ? (
               <CompactTimestampLine
