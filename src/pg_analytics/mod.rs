@@ -4097,7 +4097,7 @@ mod tests {
             VALUES (5, 'invoke-attempt-account', '2026-10-31T00:00:00Z', 'proxy', ?1)
             "#,
         )
-        .bind(r#"{"upstreamAccountName":"attempt-account"}"#)
+        .bind(r#"{"upstreamAccountId":"invalid","upstreamAccountName":"attempt-account"}"#)
         .execute(connection.as_mut())
         .await
         .expect("insert attempt-account snapshot row");

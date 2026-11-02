@@ -1151,7 +1151,8 @@ pub(crate) fn timeseries_point_from_aggregate(
     let token_components_complete = agg.total_tokens <= 0
         || (agg.token_components_observed
             && agg.token_component_incomplete_count == 0
-            && agg.input_tokens.checked_add(agg.output_tokens) == Some(agg.total_tokens));
+            && agg.input_tokens.checked_add(agg.output_tokens) == Some(agg.total_tokens)
+            && agg.cache_input_tokens <= agg.input_tokens);
     TimeseriesPoint {
         bucket_start: format_utc_iso(start),
         bucket_end: format_utc_iso(end),

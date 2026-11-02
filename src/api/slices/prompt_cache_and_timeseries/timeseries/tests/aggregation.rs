@@ -168,6 +168,32 @@ fn timeseries_point_hides_zero_filled_legacy_token_components() {
 }
 
 #[test]
+fn timeseries_point_hides_cache_input_when_it_exceeds_input_tokens() {
+    let aggregate = BucketAggregate {
+        total_tokens: 10,
+        input_tokens: 0,
+        output_tokens: 10,
+        cache_input_tokens: 2,
+        token_components_observed: true,
+        ..Default::default()
+    };
+
+    let point = timeseries_point_from_aggregate(
+        Utc.timestamp_opt(1_775_608_200, 0)
+            .single()
+            .expect("valid start timestamp"),
+        Utc.timestamp_opt(1_775_608_260, 0)
+            .single()
+            .expect("valid end timestamp"),
+        &aggregate,
+    );
+
+    assert_eq!(point.total_tokens, 10);
+    assert_eq!(point.input_tokens, None);
+    assert_eq!(point.cache_input_tokens, None);
+}
+
+#[test]
 fn add_rollup_rows_preserves_total_latency_metrics() {
     let bucket_epoch =
         align_reporting_bucket_epoch(1_775_608_200, 3_600, chrono_tz::Asia::Shanghai)

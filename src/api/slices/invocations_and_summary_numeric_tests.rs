@@ -47,6 +47,47 @@ fn projection_sql_keeps_success_aliases_and_invocation_identity() {
 }
 
 #[tokio::test]
+async fn attempt_account_fallback_ignores_invalid_payload_account_values() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("connect account fallback test database");
+    sqlx::query(
+        "CREATE TABLE codex_invocations (invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, payload TEXT)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create invocation fallback table");
+    sqlx::query(
+        "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, upstream_account_id INTEGER)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create attempt fallback table");
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, payload) VALUES ('invoke-fallback', '2026-10-31T00:00:00Z', '{\"upstreamAccountId\":\"invalid\"}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert invalid invocation account");
+    sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, upstream_account_id) VALUES (1, 'invoke-fallback', '2026-10-31T00:00:00.000Z', 1, 42)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert fallback account");
+
+    let sql = invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let account_id =
+        sqlx::query_scalar::<_, Option<i64>>(&format!("SELECT {sql} FROM codex_invocations"))
+            .fetch_one(&pool)
+            .await
+            .expect("evaluate account fallback");
+    assert_eq!(account_id, Some(42));
+}
+
+#[tokio::test]
 async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -68,7 +109,9 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
          ('completed', '', 'none', NULL, '{"failureKind":"upstream_stream_error"}'),
          ('completed', '', 'upstream_stream_error', NULL, '{"failureKind":"none"}'),
          ('completed', '', 'upstream_stream_error', NULL, '{"failureKind":""}'),
-         ('completed', '', 'none', NULL, '{"downstreamErrorMessage":"downstream closed while streaming upstream response"}')"#,
+         ('completed', '', 'none', NULL, '{"downstreamErrorMessage":"downstream closed while streaming upstream response"}'),
+         ('completed', '', 'none', NULL, '{"failureKind":0}'),
+         ('completed', '', 'none', NULL, '{"downstreamErrorMessage":false}')"#,
     )
     .execute(&pool)
     .await
@@ -89,7 +132,31 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
             "service_failure",
             "none",
             "service_failure",
-            "client_abort"
+            "client_abort",
+            "none",
+            "none"
+        ]
+    );
+
+    let kinds = sqlx::query_scalar::<_, Option<String>>(&format!(
+        "SELECT {INVOCATION_FAILURE_KIND_SQL} FROM codex_invocations"
+    ))
+    .fetch_all(&pool)
+    .await
+    .expect("evaluate normalized failure kind expression");
+    assert_eq!(
+        kinds,
+        [
+            None,
+            Some("untyped_failure".to_string()),
+            None,
+            Some("unknown_legacy_kind".to_string()),
+            Some("upstream_stream_error".to_string()),
+            None,
+            Some("upstream_stream_error".to_string()),
+            Some("downstream_closed".to_string()),
+            None,
+            None
         ]
     );
 }

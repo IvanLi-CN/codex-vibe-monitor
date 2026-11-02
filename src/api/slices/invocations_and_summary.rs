@@ -189,7 +189,7 @@ pub(crate) const INVOCATION_COMPACTION_REQUEST_KIND_SQL: &str = "CASE WHEN json_
 pub(crate) const INVOCATION_COMPACTION_RESPONSE_KIND_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionResponseKind') AS TEXT) END";
 pub(crate) const INVOCATION_IMAGE_INTENT_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.imageIntent') AS TEXT) END";
-pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind)";
+pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = "CASE WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) NOT IN ('', 'none') THEN TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''))) WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%' THEN 'downstream_closed' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' THEN 'request_body_stream_error_client_closed' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%' THEN 'invalid_api_key' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%' THEN 'api_key_not_found' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%' THEN 'api_key_missing' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response stream reported failure%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response failed%' THEN 'upstream_response_failed' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' THEN 'upstream_stream_error' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' THEN 'failed_contact_upstream' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%' THEN 'upstream_handshake_timeout' WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%' OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%' THEN 'request_body_read_timeout' WHEN LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_%' THEN LOWER(TRIM(status)) WHEN LOWER(TRIM(COALESCE(error_message, ''))) <> '' OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) <> '' THEN 'untyped_failure' ELSE NULL END";
 pub(crate) const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
 pub(crate) const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
@@ -201,14 +201,14 @@ pub(crate) const INVOCATION_REQUEST_MODEL_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requestModel') AS TEXT) END";
 pub(crate) const INVOCATION_RESPONSE_MODEL_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseModel') AS TEXT) END";
-pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.upstreamAccountId') = 'integer' THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) WHEN json_valid(payload) AND json_type(payload, '$.upstreamAccountId') = 'text' AND TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT)) <> '' AND (TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT)) NOT GLOB '*[^0-9]*' OR (SUBSTR(TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT)), 1, 1) IN ('-', '+') AND LENGTH(TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT))) > 1 AND SUBSTR(TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT)), 2) NOT GLOB '*[^0-9]*')) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL: &str = "COALESCE((SELECT NULLIF(TRIM(sample.plan_type), '') FROM pool_upstream_account_limit_samples sample WHERE sample.account_id = CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AND sample.plan_type IS NOT NULL AND TRIM(sample.plan_type) <> '' ORDER BY sample.captured_at DESC, sample.id DESC LIMIT 1), (SELECT NULLIF(TRIM(account.plan_type), '') FROM pool_upstream_accounts account WHERE account.id = CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END))";
 pub(crate) const INVOCATION_REASONING_EFFORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text' THEN json_extract(payload, '$.reasoningEffort') END";
 pub(crate) const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
 pub(crate) const INVOCATION_REQUEST_COMPRESSION_ALGORITHM_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requestCompressionAlgorithm') AS TEXT) END";
 pub(crate) const INVOCATION_DOWNSTREAM_STATUS_CODE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamStatusCode') AS INTEGER) END";
-pub(crate) const INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
+pub(crate) const INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
 pub(crate) const INVOCATION_TRANSPORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.transport') = 'text' THEN json_extract(payload, '$.transport') END";
 pub(crate) const INVOCATION_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'     THEN json_extract(payload, '$.serviceTier')   WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'     THEN json_extract(payload, '$.service_tier') END";
 pub(crate) const INVOCATION_BILLING_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'     THEN json_extract(payload, '$.billingServiceTier')   WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'     THEN json_extract(payload, '$.billing_service_tier') END";
@@ -436,30 +436,30 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "    CASE ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', 'warning_success') ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind, ''))) IN ('', 'none') ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('', 'none') ",
     "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'warning_success' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind, ''))) = 'downstream_closed' ",
+    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) = 'downstream_closed' ",
     "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind, ''))) IN ('', 'none') ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('', 'none') ",
     "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind, ''))) = 'downstream_closed' ",
+    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) = 'downstream_closed' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%' ",
-    "        OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%' ",
+    "        OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%' ",
     "        THEN 'client_abort' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429' ",
-    "        OR LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind, ''))) = 'upstream_http_429' ",
+    "        OR LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) = 'upstream_http_429' ",
     "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing') ",
+    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing') ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' ",
@@ -470,7 +470,7 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429') ",
     "        OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') ",
     "        THEN 'client_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
+    "      WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' ",
@@ -485,8 +485,8 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        THEN 'service_failure' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), failure_kind, ''))) IN ('', 'none') ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('', 'none') ",
     "        THEN 'none' ",
     "      ELSE 'service_failure' ",
     "    END ",
@@ -18261,11 +18261,10 @@ fn merge_latest_timed_metric(
 pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
     invocation_ref: &str,
 ) -> String {
+    let payload_account_id_sql =
+        INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.replace("payload", &format!("{invocation_ref}.payload"));
     format!(
-        "COALESCE(\
-           CASE WHEN json_valid({invocation_ref}.payload) \
-             THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) \
-           END, \
+        "COALESCE({payload_account_id_sql}, \
            {attempt_fallback}\
          )",
         attempt_fallback = invocation_upstream_account_id_from_attempt_fallback_sql(invocation_ref)

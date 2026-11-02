@@ -441,8 +441,9 @@ where
             " AS failure_kind, \
             ",
         )
+        .push("NULLIF(")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(" AS failure_class, CASE WHEN ")
+        .push(", 'none') AS failure_class, CASE WHEN ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(
             " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
@@ -481,7 +482,11 @@ where
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(
+                crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(
+                    "codex_invocations",
+                ),
+            )
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -593,8 +598,9 @@ where
             " AS failure_kind, \
             ",
         )
+        .push("NULLIF(")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(" AS failure_class, CASE WHEN ")
+        .push(", 'none') AS failure_class, CASE WHEN ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(
             " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
@@ -631,7 +637,11 @@ where
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(
+                crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(
+                    "codex_invocations",
+                ),
+            )
             .push(" = ")
             .push_bind(upstream_account_id);
     }
