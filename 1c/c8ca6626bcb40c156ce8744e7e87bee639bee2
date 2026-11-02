@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.15.6",
+  "base_stable_version": "4.15.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-02T19:31:24Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.15.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b9262878f4a7561e30d08b0feb52ac1442ff310d",
+  "pr_number": 1275,
+  "pr_title": "refactor(tests): split system status account roster fixtures",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.15.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.15.6",
+  "target_sha": "1cc8ca6626bcb40c156ce8744e7e87bee639bee2",
+  "type_label": "type:patch"
+}
