@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.15.5",
+  "base_stable_version": "4.15.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-02T16:10:37Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.15.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c86d9530f6c3e95f32498243b8f44f302fb42583",
+  "pr_number": 1272,
+  "pr_title": "refactor(tests): split startup rebuild retention fixtures",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.15.5",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.15.5",
+  "target_sha": "bd5b21a6027c06bc5e9878980eed6d301b8975ec",
+  "type_label": "type:patch"
+}
