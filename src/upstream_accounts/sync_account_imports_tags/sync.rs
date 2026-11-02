@@ -957,10 +957,10 @@ fn credential_refresh_attempt_is_blocked(
     false
 }
 
-pub(crate) async fn refresh_upstream_account_usage_by_id(
+async fn refresh_upstream_account_usage_by_id_with_result(
     state: &AppState,
     id: i64,
-) -> Result<Option<UpstreamAccountDetail>> {
+) -> Result<(Option<UpstreamAccountDetail>, bool)> {
     let row = load_upstream_account_row(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
@@ -977,6 +977,8 @@ pub(crate) async fn refresh_upstream_account_usage_by_id(
         UPSTREAM_ACCOUNT_ACTION_SOURCE_USAGE_WINDOWS_REFRESH,
     )
     .await?;
+    let reserve_usage_refresh_succeeded =
+        matches!(&usage_outcome, OAuthUsageRefreshOutcome::Succeeded { .. });
     let outcome_row = load_upstream_account_row(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow!("account disappeared after manual usage refresh"))?;
@@ -996,7 +998,26 @@ pub(crate) async fn refresh_upstream_account_usage_by_id(
     {
         publish_pool_routing_availability(state);
     }
-    load_upstream_account_detail_with_actual_usage(state, id).await
+    let detail = load_upstream_account_detail_with_actual_usage(state, id).await?;
+    Ok((detail, reserve_usage_refresh_succeeded))
+}
+
+pub(crate) async fn refresh_upstream_account_usage_by_id(
+    state: &AppState,
+    id: i64,
+) -> Result<Option<UpstreamAccountDetail>> {
+    Ok(refresh_upstream_account_usage_by_id_with_result(state, id)
+        .await?
+        .0)
+}
+
+pub(crate) async fn refresh_upstream_account_usage_for_reserve_by_id(
+    state: &AppState,
+    id: i64,
+) -> Result<bool> {
+    Ok(refresh_upstream_account_usage_by_id_with_result(state, id)
+        .await?
+        .1)
 }
 
 async fn apply_manual_usage_refresh_outcome(

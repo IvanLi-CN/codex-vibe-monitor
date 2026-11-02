@@ -53,14 +53,14 @@ Automatic fallback uses the effective model after the existing account model map
 
 ### Operator surfaces
 
-Pool routing settings expose `automatic_reserve_fallback`. OAuth account summaries and details expose Reserve availability, usage percentage, available percentage when reported, reset time, and last capture time. `unknown` and `unavailable` have separate labels and visual states.
+Pool routing settings expose `automaticReserveFallbackEnabled`. OAuth account summaries and details expose Reserve availability, usage percentage, available percentage when reported, reset time, and last capture time. `unknown` and `unavailable` have separate labels and visual states.
 
 ## Interfaces
 
 | Interface                        | Change                                                   | Consumers                                           |
 | -------------------------------- | -------------------------------------------------------- | --------------------------------------------------- |
 | OAuth usage snapshot             | Add typed Reserve fields and object/array parsing        | usage sync, SQLite persistence, candidate selection |
-| Pool routing settings API        | Add `automaticReserveFallback`                           | settings page, routing policy                       |
+| Pool routing settings API        | Add `automaticReserveFallbackEnabled`                    | settings page, routing policy                       |
 | OAuth account summary/detail API | Add Reserve status and reported window fields            | account list and detail views                       |
 | Pool request diagnostics         | Add quota route, Reserve wire model, and fallback reason | invocation records and troubleshooting              |
 
@@ -76,6 +76,8 @@ Pool routing settings expose `automatic_reserve_fallback`. OAuth account summari
 - VER-RESERVE-006: `cd web && bun run test`, `bun run typecheck:web`, and `bun run build` pass; the Web App Demo provides account-list, account-detail, and settings-toggle visual evidence. covers: REQ-RESERVE-002, REQ-RESERVE-007
 
 ## Visual Evidence
+
+The following screenshots were captured from the Web App Demo (`VITE_APP_RUNTIME=demo`) at a 2320x1335 browser viewport: `/#/account-pool/pool`, `/#/account-pool/pool?upstreamAccountId=101`, and `/#/system/settings`.
 
 ![OAuth Luna Reserve account list](./assets/oauth-luna-reserve-web-demo-list.png)
 

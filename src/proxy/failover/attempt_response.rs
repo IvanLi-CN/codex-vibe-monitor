@@ -53,20 +53,30 @@ fn should_attempt_automatic_reserve_fallback(
 async fn refresh_reserve_usage_with_request_budget(
     state: &AppState,
     account_id: i64,
+    attempt_pre_first_byte_timeout: Duration,
     responses_total_timeout: Option<Duration>,
     total_timeout_started_at: Option<Instant>,
 ) -> bool {
-    let refresh = crate::upstream_accounts::refresh_upstream_account_usage_by_id(state, account_id);
-    if let Some(total_timeout) = responses_total_timeout {
+    const MAX_RESERVE_USAGE_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
+    let request_budget = if let Some(total_timeout) = responses_total_timeout {
         let Some(started_at) = total_timeout_started_at else {
             return false;
         };
         let Some(remaining) = remaining_timeout_budget(total_timeout, started_at.elapsed()) else {
             return false;
         };
-        return matches!(timeout(remaining, refresh).await, Ok(Ok(_)));
+        remaining.min(attempt_pre_first_byte_timeout)
+    } else {
+        attempt_pre_first_byte_timeout
     }
-    refresh.await.is_ok()
+    .min(MAX_RESERVE_USAGE_REFRESH_TIMEOUT);
+    if request_budget.is_zero() {
+        return false;
+    }
+    let refresh = crate::upstream_accounts::refresh_upstream_account_usage_for_reserve_by_id(
+        state, account_id,
+    );
+    matches!(timeout(request_budget, refresh).await, Ok(Ok(true)))
 }
 
 pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
@@ -812,36 +822,51 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             && refresh_reserve_usage_with_request_budget(
                 context.state.as_ref(),
                 context.account.account_id,
+                attempt_pre_first_byte_timeout,
                 context.responses_total_timeout,
                 reserve_refresh_started_at,
             )
             .await;
-        let reserve_model_policy = if reserve_usage_refresh_succeeded {
-            load_pool_routing_settings(&context.state.pool)
-                .await
-                .ok()
-                .map(|row| resolve_reserve_fallback_model_policy(&row))
-        } else {
-            None
-        };
         let effective_reserve_model = context
             .upstream_request_model
             .or(context.requested_model.as_deref());
-        let reserve_available = reserve_usage_refresh_succeeded
-            && load_account_routing_candidate(&context.state.pool, context.account.account_id)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|candidate| {
-                    reserve_candidate_snapshot_is_available(&candidate, Utc::now())
-                        && reserve_model_policy.as_ref().is_some_and(|policy| {
-                            reserve_candidate_supports_model(
+        let reserve_available = if reserve_usage_refresh_succeeded {
+            let reserve_check = async {
+                let reserve_model_policy = load_pool_routing_settings(&context.state.pool)
+                    .await
+                    .ok()
+                    .map(|row| resolve_reserve_fallback_model_policy(&row));
+                let Some(reserve_model_policy) = reserve_model_policy else {
+                    return false;
+                };
+                load_account_routing_candidate(&context.state.pool, context.account.account_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|candidate| {
+                        reserve_candidate_snapshot_is_available(&candidate, Utc::now())
+                            && reserve_candidate_supports_model(
                                 &candidate,
                                 effective_reserve_model,
-                                policy,
+                                &reserve_model_policy,
                             )
-                        })
-                });
+                    })
+            };
+            if let (Some(total_timeout), Some(started_at)) =
+                (context.responses_total_timeout, reserve_refresh_started_at)
+            {
+                match remaining_timeout_budget(total_timeout, started_at.elapsed()) {
+                    Some(remaining) => timeout(remaining, reserve_check).await.unwrap_or(false),
+                    None => false,
+                }
+            } else if context.responses_total_timeout.is_some() {
+                false
+            } else {
+                reserve_check.await
+            }
+        } else {
+            false
+        };
         if should_attempt_automatic_reserve_fallback(
             failure_kind,
             *context.quota_route,
@@ -854,6 +879,7 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             *context.reserve_fallback_attempted = true;
             *context.reserve_fallback_reason = Some("normal_quota_exhausted".to_string());
             *context.quota_route = PoolQuotaRoute::Reserve;
+            disarm_pool_early_phase_cleanup_guard(early_phase_cleanup_guard);
             return Ok(PoolAttemptResponseOutcome::ReserveFallback);
         }
         *context.exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;

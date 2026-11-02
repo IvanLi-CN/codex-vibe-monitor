@@ -699,13 +699,13 @@ fn normalize_reserve_quota_snapshot(
         .get("rate_limit")
         .or_else(|| entry.get("rateLimit"))
         .unwrap_or(entry);
-    let primary = normalize_usage_window(
+    let primary = normalize_reserve_usage_window(
         limit
             .get("primary_window")
             .or_else(|| limit.get("primaryWindow")),
         updated_at,
     );
-    let secondary = normalize_usage_window(
+    let secondary = normalize_reserve_usage_window(
         limit
             .get("secondary_window")
             .or_else(|| limit.get("secondaryWindow")),
@@ -823,10 +823,8 @@ pub(crate) fn normalize_usage_window(
                 .or_else(|| value.get("limitWindowSeconds"))
                 .and_then(value_as_i64)
                 .map(seconds_to_window_minutes)
-        })?;
-    if !(0.0..=100.0).contains(&used_percent) || window_duration_mins <= 0 {
-        return None;
-    }
+        })
+        .unwrap_or_default();
     let resets_at = value
         .get("resets_at")
         .or_else(|| value.get("resetsAt"))
@@ -845,6 +843,17 @@ pub(crate) fn normalize_usage_window(
         window_duration_mins,
         resets_at,
     })
+}
+
+fn normalize_reserve_usage_window(
+    value: Option<&Value>,
+    updated_at: Option<DateTime<Utc>>,
+) -> Option<NormalizedUsageWindow> {
+    let window = normalize_usage_window(value, updated_at)?;
+    if !(0.0..=100.0).contains(&window.used_percent) || window.window_duration_mins <= 0 {
+        return None;
+    }
+    Some(window)
 }
 
 pub(crate) fn oauth_token_response_lifecycle_metadata(

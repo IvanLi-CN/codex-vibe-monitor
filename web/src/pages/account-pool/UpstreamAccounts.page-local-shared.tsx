@@ -3620,26 +3620,30 @@ function SharedUpstreamAccountDetailDrawerInner({
                           {t("accountPool.upstreamAccounts.usage.noWindows")}
                         </p>
                       ) : null}
-                      <ReserveQuotaCard
-                        title={t("accountPool.upstreamAccounts.reserve.label")}
-                        description={t("accountPool.upstreamAccounts.reserve.detailDescription")}
-                        snapshot={selectedDetail.reserve}
-                        labels={{
-                          available: t("accountPool.upstreamAccounts.reserve.available"),
-                          unavailable: t("accountPool.upstreamAccounts.reserve.unavailable"),
-                          unknown: t("accountPool.upstreamAccounts.reserve.unknown"),
-                          used: t("accountPool.upstreamAccounts.reserve.used"),
-                          availablePercent: t(
-                            "accountPool.upstreamAccounts.reserve.availablePercent",
-                          ),
-                          reset: t("accountPool.upstreamAccounts.reserve.reset"),
-                          window: t("accountPool.upstreamAccounts.reserve.window"),
-                          capturedAt: t("accountPool.upstreamAccounts.reserve.capturedAt"),
-                          unknownValue: t("accountPool.upstreamAccounts.latestAction.unknown"),
-                          binding: t("accountPool.upstreamAccounts.reserve.binding"),
-                          meteredFeature: t("accountPool.upstreamAccounts.reserve.meteredFeature"),
-                        }}
-                      />
+                      {selectedDetail.kind === "oauth_codex" ? (
+                        <ReserveQuotaCard
+                          title={t("accountPool.upstreamAccounts.reserve.label")}
+                          description={t("accountPool.upstreamAccounts.reserve.detailDescription")}
+                          snapshot={selectedDetail.reserve}
+                          labels={{
+                            available: t("accountPool.upstreamAccounts.reserve.available"),
+                            unavailable: t("accountPool.upstreamAccounts.reserve.unavailable"),
+                            unknown: t("accountPool.upstreamAccounts.reserve.unknown"),
+                            used: t("accountPool.upstreamAccounts.reserve.used"),
+                            availablePercent: t(
+                              "accountPool.upstreamAccounts.reserve.availablePercent",
+                            ),
+                            reset: t("accountPool.upstreamAccounts.reserve.reset"),
+                            window: t("accountPool.upstreamAccounts.reserve.window"),
+                            capturedAt: t("accountPool.upstreamAccounts.reserve.capturedAt"),
+                            unknownValue: t("accountPool.upstreamAccounts.latestAction.unknown"),
+                            binding: t("accountPool.upstreamAccounts.reserve.binding"),
+                            meteredFeature: t(
+                              "accountPool.upstreamAccounts.reserve.meteredFeature",
+                            ),
+                          }}
+                        />
+                      ) : null}
                     </div>
                   ) : null}
                   <DashboardActivityOverview

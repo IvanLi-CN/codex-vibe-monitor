@@ -162,6 +162,18 @@ describe("demo MSW handlers", () => {
       automaticReserveFallbackEnabled: false,
       reserveFallbackModelPolicy: { mode: "custom", patterns: ["gpt-*-luna"] },
     });
+
+    const unsupported = await fetch("http://demo.invalid/api/pool/routing-settings", {
+      method: "POST",
+      body: "{}",
+    });
+    expect(unsupported.status).toBe(405);
+
+    const invalidJson = await fetch("http://demo.invalid/api/pool/routing-settings", {
+      method: "PUT",
+      body: "not-json",
+    });
+    expect(invalidJson.status).toBe(400);
   });
 
   it("exposes synthetic observability destinations without a performance database", async () => {

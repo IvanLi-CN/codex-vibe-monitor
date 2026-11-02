@@ -6322,11 +6322,21 @@ export async function handleDemoRequest(request: Request) {
         },
       ],
     });
-  if (
-    pathname === "/api/pool/routing-settings" &&
-    (request.method === "GET" || request.method === "HEAD")
-  )
-    return json(demoModel.snapshot.settings.poolRouting);
+  if (pathname === "/api/pool/routing-settings") {
+    if (request.method === "GET" || request.method === "HEAD") {
+      return json(demoModel.snapshot.settings.poolRouting);
+    }
+    if (request.method !== "PUT") {
+      return json({ error: "Method not allowed" }, { status: 405 });
+    }
+    let body: unknown;
+    try {
+      body = await request.clone().json();
+    } catch {
+      return json({ error: "Request body must be valid JSON" }, { status: 400 });
+    }
+    return json(demoModel.updatePoolRoutingSettings(body));
+  }
   if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
     return json(
       demoModelRoutingLive({
@@ -6397,8 +6407,6 @@ export async function handleDemoRequest(request: Request) {
     }
     if (pathname === "/api/settings" || pathname.startsWith("/api/settings/"))
       return json(demoModel.updateSettings(pathname, body));
-    if (pathname === "/api/pool/routing-settings")
-      return json(demoModel.updatePoolRoutingSettings(body));
     if (pathname === "/api/pool/upstream-accounts")
       return json(demoModel.createAccount(), { status: 201 });
     const syncMatch = pathname.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sync$/);
