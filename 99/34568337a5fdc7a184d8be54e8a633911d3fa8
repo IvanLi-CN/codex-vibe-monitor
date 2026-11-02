@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.15.3",
+  "base_stable_version": "4.15.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-02T09:25:14Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.15.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "fa89cb839ca988030dea6208116dd394ce0141f0",
+  "pr_number": 1270,
+  "pr_title": "refactor(upstream): split account import sync module",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.15.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.15.3",
+  "target_sha": "9934568337a5fdc7a184d8be54e8a633911d3fa8",
+  "type_label": "type:patch"
+}
