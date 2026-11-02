@@ -82,6 +82,47 @@ git -C "$fixture_repo" diff --cached --binary >"$tmp_dir/index.after"
 cmp -s "$tmp_dir/index.before" "$tmp_dir/index.after" || fail 'checker modified staged content'
 cmp -s "$tmp_dir/worktree.before" "$fixture_repo/src/selected.rs" || fail 'checker modified worktree content'
 
+real_git="$(command -v git)"
+race_bin="$tmp_dir/race-bin"
+mkdir -p "$race_bin"
+cat > "$race_bin/git" <<'EOF_RACE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == '-C' && "${3:-}" == 'cat-file' && ! -e "${RACE_MARKER:?}" ]]; then
+  : > "$RACE_MARKER"
+  cat > "$RACE_REPO/src/selected.rs" <<'EOF_RACE_CONTENT'
+fn race_one() {}
+fn race_two() {}
+fn race_three() {}
+EOF_RACE_CONTENT
+  "$RACE_REAL_GIT" -C "$RACE_REPO" add src/selected.rs
+fi
+
+exec "$RACE_REAL_GIT" "$@"
+EOF_RACE_GIT
+chmod +x "$race_bin/git"
+race_marker="$tmp_dir/race.marker"
+if (
+  cd "$fixture_repo"
+  PATH="$race_bin:$PATH" RACE_REAL_GIT="$real_git" RACE_MARKER="$race_marker" \
+    RACE_REPO="$fixture_repo" python3 "$checker" --policy policy.json
+) >"$tmp_dir/index-race.stdout" 2>"$tmp_dir/index-race.stderr"; then
+  fail 'index mutation during the check must fail closed'
+fi
+assert_contains "$tmp_dir/index-race.stderr" 'Git index changed during staged Rust line-budget check; retry the check'
+
+cat > "$fixture_repo/src/selected.rs" <<'EOF_RESTORED_INDEX_CONTENT'
+fn staged_one() {}
+fn staged_two() {}
+fn staged_three() {}
+fn staged_four() {}
+EOF_RESTORED_INDEX_CONTENT
+git -C "$fixture_repo" add src/selected.rs
+cat > "$fixture_repo/src/selected.rs" <<'EOF_RESTORED_WORKTREE_CONTENT'
+fn worktree_only() {}
+EOF_RESTORED_WORKTREE_CONTENT
+
 cp "$fixture_repo/policy.json" "$tmp_dir/policy.before"
 sed -i.bak 's/"line_budget": 3/"line_budget": 99/' "$fixture_repo/policy.json"
 rm -f "$fixture_repo/policy.json.bak"
@@ -110,6 +151,20 @@ fi
 assert_contains "$tmp_dir/policy-alias.stderr" 'policy.files[0].path must be a canonical repository-relative path'
 cp "$tmp_dir/policy.before" "$fixture_repo/policy.json"
 git -C "$fixture_repo" add policy.json
+
+rm -f "$fixture_repo/src/selected with spaces.rs"
+ln -s selected.rs "$fixture_repo/src/selected with spaces.rs"
+git -C "$fixture_repo" add -A -- 'src/selected with spaces.rs'
+if run_checker >"$tmp_dir/type-change.stdout" 2>"$tmp_dir/type-change.stderr"; then
+  fail 'staged Rust type changes must fail closed'
+fi
+assert_contains "$tmp_dir/type-change.stderr" 'src/selected with spaces.rs: staged index entry must be a regular file'
+unlink "$fixture_repo/src/selected with spaces.rs"
+cat > "$fixture_repo/src/selected with spaces.rs" <<'EOF_RESTORED_SPACED'
+fn spaced_one() {}
+fn spaced_two() {}
+EOF_RESTORED_SPACED
+git -C "$fixture_repo" add 'src/selected with spaces.rs'
 
 cat > "$fixture_repo/src/selected.rs" <<'EOF_DELETED_SIBLING'
 fn selected_one() {}
