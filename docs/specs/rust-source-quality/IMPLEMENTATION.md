@@ -17,7 +17,7 @@ The contract is implemented by the following checked-in surfaces:
   group. The managed pre-commit wrapper serializes the complete hook per
   worktree; the Rust formatter rejects partial staging and explicitly stages
   its formatted whole-file output before the guard reads the index.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 84 current explicit file budgets (4 production and 80 test/helper), and 134 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 84 current explicit file budgets (4 production and 80 test/helper), and 140 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - The Rust 1.99.1 upgrade retains the existing test-facade re-export boundaries and registers seven additional conditional `unused_imports` allows required by all-target Clippy; no runtime, SQL, API, or test-resource behavior changes.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
