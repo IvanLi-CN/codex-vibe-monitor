@@ -986,6 +986,13 @@ export default function UpstreamAccountsPage() {
       primaryShort: t("accountPool.upstreamAccounts.primaryWindowShortLabel"),
       secondary: t("accountPool.upstreamAccounts.secondaryWindowLabel"),
       secondaryShort: t("accountPool.upstreamAccounts.secondaryWindowShortLabel"),
+      reserve: t("accountPool.upstreamAccounts.reserve.label"),
+      reserveAvailable: t("accountPool.upstreamAccounts.reserve.available"),
+      reserveUnavailable: t("accountPool.upstreamAccounts.reserve.unavailable"),
+      reserveUnknown: t("accountPool.upstreamAccounts.reserve.unknown"),
+      reserveUsed: t("accountPool.upstreamAccounts.reserve.used"),
+      reserveAvailablePercent: t("accountPool.upstreamAccounts.reserve.availablePercent"),
+      reserveCaptured: t("accountPool.upstreamAccounts.reserve.capturedAt"),
       nextReset: t("accountPool.upstreamAccounts.table.nextReset"),
       nextResetCompact: t("accountPool.upstreamAccounts.table.nextResetCompact"),
       requestsMetric: t("accountPool.upstreamAccounts.table.requestsMetric"),
@@ -1220,9 +1227,13 @@ export default function UpstreamAccountsPage() {
       setSelectedAccountIds((current) => {
         const next = new Set(current);
         if (checked) {
-          currentPageIds.forEach((accountId) => next.add(accountId));
+          currentPageIds.forEach((accountId) => {
+            next.add(accountId);
+          });
         } else {
-          currentPageIds.forEach((accountId) => next.delete(accountId));
+          currentPageIds.forEach((accountId) => {
+            next.delete(accountId);
+          });
         }
         return Array.from(next);
       });

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { UpstreamAccountHistoryPoint } from "../../lib/api";
-import { UpstreamAccountUsageCard } from "./UpstreamAccountUsageCard";
+import { ReserveQuotaCard, UpstreamAccountUsageCard } from "./UpstreamAccountUsageCard";
 
 const history: UpstreamAccountHistoryPoint[] = [
   { capturedAt: "2026-03-10T02:00:00.000Z", primaryUsedPercent: 24, secondaryUsedPercent: 10 },
@@ -21,8 +21,11 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
-        <div className="mx-auto max-w-3xl">
+      <div
+        className="min-h-screen bg-base-200 px-6 py-8 text-base-content"
+        data-visual-evidence-surface
+      >
+        <div className="mx-auto max-w-3xl" data-visual-evidence-target>
           <Story />
         </div>
       </div>
@@ -100,4 +103,41 @@ export const MissingWindowPlaceholder: Story = {
     noteLabel: "Window missing",
     accentClassName: "text-info",
   },
+};
+
+export const LunaReserveAvailable: Story = {
+  args: {
+    title: "Reserve",
+    description: "Structured Luna Reserve quota reported by the OAuth usage endpoint.",
+    history,
+    historyKey: "primaryUsedPercent",
+    emptyLabel: "No usage samples yet",
+  },
+  render: () => (
+    <ReserveQuotaCard
+      title="Reserve"
+      description="Structured Luna Reserve quota reported by the OAuth usage endpoint."
+      snapshot={{
+        availability: "available",
+        primaryWindow: {
+          usedPercent: 12,
+          usedText: "12% used",
+          limitText: "Reserve rolling window",
+          resetsAt: "2026-03-11T18:00:00.000Z",
+          windowDurationMins: 300,
+        },
+        capturedAt: "2026-03-11T12:30:00.000Z",
+      }}
+      labels={{
+        available: "available",
+        unavailable: "unavailable",
+        unknown: "unknown",
+        used: "used",
+        availablePercent: "available",
+        reset: "Reset",
+        capturedAt: "Captured",
+        unknownValue: "Unknown",
+      }}
+    />
+  ),
 };

@@ -101,6 +101,7 @@ function createRoutingPayload(): PoolRoutingSettings {
       overflowMode: "queue",
       minimumInputTokens: 3840,
     },
+    automaticReserveFallbackEnabled: true,
   };
 }
 
@@ -378,6 +379,7 @@ describe("Settings forward proxy table", () => {
 
     expect(host?.textContent).toContain("上游请求默认值");
     expect(host?.textContent).toContain("缓存命中保护");
+    expect(host?.textContent).toContain("自动使用 Luna Reserve 后备额度");
 
     const priorityHandoffToggle = host?.querySelector('button[aria-label="优先级迁移准入控制"]');
     if (!(priorityHandoffToggle instanceof HTMLButtonElement)) {
@@ -393,6 +395,16 @@ describe("Settings forward proxy table", () => {
     }
     act(() => {
       cacheHitToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const reserveFallbackToggle = host?.querySelector(
+      'button[aria-label="自动使用 Luna Reserve 后备额度"]',
+    );
+    if (!(reserveFallbackToggle instanceof HTMLButtonElement)) {
+      throw new Error("Missing Reserve fallback toggle");
+    }
+    act(() => {
+      reserveFallbackToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     const timeoutInput = host?.querySelector('input[name="responsesFirstByteTimeoutSecs"]');
@@ -425,6 +437,7 @@ describe("Settings forward proxy table", () => {
       requestCompressionLevelPreset: "balanced",
       codexImagegenRewriteMode: "keep_original",
       priorityHandoffAdmissionEnabled: false,
+      automaticReserveFallbackEnabled: false,
       cacheHitProtection: {
         enabled: true,
         lowHitRateThresholdPercent: 10,

@@ -6318,6 +6318,7 @@ export async function handleDemoRequest(request: Request) {
         compactStreamTimeoutSecs: 420,
       },
       priorityHandoffAdmissionEnabled: true,
+      automaticReserveFallbackEnabled: true,
     });
   if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
     return json(

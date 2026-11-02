@@ -55,7 +55,10 @@ import {
 import { UpstreamAccountAttemptTimeline } from "../../features/account-pool/UpstreamAccountAttemptTimeline";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { resolveRoutingBlockCountdown } from "../../features/account-pool/UpstreamAccountsTable";
-import { UpstreamAccountUsageCard } from "../../features/account-pool/UpstreamAccountUsageCard";
+import {
+  ReserveQuotaCard,
+  UpstreamAccountUsageCard,
+} from "../../features/account-pool/UpstreamAccountUsageCard";
 import { useRoutingBlockClock } from "../../features/account-pool/useRoutingBlockClock";
 import { DashboardActivityOverview } from "../../features/dashboard/DashboardActivityOverview";
 import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../features/dashboard/dashboardActivityRange";
@@ -3549,6 +3552,23 @@ function SharedUpstreamAccountDetailDrawerInner({
                         historyKey="secondaryUsedPercent"
                         emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
                         accentClassName="text-secondary"
+                      />
+                      <ReserveQuotaCard
+                        title={t("accountPool.upstreamAccounts.reserve.label")}
+                        description={t("accountPool.upstreamAccounts.reserve.detailDescription")}
+                        snapshot={selectedDetail.reserve}
+                        labels={{
+                          available: t("accountPool.upstreamAccounts.reserve.available"),
+                          unavailable: t("accountPool.upstreamAccounts.reserve.unavailable"),
+                          unknown: t("accountPool.upstreamAccounts.reserve.unknown"),
+                          used: t("accountPool.upstreamAccounts.reserve.used"),
+                          availablePercent: t(
+                            "accountPool.upstreamAccounts.reserve.availablePercent",
+                          ),
+                          reset: t("accountPool.upstreamAccounts.reserve.reset"),
+                          capturedAt: t("accountPool.upstreamAccounts.reserve.capturedAt"),
+                          unknownValue: t("accountPool.upstreamAccounts.latestAction.unknown"),
+                        }}
                       />
                     </div>
                   ) : null}

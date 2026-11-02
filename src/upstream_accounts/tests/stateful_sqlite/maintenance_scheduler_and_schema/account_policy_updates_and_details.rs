@@ -883,6 +883,7 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
             maintenance_settings: None,
             cache_hit_protection: None,
             priority_handoff_admission_enabled: None,
+            automatic_reserve_fallback_enabled: None,
         },
     )
     .await

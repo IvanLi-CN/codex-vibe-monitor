@@ -3,6 +3,7 @@ use super::*;
 pub(crate) enum PoolAttemptResponseOutcome {
     Retry,
     Failover,
+    ReserveFallback,
     Response(Box<PoolUpstreamResponse>),
 }
 
@@ -743,6 +744,37 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             );
             disarm_pool_early_phase_cleanup_guard(early_phase_cleanup_guard);
             return Err(final_error);
+        }
+        if failure_kind == FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+            && *context.quota_route == PoolQuotaRoute::Normal
+            && !*context.reserve_fallback_attempted
+            && context.account.auth.is_oauth()
+            && load_pool_routing_settings(&context.state.pool)
+                .await
+                .ok()
+                .is_some_and(|settings| {
+                    settings
+                        .automatic_reserve_fallback_enabled
+                        .is_none_or(|value| value != 0)
+                })
+            && crate::upstream_accounts::refresh_upstream_account_usage_by_id(
+                context.state.as_ref(),
+                context.account.account_id,
+            )
+            .await
+            .is_ok()
+            && load_account_routing_candidate(&context.state.pool, context.account.account_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|candidate| {
+                    reserve_candidate_snapshot_is_available(&candidate, Utc::now())
+                })
+        {
+            *context.reserve_fallback_attempted = true;
+            *context.reserve_fallback_reason = Some("normal_quota_exhausted".to_string());
+            *context.quota_route = PoolQuotaRoute::Reserve;
+            return Ok(PoolAttemptResponseOutcome::ReserveFallback);
         }
         *context.exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
         if should_timeout_route_failover {

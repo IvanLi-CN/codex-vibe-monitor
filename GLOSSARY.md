@@ -159,3 +159,33 @@ _Avoid_: export package when referring to one account record.
 **sub2api Export Package**:
 A portable collection of sub2api account records and optional proxy definitions. A package may contain accounts from multiple platforms and with different credential types.
 _Avoid_: OAuth credential when referring to the whole package.
+
+## OAuth Quota Language
+
+**Normal Quota**:
+The ordinary upstream usage allowance associated with an OAuth upstream account's standard model access. It is represented by the primary and secondary usage windows used for normal routing.
+_Avoid_: Luna Reserve, even when the standard model belongs to the Luna model family.
+
+**Luna Reserve**:
+The upstream fallback quota capability that may be offered to an OAuth subscription after ordinary usage is unavailable. It is a quota capability, not a model family, local capacity reservation, or invocation sequence reservation.
+_Avoid_: Reserve when the surrounding context could mean a local reservation; use Invocation Reservation or Capacity Reservation for those concepts.
+
+**Reserve Quota**:
+The usage allowance exposed by the upstream as the `gpt-reserve` limit. Its availability and usage are independent of the Normal Quota and must not be inferred from model pricing or token usage.
+_Avoid_: remaining tokens, unless the upstream explicitly provides an absolute token balance.
+
+**Reserve Wire Model**:
+The upstream request model identifier `gpt-reserve` used to select Luna Reserve. It is a transport-level selector and does not redefine the client's requested model identity.
+_Avoid_: normal Luna model, model alias.
+
+**Usage Snapshot**:
+A timestamped account-level reading of upstream quota windows and related allowance state. A snapshot is historical after it is persisted; it is not an implicit real-time upstream query.
+_Avoid_: live quota, unless a new upstream read was performed for the current operation.
+
+**Reserve Availability**:
+The routing eligibility state of Luna Reserve for one OAuth upstream account, based on an explicit upstream allowance signal and the freshness of the latest Usage Snapshot. It can be available, exhausted, unavailable, or unknown.
+_Avoid_: quota balance when only a percentage and reset time are known.
+
+**Automatic Reserve Fallback**:
+A routing policy that tries Luna Reserve only after a normal request is classified as ordinary quota exhaustion and the policy switch is enabled. An explicit Reserve request is separate from this policy.
+_Avoid_: model suffix routing, because a normal model name ending in `luna` does not by itself select Luna Reserve.

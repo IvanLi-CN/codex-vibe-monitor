@@ -57,6 +57,13 @@ export interface UpstreamAccountsTableProps {
     primaryShort: string;
     secondary: string;
     secondaryShort: string;
+    reserve?: string;
+    reserveAvailable?: string;
+    reserveUnavailable?: string;
+    reserveUnknown?: string;
+    reserveUsed?: string;
+    reserveAvailablePercent?: string;
+    reserveCaptured?: string;
     nextReset: string;
     nextResetCompact?: string;
     requestsMetric: string;
@@ -808,6 +815,36 @@ export function formatWindowShortLabel(windowDurationMins?: number | null) {
   return `${minutes}M`;
 }
 
+export function reserveSummaryText(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps["labels"],
+) {
+  if (!labels.reserve || !item.reserve) return null;
+  const statusLabel =
+    item.reserve.availability === "available"
+      ? (labels.reserveAvailable ?? item.reserve.availability)
+      : item.reserve.availability === "unavailable"
+        ? (labels.reserveUnavailable ?? item.reserve.availability)
+        : (labels.reserveUnknown ?? item.reserve.availability);
+  const percent = item.reserve.primaryWindow
+    ? [
+        labels.reserveUsed,
+        `${Math.round(windowPercent(item.reserve.primaryWindow.usedPercent))}%`,
+        labels.reserveAvailablePercent,
+        `${Math.round(100 - windowPercent(item.reserve.primaryWindow.usedPercent))}%`,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : labels.unknown;
+  const reset = item.reserve.primaryWindow?.resetsAt
+    ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.reserve.primaryWindow.resetsAt)}`
+    : null;
+  const captured = item.reserve.capturedAt
+    ? `${labels.reserveCaptured ?? "Captured"} ${formatDateTime(item.reserve.capturedAt)}`
+    : null;
+  return [statusLabel, percent, reset, captured].filter(Boolean).join(" · ");
+}
+
 function normalizeLabelResult(value: unknown) {
   return typeof value === "string" || value == null ? value : null;
 }
@@ -1096,6 +1133,7 @@ export function UpstreamAccountsTable({
           const statusChips = resolveRosterSummaryStatusChips(item, labels);
           const showPlanChip = shouldShowPlanChip(item.planType);
           const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
+          const reserveText = reserveSummaryText(item, labels);
 
           return (
             <article
@@ -1256,6 +1294,12 @@ export function UpstreamAccountsTable({
                           accentClassName="bg-secondary"
                           labelClassName={secondaryWindowUnexpected ? "text-warning/78" : undefined}
                         />
+                        {reserveText ? (
+                          <CompactTimestampLine
+                            label={labels.reserve ?? "Reserve"}
+                            value={reserveText}
+                          />
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -1345,6 +1389,7 @@ export function UpstreamAccountsTable({
                 undefined;
               const showPlanChip = shouldShowPlanChip(item.planType);
               const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
+              const reserveText = reserveSummaryText(item, labels);
               return (
                 // biome-ignore lint/a11y/useSemanticElements: the table row owns nested checkbox interaction, so wrapping it in a native button is not valid.
                 <tr
@@ -1499,6 +1544,12 @@ export function UpstreamAccountsTable({
                         title={secondaryWindowTitle}
                         labelClassName={secondaryWindowUnexpected ? "text-warning/78" : undefined}
                       />
+                      {reserveText ? (
+                        <CompactTimestampLine
+                          label={labels.reserve ?? "Reserve"}
+                          value={reserveText}
+                        />
+                      ) : null}
                     </div>
                   </td>
                   <td className="pl-1 pr-3 py-3 text-right align-middle">

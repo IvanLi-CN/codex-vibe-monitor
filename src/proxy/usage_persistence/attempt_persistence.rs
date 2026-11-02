@@ -1278,6 +1278,37 @@ pub(crate) fn annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
     Ok(pending.attempt_id.is_some())
 }
 
+pub(crate) fn annotate_pool_upstream_request_attempt_quota_route(
+    pending: &mut PendingPoolAttemptRecord,
+    quota_route: &str,
+    fallback_reason: Option<&str>,
+) -> Result<bool> {
+    let mut summary = pending
+        .request_summary_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(Default::default()));
+    let Some(summary) = summary.as_object_mut() else {
+        return Ok(false);
+    };
+    summary.insert(
+        "quotaRoute".to_string(),
+        Value::String(quota_route.to_string()),
+    );
+    if let Some(reason) = fallback_reason
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+    {
+        summary.insert(
+            "fallbackReason".to_string(),
+            Value::String(reason.to_string()),
+        );
+    }
+    pending.request_summary_json = Some(serde_json::to_string(&Value::Object(summary.clone()))?);
+    Ok(pending.attempt_id.is_some())
+}
+
 pub(crate) async fn advance_pool_upstream_request_attempt_phase(
     state: &AppState,
     pending: &PendingPoolAttemptRecord,

@@ -592,6 +592,15 @@ function createAccounts(scene: DemoScene = "operational") {
       const unavailable = attention && id === 102;
       const needsReauth = attention && id === 109;
       const syncing = id === 107;
+      const reserveAvailability =
+        kind !== "oauth_codex"
+          ? null
+          : attention && id === 109
+            ? "unavailable"
+            : id === 101 || id === 103
+              ? "available"
+              : "unknown";
+      const reserveUsedPercent = Math.min(92, 14 + index * 4);
       const status = unavailable
         ? "error"
         : needsReauth
@@ -700,6 +709,27 @@ function createAccounts(scene: DemoScene = "operational") {
                 windowDurationMins: 300,
                 resetsAt: "2026-07-10T12:00:00Z",
               },
+        reserve:
+          kind === "oauth_codex"
+            ? {
+                availability: reserveAvailability,
+                primaryWindow: {
+                  usedPercent: reserveUsedPercent,
+                  usedText: `${reserveUsedPercent}%`,
+                  limitText: "Luna Reserve",
+                  windowDurationMins: 300,
+                  resetsAt: "2026-08-16T16:30:00Z",
+                },
+                secondaryWindow: {
+                  usedPercent: Math.min(96, reserveUsedPercent + 9),
+                  usedText: `${Math.min(96, reserveUsedPercent + 9)}%`,
+                  limitText: "Luna Reserve weekly window",
+                  windowDurationMins: 10080,
+                  resetsAt: "2026-08-23T12:00:00Z",
+                },
+                capturedAt: recentAt(4 + index),
+              }
+            : null,
         credits:
           kind === "api_key_codex"
             ? { hasCredits: true, unlimited: false, balance: `$${(71.5 - index * 4.2).toFixed(2)}` }

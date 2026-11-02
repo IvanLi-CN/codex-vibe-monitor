@@ -572,7 +572,10 @@ pub(crate) async fn request_usage_snapshot_with_user_agent(
     let mut request = client
         .get(url)
         .bearer_auth(access_token)
-        .header(header::USER_AGENT, user_agent);
+        .header(header::USER_AGENT, user_agent)
+        // OpenAI's usage endpoint only includes Luna Reserve when the client
+        // explicitly opts into the capability it can actually route.
+        .header("x-openai-codex-luna-reserve", "1");
     if let Some(account_id) = chatgpt_account_id
         && !account_id.trim().is_empty()
     {
@@ -625,6 +628,7 @@ pub(crate) fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageS
         .get("credits")
         .map(normalize_credits_snapshot)
         .transpose()?;
+    let reserve = normalize_reserve_quota_snapshot(value, updated_at);
 
     Ok(NormalizedUsageSnapshot {
         plan_type: optional_string(value, &["plan_type", "planType"]),
@@ -633,7 +637,106 @@ pub(crate) fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageS
         primary,
         secondary,
         credits,
+        reserve,
     })
+}
+
+fn normalize_reserve_quota_snapshot(
+    value: &Value,
+    updated_at: Option<DateTime<Utc>>,
+) -> Option<NormalizedReserveQuotaSnapshot> {
+    let additional = value
+        .get("additional_rate_limits")
+        .or_else(|| value.get("additionalRateLimits"))?;
+    let mut candidates = Vec::new();
+    match additional {
+        Value::Array(values) => {
+            candidates.extend(values.iter().map(|value| (None, value)));
+        }
+        Value::Object(values) => {
+            if values.contains_key("limit_name")
+                || values.contains_key("limitName")
+                || values.contains_key("rate_limit")
+                || values.contains_key("rateLimit")
+            {
+                candidates.push((None, additional));
+            } else {
+                candidates.extend(
+                    values
+                        .iter()
+                        .map(|(key, value)| (Some(key.as_str()), value)),
+                );
+            }
+        }
+        _ => return Some(unknown_reserve_quota_snapshot()),
+    }
+
+    let Some((_key_hint, entry)) = candidates.into_iter().find(|(key_hint, entry)| {
+        let name = entry
+            .get("limit_name")
+            .or_else(|| entry.get("limitName"))
+            .and_then(value_as_string)
+            .or_else(|| (*key_hint).map(str::to_string));
+        name.as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case(RESERVE_WIRE_MODEL))
+    }) else {
+        return Some(unknown_reserve_quota_snapshot());
+    };
+    let limit = entry
+        .get("rate_limit")
+        .or_else(|| entry.get("rateLimit"))
+        .unwrap_or(entry);
+    let primary = normalize_usage_window(
+        limit
+            .get("primary_window")
+            .or_else(|| limit.get("primaryWindow")),
+        updated_at,
+    );
+    let secondary = normalize_usage_window(
+        limit
+            .get("secondary_window")
+            .or_else(|| limit.get("secondaryWindow")),
+        updated_at,
+    );
+    let allowed = limit
+        .get("allowed")
+        .or_else(|| entry.get("allowed"))
+        .and_then(value_as_bool);
+    let limit_reached = limit
+        .get("limit_reached")
+        .or_else(|| limit.get("limitReached"))
+        .or_else(|| entry.get("limit_reached"))
+        .or_else(|| entry.get("limitReached"))
+        .and_then(value_as_bool);
+    let windows_exhausted = primary
+        .as_ref()
+        .map(|window| window.used_percent >= 100.0)
+        .unwrap_or(false)
+        && secondary
+            .as_ref()
+            .map(|window| window.used_percent >= 100.0)
+            .unwrap_or(true);
+    let availability = if allowed == Some(false) || limit_reached == Some(true) || windows_exhausted
+    {
+        RESERVE_AVAILABILITY_UNAVAILABLE
+    } else if allowed == Some(true) || primary.is_some() || secondary.is_some() {
+        RESERVE_AVAILABILITY_AVAILABLE
+    } else {
+        RESERVE_AVAILABILITY_UNKNOWN
+    };
+    Some(NormalizedReserveQuotaSnapshot {
+        availability: availability.to_string(),
+        primary,
+        secondary,
+    })
+}
+
+fn unknown_reserve_quota_snapshot() -> NormalizedReserveQuotaSnapshot {
+    NormalizedReserveQuotaSnapshot {
+        availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
+        primary: None,
+        secondary: None,
+    }
 }
 
 pub(crate) fn normalize_usage_window(
@@ -1576,7 +1679,9 @@ pub(crate) fn value_as_i64(value: &Value) -> Option<i64> {
 }
 
 pub(crate) fn value_as_timestamp(value: &Value) -> Option<DateTime<Utc>> {
-    value_as_i64(value).and_then(|seconds| Utc.timestamp_opt(seconds, 0).single())
+    value_as_i64(value)
+        .and_then(|seconds| Utc.timestamp_opt(seconds, 0).single())
+        .or_else(|| value.as_str().and_then(parse_rfc3339_utc))
 }
 
 pub(crate) fn extract_error_message(body: &str) -> String {

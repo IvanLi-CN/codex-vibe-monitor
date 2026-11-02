@@ -12,7 +12,11 @@ import {
   CardTitle,
 } from "../../components/ui/card";
 import { Chip } from "../../components/ui/chip";
-import type { RateWindowSnapshot, UpstreamAccountHistoryPoint } from "../../lib/api";
+import type {
+  RateWindowSnapshot,
+  ReserveQuotaSnapshot,
+  UpstreamAccountHistoryPoint,
+} from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
 
 const WINDOW_PLACEHOLDER = "-";
@@ -169,6 +173,122 @@ export function UpstreamAccountUsageCard({
               </ResponsiveContainer>
             </div>
           )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+interface ReserveQuotaCardProps {
+  title: string;
+  description: string;
+  snapshot?: ReserveQuotaSnapshot | null;
+  labels: {
+    available: string;
+    unavailable: string;
+    unknown: string;
+    used: string;
+    availablePercent: string;
+    reset: string;
+    capturedAt: string;
+    unknownValue: string;
+  };
+}
+
+function reserveStatusLabel(
+  availability: ReserveQuotaSnapshot["availability"] | undefined,
+  labels: ReserveQuotaCardProps["labels"],
+) {
+  if (availability === "available") return labels.available;
+  if (availability === "unavailable") return labels.unavailable;
+  return labels.unknown;
+}
+
+function reserveStatusTone(availability: ReserveQuotaSnapshot["availability"] | undefined) {
+  if (availability === "available") return "success" as const;
+  if (availability === "unavailable") return "warning" as const;
+  return "secondary" as const;
+}
+
+function reserveWindowPercent(window?: RateWindowSnapshot | null) {
+  if (!window || !Number.isFinite(window.usedPercent)) return null;
+  return Math.max(0, Math.min(window.usedPercent, 100));
+}
+
+export function ReserveQuotaCard({ title, description, snapshot, labels }: ReserveQuotaCardProps) {
+  const primaryUsedPercent = reserveWindowPercent(snapshot?.primaryWindow);
+  const primaryAvailablePercent =
+    primaryUsedPercent == null ? null : Math.max(0, 100 - primaryUsedPercent);
+  const statusLabel = reserveStatusLabel(snapshot?.availability, labels);
+  const statusTone = reserveStatusTone(snapshot?.availability);
+  const resetLabel = snapshot?.primaryWindow?.resetsAt
+    ? historyLabel(snapshot.primaryWindow.resetsAt)
+    : labels.unknownValue;
+  const capturedLabel = snapshot?.capturedAt
+    ? historyLabel(snapshot.capturedAt)
+    : labels.unknownValue;
+  const ringValue =
+    primaryUsedPercent == null ? WINDOW_PLACEHOLDER : `${Math.round(primaryUsedPercent)}%`;
+
+  return (
+    <Card className="border-base-300/80 bg-base-100/75">
+      <CardHeader className="gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">{title}</CardTitle>
+            <CardDescription>{description}</CardDescription>
+          </div>
+          <Chip tone={statusTone}>{statusLabel}</Chip>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 sm:grid-cols-[auto,minmax(0,1fr)] sm:items-center">
+        <div className="flex items-center gap-4">
+          <div className="progress-ring" style={{ ["--value" as string]: primaryUsedPercent ?? 0 }}>
+            <span
+              className={
+                primaryUsedPercent == null
+                  ? "text-lg font-semibold text-base-content/55"
+                  : "text-lg font-semibold text-primary"
+              }
+            >
+              {ringValue}
+            </span>
+          </div>
+          <div className="space-y-1 text-sm text-base-content/75">
+            <p className="text-base font-semibold text-base-content">
+              {labels.used}{" "}
+              {primaryUsedPercent == null
+                ? labels.unknownValue
+                : `${Math.round(primaryUsedPercent)}%`}
+            </p>
+            <p>
+              {labels.availablePercent}{" "}
+              {primaryAvailablePercent == null
+                ? labels.unknownValue
+                : `${Math.round(primaryAvailablePercent)}%`}
+            </p>
+            <p className="inline-flex items-center gap-1">
+              <AppIcon
+                name="timer-refresh-outline"
+                className="h-4 w-4 text-base-content/50"
+                aria-hidden
+              />
+              <span>
+                {labels.reset} {resetLabel}
+              </span>
+            </p>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-base-300/70 bg-base-100/65 p-3 text-sm text-base-content/70">
+          <p>
+            {labels.capturedAt} {capturedLabel}
+          </p>
+          {snapshot?.secondaryWindow ? (
+            <p className="mt-1">
+              {snapshot.secondaryWindow.windowDurationMins} min window · {labels.used}{" "}
+              {Math.round(reserveWindowPercent(snapshot.secondaryWindow) ?? 0)}%
+            </p>
+          ) : null}
         </div>
       </CardContent>
     </Card>

@@ -497,28 +497,48 @@ pub(crate) async fn resolve_pool_account_for_failover_on_fresh_task(
     image_intent: crate::ImageIntent,
     codex_imagegen_request: bool,
     reservation_key: String,
+    quota_route: PoolQuotaRoute,
 ) -> (Result<PoolAccountResolutionWithWait>, Option<Instant>) {
     let task = tokio_util::task::AbortOnDropHandle::new(crate::observability::diagnostics::spawn(
         async move {
             let mut wait_deadline = wait_deadline;
-            let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-            state.as_ref(),
-            sticky_key.as_deref(),
-            requested_model.as_deref(),
-            &excluded_ids,
-            &excluded_upstream_route_keys,
-            required_upstream_route_key.as_deref(),
-            binding_constraint.as_ref(),
-            conversation_override.as_ref(),
-            wait_for_no_available,
-            &mut wait_deadline,
-            total_timeout_deadline,
-            endpoint.as_str(),
-            image_intent,
-            codex_imagegen_request,
-            Some(reservation_key.as_str()),
-        )
-        .await;
+            let resolution = if quota_route == PoolQuotaRoute::Reserve {
+                resolve_pool_account_for_request_with_reserve_route(
+                    state.as_ref(),
+                    sticky_key.as_deref(),
+                    requested_model.as_deref(),
+                    &excluded_ids,
+                    &excluded_upstream_route_keys,
+                    required_upstream_route_key.as_deref(),
+                    binding_constraint.as_ref(),
+                    conversation_override.as_ref(),
+                    endpoint.as_str(),
+                    image_intent,
+                    codex_imagegen_request,
+                    Some(reservation_key.as_str()),
+                )
+                .await
+                .map(PoolAccountResolutionWithWait::Resolution)
+            } else {
+                resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+                    state.as_ref(),
+                    sticky_key.as_deref(),
+                    requested_model.as_deref(),
+                    &excluded_ids,
+                    &excluded_upstream_route_keys,
+                    required_upstream_route_key.as_deref(),
+                    binding_constraint.as_ref(),
+                    conversation_override.as_ref(),
+                    wait_for_no_available,
+                    &mut wait_deadline,
+                    total_timeout_deadline,
+                    endpoint.as_str(),
+                    image_intent,
+                    codex_imagegen_request,
+                    Some(reservation_key.as_str()),
+                )
+                .await
+            };
             (resolution, wait_deadline)
         },
     ));

@@ -1042,6 +1042,7 @@ async fn imported_oauth_probe_publishes_routing_availability_on_recovery() {
             primary: None,
             secondary: None,
             credits: None,
+            reserve: None,
         }),
         maintenance_proxy_snapshot: None,
         exhausted: false,

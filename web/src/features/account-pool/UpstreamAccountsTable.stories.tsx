@@ -107,6 +107,17 @@ const items: UpstreamAccountSummary[] = [
       windowDurationMins: 10080,
       actualUsage: usage(73, 182340, 1.6234, 103220, 67480, 11640),
     },
+    reserve: {
+      availability: "available",
+      primaryWindow: {
+        usedPercent: 12,
+        usedText: "12% used",
+        limitText: "Reserve rolling window",
+        resetsAt: "2026-03-11T18:00:00.000Z",
+        windowDurationMins: 300,
+      },
+      capturedAt: now,
+    },
     credits: {
       hasCredits: true,
       unlimited: false,
@@ -193,6 +204,13 @@ const labels = {
   primaryShort: "5h",
   secondary: "7d",
   secondaryShort: "7d",
+  reserve: "Reserve",
+  reserveAvailable: "available",
+  reserveUnavailable: "unavailable",
+  reserveUnknown: "unknown",
+  reserveUsed: "used",
+  reserveAvailablePercent: "available",
+  reserveCaptured: "Captured",
   nextReset: "Reset",
   unknown: "Unknown",
   requestsMetric: "Req",
@@ -361,8 +379,11 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
-        <div className="mx-auto max-w-6xl">
+      <div
+        className="min-h-screen bg-base-200 px-6 py-8 text-base-content"
+        data-visual-evidence-surface
+      >
+        <div className="mx-auto max-w-6xl" data-visual-evidence-target>
           <Story />
         </div>
       </div>

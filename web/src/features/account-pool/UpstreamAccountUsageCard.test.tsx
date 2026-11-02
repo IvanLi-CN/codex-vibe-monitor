@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { UpstreamAccountHistoryPoint } from "../../lib/api";
-import { UpstreamAccountUsageCard } from "./UpstreamAccountUsageCard";
+import { ReserveQuotaCard, UpstreamAccountUsageCard } from "./UpstreamAccountUsageCard";
 
 const emptyLabel = "No usage samples yet";
 const history: UpstreamAccountHistoryPoint[] = [
@@ -68,5 +68,60 @@ describe("UpstreamAccountUsageCard", () => {
     expect(html).toContain("0 requests");
     expect((html.match(/>-</g) ?? []).length).toBe(0);
     expect(html).toContain(emptyLabel);
+  });
+});
+
+describe("ReserveQuotaCard", () => {
+  const labels = {
+    available: "available",
+    unavailable: "unavailable",
+    unknown: "unknown",
+    used: "used",
+    availablePercent: "available",
+    reset: "Reset",
+    capturedAt: "Captured",
+    unknownValue: "Unknown",
+  };
+
+  it("renders structured Reserve status without exposing an absolute balance", () => {
+    const html = renderToStaticMarkup(
+      <ReserveQuotaCard
+        title="Reserve"
+        description="Structured Reserve quota."
+        snapshot={{
+          availability: "available",
+          primaryWindow: {
+            usedPercent: 12,
+            usedText: "12% used",
+            limitText: "Reserve window",
+            resetsAt: "2026-03-11T18:00:00.000Z",
+            windowDurationMins: 300,
+          },
+          capturedAt: "2026-03-11T12:30:00.000Z",
+        }}
+        labels={labels}
+      />,
+    );
+
+    expect(html).toContain("available");
+    expect(html).toContain("12%");
+    expect(html).toContain("88%");
+    expect(html).toContain("Captured");
+    expect(html).not.toContain("balance");
+  });
+
+  it("uses unknown status when the Reserve snapshot is absent", () => {
+    const html = renderToStaticMarkup(
+      <ReserveQuotaCard
+        title="Reserve"
+        description="Structured Reserve quota."
+        snapshot={null}
+        labels={labels}
+      />,
+    );
+
+    expect(html).toContain("unknown");
+    expect(html).toContain("Unknown");
+    expect(html).not.toContain("unavailable");
   });
 });

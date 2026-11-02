@@ -47,6 +47,13 @@ export interface CreditsSnapshot {
   balance?: string | null;
 }
 
+export interface ReserveQuotaSnapshot {
+  availability: "available" | "unavailable" | "unknown" | string;
+  primaryWindow?: RateWindowSnapshot | null;
+  secondaryWindow?: RateWindowSnapshot | null;
+  capturedAt?: string | null;
+}
+
 export interface LocalLimitSnapshot {
   primaryLimit?: number | null;
   secondaryLimit?: number | null;
@@ -311,6 +318,7 @@ export interface UpstreamAccountSummary {
   primaryWindow?: RateWindowSnapshot | null;
   secondaryWindow?: RateWindowSnapshot | null;
   credits?: CreditsSnapshot | null;
+  reserve?: ReserveQuotaSnapshot | null;
   localLimits?: LocalLimitSnapshot | null;
   compactSupport?: CompactSupportState | null;
   duplicateInfo?: UpstreamAccountDuplicateInfo | null;
@@ -524,6 +532,7 @@ export interface UpdatePoolRoutingSettingsPayload {
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
   cacheHitProtection?: Partial<CacheHitProtectionSettings>;
   priorityHandoffAdmissionEnabled?: boolean;
+  automaticReserveFallbackEnabled?: boolean;
 }
 
 export interface PoolRoutingSettings {
@@ -540,6 +549,7 @@ export interface PoolRoutingSettings {
   timeouts?: PoolRoutingTimeoutSettings;
   cacheHitProtection?: CacheHitProtectionSettings;
   priorityHandoffAdmissionEnabled?: boolean;
+  automaticReserveFallbackEnabled?: boolean;
 }
 
 export type CacheHitOverflowMode = "queue" | "reroute";
@@ -1118,6 +1128,22 @@ function normalizeCreditsSnapshot(raw: unknown): CreditsSnapshot | null {
   };
 }
 
+function normalizeReserveQuotaSnapshot(raw: unknown): ReserveQuotaSnapshot | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const availability =
+    payload.availability === "available" ||
+    payload.availability === "unavailable" ||
+    payload.availability === "unknown"
+      ? payload.availability
+      : "unknown";
+  return {
+    availability,
+    primaryWindow: normalizeRateWindowSnapshot(payload.primaryWindow),
+    secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
+    capturedAt: typeof payload.capturedAt === "string" ? payload.capturedAt : null,
+  };
+}
+
 function normalizeLocalLimitSnapshot(raw: unknown): LocalLimitSnapshot | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const limitUnit =
@@ -1522,6 +1548,7 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     primaryWindow: normalizeRateWindowSnapshot(payload.primaryWindow),
     secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
     credits: normalizeCreditsSnapshot(payload.credits),
+    reserve: kind === "oauth_codex" ? normalizeReserveQuotaSnapshot(payload.reserve) : null,
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
     compactSupport: normalizeCompactSupportState(payload.compactSupport),
     duplicateInfo: normalizeUpstreamAccountDuplicateInfo(payload.duplicateInfo),

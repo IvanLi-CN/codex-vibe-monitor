@@ -4493,6 +4493,7 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
   if (typeof payload.priorityHandoffAdmissionEnabled === "boolean") {
     normalized.priorityHandoffAdmissionEnabled = payload.priorityHandoffAdmissionEnabled;
   }
+  normalized.automaticReserveFallbackEnabled = payload.automaticReserveFallbackEnabled !== false;
   if (Array.isArray(payload.availableModels)) {
     normalized.availableModels = payload.availableModels.filter(
       (value): value is string => typeof value === "string",

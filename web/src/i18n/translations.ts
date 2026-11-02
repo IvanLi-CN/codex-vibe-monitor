@@ -388,6 +388,16 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.primaryWindowShortLabel": "5h",
     "accountPool.upstreamAccounts.secondaryWindowLabel": "7d window",
     "accountPool.upstreamAccounts.secondaryWindowShortLabel": "7d",
+    "accountPool.upstreamAccounts.reserve.label": "Reserve",
+    "accountPool.upstreamAccounts.reserve.available": "available",
+    "accountPool.upstreamAccounts.reserve.unavailable": "unavailable",
+    "accountPool.upstreamAccounts.reserve.unknown": "unknown",
+    "accountPool.upstreamAccounts.reserve.used": "used",
+    "accountPool.upstreamAccounts.reserve.availablePercent": "available",
+    "accountPool.upstreamAccounts.reserve.detailDescription":
+      "Structured Luna Reserve quota reported by the OAuth usage endpoint.",
+    "accountPool.upstreamAccounts.reserve.reset": "Reset",
+    "accountPool.upstreamAccounts.reserve.capturedAt": "Captured",
     "accountPool.upstreamAccounts.primaryWindowDescription":
       "Primary quota window, aligned with Codex 5-hour usage semantics.",
     "accountPool.upstreamAccounts.secondaryWindowDescription":
@@ -2258,6 +2268,9 @@ const baseTranslations = {
     "settings.routing.priorityHandoff.title": "Priority handoff admission",
     "settings.routing.priorityHandoff.description":
       "Limit automatic HTTP/API key priority migrations to one real request at a time while a target recovers.",
+    "settings.routing.reserveFallback.title": "Automatic Luna Reserve fallback",
+    "settings.routing.reserveFallback.description":
+      "Allow OAuth requests to use the official Luna Reserve quota only after the normal quota is explicitly exhausted.",
     "settings.routing.cacheHit.threshold": "Low hit threshold (%)",
     "settings.routing.cacheHit.overflow": "When the route is limited",
     "settings.routing.cacheHit.queue": "Queue requests",
@@ -4083,6 +4096,16 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.primaryWindowShortLabel": "5h",
     "accountPool.upstreamAccounts.secondaryWindowLabel": "7 天窗口",
     "accountPool.upstreamAccounts.secondaryWindowShortLabel": "7d",
+    "accountPool.upstreamAccounts.reserve.label": "Reserve",
+    "accountPool.upstreamAccounts.reserve.available": "可用",
+    "accountPool.upstreamAccounts.reserve.unavailable": "不可用",
+    "accountPool.upstreamAccounts.reserve.unknown": "未知",
+    "accountPool.upstreamAccounts.reserve.used": "已用",
+    "accountPool.upstreamAccounts.reserve.availablePercent": "可用",
+    "accountPool.upstreamAccounts.reserve.detailDescription":
+      "来自 OAuth usage 响应的结构化 Luna Reserve 配额状态。",
+    "accountPool.upstreamAccounts.reserve.reset": "重置",
+    "accountPool.upstreamAccounts.reserve.capturedAt": "采集",
     "accountPool.upstreamAccounts.primaryWindowDescription":
       "主额度窗口，对齐 Codex 的 5 小时使用语义。",
     "accountPool.upstreamAccounts.secondaryWindowDescription":
@@ -5846,6 +5869,9 @@ const baseTranslations = {
     "settings.routing.priorityHandoff.title": "优先级迁移准入控制",
     "settings.routing.priorityHandoff.description":
       "上游恢复期间，自动 HTTP/API Key 优先级迁移只允许逐个真实请求验证；来源请求不会排队。",
+    "settings.routing.reserveFallback.title": "自动使用 Luna Reserve 后备额度",
+    "settings.routing.reserveFallback.description":
+      "仅在普通额度明确耗尽后，允许 OAuth 请求使用官方 Luna Reserve 配额；关闭后仍会同步并展示 Reserve 状态。",
     "settings.routing.cacheHit.threshold": "低命中阈值（%）",
     "settings.routing.cacheHit.overflow": "路由受限时",
     "settings.routing.cacheHit.queue": "请求排队",

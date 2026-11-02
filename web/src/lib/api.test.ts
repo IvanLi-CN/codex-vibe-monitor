@@ -2349,6 +2349,7 @@ describe("account pool frontend API helpers", () => {
         overflowMode: "queue",
         minimumInputTokens: 3840,
       },
+      automaticReserveFallbackEnabled: true,
     });
   });
 

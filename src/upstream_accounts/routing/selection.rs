@@ -412,6 +412,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         crate::ImageIntent::Unknown,
         false,
         None,
+        PoolQuotaRoute::Normal,
     )
     .await
 }
@@ -485,6 +486,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
         crate::ImageIntent::Unknown,
         false,
         None,
+        PoolQuotaRoute::Normal,
     )
     .await
 }
@@ -535,6 +537,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         crate::ImageIntent::Unknown,
         false,
         None,
+        PoolQuotaRoute::Normal,
     )
     .await
 }
@@ -640,6 +643,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
 ) -> Result<PoolAccountResolution> {
     // This selection state machine is intentionally large. Keep it off callers'
     // async task stacks, including the request body reader.
+    let quota_route =
+        if requested_model.is_some_and(|model| model.eq_ignore_ascii_case(RESERVE_WIRE_MODEL)) {
+            PoolQuotaRoute::Reserve
+        } else {
+            PoolQuotaRoute::Normal
+        };
     Box::pin(
         resolve_pool_account_for_request_with_route_requirement_internal(
             state,
@@ -654,6 +663,41 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
             image_intent,
             codex_imagegen_request,
             reservation_key,
+            quota_route,
+        ),
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_reserve_route(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+    reservation_key: Option<&str>,
+) -> Result<PoolAccountResolution> {
+    Box::pin(
+        resolve_pool_account_for_request_with_route_requirement_internal(
+            state,
+            sticky_key,
+            requested_model,
+            excluded_ids,
+            excluded_upstream_route_keys,
+            required_upstream_route_key,
+            binding_constraint,
+            conversation_override,
+            endpoint,
+            image_intent,
+            codex_imagegen_request,
+            reservation_key,
+            PoolQuotaRoute::Reserve,
         ),
     )
     .await
@@ -672,9 +716,17 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     image_intent: crate::ImageIntent,
     codex_imagegen_request: bool,
     reservation_key: Option<&str>,
+    quota_route: PoolQuotaRoute,
 ) -> Result<PoolAccountResolution> {
     let mut routing_runtime = load_pool_routing_runtime_cache(state).await?;
     overlay_runtime_routing_cache(state, &mut routing_runtime, requested_model).await?;
+    let requested_model_for_policy = if quota_route == PoolQuotaRoute::Reserve
+        && requested_model.is_some_and(|model| model.eq_ignore_ascii_case(RESERVE_WIRE_MODEL))
+    {
+        None
+    } else {
+        requested_model
+    };
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
@@ -782,9 +834,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 binding_constraint.is_none_or(|constraint| constraint.accepts_row(&row));
             let sticky_candidate =
                 load_account_routing_candidate(&state.pool, route.account_id).await?;
-            let sticky_snapshot_exhausted = sticky_candidate
-                .as_ref()
-                .is_some_and(routing_candidate_snapshot_is_exhausted);
+            let sticky_snapshot_exhausted = quota_route == PoolQuotaRoute::Normal
+                && sticky_candidate
+                    .as_ref()
+                    .is_some_and(routing_candidate_snapshot_is_exhausted);
             let sticky_route_key = resolve_pool_account_upstream_base_url(
                 &row,
                 &state.config.openai_upstream_base_url,
@@ -841,7 +894,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 // A sticky account whose requested model is cooling down is still a
                 // model-level degraded candidate, not an unavailable account.
                 saw_degraded_candidate = true;
-            } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
+            } else if (quota_route == PoolQuotaRoute::Normal
+                || sticky_candidate
+                    .as_ref()
+                    .is_some_and(|candidate| reserve_candidate_is_available(&row, candidate, now)))
+                && is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now)
+            {
                 let sticky_model_accepted = match sticky_source_rule.as_ref() {
                     None => true,
                     Some(rule)
@@ -851,7 +909,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         account_accepts_requested_model_or_mapping_with_available_models_bypass(
                             state,
                             row.id,
-                            requested_model,
+                            requested_model_for_policy,
                             rule,
                         )
                         .await?
@@ -860,13 +918,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     // A local account mapping can bypass its ordinary availability policy,
                     // but must not broaden this per-conversation restriction.
                     Some(rule) if conversation_available_models_override => {
-                        account_accepts_requested_model(requested_model, rule)
+                        account_accepts_requested_model(requested_model_for_policy, rule)
                     }
                     Some(rule) => {
                         account_accepts_requested_model_or_cached_mapping(
                             state,
                             row.id,
-                            requested_model,
+                            requested_model_for_policy,
                             rule,
                         )
                         .await?
@@ -969,6 +1027,14 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         last_selected_at: row.last_selected_at.clone(),
                                         active_sticky_conversations: 0,
                                         in_flight_reservations: 0,
+                                        reserve_status: None,
+                                        reserve_primary_used_percent: None,
+                                        reserve_primary_window_minutes: None,
+                                        reserve_primary_resets_at: None,
+                                        reserve_secondary_used_percent: None,
+                                        reserve_secondary_window_minutes: None,
+                                        reserve_secondary_resets_at: None,
+                                        reserve_captured_at: None,
                                     }),
                                 sticky_source_rule
                                     .as_ref()
@@ -1286,7 +1352,19 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             }
             continue;
         }
-        let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
+        let snapshot_exhausted = quota_route == PoolQuotaRoute::Normal
+            && routing_candidate_snapshot_is_exhausted(&candidate);
+        if quota_route == PoolQuotaRoute::Reserve
+            && !reserve_candidate_is_available(&row, &candidate, now)
+        {
+            push_routing_selection_audit_exclusion(
+                &mut selection_audit_exclusions,
+                &row,
+                "reserveUnavailable",
+            );
+            saw_rate_limited_candidate = true;
+            continue;
+        }
         let candidate_route_key =
             resolve_pool_account_upstream_base_url(&row, &state.config.openai_upstream_base_url)
                 .ok()
@@ -1384,17 +1462,17 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 account_accepts_requested_model_or_mapping_with_available_models_bypass(
                     state,
                     row.id,
-                    requested_model,
+                    requested_model_for_policy,
                     effective_rule,
                 )
                 .await?
             } else if conversation_available_models_override {
-                account_accepts_requested_model(requested_model, effective_rule)
+                account_accepts_requested_model(requested_model_for_policy, effective_rule)
             } else {
                 account_accepts_requested_model_or_cached_mapping(
                     state,
                     row.id,
-                    requested_model,
+                    requested_model_for_policy,
                     effective_rule,
                 )
                 .await?

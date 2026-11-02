@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "implementation-in-progress-validation-pending",
+  "migration": {
+    "description": "Additive persistence for OAuth Luna Reserve usage windows and the automatic fallback setting.",
+    "release_unit_description": "OAuth Luna Reserve fallback routing change described by ADR 0051.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Existing OAuth account usage snapshots and pool routing settings remain readable; Reserve fields are nullable and missing observations remain unknown.",
+    "storage_implementation": "Existing SQLite database. Reserve usage columns are nullable additions to pool_upstream_account_limit_samples; automatic_reserve_fallback_enabled is a NOT NULL setting with a default of 1.",
+    "source_compatibility_range": {
+      "from_program_versions": "Existing databases created before Reserve columns and the automatic fallback setting.",
+      "to_program_version": "Current candidate implementation of ADR 0051.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-reserve-usage-columns",
+        "description": "Create nullable Reserve availability, window, and capture-time columns on pool_upstream_account_limit_samples; preserve all existing rows.",
+        "order": 1,
+        "observable": true,
+        "pauseable": false
+      },
+      {
+        "id": "ddl-reserve-fallback-setting",
+        "description": "Create automatic_reserve_fallback_enabled on pool_routing_settings with default 1 and backfill legacy rows to enabled.",
+        "order": 2,
+        "observable": true,
+        "pauseable": false
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-reserve-unknown-backfill",
+        "description": "New usage samples persist an unknown Reserve snapshot when the upstream response has no structured gpt-reserve data; no absolute balance is fabricated.",
+        "order": 3,
+        "depends_on": ["ddl-reserve-usage-columns"],
+        "observable": true,
+        "pauseable": false
+      }
+    ],
+    "historical_data_backfill_or_transformation": []
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-reserve-usage-columns", "ddl-reserve-fallback-setting", "dml-reserve-unknown-backfill"],
+    "progress_signals": ["Schema migration tests verify additive columns, legacy row readability, and default-on fallback", "Account summaries expose Reserve availability, percentages, reset time, and capture time"],
+    "pause_points": ["Automatic Reserve fallback can be disabled independently through pool routing settings"]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "status": "pending-current-candidate-ci-and-review",
+    "required_test_evidence": ["Reserve object and array usage parsing", "Legacy SQLite schema upgrade", "Fallback setting default and toggle behavior", "Reserve routing and request rewrite regression tests"]
+  }
+}

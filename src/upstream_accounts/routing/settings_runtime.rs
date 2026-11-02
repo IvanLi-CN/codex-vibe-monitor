@@ -689,6 +689,7 @@ pub(crate) async fn load_pool_routing_settings(
             ,cache_hit_low_rate_threshold_percent
             ,cache_hit_overflow_mode
             ,priority_handoff_admission_enabled
+            ,automatic_reserve_fallback_enabled
         FROM pool_routing_settings
         WHERE id = ?1
         LIMIT 1
@@ -767,6 +768,9 @@ pub(crate) fn build_pool_routing_settings_response(
         timeouts: pool_routing_timeouts_response(timeouts),
         cache_hit_protection: resolve_cache_hit_protection_settings(row).into_response(),
         priority_handoff_admission_enabled: priority_handoff_admission_enabled(),
+        automatic_reserve_fallback_enabled: row
+            .automatic_reserve_fallback_enabled
+            .is_none_or(|value| value != 0),
     }
 }
 
@@ -1051,6 +1055,7 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) maintenance_settings: Option<PoolRoutingMaintenanceSettings>,
     pub(crate) cache_hit_protection: Option<CacheHitProtectionSettings>,
     pub(crate) priority_handoff_admission_enabled: Option<bool>,
+    pub(crate) automatic_reserve_fallback_enabled: Option<bool>,
 }
 
 pub(crate) async fn save_pool_routing_settings(
@@ -1166,6 +1171,13 @@ pub(crate) async fn save_pool_routing_settings(
                 .priority_handoff_admission_enabled
                 .is_none_or(|value| value != 0)
         });
+    let automatic_reserve_fallback_enabled_value = update
+        .automatic_reserve_fallback_enabled
+        .unwrap_or_else(|| {
+            current
+                .automatic_reserve_fallback_enabled
+                .is_none_or(|value| value != 0)
+        });
     let now_iso = format_utc_iso(Utc::now());
 
     let mut tx = pool.begin().await.map_err(internal_error_tuple)?;
@@ -1193,7 +1205,8 @@ pub(crate) async fn save_pool_routing_settings(
             upstream_handshake_timeout_secs = ?19,
             request_read_timeout_secs = ?20,
             priority_handoff_admission_enabled = ?21,
-            updated_at = ?22
+            automatic_reserve_fallback_enabled = ?22,
+            updated_at = ?23
         WHERE id = ?1
         "#,
     )
@@ -1218,6 +1231,11 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(upstream_handshake_timeout_secs)
     .bind(request_read_timeout_secs)
     .bind(if priority_handoff_admission_enabled_value { 1_i64 } else { 0_i64 })
+    .bind(if automatic_reserve_fallback_enabled_value {
+        1_i64
+    } else {
+        0_i64
+    })
     .bind(now_iso)
     .execute(&mut *tx)
     .await

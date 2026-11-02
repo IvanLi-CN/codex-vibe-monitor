@@ -69,6 +69,7 @@ type RoutingDraft = {
   cacheHitRateThresholdPercent: string;
   cacheHitOverflowMode: import("../lib/api").CacheHitOverflowMode;
   priorityHandoffAdmissionEnabled: boolean;
+  automaticReserveFallbackEnabled: boolean;
 };
 
 type ForwardProxyValidationState =
@@ -299,6 +300,7 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
     ),
     cacheHitOverflowMode: routing.cacheHitProtection?.overflowMode ?? "queue",
     priorityHandoffAdmissionEnabled: routing.priorityHandoffAdmissionEnabled ?? true,
+    automaticReserveFallbackEnabled: routing.automaticReserveFallbackEnabled ?? true,
   };
 }
 
@@ -832,6 +834,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
         overflowMode: routingDraft.cacheHitOverflowMode,
       },
       priorityHandoffAdmissionEnabled: routingDraft.priorityHandoffAdmissionEnabled,
+      automaticReserveFallbackEnabled: routingDraft.automaticReserveFallbackEnabled,
     };
 
     try {
@@ -2077,6 +2080,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 onCacheHitProtectionChange={(patch) => updateRoutingDraft(patch)}
                 onPriorityHandoffAdmissionChange={(enabled) =>
                   updateRoutingDraft({ priorityHandoffAdmissionEnabled: enabled })
+                }
+                onAutomaticReserveFallbackChange={(enabled) =>
+                  updateRoutingDraft({ automaticReserveFallbackEnabled: enabled })
                 }
                 onSave={() => void saveRoutingDefaults()}
               />

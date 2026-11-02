@@ -81,6 +81,7 @@ pub(crate) fn test_summary_with_statuses(
         primary_window: None,
         secondary_window: None,
         credits: None,
+        reserve: None,
         local_limits: None,
         compact_support: CompactSupportState {
             status: "unknown".to_string(),
@@ -3160,6 +3161,7 @@ fn imported_snapshot_is_exhausted_when_any_limit_is_full_or_credits_are_empty() 
         }),
         secondary: None,
         credits: None,
+        reserve: None,
     };
     assert!(imported_snapshot_is_exhausted(&primary_exhausted));
 
@@ -3182,6 +3184,7 @@ fn imported_snapshot_is_exhausted_when_any_limit_is_full_or_credits_are_empty() 
             unlimited: false,
             balance: Some("0".to_string()),
         }),
+        reserve: None,
     };
     assert!(imported_snapshot_is_exhausted(&credits_exhausted));
 }
@@ -3424,6 +3427,78 @@ fn normalize_usage_snapshot_reads_windows_and_resets() {
             .and_then(|value| value.balance.clone())
             .as_deref(),
         Some("9.99")
+    );
+}
+
+#[test]
+fn reserve_usage_snapshot_accepts_object_additional_rate_limits() {
+    let payload = json!({
+        "additional_rate_limits": {
+            "gpt-reserve": {
+                "rate_limit": {
+                    "allowed": true,
+                    "primary_window": {
+                        "used_percent": 12.5,
+                        "window_duration_mins": 300,
+                        "resets_at": "2026-11-01T12:00:00Z"
+                    },
+                    "secondary_window": {
+                        "used_percent": 40,
+                        "window_duration_mins": 10080,
+                        "resets_at": "2026-11-07T00:00:00Z"
+                    }
+                }
+            }
+        }
+    });
+
+    let reserve = normalize_usage_snapshot(&payload)
+        .expect("normalize object reserve snapshot")
+        .reserve
+        .expect("reserve snapshot should be present");
+    assert_eq!(reserve.availability, RESERVE_AVAILABILITY_AVAILABLE);
+    assert_eq!(
+        reserve.primary.as_ref().map(|window| window.used_percent),
+        Some(12.5)
+    );
+    assert_eq!(
+        reserve
+            .secondary
+            .as_ref()
+            .and_then(|window| window.resets_at.as_deref()),
+        Some("2026-11-07T00:00:00Z")
+    );
+}
+
+#[test]
+fn reserve_usage_snapshot_accepts_array_additional_rate_limits_and_unavailable_state() {
+    let payload = json!({
+        "additionalRateLimits": [
+            {
+                "limitName": "gpt-5.4",
+                "rateLimit": {"allowed": true}
+            },
+            {
+                "limitName": "gpt-reserve",
+                "rateLimit": {
+                    "allowed": false,
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300
+                    }
+                }
+            }
+        ]
+    });
+
+    let reserve = normalize_usage_snapshot(&payload)
+        .expect("normalize array reserve snapshot")
+        .reserve
+        .expect("reserve snapshot should be present");
+    assert_eq!(reserve.availability, RESERVE_AVAILABILITY_UNAVAILABLE);
+    assert_eq!(
+        reserve.primary.as_ref().map(|window| window.used_percent),
+        Some(100.0)
     );
 }
 

@@ -1683,13 +1683,77 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             secondary_resets_at TEXT,
             credits_has_credits INTEGER,
             credits_unlimited INTEGER,
-            credits_balance TEXT
+            credits_balance TEXT,
+            reserve_status TEXT,
+            reserve_primary_used_percent REAL,
+            reserve_primary_window_minutes INTEGER,
+            reserve_primary_resets_at TEXT,
+            reserve_secondary_used_percent REAL,
+            reserve_secondary_window_minutes INTEGER,
+            reserve_secondary_resets_at TEXT,
+            reserve_captured_at TEXT
         )
         "#,
     )
     .execute(pool)
     .await
     .context("failed to ensure pool_upstream_account_limit_samples table existence")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_status",
+    )
+    .await
+    .context("failed to ensure reserve_status usage sample column")?;
+    ensure_nullable_real_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_primary_used_percent",
+    )
+    .await
+    .context("failed to ensure reserve_primary_used_percent usage sample column")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_primary_window_minutes",
+    )
+    .await
+    .context("failed to ensure reserve_primary_window_minutes usage sample column")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_primary_resets_at",
+    )
+    .await
+    .context("failed to ensure reserve_primary_resets_at usage sample column")?;
+    ensure_nullable_real_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_secondary_used_percent",
+    )
+    .await
+    .context("failed to ensure reserve_secondary_used_percent usage sample column")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_secondary_window_minutes",
+    )
+    .await
+    .context("failed to ensure reserve_secondary_window_minutes usage sample column")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_secondary_resets_at",
+    )
+    .await
+    .context("failed to ensure reserve_secondary_resets_at usage sample column")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_captured_at",
+    )
+    .await
+    .context("failed to ensure reserve_captured_at usage sample column")?;
 
     sqlx::query(
         r#"
@@ -1867,6 +1931,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             cache_hit_low_rate_threshold_percent INTEGER NOT NULL DEFAULT 10,
             cache_hit_overflow_mode TEXT NOT NULL DEFAULT 'queue',
             priority_handoff_admission_enabled INTEGER NOT NULL DEFAULT 1,
+            automatic_reserve_fallback_enabled INTEGER NOT NULL DEFAULT 1,
             capability_axis_split_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -1879,6 +1944,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         load_sqlite_table_columns(pool, "pool_routing_settings").await?;
     let routing_models_mode_was_missing =
         !existing_routing_settings_columns.contains("available_models_mode");
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "automatic_reserve_fallback_enabled",
+    )
+    .await
+    .context("failed to ensure automatic_reserve_fallback_enabled")?;
+    sqlx::query(
+        "UPDATE pool_routing_settings SET automatic_reserve_fallback_enabled = 1 WHERE automatic_reserve_fallback_enabled IS NULL",
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill automatic_reserve_fallback_enabled")?;
     ensure_nullable_integer_column(pool, "pool_routing_settings", "primary_sync_interval_secs")
         .await
         .context("failed to ensure pool_routing_settings.primary_sync_interval_secs")?;
@@ -2423,6 +2501,28 @@ pub(crate) async fn ensure_nullable_integer_column(
     }
 
     let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} INTEGER");
+    sqlx::query(&statement).execute(pool).await?;
+    Ok(())
+}
+
+pub(crate) async fn ensure_nullable_real_column(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+    column_name: &str,
+) -> Result<()> {
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+
+    if columns.contains(column_name) {
+        return Ok(());
+    }
+
+    let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} REAL");
     sqlx::query(&statement).execute(pool).await?;
     Ok(())
 }

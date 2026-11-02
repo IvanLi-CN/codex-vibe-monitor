@@ -218,6 +218,8 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) cache_hit_overflow_mode: Option<String>,
     #[sqlx(default)]
     pub(crate) priority_handoff_admission_enabled: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) automatic_reserve_fallback_enabled: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,6 +348,22 @@ pub(crate) struct AccountRoutingCandidateRow {
     pub(crate) active_sticky_conversations: i64,
     #[sqlx(default)]
     pub(crate) in_flight_reservations: i64,
+    #[sqlx(default)]
+    pub(crate) reserve_status: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_primary_used_percent: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) reserve_primary_window_minutes: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reserve_primary_resets_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_secondary_used_percent: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) reserve_secondary_window_minutes: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reserve_secondary_resets_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_captured_at: Option<String>,
 }
 
 impl AccountRoutingCandidateRow {
@@ -943,6 +961,22 @@ pub(crate) struct UpstreamAccountSampleRow {
     pub(crate) credits_has_credits: Option<i64>,
     pub(crate) credits_unlimited: Option<i64>,
     pub(crate) credits_balance: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_status: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_primary_used_percent: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) reserve_primary_window_minutes: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reserve_primary_resets_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_secondary_used_percent: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) reserve_secondary_window_minutes: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reserve_secondary_resets_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_captured_at: Option<String>,
 }
 
 #[allow(dead_code)]

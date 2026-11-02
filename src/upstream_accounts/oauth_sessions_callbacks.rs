@@ -148,6 +148,7 @@ pub(crate) async fn update_pool_routing_settings(
         || payload.maintenance.is_some()
         || payload.cache_hit_protection.is_some()
         || payload.priority_handoff_admission_enabled.is_some()
+        || payload.automatic_reserve_fallback_enabled.is_some()
     {
         save_pool_routing_settings(
             &state.pool,
@@ -168,6 +169,7 @@ pub(crate) async fn update_pool_routing_settings(
                     .as_ref()
                     .map(|_| merged_cache_hit_protection),
                 priority_handoff_admission_enabled: payload.priority_handoff_admission_enabled,
+                automatic_reserve_fallback_enabled: payload.automatic_reserve_fallback_enabled,
             },
         )
         .await?;

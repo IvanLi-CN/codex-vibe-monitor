@@ -99,32 +99,47 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
                 })
         })
     });
+    let reserve =
+        snapshot
+            .reserve
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| NormalizedReserveQuotaSnapshot {
+                availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
+                primary: None,
+                secondary: None,
+            });
     let insert_result = sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_limit_samples (
             account_id, captured_at, limit_id, limit_name, plan_type,
             primary_used_percent, primary_window_minutes, primary_resets_at,
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
-            credits_has_credits, credits_unlimited, credits_balance
+            credits_has_credits, credits_unlimited, credits_balance,
+            reserve_status,
+            reserve_primary_used_percent, reserve_primary_window_minutes, reserve_primary_resets_at,
+            reserve_secondary_used_percent, reserve_secondary_window_minutes, reserve_secondary_resets_at,
+            reserve_captured_at
         )
-        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
         WHERE (
-            ?15 IS NULL OR EXISTS (
+            ?23 IS NULL OR EXISTS (
                 SELECT 1
                 FROM pool_upstream_account_refresh_state
                 WHERE account_id = ?1
-                  AND operation = ?16
-                  AND lease_token = ?15
+                  AND operation = ?24
+                  AND lease_token = ?23
             )
         )
           AND (
-              ?17 = 0
-              OR (?18 = 0 AND NOT EXISTS (
+              ?25 = 0
+              OR (?26 = 0 AND NOT EXISTS (
                   SELECT 1
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
               ))
-              OR (?18 = 1 AND (?19, ?20) = (
+              OR (?26 = 1 AND (?27, ?28) = (
                   SELECT captured_at, id
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
@@ -161,6 +176,14 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
             .map(|value| if value.unlimited { 1 } else { 0 }),
     )
     .bind(credits.as_ref().and_then(|value| value.balance.clone()))
+    .bind(&reserve.availability)
+    .bind(reserve.primary.as_ref().map(|value| value.used_percent))
+    .bind(reserve.primary.as_ref().map(|value| value.window_duration_mins))
+    .bind(reserve.primary.as_ref().and_then(|value| value.resets_at.clone()))
+    .bind(reserve.secondary.as_ref().map(|value| value.used_percent))
+    .bind(reserve.secondary.as_ref().map(|value| value.window_duration_mins))
+    .bind(reserve.secondary.as_ref().and_then(|value| value.resets_at.clone()))
+    .bind(&now_iso)
     .bind(expected_lease_token)
     .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
     .bind(i64::from(expected_usage_version.is_some()))
@@ -180,7 +203,7 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
         expected_usage_version
             .as_ref()
             .and_then(Option::as_ref)
-            .map(|value| value.id),
+        .map(|value| value.id),
     )
     .execute(pool)
     .await?;

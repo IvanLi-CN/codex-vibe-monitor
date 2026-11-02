@@ -53,6 +53,7 @@ async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_dat
     assert_eq!(row.cache_hit_protection_enabled, Some(0));
     assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
     assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
+    assert_eq!(row.automatic_reserve_fallback_enabled, Some(1));
     let compression = resolve_pool_request_compression_settings_from_row(&row);
     assert_eq!(compression.algorithm, RequestCompressionAlgorithm::Identity);
     assert_eq!(
@@ -278,6 +279,7 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
         "cache_hit_protection_enabled",
         "cache_hit_low_rate_threshold_percent",
         "cache_hit_overflow_mode",
+        "automatic_reserve_fallback_enabled",
     ] {
         assert!(
             columns.contains(column),
@@ -339,6 +341,7 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
     assert_eq!(row.cache_hit_protection_enabled, Some(0));
     assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
     assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
+    assert_eq!(row.automatic_reserve_fallback_enabled, Some(1));
 
     let resolved = resolve_pool_routing_timeouts(&pool, &config)
         .await

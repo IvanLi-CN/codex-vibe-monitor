@@ -53,6 +53,7 @@ type PoolRoutingSettingsCardProps = {
     cacheHitRateThresholdPercent: string;
     cacheHitOverflowMode: "queue" | "reroute";
     priorityHandoffAdmissionEnabled: boolean;
+    automaticReserveFallbackEnabled: boolean;
   };
   busy: boolean;
   writesEnabled: boolean;
@@ -72,6 +73,7 @@ type PoolRoutingSettingsCardProps = {
     cacheHitOverflowMode?: "queue" | "reroute";
   }) => void;
   onPriorityHandoffAdmissionChange: (enabled: boolean) => void;
+  onAutomaticReserveFallbackChange: (enabled: boolean) => void;
   onSave: () => void;
 };
 
@@ -91,6 +93,7 @@ export function PoolRoutingSettingsCard({
   onTimeoutChange,
   onCacheHitProtectionChange,
   onPriorityHandoffAdmissionChange,
+  onAutomaticReserveFallbackChange,
   onSave,
 }: PoolRoutingSettingsCardProps) {
   const { t } = useTranslation();
@@ -192,6 +195,24 @@ export function PoolRoutingSettingsCard({
               disabled={!writesEnabled || busy}
               aria-label={t("settings.routing.priorityHandoff.title")}
               onCheckedChange={onPriorityHandoffAdmissionChange}
+            />
+          </div>
+        </div>
+        <div className="space-y-4 rounded-lg border border-base-300/75 bg-base-200/28 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <div className="font-medium leading-snug">
+                {t("settings.routing.reserveFallback.title")}
+              </div>
+              <div className="text-sm leading-snug text-base-content/70">
+                {t("settings.routing.reserveFallback.description")}
+              </div>
+            </div>
+            <Switch
+              checked={draft.automaticReserveFallbackEnabled}
+              disabled={!writesEnabled || busy}
+              aria-label={t("settings.routing.reserveFallback.title")}
+              onCheckedChange={onAutomaticReserveFallbackChange}
             />
           </div>
         </div>

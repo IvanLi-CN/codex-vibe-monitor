@@ -172,6 +172,47 @@ mod tests {
         assert!(rule.available_models.is_empty());
         assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));
     }
+
+    #[test]
+    fn reserve_routing_requires_fresh_available_snapshot() {
+        let now = Utc::now();
+        let mut candidate = AccountRoutingCandidateRow {
+            id: 1,
+            plan_type: None,
+            secondary_used_percent: None,
+            secondary_window_minutes: None,
+            secondary_resets_at: None,
+            primary_used_percent: None,
+            primary_window_minutes: None,
+            primary_resets_at: None,
+            local_primary_limit: None,
+            local_secondary_limit: None,
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            last_selected_at: None,
+            active_sticky_conversations: 0,
+            in_flight_reservations: 0,
+            reserve_status: Some(RESERVE_AVAILABILITY_AVAILABLE.to_string()),
+            reserve_primary_used_percent: Some(20.0),
+            reserve_primary_window_minutes: Some(300),
+            reserve_primary_resets_at: None,
+            reserve_secondary_used_percent: None,
+            reserve_secondary_window_minutes: None,
+            reserve_secondary_resets_at: None,
+            reserve_captured_at: Some((now - chrono::Duration::seconds(60)).to_rfc3339()),
+        };
+        assert!(reserve_candidate_snapshot_is_available(&candidate, now));
+
+        candidate.reserve_status = Some(RESERVE_AVAILABILITY_UNKNOWN.to_string());
+        assert!(!reserve_candidate_snapshot_is_available(&candidate, now));
+
+        candidate.reserve_status = Some(RESERVE_AVAILABILITY_AVAILABLE.to_string());
+        candidate.reserve_captured_at = Some(
+            (now - chrono::Duration::seconds(RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS + 1)).to_rfc3339(),
+        );
+        assert!(!reserve_candidate_snapshot_is_available(&candidate, now));
+    }
 }
 
 pub(crate) fn apply_conversation_routing_override(
@@ -990,6 +1031,62 @@ pub(crate) async fn load_account_routing_candidates(
                 ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_balance,
+            (
+                SELECT sample.reserve_status
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_status,
+            (
+                SELECT sample.reserve_primary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_primary_used_percent,
+            (
+                SELECT sample.reserve_primary_window_minutes
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_primary_window_minutes,
+            (
+                SELECT sample.reserve_primary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_primary_resets_at,
+            (
+                SELECT sample.reserve_secondary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_secondary_used_percent,
+            (
+                SELECT sample.reserve_secondary_window_minutes
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_secondary_window_minutes,
+            (
+                SELECT sample.reserve_secondary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_secondary_resets_at,
+            (
+                SELECT sample.reserve_captured_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_captured_at,
             account.last_selected_at,
             (
                 SELECT COUNT(DISTINCT route.sticky_key)
@@ -1029,6 +1126,30 @@ pub(crate) async fn load_account_routing_candidates(
         .fetch_all(pool)
         .await
         .map_err(Into::into)
+}
+
+pub(crate) fn reserve_candidate_is_available(
+    row: &UpstreamAccountRow,
+    candidate: &AccountRoutingCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+        && reserve_candidate_snapshot_is_available(candidate, now)
+}
+
+pub(crate) fn reserve_candidate_snapshot_is_available(
+    candidate: &AccountRoutingCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    candidate.reserve_status.as_deref() == Some(RESERVE_AVAILABILITY_AVAILABLE)
+        && candidate
+            .reserve_captured_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .is_some_and(|captured_at| {
+                now.signed_duration_since(captured_at).num_seconds()
+                    <= RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS
+            })
 }
 
 pub(crate) async fn load_account_routing_candidate(
@@ -1117,6 +1238,62 @@ pub(crate) async fn load_account_routing_candidate(
                 ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS credits_balance,
+            (
+                SELECT sample.reserve_status
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_status,
+            (
+                SELECT sample.reserve_primary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_primary_used_percent,
+            (
+                SELECT sample.reserve_primary_window_minutes
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_primary_window_minutes,
+            (
+                SELECT sample.reserve_primary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_primary_resets_at,
+            (
+                SELECT sample.reserve_secondary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_secondary_used_percent,
+            (
+                SELECT sample.reserve_secondary_window_minutes
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_secondary_window_minutes,
+            (
+                SELECT sample.reserve_secondary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_secondary_resets_at,
+            (
+                SELECT sample.reserve_captured_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_captured_at,
             account.last_selected_at,
             (
                 SELECT COUNT(DISTINCT route.sticky_key)
