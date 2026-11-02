@@ -30587,7 +30587,7 @@ mod dashboard_activity_read_model_tests {
         sqlx::query(
             "CREATE TABLE codex_invocations (\
                 id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, \
-                status TEXT, total_tokens INTEGER, cost REAL, cache_input_tokens INTEGER, \
+                status TEXT, input_tokens INTEGER, total_tokens INTEGER, cost REAL, cache_input_tokens INTEGER, \
                 payload TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT, \
                 is_actionable INTEGER, t_req_read_ms REAL, t_req_parse_ms REAL, \
                 t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, first_token_ms REAL, \
