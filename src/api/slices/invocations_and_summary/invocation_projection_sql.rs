@@ -64,7 +64,7 @@ pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = concat!(
     invocation_classification_error_sql!(),
     " LIKE '%request body read timed out%' OR ",
     invocation_classification_error_sql!(),
-    " LIKE '[request_body_read_timeout]%' THEN 'request_body_read_timeout' WHEN LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_%' THEN LOWER(TRIM(status)) WHEN ",
+    " LIKE '[request_body_read_timeout]%' THEN 'request_body_read_timeout' WHEN LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_%' AND LOWER(TRIM(COALESCE(status, ''))) <> 'http_200' THEN LOWER(TRIM(status)) WHEN ",
     invocation_classification_error_sql!(),
     " <> '' THEN 'untyped_failure' ELSE NULL END"
 );
@@ -105,6 +105,10 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     invocation_classification_error_sql!(),
     " LIKE '[downstream_closed]%' ",
     "        THEN 'client_abort' ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
+    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('', 'none') ",
+    "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429' ",
     "        OR LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) = 'upstream_http_429' ",
     "        THEN 'service_failure' ",
