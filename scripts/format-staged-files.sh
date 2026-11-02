@@ -669,7 +669,7 @@ sub restore_index {
   my @current_stat = lstat($index_name) or return 0;
   return 0 unless "$current_stat[0]:$current_stat[1]" eq $installed_identity;
   sysopen my $restore_lock, $lock_name,
-    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0666 or return 0;
+    O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0666 or return 0;
   binmode $restore_lock;
   my $fail = sub {
     my @fd_stat = stat($restore_lock);

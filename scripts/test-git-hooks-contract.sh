@@ -612,6 +612,12 @@ idempotent_output="$tmp_dir/idempotent-install.log"
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh > "$idempotent_output" 2>&1
 )
 assert_not_contains "$idempotent_output" 'already exists and is unmanaged'
+chmod -x "$legacy_repo/.git/hooks/commit-msg"
+(
+  cd "$legacy_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
+)
+[ -x "$legacy_repo/.git/hooks/commit-msg" ] || fail 'managed hook installation did not restore executable permissions'
 printf '#!/bin/sh\necho custom\n' > "$legacy_hook"
 chmod +x "$legacy_hook"
 (

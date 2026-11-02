@@ -372,7 +372,7 @@ safe_remove_legacy_hook() {
   local template_path="$2"
   local expected_identity="$3"
 
-  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -e '
+  perl -MConfig -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -e '
     my ($hook_path, $template_path, $expected_identity) = @ARGV;
     my $separator = rindex($hook_path, "/");
     die "unable to determine hook parent directory\n" if $separator < 1;
@@ -421,6 +421,21 @@ safe_remove_legacy_hook() {
       return $contents;
     }
 
+    sub unlink_exact {
+      my ($directory, $name) = @_;
+      my $syscall_number;
+      if ($^O eq "darwin") {
+        $syscall_number = 472;
+      } elsif ($^O eq "linux") {
+        $syscall_number = $Config{archname} =~ /(?:aarch64|arm64)/ ? 35 : 263;
+      }
+      if (defined $syscall_number) {
+        my $mutable_name = $name;
+        return syscall($syscall_number, fileno($directory), $mutable_name, 0) == 0;
+      }
+      return unlink($name) ? 1 : 0;
+    }
+
     my $identity = regular_identity($hook, $hook_name)
       or die "hook must be a regular file\n";
     die "hook identity changed\n" unless $identity eq $expected_identity;
@@ -434,7 +449,7 @@ safe_remove_legacy_hook() {
     die "unable to read hook\n" unless defined $final_contents;
     die "hook contents changed\n" unless $final_contents eq $template_contents;
     die "hook identity changed\n" unless (regular_identity($hook, $hook_name) || "") eq $expected_identity;
-    unlink($hook_name) or die "unable to remove hook: $!\n";
+    unlink_exact($directory, $hook_name) or die "unable to remove hook: $!\n";
   ' "$hook_path" "$template_path" "$expected_identity"
 }
 
@@ -461,9 +476,6 @@ safe_publish_hook() {
       or die "unable to resolve opened hook parent directory: $!\n";
     die "hook parent directory changed while opening\n"
       unless $opened_directory eq $expected_directory;
-    sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
-      or die "unable to open generated hook: $!\n";
-    binmode $source;
 
     sub regular_identity {
       my ($handle, $name) = @_;
@@ -504,23 +516,6 @@ safe_publish_hook() {
       return 1;
     }
 
-    sub restore_existing {
-      my ($handle, $name, $expected_identity, $contents) = @_;
-      return 0 unless (regular_identity($handle, $name) || "") eq $expected_identity;
-      return 0 unless write_contents($handle, $contents);
-      my $restored_contents = read_contents($handle);
-      return 0 unless defined($restored_contents) && $restored_contents eq $contents;
-      return 0 unless (regular_identity($handle, $name) || "") eq $expected_identity;
-      return 1;
-    }
-
-    sub remove_created {
-      my ($handle, $name, $identity) = @_;
-      return 0 unless defined($identity) && $identity ne "";
-      return 0 unless (regular_identity($handle, $name) || "") eq $identity;
-      return unlink($name) ? 1 : 0;
-    }
-
     sub hash_contents {
       my ($contents) = @_;
       my ($read_handle, $write_handle);
@@ -554,67 +549,99 @@ safe_publish_hook() {
       return undef;
     }
 
+    sub cleanup_temporary {
+      my ($handle, $name) = @_;
+      return unless defined $handle && defined $name && length $name;
+      my @handle_stat = stat($handle);
+      my @path_stat = lstat($name);
+      if (@handle_stat && @path_stat
+        && (($handle_stat[2] & S_IFMT) == S_IFREG)
+        && (($path_stat[2] & S_IFMT) == S_IFREG)
+        && "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]") {
+        unlink($name);
+      }
+      close $handle;
+    }
+
+    sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+      or die "unable to open generated hook: $!\n";
+    binmode $source;
     regular_identity($source, $source_path) or die "generated hook must be a regular file\n";
     my $source_contents = read_contents($source);
     die "unable to read generated hook\n" unless defined $source_contents;
     regular_identity($source, $source_path) or die "generated hook changed while reading\n";
 
+    my $temporary_name = "";
+    my $temporary;
+    for my $attempt (0 .. 99) {
+      my $candidate = ".${hook_name}.codex-vibe-monitor.$$.$attempt";
+      next if -e $candidate || -l $candidate;
+      if (sysopen($temporary, $candidate,
+          O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0755)) {
+        $temporary_name = $candidate;
+        last;
+      }
+    }
+    die "unable to create temporary hook: $!\n" unless length $temporary_name;
+    binmode $temporary;
+    my $temporary_identity = regular_identity($temporary, $temporary_name)
+      or die "temporary hook must be a regular file\n";
+    die "unable to write temporary hook\n" unless write_contents($temporary, $source_contents);
+    my $temporary_contents = read_contents($temporary);
+    die "unable to verify temporary hook\n"
+      unless defined($temporary_contents) && $temporary_contents eq $source_contents;
+    die "temporary hook changed while writing\n"
+      unless (regular_identity($temporary, $temporary_name) || "") eq $temporary_identity;
+
     my $hook;
-    my $created = 0;
-    my $original_contents = "";
-    if ($expected_state eq "absent") {
-      sysopen $hook, $hook_name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0755
-        or die "hook appeared during installation: $!\n";
-      $created = 1;
-    } else {
-      sysopen $hook, $hook_name, O_RDWR | O_NOFOLLOW | O_NONBLOCK
-        or die "unable to open existing hook: $!\n";
-    }
-    binmode $hook;
-    flock($hook, LOCK_EX) or die "unable to lock hook: $!\n";
-    my $identity = regular_identity($hook, $hook_name)
-      or die "hook must be a regular file\n";
-    if ($expected_state eq "absent") {
-      die "hook appeared during installation\n" unless $created;
-    } else {
-      die "hook identity changed during installation\n" unless $identity eq $expected_identity;
-      $original_contents = read_contents($hook);
-      die "unable to read existing hook\n" unless defined $original_contents;
-      my $original_hash = hash_contents($original_contents)
-        or die "unable to hash existing hook\n";
-      die "hook contents changed during installation\n" unless $original_hash eq $expected_hash;
-      die "hook identity changed during installation\n"
-        unless (regular_identity($hook, $hook_name) || "") eq $expected_identity;
-      my $rechecked_contents = read_contents($hook);
-      die "unable to read existing hook\n" unless defined $rechecked_contents;
-      my $rechecked_hash = hash_contents($rechecked_contents)
-        or die "unable to hash existing hook\n";
-      die "hook contents changed during installation\n" unless $rechecked_hash eq $expected_hash;
-      $original_contents = $rechecked_contents;
-    }
-    die "hook identity changed before installation\n"
-      unless $expected_state eq "absent" || (regular_identity($hook, $hook_name) || "") eq $expected_identity;
-    if (!write_contents($hook, $source_contents)) {
-      if ($expected_state eq "absent") {
-        remove_created($hook, $hook_name, $identity);
+    my $publication_ok = eval {
+      if ($expected_state eq "present") {
+        sysopen($hook, $hook_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+          or die "unable to open existing hook: $!\n";
+        flock($hook, LOCK_EX) or die "unable to lock hook: $!\n";
+        my $identity = regular_identity($hook, $hook_name)
+          or die "hook must be a regular file\n";
+        die "hook identity changed during installation\n" unless $identity eq $expected_identity;
+        my $current_contents = read_contents($hook);
+        die "unable to read existing hook\n" unless defined $current_contents;
+        my $current_hash = hash_contents($current_contents)
+          or die "unable to hash existing hook\n";
+        die "hook contents changed during installation\n" unless $current_hash eq $expected_hash;
+        die "hook identity changed before installation\n"
+          unless (regular_identity($hook, $hook_name) || "") eq $expected_identity;
+        my $rechecked_contents = read_contents($hook);
+        die "unable to read existing hook\n" unless defined $rechecked_contents;
+        my $rechecked_hash = hash_contents($rechecked_contents)
+          or die "unable to hash existing hook\n";
+        die "hook contents changed before installation\n" unless $rechecked_hash eq $expected_hash;
+        die "temporary hook changed before installation\n"
+          unless (regular_identity($temporary, $temporary_name) || "") eq $temporary_identity;
+        rename($temporary_name, $hook_name)
+          or die "unable to publish hook: $!\n";
+        die "published hook identity changed\n"
+          unless (regular_identity($temporary, $hook_name) || "") eq $temporary_identity;
+        my $published_contents = read_contents($temporary);
+        die "unable to verify published hook\n"
+          unless defined($published_contents) && $published_contents eq $source_contents;
       } else {
-        restore_existing($hook, $hook_name, $expected_identity, $original_contents);
+        link($temporary_name, $hook_name)
+          or die "hook appeared during installation: $!\n";
+        die "published hook identity changed\n"
+          unless (regular_identity($temporary, $hook_name) || "") eq $temporary_identity;
+        unlink($temporary_name) or die "unable to remove temporary hook: $!\n";
+        $temporary_name = "";
       }
-      die "unable to write hook\n";
+      1;
+    };
+    if (!$publication_ok) {
+      my $error = $@ || "unable to publish hook\n";
+      cleanup_temporary($temporary, $temporary_name);
+      close $hook if defined $hook;
+      die $error;
     }
-    my $written_contents = read_contents($hook);
-    if (!defined($written_contents) || $written_contents ne $source_contents) {
-      if ($expected_state eq "absent") {
-        remove_created($hook, $hook_name, $identity);
-      } else {
-        restore_existing($hook, $hook_name, $expected_identity, $original_contents);
-      }
-      die "unable to verify hook\n";
-    }
-    if (!regular_identity($hook, $hook_name)) {
-      die "hook identity changed after installation\n";
-    }
-    close $hook or die "unable to close hook: $!\n";
+    close $hook if defined $hook;
+    close $temporary or die "unable to close temporary hook: $!\n";
+    close $source or die "unable to close generated hook: $!\n";
   ' "$repo_root" "$hook_path" "$source_path" "$expected_state" "$expected_identity" "$expected_hash"
 }
 
