@@ -12,17 +12,17 @@ from pathlib import Path
 
 
 TARGETS = [
-    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::"
+    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::"
     "startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure",
-    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::"
+    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::"
     "summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure",
-    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::"
+    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::"
     "system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline",
     "tests::stateful_sqlite::parallel_work_stats_and_timeseries::"
     "restart_schema_refreshes_existing_objects_across_primed_pool_connections",
     "tests::stateful_sqlite::proxy_backfill_and_cost_repairs::"
     "run_backfill_with_retry_succeeds_after_lock_release",
-    "tests::stateful_sqlite::system_status_and_account_roster::"
+    "tests::stateful_sqlite::system_status_and_account_roster::system_status_and_raw_metrics::"
     "system_raw_metrics_inventory_revalidates_existing_paths_after_hydration",
 ]
 
@@ -31,10 +31,10 @@ PHASE_RE = re.compile(
     r"elapsed_ms=(?P<elapsed>[0-9]+)"
 )
 TARGET_START_MARKER_RE = re.compile(
-    r"stateful-test-timing target_start=(?P<target>tests::stateful_sqlite::[a-z0-9_]+::[a-z0-9_]+)"
+    r"stateful-test-timing target_start=(?P<target>tests::stateful_sqlite::[a-z0-9_]+(?:::[a-z0-9_]+)+)"
 )
 TARGET_END_MARKER_RE = re.compile(
-    r"stateful-test-timing target_end=(?P<target>tests::stateful_sqlite::[a-z0-9_]+::[a-z0-9_]+)"
+    r"stateful-test-timing target_end=(?P<target>tests::stateful_sqlite::[a-z0-9_]+(?:::[a-z0-9_]+)+)"
 )
 WALL_RE = re.compile(
     r"^stateful-performance ref=(?P<ref>control|candidate) "

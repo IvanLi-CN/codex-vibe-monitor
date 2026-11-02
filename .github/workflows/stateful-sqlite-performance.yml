@@ -391,16 +391,16 @@ jobs:
           done
           setup_target_indices=(0 1 2 5)
           setup_target_filters=(
-            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure)'
-            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure)'
-            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline)'
-            'test(=tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration)'
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure)'
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure)'
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline)'
+            'test(=tests::stateful_sqlite::system_status_and_account_roster::system_status_and_raw_metrics::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration)'
           )
           setup_target_names=(
-            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure'
-            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure'
-            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline'
-            'tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration'
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure'
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure'
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline'
+            'tests::stateful_sqlite::system_status_and_account_roster::system_status_and_raw_metrics::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration'
           )
           for replay in cold warm; do
             case "$replay" in

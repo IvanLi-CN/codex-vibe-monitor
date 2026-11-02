@@ -17,7 +17,7 @@ The contract is implemented by the following checked-in surfaces:
   group. The managed pre-commit wrapper serializes the complete hook per
   worktree; the Rust formatter rejects partial staging and explicitly stages
   its formatted whole-file output before the guard reads the index.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 83 current explicit file budgets (3 production and 80 test/helper), and 140 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 88 current explicit file budgets (3 production and 85 test/helper), and 140 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - The Rust 1.99.1 upgrade retains the existing test-facade re-export boundaries and registers seven additional conditional `unused_imports` allows required by all-target Clippy; no runtime, SQL, API, or test-resource behavior changes.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -567,3 +567,39 @@ Validation for this extraction is the canonical Rust source-quality runner and
 fixture harness, focused upstream-account synchronization/import/tag/detail
 coverage, locked all-target checking, all-features Clippy, the applicable
 backend resource profile, and `git diff --check`.
+
+## Startup Rebuild and Retention Test Helper Extraction
+
+The startup/rebuild/retention extraction starts from live main
+`9934568337a5fdc7a184d8be54e8a633911d3fa8` and completes governance of the
+original 6,489-line
+`src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs` parent in
+one source-quality PR. The parent is now a 16-line facade over five named
+stateful SQLite children: `schema_and_timeseries.rs` (1,088 lines),
+`startup_health_and_hydration.rs` (510),
+`hourly_rollup_bootstrap_and_startup_backfill.rs` (2,333),
+`failure_classification_backfill.rs` (298), and
+`retention_and_archive_activity_recovery.rs` (2,267). Every resulting
+test/helper file is below the 3,000-line target.
+
+The five boundaries cover schema/timeseries lifecycle, startup health and
+hydration, hourly-rollup bootstrap and startup backfill, failure-classification
+backfill, and retention/archive/activity recovery respectively. The 98
+original function declarations and 93 test attributes remain exactly once,
+including every test name, assertion, SQL literal, fixture setup and cleanup,
+timeout/deadline, lock/permit, cancellation, and stateful SQLite resource
+classification. The facade exposes only the three shared gate/progress helpers
+needed by the startup backfill child; no production source, runtime behavior,
+frozen source, or `include!` composition changes.
+
+The stateful SQLite performance target selectors now point at the hydration
+child's unchanged test identities. The policy removes the oversized parent
+candidate only after the complete extraction and records the facade plus all
+five children at their measured physical line counts, leaving 88 explicit
+entries (3 production and 85 test/helper) and 140 suppression declarations;
+immutable preparation counts remain 32/23.
+
+Validation for this extraction is the canonical source-quality runner and
+fixture harness, the stateful SQLite backend profile, focused selectors for the
+five extracted families, locked all-target checking, all-features Clippy,
+stateful performance contract syntax checks, and `git diff --check`.
