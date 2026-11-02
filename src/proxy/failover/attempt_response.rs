@@ -50,6 +50,25 @@ fn should_attempt_automatic_reserve_fallback(
         && reserve_available
 }
 
+async fn refresh_reserve_usage_with_request_budget(
+    state: &AppState,
+    account_id: i64,
+    responses_total_timeout: Option<Duration>,
+    total_timeout_started_at: Option<Instant>,
+) -> bool {
+    let refresh = crate::upstream_accounts::refresh_upstream_account_usage_by_id(state, account_id);
+    if let Some(total_timeout) = responses_total_timeout {
+        let Some(started_at) = total_timeout_started_at else {
+            return false;
+        };
+        let Some(remaining) = remaining_timeout_budget(total_timeout, started_at.elapsed()) else {
+            return false;
+        };
+        return matches!(timeout(remaining, refresh).await, Ok(Ok(_)));
+    }
+    refresh.await.is_ok()
+}
+
 pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
     response_context: PoolAttemptResponseContext<'a, 'b>,
 ) -> Result<PoolAttemptResponseOutcome, PoolUpstreamError> {
@@ -786,13 +805,17 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             disarm_pool_early_phase_cleanup_guard(early_phase_cleanup_guard);
             return Err(final_error);
         }
+        let reserve_refresh_started_at = attempt_total_timeout_started_at
+            .or(context.responses_total_timeout_started_at)
+            .or_else(|| context.responses_total_timeout.map(|_| connect_started));
         let reserve_usage_refresh_succeeded = automatic_reserve_fallback_enabled
-            && crate::upstream_accounts::refresh_upstream_account_usage_by_id(
+            && refresh_reserve_usage_with_request_budget(
                 context.state.as_ref(),
                 context.account.account_id,
+                context.responses_total_timeout,
+                reserve_refresh_started_at,
             )
-            .await
-            .is_ok();
+            .await;
         let reserve_model_policy = if reserve_usage_refresh_succeeded {
             load_pool_routing_settings(&context.state.pool)
                 .await

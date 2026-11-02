@@ -6322,26 +6322,11 @@ export async function handleDemoRequest(request: Request) {
         },
       ],
     });
-  if (pathname === "/api/pool/routing-settings")
-    return json({
-      writesEnabled: true,
-      apiKeyConfigured: true,
-      maskedApiKey: "cvm_pool••••••",
-      maintenance: {
-        primarySyncIntervalSecs: 300,
-        secondarySyncIntervalSecs: 1800,
-        priorityAvailableAccountCap: 100,
-      },
-      timeouts: {
-        responsesFirstByteTimeoutSecs: 30,
-        compactFirstByteTimeoutSecs: 45,
-        imageFirstByteTimeoutSecs: 300,
-        responsesStreamTimeoutSecs: 300,
-        compactStreamTimeoutSecs: 420,
-      },
-      priorityHandoffAdmissionEnabled: true,
-      automaticReserveFallbackEnabled: true,
-    });
+  if (
+    pathname === "/api/pool/routing-settings" &&
+    (request.method === "GET" || request.method === "HEAD")
+  )
+    return json(demoModel.snapshot.settings.poolRouting);
   if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
     return json(
       demoModelRoutingLive({
@@ -6412,6 +6397,8 @@ export async function handleDemoRequest(request: Request) {
     }
     if (pathname === "/api/settings" || pathname.startsWith("/api/settings/"))
       return json(demoModel.updateSettings(pathname, body));
+    if (pathname === "/api/pool/routing-settings")
+      return json(demoModel.updatePoolRoutingSettings(body));
     if (pathname === "/api/pool/upstream-accounts")
       return json(demoModel.createAccount(), { status: 201 });
     const syncMatch = pathname.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sync$/);

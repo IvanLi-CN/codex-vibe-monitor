@@ -440,6 +440,9 @@ describe("fetchUpstreamAccounts Reserve normalization", () => {
                 enabled: true,
                 reserve: {
                   availability: "unexpected",
+                  normalModelSlug: "gpt-5.4-luna",
+                  meteredFeature: "base_model_inference",
+                  bindingSource: "additional_rate_limits",
                   primaryWindow: {
                     usedPercent: 15,
                     availablePercent: 82,
@@ -458,6 +461,9 @@ describe("fetchUpstreamAccounts Reserve normalization", () => {
 
     const response = await fetchUpstreamAccounts();
     expect(response.items[0]?.reserve?.availability).toBe("unknown");
+    expect(response.items[0]?.reserve?.normalModelSlug).toBe("gpt-5.4-luna");
+    expect(response.items[0]?.reserve?.meteredFeature).toBe("base_model_inference");
+    expect(response.items[0]?.reserve?.bindingSource).toBe("additional_rate_limits");
     expect(response.items[0]?.reserve?.primaryWindow?.availablePercent).toBe(82);
   });
 });

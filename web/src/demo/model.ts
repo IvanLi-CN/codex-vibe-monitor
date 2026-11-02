@@ -61,6 +61,44 @@ const RETIRED_PROXY_SETTING_FIELDS = new Set([
   "upstreamWebsocketDefaultEnabled",
 ]);
 
+function createPoolRoutingSettings() {
+  return {
+    writesEnabled: true,
+    apiKeyConfigured: true,
+    maskedApiKey: "cvm_pool••••••",
+    maintenance: {
+      primarySyncIntervalSecs: 300,
+      secondarySyncIntervalSecs: 1800,
+      priorityAvailableAccountCap: 100,
+    },
+    requestCompressionAlgorithm: "identity",
+    oauthRequestCompressionAlgorithm: "zstd",
+    requestCompressionLevelPreset: "balanced",
+    codexImagegenRewriteMode: "keep_original",
+    availableModels: [],
+    availableModelsMode: "denylist",
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 30,
+      compactFirstByteTimeoutSecs: 45,
+      imageFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 420,
+    },
+    cacheHitProtection: {
+      enabled: false,
+      lowHitRateThresholdPercent: 10,
+      overflowMode: "queue",
+      minimumInputTokens: 3840,
+    },
+    priorityHandoffAdmissionEnabled: true,
+    automaticReserveFallbackEnabled: true,
+    reserveFallbackModelPolicy: {
+      mode: "upstream",
+      patterns: [],
+    },
+  };
+}
+
 function safePayload(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(safePayload);
   if (typeof value !== "object" || value === null) return value;
@@ -180,6 +218,7 @@ function createSettings() {
         },
       ],
     },
+    poolRouting: createPoolRoutingSettings(),
     pricing: {
       catalogVersion: "openai-standard-2026-09-23",
       entries: [
@@ -715,6 +754,9 @@ function createAccounts(scene: DemoScene = "operational") {
           kind === "oauth_codex"
             ? {
                 availability: reserveAvailability,
+                normalModelSlug: "gpt-5.6-luna",
+                meteredFeature: "base_model_inference",
+                bindingSource: "additional_rate_limits",
                 primaryWindow: {
                   usedPercent: reserveUsedPercent,
                   availablePercent: 100 - reserveUsedPercent,
@@ -961,6 +1003,52 @@ class DemoModel {
     if (pathname === "/api/settings/forward-proxy") return clone(settings.forwardProxy);
     if (pathname === "/api/settings/pricing") return clone(settings.pricing);
     return clone(settings);
+  }
+
+  updatePoolRoutingSettings(payload: unknown) {
+    const nextPayload = safePayload(payload);
+    const update =
+      typeof nextPayload === "object" && nextPayload !== null
+        ? (nextPayload as Record<string, unknown>)
+        : {};
+    const current =
+      typeof this.#state.settings.poolRouting === "object" &&
+      this.#state.settings.poolRouting !== null
+        ? (this.#state.settings.poolRouting as Record<string, unknown>)
+        : createPoolRoutingSettings();
+    const objectValue = (value: unknown): Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    const poolRouting = {
+      ...current,
+      ...update,
+      maintenance: {
+        ...objectValue(current.maintenance),
+        ...objectValue(update.maintenance),
+      },
+      timeouts: {
+        ...objectValue(current.timeouts),
+        ...objectValue(update.timeouts),
+      },
+      cacheHitProtection: {
+        ...objectValue(current.cacheHitProtection),
+        ...objectValue(update.cacheHitProtection),
+      },
+      reserveFallbackModelPolicy: {
+        ...objectValue(current.reserveFallbackModelPolicy),
+        ...objectValue(update.reserveFallbackModelPolicy),
+      },
+    };
+    this.#state = {
+      ...this.#state,
+      settings: {
+        ...this.#state.settings,
+        poolRouting,
+      },
+    };
+    this.record("模拟保存池路由配置");
+    return clone(poolRouting);
   }
 
   updateModelSyncState(payload: unknown) {

@@ -133,6 +133,37 @@ describe("demo MSW handlers", () => {
     ).toMatchObject({ enabled: true });
   });
 
+  it("persists automatic Reserve fallback settings in the demo API", async () => {
+    const initial = await fetch("http://demo.invalid/api/pool/routing-settings");
+    expect(await initial.json()).toMatchObject({
+      automaticReserveFallbackEnabled: true,
+      reserveFallbackModelPolicy: { mode: "upstream", patterns: [] },
+    });
+
+    const updated = await fetch("http://demo.invalid/api/pool/routing-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        automaticReserveFallbackEnabled: false,
+        reserveFallbackModelPolicy: {
+          mode: "custom",
+          patterns: ["gpt-*-luna"],
+        },
+      }),
+    });
+    expect(updated.ok).toBe(true);
+    expect(await updated.json()).toMatchObject({
+      automaticReserveFallbackEnabled: false,
+      reserveFallbackModelPolicy: { mode: "custom", patterns: ["gpt-*-luna"] },
+    });
+
+    const reloaded = await fetch("http://demo.invalid/api/pool/routing-settings");
+    expect(await reloaded.json()).toMatchObject({
+      automaticReserveFallbackEnabled: false,
+      reserveFallbackModelPolicy: { mode: "custom", patterns: ["gpt-*-luna"] },
+    });
+  });
+
   it("exposes synthetic observability destinations without a performance database", async () => {
     const response = await fetch("http://demo.invalid/api/system/observability");
     const payload = await response.json();
