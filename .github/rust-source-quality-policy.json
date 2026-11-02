@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 84,
+    "inventory_entries": 83,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -395,12 +395,6 @@
       "role": "production",
       "line_budget": 3500,
       "next_module_workstream": "Split OAuth session callbacks, mailbox transitions, and account mutation helpers."
-    },
-    {
-      "path": "src/upstream_accounts/sync_account_imports_tags.rs",
-      "role": "production",
-      "line_budget": 5681,
-      "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
     },
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
@@ -1347,13 +1341,13 @@
       "reason": "Retain this targeted expect for the version-fenced OAuth upsert actor boundary; remove it when the command carries a dedicated optimistic-version payload."
     },
     {
-      "path": "src/upstream_accounts/sync_account_imports_tags.rs",
+      "path": "src/upstream_accounts/sync_account_imports_tags/sync.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
       "reason": "Retain this targeted allow for the usage refresh failure adapter; remove it when usage refresh failure context is carried by a dedicated payload."
     },
     {
-      "path": "src/upstream_accounts/sync_account_imports_tags.rs",
+      "path": "src/upstream_accounts/sync_account_imports_tags/sync.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Lease-fenced OAuth persistence keeps credential, expiry, source, retry, and fencing inputs explicit.\" )]",
       "reason": "Retain this targeted expect for the lease-fenced OAuth persistence adapter; remove it when credential refresh context is carried by a dedicated payload."

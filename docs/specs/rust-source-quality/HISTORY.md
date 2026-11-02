@@ -443,3 +443,23 @@ The 121 tests remain exactly once with their original names, attributes, asserti
 The policy removes only the old parent inventory entry, leaving 20 explicit files with 4 production and 16 test/helper candidates, immutable preparation counts of 32/23, and 125 suppression entries. No production implementation, SQL/transaction semantics, schema, frozen invocation-summary source, `include!`, or new suppression declaration changes.
 
 Structural validation, the canonical source-quality runner, locked all-target checking, all-features Clippy, and `git diff --check` passed. The required archive-file-io backend profile was attempted three times and stopped before tests because the rustc 1.96.0 `libsqlx_macros` dylib was rejected by macOS with `mis-aligned LINKEDIT string pool`; a temporary debug-profile fallback ran 450 selected tests with 433 passes, 10 pre-existing concurrency/timing failures, and 7 ignored tests, while all 121 migrated tests passed.
+
+## Upstream Account Import, Tag, and Account Read Extraction
+
+The upstream-account source-quality extraction starts from live main
+`524341345a5f038ce02b1382ee82c7fbf59ade54` and completes the original
+5,644-line `src/upstream_accounts/sync_account_imports_tags.rs` parent in one
+PR. The parent is a 25-line facade over explicit system-tag, synchronization,
+import-identity, tag, and account-read modules; the existing OAuth lifecycle
+child remains in place. All resulting production files are below 2,500
+physical lines.
+
+Existing crate-visible paths, names, visibility, SQL, transaction and lease
+boundaries, async ordering, retry behavior, routing publication, status/error
+mapping, tests, and runtime behavior remain unchanged. The parent is removed
+from the policy only after the complete extraction. The current inventory is
+83 explicit files with 3 production and 80 test/helper entries; the immutable
+candidate counts remain 32/23 and the suppression inventory remains 140, with
+the two moved declarations recorded under `sync.rs`. No `include!`
+composition is used, and the frozen invocation-summary and schema sources are
+untouched.
