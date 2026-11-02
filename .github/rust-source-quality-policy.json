@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 83,
+    "inventory_entries": 88,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -375,8 +375,38 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6489,
-      "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
+      "line_budget": 16,
+      "next_module_workstream": "Keep startup rebuild/retention facade limited to module declarations and narrow helper re-exports."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics/schema_and_timeseries.rs",
+      "role": "test_helper",
+      "line_budget": 1088,
+      "next_module_workstream": "Maintain schema migration, timeseries lifecycle, and prompt-cache working-set fixtures as one boundary."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics/startup_health_and_hydration.rs",
+      "role": "test_helper",
+      "line_budget": 510,
+      "next_module_workstream": "Maintain startup health publication, hydration, readiness, cancellation, and deadline fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics/hourly_rollup_bootstrap_and_startup_backfill.rs",
+      "role": "test_helper",
+      "line_budget": 2333,
+      "next_module_workstream": "Maintain hourly-rollup bootstrap, startup backfill, pressure gates, retries, and coverage repair fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics/failure_classification_backfill.rs",
+      "role": "test_helper",
+      "line_budget": 298,
+      "next_module_workstream": "Maintain failure-classification backfill defaults, raw-stream recovery, and cursor scan-limit fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics/retention_and_archive_activity_recovery.rs",
+      "role": "test_helper",
+      "line_budget": 2267,
+      "next_module_workstream": "Maintain retention pruning, archive recovery, manifest refresh, and upstream activity backfill fixtures."
     },
     {
       "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
