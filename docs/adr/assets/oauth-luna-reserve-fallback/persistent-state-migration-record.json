@@ -3,13 +3,13 @@
   "kind": "persistent-state-migration-record",
   "status": "implementation-in-progress-validation-pending",
   "migration": {
-    "description": "Additive persistence for OAuth Luna Reserve usage windows and the automatic fallback setting.",
+    "description": "Additive persistence for OAuth Luna Reserve usage windows, the automatic fallback setting, and its model eligibility policy.",
     "release_unit_description": "OAuth Luna Reserve fallback routing change described by ADR 0051.",
     "version_impact": "minor"
   },
   "durable_state": {
     "description": "Existing OAuth account usage snapshots and pool routing settings remain readable; Reserve fields are nullable and missing observations remain unknown.",
-    "storage_implementation": "Existing SQLite database. Reserve usage columns are nullable additions to pool_upstream_account_limit_samples; automatic_reserve_fallback_enabled is a NOT NULL setting with a default of 1.",
+    "storage_implementation": "Existing SQLite database. Reserve usage columns are nullable additions to pool_upstream_account_limit_samples; automatic_reserve_fallback_enabled defaults to 1, while reserve_fallback_model_policy_mode defaults to upstream and reserve_fallback_model_patterns_json defaults to an empty array.",
     "source_compatibility_range": {
       "from_program_versions": "Existing databases created before Reserve columns and the automatic fallback setting.",
       "to_program_version": "Current candidate implementation of ADR 0051.",
@@ -32,13 +32,20 @@
         "order": 2,
         "observable": true,
         "pauseable": false
+      },
+      {
+        "id": "ddl-reserve-model-policy",
+        "description": "Create reserve_fallback_model_policy_mode and reserve_fallback_model_patterns_json on pool_routing_settings with upstream and empty-array defaults.",
+        "order": 3,
+        "observable": true,
+        "pauseable": false
       }
     ],
     "dml_changes": [
       {
         "id": "dml-reserve-unknown-backfill",
         "description": "New usage samples persist an unknown Reserve snapshot when the upstream response has no structured gpt-reserve data; no absolute balance is fabricated.",
-        "order": 3,
+        "order": 4,
         "depends_on": ["ddl-reserve-usage-columns"],
         "observable": true,
         "pauseable": false
@@ -48,9 +55,9 @@
   },
   "rollout_observability": {
     "operations_must_remain_separate": true,
-    "operation_sequence": ["ddl-reserve-usage-columns", "ddl-reserve-fallback-setting", "dml-reserve-unknown-backfill"],
-    "progress_signals": ["Schema migration tests verify additive columns, legacy row readability, and default-on fallback", "Account summaries expose Reserve availability, percentages, reset time, and capture time"],
-    "pause_points": ["Automatic Reserve fallback can be disabled independently through pool routing settings"]
+    "operation_sequence": ["ddl-reserve-usage-columns", "ddl-reserve-fallback-setting", "ddl-reserve-model-policy", "dml-reserve-unknown-backfill"],
+    "progress_signals": ["Schema migration tests verify additive columns, legacy row readability, default-on fallback, and the default upstream model policy", "Account summaries expose Reserve availability, percentages, reset time, and capture time"],
+    "pause_points": ["Automatic Reserve fallback can be disabled independently through pool routing settings", "Reserve model eligibility can be restricted through the persisted policy mode and patterns"]
   },
   "recovery": {
     "deployed_migrations_immutable": true,
@@ -60,6 +67,6 @@
   },
   "validation": {
     "status": "pending-current-candidate-ci-and-review",
-    "required_test_evidence": ["Reserve object and array usage parsing", "Legacy SQLite schema upgrade", "Fallback setting default and toggle behavior", "Reserve routing and request rewrite regression tests"]
+    "required_test_evidence": ["Reserve object and array usage parsing", "Legacy SQLite schema upgrade", "Fallback setting default and toggle behavior", "Persisted Reserve model policy defaults and updates", "Reserve routing and request rewrite regression tests"]
   }
 }

@@ -560,7 +560,7 @@ export interface UpdatePoolRoutingSettingsPayload {
 }
 
 export interface ReserveFallbackModelPolicy {
-  mode: "upstream" | "upstream_plus_custom" | "custom" | string;
+  mode: "upstream" | "upstream_plus_custom" | "custom";
   patterns: string[];
 }
 

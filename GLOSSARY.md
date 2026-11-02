@@ -195,7 +195,7 @@ A timestamped account-level reading of upstream quota windows and related allowa
 _Avoid_: live quota, unless a new upstream read was performed for the current operation.
 
 **Reserve Availability**:
-The routing eligibility state of Luna Reserve for one OAuth upstream account, based on an explicit upstream allowance signal and the freshness of the latest Usage Snapshot. It can be available, exhausted, unavailable, or unknown.
+The routing eligibility state of Luna Reserve for one OAuth upstream account, based on an explicit upstream allowance signal and the freshness of the latest Usage Snapshot. It can be available, unavailable, or unknown. An upstream exhaustion reason may explain an unavailable state but is not a separate public availability state.
 _Avoid_: quota balance when only a percentage and reset time are known.
 
 **Automatic Reserve Fallback**:

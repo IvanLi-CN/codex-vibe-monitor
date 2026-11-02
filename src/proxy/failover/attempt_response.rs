@@ -463,6 +463,7 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
                     requested_service_tier: attempted_requested_service_tier,
                     request_body_for_capture: attempted_request_body_for_capture,
                     codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                    quota_route: *context.quota_route,
                     reservation_guard: context.reservation_guard.take(),
                 },
             )));
@@ -818,55 +819,61 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
         let reserve_refresh_started_at = attempt_total_timeout_started_at
             .or(context.responses_total_timeout_started_at)
             .or_else(|| context.responses_total_timeout.map(|_| connect_started));
-        let reserve_usage_refresh_succeeded = automatic_reserve_fallback_enabled
-            && refresh_reserve_usage_with_request_budget(
-                context.state.as_ref(),
-                context.account.account_id,
-                attempt_pre_first_byte_timeout,
-                context.responses_total_timeout,
-                reserve_refresh_started_at,
-            )
-            .await;
+        let reserve_usage_refresh_succeeded =
+            if automatic_reserve_fallback_enabled && !*context.reserve_usage_refresh_attempted {
+                *context.reserve_usage_refresh_attempted = true;
+                refresh_reserve_usage_with_request_budget(
+                    context.state.as_ref(),
+                    context.account.account_id,
+                    attempt_pre_first_byte_timeout,
+                    context.responses_total_timeout,
+                    reserve_refresh_started_at,
+                )
+                .await
+            } else {
+                false
+            };
         let effective_reserve_model = context
             .upstream_request_model
             .or(context.requested_model.as_deref());
-        let reserve_available = if reserve_usage_refresh_succeeded {
-            let reserve_check = async {
-                let reserve_model_policy = load_pool_routing_settings(&context.state.pool)
-                    .await
-                    .ok()
-                    .map(|row| resolve_reserve_fallback_model_policy(&row));
-                let Some(reserve_model_policy) = reserve_model_policy else {
-                    return false;
+        let reserve_available =
+            if automatic_reserve_fallback_enabled && reserve_usage_refresh_succeeded {
+                let reserve_check = async {
+                    let reserve_model_policy = load_pool_routing_settings(&context.state.pool)
+                        .await
+                        .ok()
+                        .map(|row| resolve_reserve_fallback_model_policy(&row));
+                    let Some(reserve_model_policy) = reserve_model_policy else {
+                        return false;
+                    };
+                    load_account_routing_candidate(&context.state.pool, context.account.account_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|candidate| {
+                            reserve_candidate_snapshot_is_available(&candidate, Utc::now())
+                                && reserve_candidate_supports_model(
+                                    &candidate,
+                                    effective_reserve_model,
+                                    &reserve_model_policy,
+                                )
+                        })
                 };
-                load_account_routing_candidate(&context.state.pool, context.account.account_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|candidate| {
-                        reserve_candidate_snapshot_is_available(&candidate, Utc::now())
-                            && reserve_candidate_supports_model(
-                                &candidate,
-                                effective_reserve_model,
-                                &reserve_model_policy,
-                            )
-                    })
-            };
-            if let (Some(total_timeout), Some(started_at)) =
-                (context.responses_total_timeout, reserve_refresh_started_at)
-            {
-                match remaining_timeout_budget(total_timeout, started_at.elapsed()) {
-                    Some(remaining) => timeout(remaining, reserve_check).await.unwrap_or(false),
-                    None => false,
+                if let (Some(total_timeout), Some(started_at)) =
+                    (context.responses_total_timeout, reserve_refresh_started_at)
+                {
+                    match remaining_timeout_budget(total_timeout, started_at.elapsed()) {
+                        Some(remaining) => timeout(remaining, reserve_check).await.unwrap_or(false),
+                        None => false,
+                    }
+                } else if context.responses_total_timeout.is_some() {
+                    false
+                } else {
+                    reserve_check.await
                 }
-            } else if context.responses_total_timeout.is_some() {
-                false
             } else {
-                reserve_check.await
-            }
-        } else {
-            false
-        };
+                false
+            };
         if should_attempt_automatic_reserve_fallback(
             failure_kind,
             *context.quota_route,
@@ -1644,6 +1651,7 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             requested_service_tier: attempted_requested_service_tier,
             request_body_for_capture: attempted_request_body_for_capture,
             codex_imagegen_rewrite: attempted_codex_imagegen_rewrite,
+            quota_route: *context.quota_route,
             reservation_guard: context.reservation_guard.take(),
         },
     )))

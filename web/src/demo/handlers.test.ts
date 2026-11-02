@@ -146,8 +146,8 @@ describe("demo MSW handlers", () => {
       body: JSON.stringify({
         automaticReserveFallbackEnabled: false,
         reserveFallbackModelPolicy: {
-          mode: "custom",
-          patterns: ["gpt-*-luna"],
+          mode: " CUSTOM ",
+          patterns: [" gpt-*-luna "],
         },
       }),
     });
@@ -163,6 +163,12 @@ describe("demo MSW handlers", () => {
       reserveFallbackModelPolicy: { mode: "custom", patterns: ["gpt-*-luna"] },
     });
 
+    const accountList = await fetch("http://demo.invalid/api/pool/upstream-accounts");
+    expect((await accountList.json()).routing).toMatchObject({
+      automaticReserveFallbackEnabled: false,
+      reserveFallbackModelPolicy: { mode: "custom", patterns: ["gpt-*-luna"] },
+    });
+
     const unsupported = await fetch("http://demo.invalid/api/pool/routing-settings", {
       method: "POST",
       body: "{}",
@@ -174,6 +180,24 @@ describe("demo MSW handlers", () => {
       body: "not-json",
     });
     expect(invalidJson.status).toBe(400);
+
+    const invalidPolicy = await fetch("http://demo.invalid/api/pool/routing-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        reserveFallbackModelPolicy: { mode: "invalid", patterns: [] },
+      }),
+    });
+    expect(invalidPolicy.status).toBe(400);
+
+    const invalidPattern = await fetch("http://demo.invalid/api/pool/routing-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        reserveFallbackModelPolicy: { mode: "custom", patterns: ["   "] },
+      }),
+    });
+    expect(invalidPattern.status).toBe(400);
   });
 
   it("exposes synthetic observability destinations without a performance database", async () => {

@@ -209,6 +209,11 @@ mod tests {
 
         candidate.reserve_status = Some(RESERVE_AVAILABILITY_UNKNOWN.to_string());
         assert!(!reserve_candidate_snapshot_is_available(&candidate, now));
+        candidate.reserve_status = Some(RESERVE_AVAILABILITY_UNAVAILABLE.to_string());
+        candidate.reserve_captured_at = Some((now - chrono::Duration::seconds(60)).to_rfc3339());
+        assert!(reserve_candidate_snapshot_is_confirmed_unavailable(
+            &candidate, now
+        ));
 
         candidate.reserve_status = Some(RESERVE_AVAILABILITY_AVAILABLE.to_string());
         candidate.reserve_captured_at = Some(
@@ -973,6 +978,7 @@ pub(crate) fn is_account_selectable_for_reserve_route(
         || row.kind != UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
         || row.enabled == 0
         || row.encrypted_credentials.is_none()
+        || row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
     {
         return false;
     }
@@ -1249,15 +1255,30 @@ pub(crate) fn reserve_candidate_snapshot_is_available(
     candidate: &AccountRoutingCandidateRow,
     now: DateTime<Utc>,
 ) -> bool {
-    candidate.reserve_status.as_deref() == Some(RESERVE_AVAILABILITY_AVAILABLE)
-        && candidate
-            .reserve_captured_at
-            .as_deref()
-            .and_then(parse_rfc3339_utc)
-            .is_some_and(|captured_at| {
-                let age_secs = now.signed_duration_since(captured_at).num_seconds();
-                (0..=RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS).contains(&age_secs)
-            })
+    reserve_candidate_snapshot_is_fresh(candidate, now)
+        && candidate.reserve_status.as_deref() == Some(RESERVE_AVAILABILITY_AVAILABLE)
+}
+
+pub(crate) fn reserve_candidate_snapshot_is_confirmed_unavailable(
+    candidate: &AccountRoutingCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    reserve_candidate_snapshot_is_fresh(candidate, now)
+        && candidate.reserve_status.as_deref() == Some(RESERVE_AVAILABILITY_UNAVAILABLE)
+}
+
+fn reserve_candidate_snapshot_is_fresh(
+    candidate: &AccountRoutingCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    candidate
+        .reserve_captured_at
+        .as_deref()
+        .and_then(parse_rfc3339_utc)
+        .is_some_and(|captured_at| {
+            let age_secs = now.signed_duration_since(captured_at).num_seconds();
+            (0..=RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS).contains(&age_secs)
+        })
 }
 
 pub(crate) fn reserve_candidate_supports_model(

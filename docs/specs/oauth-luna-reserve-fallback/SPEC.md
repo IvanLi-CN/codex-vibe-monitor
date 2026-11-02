@@ -53,16 +53,16 @@ Automatic fallback uses the effective model after the existing account model map
 
 ### Operator surfaces
 
-Pool routing settings expose `automaticReserveFallbackEnabled`. OAuth account summaries and details expose Reserve availability, usage percentage, available percentage when reported, reset time, and last capture time. `unknown` and `unavailable` have separate labels and visual states.
+Pool routing settings expose `automaticReserveFallbackEnabled` and `reserveFallbackModelPolicy` (`upstream`, `upstream_plus_custom`, or `custom`, with bounded exact/glob patterns). OAuth account summaries and details expose Reserve availability, usage percentage, available percentage when reported, reset time, and last capture time. `unknown` and `unavailable` have separate labels and visual states.
 
 ## Interfaces
 
-| Interface                        | Change                                                   | Consumers                                           |
-| -------------------------------- | -------------------------------------------------------- | --------------------------------------------------- |
-| OAuth usage snapshot             | Add typed Reserve fields and object/array parsing        | usage sync, SQLite persistence, candidate selection |
-| Pool routing settings API        | Add `automaticReserveFallbackEnabled`                    | settings page, routing policy                       |
-| OAuth account summary/detail API | Add Reserve status and reported window fields            | account list and detail views                       |
-| Pool request diagnostics         | Add quota route, Reserve wire model, and fallback reason | invocation records and troubleshooting              |
+| Interface                        | Change                                                                 | Consumers                                           |
+| -------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------- |
+| OAuth usage snapshot             | Add typed Reserve fields and object/array parsing                      | usage sync, SQLite persistence, candidate selection |
+| Pool routing settings API        | Add `automaticReserveFallbackEnabled` and `reserveFallbackModelPolicy` | settings page, routing policy                       |
+| OAuth account summary/detail API | Add Reserve status and reported window fields                          | account list and detail views                       |
+| Pool request diagnostics         | Add quota route, Reserve wire model, and fallback reason               | invocation records and troubleshooting              |
 
 ## Verification
 
@@ -72,12 +72,39 @@ Pool routing settings expose `automaticReserveFallbackEnabled`. OAuth account su
 - VER-RESERVE-007: `cargo test reserve_routing -- --nocapture` covers upstream model binding, custom model patterns, and the effective-model eligibility gate. covers: REQ-RESERVE-008, REQ-RESERVE-009
 - VER-RESERVE-008: `cargo test pricing_catalog_and_models_passthrough -- --nocapture` covers the default switch and persisted custom model policy; `cargo test reserve_routing_requires_upstream_model_binding_or_explicit_custom_pattern -- --nocapture` covers the effective-model eligibility rule. Explicit `gpt-reserve` remains Reserve-only through the route guard and request rewrite tests. covers: REQ-RESERVE-002, REQ-RESERVE-008, REQ-RESERVE-009
 - VER-RESERVE-004: `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings` pass locally. covers: REQ-RESERVE-006
-- VER-RESERVE-005: `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` passes all 1550 stateful tests plus the schema-template precheck. covers: REQ-RESERVE-001, REQ-RESERVE-006
-- VER-RESERVE-006: `cd web && bun run test`, `bun run typecheck:web`, and `bun run build` pass; the Web App Demo provides account-list, account-detail, and settings-toggle visual evidence. covers: REQ-RESERVE-002, REQ-RESERVE-007
+- VER-RESERVE-005: `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` passes the profile's reported stateful test set plus the schema-template precheck. covers: REQ-RESERVE-001, REQ-RESERVE-006
+- VER-RESERVE-006: `cd web && bun run test`, `bun run typecheck:web`, and `bun run build` pass; the Web App Demo provides account-list, account-detail, and settings toggle plus Reserve model policy mode/pattern visual evidence. covers: REQ-RESERVE-002, REQ-RESERVE-007, REQ-RESERVE-009
 
 ## Visual Evidence
 
-The following screenshots were captured from the Web App Demo (`VITE_APP_RUNTIME=demo`) at a 2320x1335 browser viewport: `/#/account-pool/pool`, `/#/account-pool/pool?upstreamAccountId=101`, and `/#/system/settings`.
+The following screenshots were captured from the Web App Demo (`VITE_APP_RUNTIME=demo`) at a 2320x1335 browser viewport. Each evidence record binds the target program, runtime, route, browser viewport, and the source/capture revision used for the screenshot.
+
+- source_type: ui_demo
+  target_program: Web App Demo
+  runtime: `VITE_APP_RUNTIME=demo`
+  route: `/#/account-pool/pool`
+  requested_viewport: 2320x1335
+  capture_scope: browser-viewport
+  source_revision: `9fd5ae4b8cff3cc8752c4d81b6c342c10c22176a`
+  capture_revision: `9fd5ae4b8cff3cc8752c4d81b6c342c10c22176a`
+
+- source_type: ui_demo
+  target_program: Web App Demo
+  runtime: `VITE_APP_RUNTIME=demo`
+  route: `/#/account-pool/pool?upstreamAccountId=101`
+  requested_viewport: 2320x1335
+  capture_scope: browser-viewport
+  source_revision: `9fd5ae4b8cff3cc8752c4d81b6c342c10c22176a`
+  capture_revision: `9fd5ae4b8cff3cc8752c4d81b6c342c10c22176a`
+
+- source_type: ui_demo
+  target_program: Web App Demo
+  runtime: `VITE_APP_RUNTIME=demo`
+  route: `/#/system/settings`
+  requested_viewport: 2320x1335
+  capture_scope: browser-viewport
+  source_revision: `9fd5ae4b8cff3cc8752c4d81b6c342c10c22176a`
+  capture_revision: `9fd5ae4b8cff3cc8752c4d81b6c342c10c22176a`
 
 ![OAuth Luna Reserve account list](./assets/oauth-luna-reserve-web-demo-list.png)
 

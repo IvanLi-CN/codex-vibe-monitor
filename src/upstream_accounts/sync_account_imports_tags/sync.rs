@@ -170,6 +170,87 @@ impl OAuthUsageRefreshOutcome {
     }
 }
 
+struct OAuthUsageRefreshLeaseCleanupGuard {
+    pool: Pool<Sqlite>,
+    account_id: i64,
+    operation: &'static str,
+    lease_token: String,
+    effective_plan_type: Option<String>,
+    retention_days: u64,
+    armed: bool,
+}
+
+impl OAuthUsageRefreshLeaseCleanupGuard {
+    fn new(
+        pool: &Pool<Sqlite>,
+        account_id: i64,
+        operation: &'static str,
+        lease_token: &str,
+        effective_plan_type: Option<&str>,
+        retention_days: u64,
+    ) -> Self {
+        Self {
+            pool: pool.clone(),
+            account_id,
+            operation,
+            lease_token: lease_token.to_string(),
+            effective_plan_type: effective_plan_type.map(str::to_string),
+            retention_days,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for OAuthUsageRefreshLeaseCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let pool = self.pool.clone();
+        let account_id = self.account_id;
+        let operation = self.operation;
+        let lease_token = self.lease_token.clone();
+        let effective_plan_type = self.effective_plan_type.clone();
+        let retention_days = self.retention_days;
+        drop(handle.spawn(async move {
+            if let Err(err) = persist_unknown_reserve_usage_snapshot_with_lease(
+                &pool,
+                account_id,
+                effective_plan_type.as_deref(),
+                retention_days,
+                Some(&lease_token),
+            )
+            .await
+            {
+                warn!(
+                    account_id,
+                    operation,
+                    error = %err,
+                    "failed to invalidate Reserve usage snapshot after cancellation"
+                );
+            }
+            if let Err(err) =
+                release_upstream_account_refresh_lease(&pool, account_id, operation, &lease_token)
+                    .await
+            {
+                warn!(
+                    account_id,
+                    operation,
+                    error = %err,
+                    "upstream account refresh lease cleanup failed after cancellation"
+                );
+            }
+        }));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn record_usage_refresh_failure(
     state: &AppState,
@@ -183,6 +264,14 @@ async fn record_usage_refresh_failure(
     http_status: Option<StatusCode>,
     proxy_snapshot: Option<AccountMaintenanceProxySnapshot>,
 ) -> Result<OAuthUsageRefreshOutcome> {
+    persist_unknown_reserve_usage_snapshot_with_lease(
+        &state.pool,
+        row.id,
+        row.plan_type.as_deref(),
+        state.config.upstream_accounts_history_retention_days,
+        Some(lease_token),
+    )
+    .await?;
     let applied = record_upstream_account_refresh_failure_with_lease(
         &state.pool,
         row.id,
@@ -601,6 +690,14 @@ pub(crate) async fn refresh_oauth_usage_windows(
             lease_token: None,
         });
     };
+    let mut lease_cleanup_guard = OAuthUsageRefreshLeaseCleanupGuard::new(
+        &state.pool,
+        row.id,
+        operation,
+        &lease_token,
+        row.plan_type.as_deref(),
+        state.config.upstream_accounts_history_retention_days,
+    );
     let refresh_result = async {
         let crypto_key = match state.upstream_accounts.crypto_key.as_ref() {
             Some(key) => key,
@@ -922,6 +1019,7 @@ pub(crate) async fn refresh_oauth_usage_windows(
             "upstream account refresh lease cleanup failed after an internal error"
         );
     }
+    lease_cleanup_guard.disarm();
     refresh_result
 }
 
@@ -960,6 +1058,7 @@ fn credential_refresh_attempt_is_blocked(
 async fn refresh_upstream_account_usage_by_id_with_result(
     state: &AppState,
     id: i64,
+    load_detail: bool,
 ) -> Result<(Option<UpstreamAccountDetail>, bool)> {
     let row = load_upstream_account_row(&state.pool, id)
         .await?
@@ -979,6 +1078,16 @@ async fn refresh_upstream_account_usage_by_id_with_result(
     .await?;
     let reserve_usage_refresh_succeeded =
         matches!(&usage_outcome, OAuthUsageRefreshOutcome::Succeeded { .. });
+    let mut usage_apply_cleanup_guard = usage_outcome.lease_token().map(|lease_token| {
+        OAuthUsageRefreshLeaseCleanupGuard::new(
+            &state.pool,
+            id,
+            UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS,
+            lease_token,
+            row.plan_type.as_deref(),
+            state.config.upstream_accounts_history_retention_days,
+        )
+    });
     let outcome_row = load_upstream_account_row(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow!("account disappeared after manual usage refresh"))?;
@@ -989,7 +1098,15 @@ async fn refresh_upstream_account_usage_by_id_with_result(
     } else {
         outcome_row.status.as_str()
     };
-    apply_manual_usage_refresh_outcome(state, &outcome_row, deferred_status, usage_outcome).await?;
+    let apply_result =
+        apply_manual_usage_refresh_outcome(state, &outcome_row, deferred_status, usage_outcome)
+            .await;
+    if apply_result.is_ok()
+        && let Some(guard) = usage_apply_cleanup_guard.as_mut()
+    {
+        guard.disarm();
+    }
+    apply_result?;
     let refreshed_row = load_upstream_account_row(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow!("account disappeared after manual usage refresh"))?;
@@ -998,7 +1115,11 @@ async fn refresh_upstream_account_usage_by_id_with_result(
     {
         publish_pool_routing_availability(state);
     }
-    let detail = load_upstream_account_detail_with_actual_usage(state, id).await?;
+    let detail = if load_detail {
+        load_upstream_account_detail_with_actual_usage(state, id).await?
+    } else {
+        None
+    };
     Ok((detail, reserve_usage_refresh_succeeded))
 }
 
@@ -1006,18 +1127,22 @@ pub(crate) async fn refresh_upstream_account_usage_by_id(
     state: &AppState,
     id: i64,
 ) -> Result<Option<UpstreamAccountDetail>> {
-    Ok(refresh_upstream_account_usage_by_id_with_result(state, id)
-        .await?
-        .0)
+    Ok(
+        refresh_upstream_account_usage_by_id_with_result(state, id, true)
+            .await?
+            .0,
+    )
 }
 
 pub(crate) async fn refresh_upstream_account_usage_for_reserve_by_id(
     state: &AppState,
     id: i64,
 ) -> Result<bool> {
-    Ok(refresh_upstream_account_usage_by_id_with_result(state, id)
-        .await?
-        .1)
+    Ok(
+        refresh_upstream_account_usage_by_id_with_result(state, id, false)
+            .await?
+            .1,
+    )
 }
 
 async fn apply_manual_usage_refresh_outcome(

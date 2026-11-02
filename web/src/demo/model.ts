@@ -109,6 +109,57 @@ function safePayload(value: unknown): unknown {
   );
 }
 
+const DEMO_RESERVE_FALLBACK_MODEL_POLICY_MODES = new Set([
+  "upstream",
+  "upstream_plus_custom",
+  "custom",
+]);
+const DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERNS = 64;
+const DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH = 256;
+
+export function validateDemoPoolRoutingSettingsPayload(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return "Request body must be a JSON object";
+  }
+  const payload = value as Record<string, unknown>;
+  if (
+    "automaticReserveFallbackEnabled" in payload &&
+    typeof payload.automaticReserveFallbackEnabled !== "boolean"
+  ) {
+    return "automaticReserveFallbackEnabled must be a boolean";
+  }
+  const policy = payload.reserveFallbackModelPolicy;
+  if (policy === undefined || policy === null) return null;
+  if (typeof policy !== "object" || Array.isArray(policy)) {
+    return "reserveFallbackModelPolicy must be an object";
+  }
+  const policyRecord = policy as Record<string, unknown>;
+  if (typeof policyRecord.mode !== "string") {
+    return "reserveFallbackModelPolicy.mode is required";
+  }
+  if (!DEMO_RESERVE_FALLBACK_MODEL_POLICY_MODES.has(policyRecord.mode.trim().toLowerCase())) {
+    return "reserveFallbackModelPolicy.mode must be upstream, upstream_plus_custom, or custom";
+  }
+  const patterns = policyRecord.patterns;
+  if (patterns === undefined) return null;
+  if (!Array.isArray(patterns)) {
+    return "reserveFallbackModelPolicy.patterns must be an array";
+  }
+  if (patterns.length > DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERNS) {
+    return `reserveFallbackModelPolicy.patterns must contain at most ${DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERNS} entries`;
+  }
+  for (const pattern of patterns) {
+    if (
+      typeof pattern !== "string" ||
+      pattern.trim().length === 0 ||
+      pattern.trim().length > DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH
+    ) {
+      return `reserveFallbackModelPolicy.patterns entries must be 1-${DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH} characters`;
+    }
+  }
+  return null;
+}
+
 function createSettings() {
   return {
     proxy: {
@@ -1020,6 +1071,26 @@ class DemoModel {
       typeof value === "object" && value !== null && !Array.isArray(value)
         ? (value as Record<string, unknown>)
         : {};
+    const currentReservePolicy = objectValue(current.reserveFallbackModelPolicy);
+    const updateReservePolicy = objectValue(update.reserveFallbackModelPolicy);
+    const reserveFallbackModelPolicy = {
+      ...currentReservePolicy,
+      ...updateReservePolicy,
+      mode:
+        typeof updateReservePolicy.mode === "string"
+          ? updateReservePolicy.mode.trim().toLowerCase()
+          : typeof currentReservePolicy.mode === "string"
+            ? currentReservePolicy.mode.trim().toLowerCase()
+            : "upstream",
+      patterns: (Array.isArray(updateReservePolicy.patterns)
+        ? updateReservePolicy.patterns
+        : Array.isArray(currentReservePolicy.patterns)
+          ? currentReservePolicy.patterns
+          : []
+      )
+        .filter((pattern): pattern is string => typeof pattern === "string")
+        .map((pattern) => pattern.trim()),
+    };
     const poolRouting = {
       ...current,
       ...update,
@@ -1035,10 +1106,7 @@ class DemoModel {
         ...objectValue(current.cacheHitProtection),
         ...objectValue(update.cacheHitProtection),
       },
-      reserveFallbackModelPolicy: {
-        ...objectValue(current.reserveFallbackModelPolicy),
-        ...objectValue(update.reserveFallbackModelPolicy),
-      },
+      reserveFallbackModelPolicy,
     };
     this.#state = {
       ...this.#state,

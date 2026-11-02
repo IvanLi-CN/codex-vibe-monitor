@@ -102,6 +102,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint_inner
         PoolQuotaRoute::Normal
     };
     let mut reserve_fallback_attempted = quota_route == PoolQuotaRoute::Reserve;
+    let mut reserve_usage_refresh_attempted = false;
     let mut reserve_fallback_reason =
         (quota_route == PoolQuotaRoute::Reserve).then(|| "explicit_reserve_request".to_string());
     let image_intent = runtime_snapshot_context
@@ -998,6 +999,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint_inner
                 requested_model: &requested_model,
                 quota_route: &mut quota_route,
                 reserve_fallback_attempted: &mut reserve_fallback_attempted,
+                reserve_usage_refresh_attempted: &mut reserve_usage_refresh_attempted,
                 reserve_fallback_reason: &mut reserve_fallback_reason,
                 account,
                 pre_first_byte_timeout,

@@ -1178,6 +1178,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             };
 
         let account = upstream.account;
+        let quota_route = upstream.quota_route;
         let upstream_attempt_started_at_utc = upstream.attempt_started_at_utc;
         let codex_imagegen_rewrite = upstream.codex_imagegen_rewrite;
         let pending_pool_attempt_record = upstream.pending_attempt_record;
@@ -1273,32 +1274,33 @@ pub(crate) fn proxy_openai_v1_via_pool(
             );
             if pool_route_success {
                 consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
-                if let Err(route_err) = record_runtime_pool_route_success(
-                    state.as_ref(),
-                    account.account_id,
-                    upstream_attempt_started_at_utc,
-                    sticky_key.as_deref(),
-                    prompt_cache_key.as_deref(),
-                    upstream_invoke_id.as_deref(),
-                    capability_endpoint,
-                    request_image_intent,
-                    codex_imagegen_rewrite.as_ref(),
-                    pending_pool_attempt_record
-                        .as_ref()
-                        .and_then(|pending| pending.attempt_id),
-                    pending_pool_attempt_record.as_ref().and_then(|pending| {
-                        pending
-                            .sticky_affinity_generation
-                            .or_else(|| pending.attempt_id.and(account.sticky_affinity_generation))
-                    }),
-                    pending_pool_attempt_record.as_ref().and_then(|pending| {
-                        pending
-                            .request_model
-                            .as_deref()
-                            .or(pending.upstream_request_model.as_deref())
-                    }),
-                )
-                .await
+                if quota_route.updates_shared_route_health()
+                    && let Err(route_err) = record_runtime_pool_route_success(
+                        state.as_ref(),
+                        account.account_id,
+                        upstream_attempt_started_at_utc,
+                        sticky_key.as_deref(),
+                        prompt_cache_key.as_deref(),
+                        upstream_invoke_id.as_deref(),
+                        capability_endpoint,
+                        request_image_intent,
+                        codex_imagegen_rewrite.as_ref(),
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
+                        pending_pool_attempt_record.as_ref().and_then(|pending| {
+                            pending.sticky_affinity_generation.or_else(|| {
+                                pending.attempt_id.and(account.sticky_affinity_generation)
+                            })
+                        }),
+                        pending_pool_attempt_record.as_ref().and_then(|pending| {
+                            pending
+                                .request_model
+                                .as_deref()
+                                .or(pending.upstream_request_model.as_deref())
+                        }),
+                    )
+                    .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                 }
@@ -1342,35 +1344,36 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 }
             } else {
                 release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
-                if let Err(route_err) = record_runtime_pool_route_http_failure(
-                    state.as_ref(),
-                    account.account_id,
-                    &account.kind,
-                    account.single_account_rotation_enabled
-                        && account.effective_upstream_429_max_retries() == 0,
-                    sticky_key.as_deref(),
-                    upstream_status,
-                    route_http_failure_message
-                        .as_deref()
-                        .unwrap_or("upstream request failed"),
-                    upstream_invoke_id.as_deref(),
-                    capability_endpoint,
-                    request_image_intent,
-                    pending_pool_attempt_record
-                        .as_ref()
-                        .and_then(|pending| pending.attempt_id),
-                    pending_pool_attempt_record
-                        .as_ref()
-                        .and_then(|pending| pending.sticky_affinity_generation),
-                    prompt_cache_key.as_deref(),
-                    pending_pool_attempt_record.as_ref().and_then(|pending| {
-                        pending
-                            .request_model
+                if quota_route.updates_shared_route_health()
+                    && let Err(route_err) = record_runtime_pool_route_http_failure(
+                        state.as_ref(),
+                        account.account_id,
+                        &account.kind,
+                        account.single_account_rotation_enabled
+                            && account.effective_upstream_429_max_retries() == 0,
+                        sticky_key.as_deref(),
+                        upstream_status,
+                        route_http_failure_message
                             .as_deref()
-                            .or(pending.upstream_request_model.as_deref())
-                    }),
-                )
-                .await
+                            .unwrap_or("upstream request failed"),
+                        upstream_invoke_id.as_deref(),
+                        capability_endpoint,
+                        request_image_intent,
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.sticky_affinity_generation),
+                        prompt_cache_key.as_deref(),
+                        pending_pool_attempt_record.as_ref().and_then(|pending| {
+                            pending
+                                .request_model
+                                .as_deref()
+                                .or(pending.upstream_request_model.as_deref())
+                        }),
+                    )
+                    .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
                 }
@@ -1399,6 +1402,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
         let request_contains_encrypted_content_for_task = request_contains_encrypted_content;
         let upstream_content_encoding_for_task = upstream_content_encoding.clone();
+        let quota_route_for_task = quota_route;
         let request_path_for_record = capability_endpoint.to_string();
         let codex_imagegen_rewrite_for_record = codex_imagegen_rewrite.clone();
         let proxy_request_permit_for_task = proxy_request_permit;
@@ -1514,26 +1518,27 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
                 );
-                if let Err(route_err) = record_runtime_pool_route_transport_failure(
-                    state_for_record.as_ref(),
-                    account.account_id,
-                    sticky_key_for_record.as_deref(),
-                    message,
-                    PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                    invoke_id_for_record.as_deref(),
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| pending.attempt_id),
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| {
-                            pending
-                                .request_model
-                                .as_deref()
-                                .or(pending.upstream_request_model.as_deref())
-                        }),
-                )
-                .await
+                if quota_route_for_task.updates_shared_route_health()
+                    && let Err(route_err) = record_runtime_pool_route_transport_failure(
+                        state_for_record.as_ref(),
+                        account.account_id,
+                        sticky_key_for_record.as_deref(),
+                        message,
+                        PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                        invoke_id_for_record.as_deref(),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
+                    )
+                    .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
                 }
@@ -1544,36 +1549,37 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
                 );
-                if let Err(route_err) = record_runtime_pool_route_success(
-                    state_for_record.as_ref(),
-                    account.account_id,
-                    upstream_attempt_started_at_utc_for_record,
-                    sticky_key_for_record.as_deref(),
-                    prompt_cache_key_for_record.as_deref(),
-                    invoke_id_for_record.as_deref(),
-                    request_path_for_record.as_str(),
-                    request_image_intent,
-                    codex_imagegen_rewrite_for_record.as_ref(),
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| pending.attempt_id),
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| {
-                            pending.sticky_affinity_generation.or_else(|| {
-                                pending.attempt_id.and(account.sticky_affinity_generation)
-                            })
-                        }),
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| {
-                            pending
-                                .request_model
-                                .as_deref()
-                                .or(pending.upstream_request_model.as_deref())
-                        }),
-                )
-                .await
+                if quota_route_for_task.updates_shared_route_health()
+                    && let Err(route_err) = record_runtime_pool_route_success(
+                        state_for_record.as_ref(),
+                        account.account_id,
+                        upstream_attempt_started_at_utc_for_record,
+                        sticky_key_for_record.as_deref(),
+                        prompt_cache_key_for_record.as_deref(),
+                        invoke_id_for_record.as_deref(),
+                        request_path_for_record.as_str(),
+                        request_image_intent,
+                        codex_imagegen_rewrite_for_record.as_ref(),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending.sticky_affinity_generation.or_else(|| {
+                                    pending.attempt_id.and(account.sticky_affinity_generation)
+                                })
+                            }),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
+                    )
+                    .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                 }
@@ -1625,35 +1631,36 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
                 );
-                if let Err(route_err) = record_runtime_pool_route_http_failure(
-                    state_for_record.as_ref(),
-                    account.account_id,
-                    &account.kind,
-                    account.single_account_rotation_enabled
-                        && account.effective_upstream_429_max_retries() == 0,
-                    sticky_key_for_record.as_deref(),
-                    upstream_status,
-                    &route_http_failure_message,
-                    invoke_id_for_record.as_deref(),
-                    request_path_for_record.as_str(),
-                    request_image_intent,
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| pending.attempt_id),
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| pending.sticky_affinity_generation),
-                    prompt_cache_key_for_record.as_deref(),
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| {
-                            pending
-                                .request_model
-                                .as_deref()
-                                .or(pending.upstream_request_model.as_deref())
-                        }),
-                )
-                .await
+                if quota_route_for_task.updates_shared_route_health()
+                    && let Err(route_err) = record_runtime_pool_route_http_failure(
+                        state_for_record.as_ref(),
+                        account.account_id,
+                        &account.kind,
+                        account.single_account_rotation_enabled
+                            && account.effective_upstream_429_max_retries() == 0,
+                        sticky_key_for_record.as_deref(),
+                        upstream_status,
+                        &route_http_failure_message,
+                        invoke_id_for_record.as_deref(),
+                        request_path_for_record.as_str(),
+                        request_image_intent,
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.sticky_affinity_generation),
+                        prompt_cache_key_for_record.as_deref(),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
+                    )
+                    .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
                 }

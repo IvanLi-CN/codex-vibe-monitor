@@ -22,6 +22,7 @@ pub(crate) struct PoolAttemptExecutionContext<'a> {
     pub(crate) requested_model: &'a Option<String>,
     pub(crate) quota_route: &'a mut PoolQuotaRoute,
     pub(crate) reserve_fallback_attempted: &'a mut bool,
+    pub(crate) reserve_usage_refresh_attempted: &'a mut bool,
     pub(crate) reserve_fallback_reason: &'a mut Option<String>,
     pub(crate) account: PoolResolvedAccount,
     pub(crate) pre_first_byte_timeout: Duration,
@@ -896,6 +897,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                                 sleep(retry_delay),
                             )
                             .await;
+                            same_account_attempt = same_account_attempt.saturating_add(1);
                             continue;
                         }
                         if context.quota_route.updates_shared_route_health()
@@ -1173,6 +1175,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                                 sleep(retry_delay),
                             )
                             .await;
+                            same_account_attempt = same_account_attempt.saturating_add(1);
                             continue;
                         }
                         if context.quota_route.updates_shared_route_health()

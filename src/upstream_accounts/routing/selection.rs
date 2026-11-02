@@ -1416,7 +1416,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 &row,
                 "reserveUnavailable",
             );
-            saw_rate_limited_candidate = true;
+            if is_account_selectable_for_reserve_route(&row, now)
+                && reserve_candidate_snapshot_is_confirmed_unavailable(&candidate, now)
+            {
+                saw_rate_limited_candidate = true;
+            } else {
+                saw_other_non_rate_limited_routing_candidate = true;
+            }
             continue;
         }
         let candidate_route_key =
