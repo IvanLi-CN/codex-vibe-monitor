@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "loc_targets": {
+    "production": 2500,
+    "test_helper": 3000
+  },
+  "files": [
+    {
+      "path": "src/selected.rs",
+      "role": "production",
+      "line_budget": 3,
+      "next_module_workstream": "Keep this selected fixture small while the staged budget contract evolves."
+    },
+    {
+      "path": "src/selected with spaces.rs",
+      "role": "production",
+      "line_budget": 2,
+      "next_module_workstream": "Keep this spaced-path fixture small while path handling remains covered."
+    }
+  ],
+  "suppressions": []
+}

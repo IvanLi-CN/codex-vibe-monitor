@@ -29,7 +29,7 @@ Repository-wide type checking, linting, formatting, and dependency recovery prov
 
 ## Resolution
 
-- Keep only staged-path formatters in `pre-commit`: Biome for web files, Rustfmt with the repository edition for Rust, and dprint for Markdown. Keep Lefthook `stage_fixed`, but add a managed pre-commit wrapper that runs the formatter wrapper's `--check` mode before Lefthook hides partial changes. The check and formatter share their path filter, so it does not depend on Lefthook's shared Git common-directory patch; the normal Lefthook path can then stage the verified formatter outputs. Treat a marker-bearing standard pre-commit template as a safe predecessor to migrate, but preserve every other existing hook.
+- Keep only staged-path formatters in `pre-commit`: Biome for web files, Rustfmt with the repository edition for Rust, and dprint for Markdown. Keep Lefthook `stage_fixed`, but add a managed pre-commit wrapper that holds a per-worktree Git metadata lock, runs the formatter wrapper's `--check` mode before Lefthook hides partial changes, and serializes the complete hook execution. The check and formatter share their path filter, so it does not depend on Lefthook's shared Git common-directory patch; the Rust formatter stages its verified whole-file output before the staged budget check. Treat a marker-bearing standard pre-commit template as a safe predecessor to migrate, but preserve every other existing hook.
 - Put full checks behind explicit commands (`bun run typecheck:web`, `bun run verify:rust`) and retain their existing CI steps and required job names.
 - Store one status and digest per dependency surface in each worktree's Git metadata. Digest root Bun, web Bun, docs Bun, and Cargo from their manifests, lockfiles, and toolchain input. A reusable Bun state needs every manifest-direct package directory; Cargo needs every registry archive represented by `Cargo.lock` plus the cache-relative layout captured after a successful fetch. Restore only a missing or changed surface; `--force` is the intentional escape hatch.
 - Record a failed digest. Automatic checkout logs and suppresses repeat attempts for that exact input, while manual setup retries it and input changes reactivate automatic recovery.
@@ -40,6 +40,7 @@ Repository-wide type checking, linting, formatting, and dependency recovery prov
 
 - A formatter wrapper must filter deleted, nonexistent, and paths containing any symlink component before invoking a formatter and must receive only Lefthook staged files.
 - Test partial staging with a real Lefthook run and a formatter fixture that would rewrite staged content; assert that the guard fails before it changes either the index or the worktree.
+- Test concurrent pre-commit invocations in one worktree and assert that the advisory lock serializes their Lefthook executions.
 - CI tooling jobs install the pinned Lefthook binary globally; smoke invokes that repository-external executable directly, and production hook installation requires the same external `PATH` precondition.
 - State files must contain no copied resources, environment values, credentials, or dependency directory paths.
 - Do not move full static analysis out of CI or alter required check names to make local Git operations faster.
