@@ -418,6 +418,50 @@ describe("fetchSystemTaskRuns", () => {
   });
 });
 
+describe("fetchUpstreamAccounts Reserve normalization", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps malformed Reserve availability unknown and preserves explicit percentages", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: 1,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "OAuth Reserve",
+                isMother: false,
+                status: "active",
+                enabled: true,
+                reserve: {
+                  availability: "unexpected",
+                  primaryWindow: {
+                    usedPercent: 15,
+                    availablePercent: 82,
+                    usedText: "15%",
+                    limitText: "5h",
+                    windowDurationMins: 300,
+                  },
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+    expect(response.items[0]?.reserve?.availability).toBe("unknown");
+    expect(response.items[0]?.reserve?.primaryWindow?.availablePercent).toBe(82);
+  });
+});
+
 describe("fetchUpstreamAccountActivity", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

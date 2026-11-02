@@ -363,7 +363,7 @@
     {
       "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",
       "role": "test_helper",
-      "line_budget": 3692,
+      "line_budget": 3693,
       "next_module_workstream": "Split routing failover/retry fixtures by reservation, retry capture, and failure timing."
     },
     {
@@ -387,7 +387,7 @@
     {
       "path": "src/upstream_accounts/core_runtime_types.rs",
       "role": "production",
-      "line_budget": 3566,
+      "line_budget": 3619,
       "next_module_workstream": "Split upstream account runtime types, account state, and capability projections."
     },
     {
@@ -399,13 +399,13 @@
     {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
       "role": "production",
-      "line_budget": 5681,
+      "line_budget": 5786,
       "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
     },
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
       "role": "test_helper",
-      "line_budget": 4513,
+      "line_budget": 4516,
       "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
     },
     {
@@ -429,13 +429,13 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/schema_migrations_and_pool_routing_settings.rs",
       "role": "test_helper",
-      "line_budget": 812,
+      "line_budget": 913,
       "next_module_workstream": "Maintain upstream account schema seeds/migrations and pool routing settings persistence and runtime-cache fixtures."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/maintenance_due_plans_and_candidate_capacity.rs",
       "role": "test_helper",
-      "line_budget": 1016,
+      "line_budget": 1024,
       "next_module_workstream": "Maintain maintenance due planning, cadence and reset boundaries, deferred throttles, candidate capacity, and work-status fixtures."
     },
     {
@@ -447,7 +447,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/account_policy_updates_and_details.rs",
       "role": "test_helper",
-      "line_budget": 1185,
+      "line_budget": 1186,
       "next_module_workstream": "Maintain account routing-policy writes, validation, partial updates, details, tag listing, and layered effective-policy fixtures."
     },
     {
@@ -465,7 +465,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/relogin_duplicates_and_usage_snapshots.rs",
       "role": "test_helper",
-      "line_budget": 4810,
+      "line_budget": 4872,
       "next_module_workstream": "Split upstream relogin/duplicate usage fixtures by mailbox, identity, and snapshot recovery."
     },
     {
@@ -477,7 +477,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/cache_hit_protection_and_route_reservations.rs",
       "role": "test_helper",
-      "line_budget": 2634,
+      "line_budget": 2635,
       "next_module_workstream": "Maintain cache-hit protection sampling, atomic reservations, sticky routes, cooldown probes, and exact-route health fixtures."
     },
     {
@@ -501,7 +501,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/oauth_refresh_observability.rs",
       "role": "test_helper",
-      "line_budget": 1139,
+      "line_budget": 1140,
       "next_module_workstream": "Maintain OAuth refresh observability, independent manual operations, and usage authentication retry fixtures."
     },
     {

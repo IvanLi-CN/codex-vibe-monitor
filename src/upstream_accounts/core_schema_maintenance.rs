@@ -1685,12 +1685,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             credits_unlimited INTEGER,
             credits_balance TEXT,
             reserve_status TEXT,
+            reserve_allowed INTEGER,
+            reserve_limit_reached INTEGER,
             reserve_primary_used_percent REAL,
             reserve_primary_window_minutes INTEGER,
             reserve_primary_resets_at TEXT,
+            reserve_primary_available_percent REAL,
             reserve_secondary_used_percent REAL,
             reserve_secondary_window_minutes INTEGER,
             reserve_secondary_resets_at TEXT,
+            reserve_secondary_available_percent REAL,
             reserve_captured_at TEXT
         )
         "#,
@@ -1705,6 +1709,20 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure reserve_status usage sample column")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_allowed",
+    )
+    .await
+    .context("failed to ensure reserve_allowed usage sample column")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_limit_reached",
+    )
+    .await
+    .context("failed to ensure reserve_limit_reached usage sample column")?;
     ensure_nullable_real_column(
         pool,
         "pool_upstream_account_limit_samples",
@@ -1729,6 +1747,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_real_column(
         pool,
         "pool_upstream_account_limit_samples",
+        "reserve_primary_available_percent",
+    )
+    .await
+    .context("failed to ensure reserve_primary_available_percent usage sample column")?;
+    ensure_nullable_real_column(
+        pool,
+        "pool_upstream_account_limit_samples",
         "reserve_secondary_used_percent",
     )
     .await
@@ -1747,6 +1772,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure reserve_secondary_resets_at usage sample column")?;
+    ensure_nullable_real_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_secondary_available_percent",
+    )
+    .await
+    .context("failed to ensure reserve_secondary_available_percent usage sample column")?;
     ensure_nullable_text_column(
         pool,
         "pool_upstream_account_limit_samples",
@@ -1944,10 +1976,11 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         load_sqlite_table_columns(pool, "pool_routing_settings").await?;
     let routing_models_mode_was_missing =
         !existing_routing_settings_columns.contains("available_models_mode");
-    ensure_nullable_integer_column(
+    ensure_integer_column_with_default(
         pool,
         "pool_routing_settings",
         "automatic_reserve_fallback_enabled",
+        "1",
     )
     .await
     .context("failed to ensure automatic_reserve_fallback_enabled")?;

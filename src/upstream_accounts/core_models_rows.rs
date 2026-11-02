@@ -964,17 +964,25 @@ pub(crate) struct UpstreamAccountSampleRow {
     #[sqlx(default)]
     pub(crate) reserve_status: Option<String>,
     #[sqlx(default)]
+    pub(crate) reserve_allowed: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reserve_limit_reached: Option<i64>,
+    #[sqlx(default)]
     pub(crate) reserve_primary_used_percent: Option<f64>,
     #[sqlx(default)]
     pub(crate) reserve_primary_window_minutes: Option<i64>,
     #[sqlx(default)]
     pub(crate) reserve_primary_resets_at: Option<String>,
     #[sqlx(default)]
+    pub(crate) reserve_primary_available_percent: Option<f64>,
+    #[sqlx(default)]
     pub(crate) reserve_secondary_used_percent: Option<f64>,
     #[sqlx(default)]
     pub(crate) reserve_secondary_window_minutes: Option<i64>,
     #[sqlx(default)]
     pub(crate) reserve_secondary_resets_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_secondary_available_percent: Option<f64>,
     #[sqlx(default)]
     pub(crate) reserve_captured_at: Option<String>,
 }

@@ -248,23 +248,25 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
 }
 
 #[test]
-fn merge_models_payload_with_upstream_excludes_gpt_6_terra() {
+fn merge_models_payload_with_upstream_excludes_internal_models() {
     let merged = crate::proxy::merge_models_payload_with_upstream(
         &json!({
             "object": "list",
             "data": [
                 {"id": "upstream-model-a"},
+                {"id": "gpt-reserve"},
                 {"id": "gpt-6-terra"},
                 {"id": "gpt-6-terra-2026-09-23"},
                 {"id": "gpt-6-terra-preview"}
             ]
         }),
-        &["gpt-6-astra".to_string()],
+        &["gpt-6-astra".to_string(), "gpt-reserve".to_string()],
     )
     .expect("merge upstream models");
     let ids = extract_model_ids(&merged);
     assert!(ids.contains(&"gpt-6-astra".to_string()));
     assert!(ids.contains(&"upstream-model-a".to_string()));
+    assert!(!ids.iter().any(|id| id.eq_ignore_ascii_case("gpt-reserve")));
     assert!(!ids.iter().any(|id| id.starts_with("gpt-6-terra")));
 }
 #[tokio::test]

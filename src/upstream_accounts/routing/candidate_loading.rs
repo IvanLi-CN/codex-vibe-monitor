@@ -896,6 +896,24 @@ pub(crate) fn is_account_selectable_for_fresh_assignment(
         && !is_account_degraded_for_routing(row, snapshot_exhausted, now)
 }
 
+pub(crate) fn is_account_selectable_for_reserve_route(
+    row: &UpstreamAccountRow,
+    now: DateTime<Utc>,
+) -> bool {
+    if row.provider != UPSTREAM_ACCOUNT_PROVIDER_CODEX
+        || row.kind != UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+        || row.enabled == 0
+        || row.encrypted_credentials.is_none()
+    {
+        return false;
+    }
+
+    let ordinary_quota_limited = is_account_rate_limited_for_routing(row, false);
+    let ordinary_health_ready = row.status == UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        && !is_account_degraded_for_routing(row, false, now);
+    ordinary_quota_limited || ordinary_health_ready
+}
+
 pub(crate) fn is_account_degraded_for_routing(
     row: &UpstreamAccountRow,
     snapshot_exhausted: bool,

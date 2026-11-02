@@ -2452,6 +2452,7 @@ pub(crate) struct UpstreamAccountHistoryPoint {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RateWindowSnapshot {
     pub(crate) used_percent: f64,
+    pub(crate) available_percent: Option<f64>,
     pub(crate) used_text: String,
     pub(crate) limit_text: String,
     pub(crate) resets_at: Option<String>,
@@ -2463,6 +2464,8 @@ pub(crate) struct RateWindowSnapshot {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReserveQuotaSnapshot {
     pub(crate) availability: String,
+    pub(crate) allowed: Option<bool>,
+    pub(crate) limit_reached: Option<bool>,
     pub(crate) primary_window: Option<RateWindowSnapshot>,
     pub(crate) secondary_window: Option<RateWindowSnapshot>,
     pub(crate) captured_at: Option<String>,
@@ -3437,6 +3440,10 @@ impl PoolQuotaRoute {
             Self::Reserve => "reserve",
         }
     }
+
+    pub(crate) fn updates_shared_route_health(self) -> bool {
+        self == Self::Normal
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3449,8 +3456,12 @@ pub(crate) struct NormalizedUsageWindow {
 #[derive(Debug, Clone)]
 pub(crate) struct NormalizedReserveQuotaSnapshot {
     pub(crate) availability: String,
+    pub(crate) allowed: Option<bool>,
+    pub(crate) limit_reached: Option<bool>,
     pub(crate) primary: Option<NormalizedUsageWindow>,
     pub(crate) secondary: Option<NormalizedUsageWindow>,
+    pub(crate) primary_available_percent: Option<f64>,
+    pub(crate) secondary_available_percent: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]

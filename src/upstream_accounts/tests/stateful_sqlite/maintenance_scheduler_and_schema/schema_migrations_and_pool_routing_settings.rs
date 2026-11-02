@@ -235,6 +235,44 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
     .expect("insert legacy model routing row");
     sqlx::query(
         r#"
+            CREATE TABLE pool_upstream_account_limit_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                captured_at TEXT NOT NULL,
+                limit_id TEXT,
+                limit_name TEXT,
+                plan_type TEXT,
+                primary_used_percent REAL,
+                primary_window_minutes INTEGER,
+                primary_resets_at TEXT,
+                secondary_used_percent REAL,
+                secondary_window_minutes INTEGER,
+                secondary_resets_at TEXT,
+                credits_has_credits INTEGER,
+                credits_unlimited INTEGER,
+                credits_balance TEXT
+            )
+            "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy usage sample table");
+    sqlx::query(
+        r#"
+            INSERT INTO pool_upstream_account_limit_samples (
+                id,
+                account_id,
+                captured_at,
+                limit_id,
+                primary_used_percent
+            ) VALUES (7, 7, '2026-11-01T12:00:00Z', 'codex', 42.0)
+            "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy usage sample row");
+    sqlx::query(
+        r#"
             INSERT INTO pool_routing_settings (
                 id,
                 encrypted_api_key,
@@ -286,6 +324,66 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
             "expected upgraded schema to contain {column}"
         );
     }
+    let settings_column = sqlx::query(
+        "SELECT \"notnull\", dflt_value FROM pragma_table_info('pool_routing_settings') WHERE name = 'automatic_reserve_fallback_enabled'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect automatic fallback setting constraints");
+    assert_eq!(
+        settings_column
+            .try_get::<i64, _>("notnull")
+            .unwrap_or_default(),
+        1
+    );
+    assert_eq!(
+        settings_column
+            .try_get::<Option<String>, _>("dflt_value")
+            .expect("read automatic fallback default")
+            .as_deref(),
+        Some("1")
+    );
+    let usage_columns = sqlx::query("PRAGMA table_info('pool_upstream_account_limit_samples')")
+        .fetch_all(&pool)
+        .await
+        .expect("load upgraded usage sample table info")
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<std::collections::HashSet<_>>();
+    for column in [
+        "reserve_status",
+        "reserve_allowed",
+        "reserve_limit_reached",
+        "reserve_primary_used_percent",
+        "reserve_primary_window_minutes",
+        "reserve_primary_resets_at",
+        "reserve_primary_available_percent",
+        "reserve_secondary_used_percent",
+        "reserve_secondary_window_minutes",
+        "reserve_secondary_resets_at",
+        "reserve_secondary_available_percent",
+        "reserve_captured_at",
+    ] {
+        assert!(
+            usage_columns.contains(column),
+            "expected upgraded usage sample table to contain {column}"
+        );
+    }
+    let legacy_usage = sqlx::query_as::<_, (i64, String, Option<String>, Option<f64>)>(
+        "SELECT account_id, captured_at, limit_id, primary_used_percent FROM pool_upstream_account_limit_samples WHERE id = 7",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved legacy usage sample");
+    assert_eq!(
+        legacy_usage,
+        (
+            7,
+            "2026-11-01T12:00:00Z".to_string(),
+            Some("codex".to_string()),
+            Some(42.0)
+        )
+    );
     let model_route_columns =
         sqlx::query("PRAGMA table_info('pool_upstream_account_model_routes')")
             .fetch_all(&pool)

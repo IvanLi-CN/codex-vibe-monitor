@@ -190,6 +190,7 @@ interface ReserveQuotaCardProps {
     used: string;
     availablePercent: string;
     reset: string;
+    window: string;
     capturedAt: string;
     unknownValue: string;
   };
@@ -210,15 +211,14 @@ function reserveStatusTone(availability: ReserveQuotaSnapshot["availability"] | 
   return "secondary" as const;
 }
 
-function reserveWindowPercent(window?: RateWindowSnapshot | null) {
-  if (!window || !Number.isFinite(window.usedPercent)) return null;
-  return Math.max(0, Math.min(window.usedPercent, 100));
+function reservePercent(value?: number | null) {
+  if (value == null || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(value, 100));
 }
 
 export function ReserveQuotaCard({ title, description, snapshot, labels }: ReserveQuotaCardProps) {
-  const primaryUsedPercent = reserveWindowPercent(snapshot?.primaryWindow);
-  const primaryAvailablePercent =
-    primaryUsedPercent == null ? null : Math.max(0, 100 - primaryUsedPercent);
+  const primaryUsedPercent = reservePercent(snapshot?.primaryWindow?.usedPercent);
+  const primaryAvailablePercent = reservePercent(snapshot?.primaryWindow?.availablePercent);
   const statusLabel = reserveStatusLabel(snapshot?.availability, labels);
   const statusTone = reserveStatusTone(snapshot?.availability);
   const resetLabel = snapshot?.primaryWindow?.resetsAt
@@ -285,8 +285,8 @@ export function ReserveQuotaCard({ title, description, snapshot, labels }: Reser
           </p>
           {snapshot?.secondaryWindow ? (
             <p className="mt-1">
-              {snapshot.secondaryWindow.windowDurationMins} min window · {labels.used}{" "}
-              {Math.round(reserveWindowPercent(snapshot.secondaryWindow) ?? 0)}%
+              {snapshot.secondaryWindow.windowDurationMins} {labels.window} · {labels.used}{" "}
+              {Math.round(reservePercent(snapshot.secondaryWindow.usedPercent) ?? 0)}%
             </p>
           ) : null}
         </div>

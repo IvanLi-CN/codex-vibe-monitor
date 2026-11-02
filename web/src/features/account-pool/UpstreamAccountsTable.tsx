@@ -778,11 +778,13 @@ export function CompactTimestampLine({
   value,
   title,
   wrapValue = false,
+  valueClassName,
 }: {
   label: string;
   value: string;
   title?: string;
   wrapValue?: boolean;
+  valueClassName?: string;
 }) {
   return (
     <div
@@ -793,11 +795,12 @@ export function CompactTimestampLine({
         {label}
       </span>
       <span
-        className={
+        className={cn(
           wrapValue
             ? "min-w-0 whitespace-normal break-words text-[12px] leading-4 text-base-content/72"
-            : "truncate whitespace-nowrap text-[12px] leading-4 text-base-content/72 font-mono tabular-nums"
-        }
+            : "truncate whitespace-nowrap text-[12px] leading-4 text-base-content/72 font-mono tabular-nums",
+          valueClassName,
+        )}
       >
         {value}
       </span>
@@ -830,8 +833,10 @@ export function reserveSummaryText(
     ? [
         labels.reserveUsed,
         `${Math.round(windowPercent(item.reserve.primaryWindow.usedPercent))}%`,
-        labels.reserveAvailablePercent,
-        `${Math.round(100 - windowPercent(item.reserve.primaryWindow.usedPercent))}%`,
+        item.reserve.primaryWindow.availablePercent == null ? null : labels.reserveAvailablePercent,
+        item.reserve.primaryWindow.availablePercent == null
+          ? null
+          : `${Math.round(windowPercent(item.reserve.primaryWindow.availablePercent))}%`,
       ]
         .filter(Boolean)
         .join(" ")
@@ -843,6 +848,12 @@ export function reserveSummaryText(
     ? `${labels.reserveCaptured ?? "Captured"} ${formatDateTime(item.reserve.capturedAt)}`
     : null;
   return [statusLabel, percent, reset, captured].filter(Boolean).join(" · ");
+}
+
+export function reserveValueTone(availability?: string | null) {
+  if (availability === "available") return "text-success";
+  if (availability === "unavailable") return "text-warning";
+  return "text-base-content/60";
 }
 
 function normalizeLabelResult(value: unknown) {
@@ -1298,6 +1309,8 @@ export function UpstreamAccountsTable({
                           <CompactTimestampLine
                             label={labels.reserve ?? "Reserve"}
                             value={reserveText}
+                            valueClassName={reserveValueTone(item.reserve?.availability)}
+                            wrapValue
                           />
                         ) : null}
                       </div>
@@ -1548,6 +1561,8 @@ export function UpstreamAccountsTable({
                         <CompactTimestampLine
                           label={labels.reserve ?? "Reserve"}
                           value={reserveText}
+                          valueClassName={reserveValueTone(item.reserve?.availability)}
+                          wrapValue
                         />
                       ) : null}
                     </div>

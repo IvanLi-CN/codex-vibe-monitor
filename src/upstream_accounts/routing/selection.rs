@@ -898,7 +898,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 || sticky_candidate
                     .as_ref()
                     .is_some_and(|candidate| reserve_candidate_is_available(&row, candidate, now)))
-                && is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now)
+                && if quota_route == PoolQuotaRoute::Reserve {
+                    is_account_selectable_for_reserve_route(&row, now)
+                } else {
+                    is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now)
+                }
             {
                 let sticky_model_accepted = match sticky_source_rule.as_ref() {
                     None => true,
@@ -1418,7 +1422,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             }
             continue;
         }
-        if !is_account_selectable_for_fresh_assignment(&row, snapshot_exhausted, now) {
+        let account_selectable = if quota_route == PoolQuotaRoute::Reserve {
+            is_account_selectable_for_reserve_route(&row, now)
+        } else {
+            is_account_selectable_for_fresh_assignment(&row, snapshot_exhausted, now)
+        };
+        if !account_selectable {
             let reason_code = if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
                 saw_rate_limited_candidate = true;
                 "rateLimited"

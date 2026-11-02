@@ -397,6 +397,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.reserve.detailDescription":
       "Structured Luna Reserve quota reported by the OAuth usage endpoint.",
     "accountPool.upstreamAccounts.reserve.reset": "Reset",
+    "accountPool.upstreamAccounts.reserve.window": "min window",
     "accountPool.upstreamAccounts.reserve.capturedAt": "Captured",
     "accountPool.upstreamAccounts.primaryWindowDescription":
       "Primary quota window, aligned with Codex 5-hour usage semantics.",
@@ -4105,6 +4106,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.reserve.detailDescription":
       "来自 OAuth usage 响应的结构化 Luna Reserve 配额状态。",
     "accountPool.upstreamAccounts.reserve.reset": "重置",
+    "accountPool.upstreamAccounts.reserve.window": "分钟窗口",
     "accountPool.upstreamAccounts.reserve.capturedAt": "采集",
     "accountPool.upstreamAccounts.primaryWindowDescription":
       "主额度窗口，对齐 Codex 的 5 小时使用语义。",

@@ -283,21 +283,25 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 Ok(selection) => selection,
                 Err(message) => {
                     // The drop guard releases silently if cancellation interrupts this fence.
-                    let failure_recorded = context
-                        .reservation_guard
-                        .as_mut()
-                        .expect("pool routing reservation should be active")
-                        .fence_failure(record_runtime_pool_route_transport_failure(
-                            context.state.as_ref(),
-                            context.account.account_id,
-                            context.sticky_key,
-                            &message,
-                            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                            context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                            None,
-                            context.requested_model.as_deref(),
-                        ))
-                        .await;
+                    let failure_recorded = if context.quota_route.updates_shared_route_health() {
+                        context
+                            .reservation_guard
+                            .as_mut()
+                            .expect("pool routing reservation should be active")
+                            .fence_failure(record_runtime_pool_route_transport_failure(
+                                context.state.as_ref(),
+                                context.account.account_id,
+                                context.sticky_key,
+                                &message,
+                                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                                None,
+                                context.requested_model.as_deref(),
+                            ))
+                            .await
+                    } else {
+                        Ok(())
+                    };
                     if let Err(ref route_err) = failure_recorded {
                         warn!(account_id = context.account.account_id, error = %route_err, "failed to record pool forward proxy selection failure");
                     }
@@ -884,28 +888,29 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                             .await;
                             continue;
                         }
-                        if let Err(route_err) = context
-                            .reservation_guard
-                            .as_mut()
-                            .expect("pool routing reservation should be active")
-                            .fence_failure(record_runtime_pool_route_transport_failure(
-                                context.state.as_ref(),
-                                context.account.account_id,
-                                context.sticky_key,
-                                &message,
-                                failure_kind,
-                                context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                                pending_attempt_record
-                                    .as_ref()
-                                    .and_then(|pending| pending.attempt_id),
-                                pending_attempt_record.as_ref().and_then(|pending| {
-                                    pending
-                                        .request_model
-                                        .as_deref()
-                                        .or(pending.upstream_request_model.as_deref())
-                                }),
-                            ))
-                            .await
+                        if context.quota_route.updates_shared_route_health()
+                            && let Err(route_err) = context
+                                .reservation_guard
+                                .as_mut()
+                                .expect("pool routing reservation should be active")
+                                .fence_failure(record_runtime_pool_route_transport_failure(
+                                    context.state.as_ref(),
+                                    context.account.account_id,
+                                    context.sticky_key,
+                                    &message,
+                                    failure_kind,
+                                    context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
+                                    pending_attempt_record.as_ref().and_then(|pending| {
+                                        pending
+                                            .request_model
+                                            .as_deref()
+                                            .or(pending.upstream_request_model.as_deref())
+                                    }),
+                                ))
+                                .await
                         {
                             warn!(account_id = context.account.account_id, error = %route_err, "failed to record pool transport failure");
                         }
@@ -1160,23 +1165,24 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                             .await;
                             continue;
                         }
-                        if let Err(route_err) = context
-                            .reservation_guard
-                            .as_mut()
-                            .expect("pool routing reservation should be active")
-                            .fence_failure(record_runtime_pool_route_transport_failure(
-                                context.state.as_ref(),
-                                context.account.account_id,
-                                context.sticky_key,
-                                &message,
-                                PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                                context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                                pending_attempt_record
-                                    .as_ref()
-                                    .and_then(|pending| pending.attempt_id),
-                                context.requested_model.as_deref(),
-                            ))
-                            .await
+                        if context.quota_route.updates_shared_route_health()
+                            && let Err(route_err) = context
+                                .reservation_guard
+                                .as_mut()
+                                .expect("pool routing reservation should be active")
+                                .fence_failure(record_runtime_pool_route_transport_failure(
+                                    context.state.as_ref(),
+                                    context.account.account_id,
+                                    context.sticky_key,
+                                    &message,
+                                    PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                    context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
+                                    context.requested_model.as_deref(),
+                                ))
+                                .await
                         {
                             warn!(account_id = context.account.account_id, error = %route_err, "failed to record pool handshake timeout");
                         }

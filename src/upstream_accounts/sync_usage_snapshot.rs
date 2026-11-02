@@ -17,6 +17,79 @@ pub(crate) fn usage_refresh_failure_message(error_code: &str, error_message: &st
     }
 }
 
+fn normalized_window_from_sample(
+    used_percent: Option<f64>,
+    window_duration_mins: Option<i64>,
+    resets_at: Option<String>,
+) -> Option<NormalizedUsageWindow> {
+    Some(NormalizedUsageWindow {
+        used_percent: used_percent?,
+        window_duration_mins: window_duration_mins?,
+        resets_at,
+    })
+}
+
+pub(crate) async fn persist_unknown_reserve_usage_snapshot_with_lease(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    effective_plan_type: Option<&str>,
+    retention_days: u64,
+    expected_lease_token: Option<&str>,
+) -> Result<bool> {
+    let latest =
+        super::sync_account_imports_tags::load_latest_usage_sample(pool, account_id).await?;
+    let snapshot = NormalizedUsageSnapshot {
+        plan_type: latest.as_ref().and_then(|sample| sample.plan_type.clone()),
+        limit_id: latest
+            .as_ref()
+            .and_then(|sample| sample.limit_id.clone())
+            .unwrap_or_else(|| DEFAULT_USAGE_LIMIT_ID.to_string()),
+        limit_name: latest.as_ref().and_then(|sample| sample.limit_name.clone()),
+        primary: latest.as_ref().and_then(|sample| {
+            normalized_window_from_sample(
+                sample.primary_used_percent,
+                sample.primary_window_minutes,
+                sample.primary_resets_at.clone(),
+            )
+        }),
+        secondary: latest.as_ref().and_then(|sample| {
+            normalized_window_from_sample(
+                sample.secondary_used_percent,
+                sample.secondary_window_minutes,
+                sample.secondary_resets_at.clone(),
+            )
+        }),
+        credits: latest.as_ref().and_then(|sample| {
+            sample
+                .credits_has_credits
+                .map(|has_credits| CreditsSnapshot {
+                    has_credits: has_credits != 0,
+                    unlimited: sample.credits_unlimited.unwrap_or_default() != 0,
+                    balance: sample.credits_balance.clone(),
+                })
+        }),
+        reserve: Some(NormalizedReserveQuotaSnapshot {
+            availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
+            allowed: None,
+            limit_reached: None,
+            primary: None,
+            secondary: None,
+            primary_available_percent: None,
+            secondary_available_percent: None,
+        }),
+    };
+    persist_usage_snapshot_with_versions(
+        pool,
+        account_id,
+        effective_plan_type,
+        &snapshot,
+        retention_days,
+        expected_lease_token,
+        None,
+    )
+    .await
+}
+
 pub(crate) fn probe_error_tuple(error: anyhow::Error) -> (StatusCode, String) {
     if error
         .chain()
@@ -106,8 +179,12 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
             .cloned()
             .unwrap_or_else(|| NormalizedReserveQuotaSnapshot {
                 availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
+                allowed: None,
+                limit_reached: None,
                 primary: None,
                 secondary: None,
+                primary_available_percent: None,
+                secondary_available_percent: None,
             });
     let insert_result = sqlx::query(
         r#"
@@ -117,29 +194,32 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance,
             reserve_status,
+            reserve_allowed, reserve_limit_reached,
             reserve_primary_used_percent, reserve_primary_window_minutes, reserve_primary_resets_at,
+            reserve_primary_available_percent,
             reserve_secondary_used_percent, reserve_secondary_window_minutes, reserve_secondary_resets_at,
+            reserve_secondary_available_percent,
             reserve_captured_at
         )
         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
         WHERE (
-            ?23 IS NULL OR EXISTS (
+            ?27 IS NULL OR EXISTS (
                 SELECT 1
                 FROM pool_upstream_account_refresh_state
                 WHERE account_id = ?1
-                  AND operation = ?24
-                  AND lease_token = ?23
+                  AND operation = ?28
+                  AND lease_token = ?27
             )
         )
           AND (
-              ?25 = 0
-              OR (?26 = 0 AND NOT EXISTS (
+              ?29 = 0
+              OR (?30 = 0 AND NOT EXISTS (
                   SELECT 1
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
               ))
-              OR (?26 = 1 AND (?27, ?28) = (
+              OR (?30 = 1 AND (?31, ?32) = (
                   SELECT captured_at, id
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
@@ -177,12 +257,16 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
     )
     .bind(credits.as_ref().and_then(|value| value.balance.clone()))
     .bind(&reserve.availability)
+    .bind(reserve.allowed.map(i64::from))
+    .bind(reserve.limit_reached.map(i64::from))
     .bind(reserve.primary.as_ref().map(|value| value.used_percent))
     .bind(reserve.primary.as_ref().map(|value| value.window_duration_mins))
     .bind(reserve.primary.as_ref().and_then(|value| value.resets_at.clone()))
+    .bind(reserve.primary_available_percent)
     .bind(reserve.secondary.as_ref().map(|value| value.used_percent))
     .bind(reserve.secondary.as_ref().map(|value| value.window_duration_mins))
     .bind(reserve.secondary.as_ref().and_then(|value| value.resets_at.clone()))
+    .bind(reserve.secondary_available_percent)
     .bind(&now_iso)
     .bind(expected_lease_token)
     .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)

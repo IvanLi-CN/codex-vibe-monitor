@@ -596,10 +596,12 @@ function createAccounts(scene: DemoScene = "operational") {
         kind !== "oauth_codex"
           ? null
           : attention && id === 109
-            ? "unavailable"
-            : id === 101 || id === 103
-              ? "available"
-              : "unknown";
+            ? "unknown"
+            : id === 105
+              ? "unavailable"
+              : id === 101 || id === 103
+                ? "available"
+                : "unknown";
       const reserveUsedPercent = Math.min(92, 14 + index * 4);
       const status = unavailable
         ? "error"
@@ -715,6 +717,7 @@ function createAccounts(scene: DemoScene = "operational") {
                 availability: reserveAvailability,
                 primaryWindow: {
                   usedPercent: reserveUsedPercent,
+                  availablePercent: 100 - reserveUsedPercent,
                   usedText: `${reserveUsedPercent}%`,
                   limitText: "Luna Reserve",
                   windowDurationMins: 300,

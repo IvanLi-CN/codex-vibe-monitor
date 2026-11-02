@@ -1896,6 +1896,58 @@ async fn persist_usage_snapshot_preserves_missing_window_from_latest_sample() {
 }
 
 #[tokio::test]
+async fn failed_usage_refresh_persists_unknown_reserve_without_erasing_normal_usage() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Reserve Failure OAuth").await;
+    let snapshot = NormalizedUsageSnapshot {
+        plan_type: Some("team".to_string()),
+        limit_id: "codex".to_string(),
+        limit_name: Some("Codex".to_string()),
+        primary: Some(NormalizedUsageWindow {
+            used_percent: 32.0,
+            window_duration_mins: 300,
+            resets_at: Some("2026-03-17T14:00:00Z".to_string()),
+        }),
+        secondary: None,
+        credits: None,
+        reserve: Some(NormalizedReserveQuotaSnapshot {
+            availability: RESERVE_AVAILABILITY_AVAILABLE.to_string(),
+            allowed: Some(true),
+            limit_reached: Some(false),
+            primary: Some(NormalizedUsageWindow {
+                used_percent: 10.0,
+                window_duration_mins: 300,
+                resets_at: Some("2026-03-17T14:00:00Z".to_string()),
+            }),
+            secondary: None,
+            primary_available_percent: Some(90.0),
+            secondary_available_percent: None,
+        }),
+    };
+    persist_usage_snapshot(&pool, account_id, Some("team"), &snapshot, 30)
+        .await
+        .expect("persist initial reserve snapshot");
+
+    persist_unknown_reserve_usage_snapshot_with_lease(&pool, account_id, Some("team"), 30, None)
+        .await
+        .expect("persist unknown reserve snapshot");
+
+    let latest = load_latest_usage_sample(&pool, account_id)
+        .await
+        .expect("load latest usage sample")
+        .expect("latest usage sample exists");
+    assert_eq!(latest.primary_used_percent, Some(32.0));
+    assert_eq!(
+        latest.reserve_status.as_deref(),
+        Some(RESERVE_AVAILABILITY_UNKNOWN)
+    );
+    assert_eq!(latest.reserve_allowed, None);
+    assert_eq!(latest.reserve_limit_reached, None);
+    assert_eq!(latest.reserve_primary_used_percent, None);
+    assert_eq!(latest.reserve_primary_available_percent, None);
+}
+
+#[tokio::test]
 async fn refresh_without_plan_type_keeps_existing_plan_type_observed_at() {
     let pool = test_pool().await;
     let crypto_key = derive_secret_key("refresh-without-plan-type");
@@ -3710,6 +3762,7 @@ async fn enrich_window_actual_usage_for_summaries_uses_matching_stale_reset_wind
     summary.id = account_id;
     summary.primary_window = Some(RateWindowSnapshot {
         used_percent: 100.0,
+        available_percent: None,
         used_text: "100% used".to_string(),
         limit_text: "5h window".to_string(),
         resets_at: Some(format_utc_iso(reset_at)),
@@ -3799,6 +3852,7 @@ async fn enrich_window_actual_usage_for_summaries_reads_materialized_archive_usa
     summary.id = account_id;
     summary.primary_window = Some(RateWindowSnapshot {
         used_percent: 12.0,
+        available_percent: None,
         used_text: "12% used".to_string(),
         limit_text: "3d rolling window".to_string(),
         resets_at: None,

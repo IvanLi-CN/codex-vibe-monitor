@@ -3566,6 +3566,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                             "accountPool.upstreamAccounts.reserve.availablePercent",
                           ),
                           reset: t("accountPool.upstreamAccounts.reserve.reset"),
+                          window: t("accountPool.upstreamAccounts.reserve.window"),
                           capturedAt: t("accountPool.upstreamAccounts.reserve.capturedAt"),
                           unknownValue: t("accountPool.upstreamAccounts.latestAction.unknown"),
                         }}

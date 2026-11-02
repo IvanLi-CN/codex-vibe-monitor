@@ -698,6 +698,16 @@ fn normalize_reserve_quota_snapshot(
             .or_else(|| limit.get("secondaryWindow")),
         updated_at,
     );
+    let primary_available_percent = normalize_reported_available_percent(
+        limit
+            .get("primary_window")
+            .or_else(|| limit.get("primaryWindow")),
+    );
+    let secondary_available_percent = normalize_reported_available_percent(
+        limit
+            .get("secondary_window")
+            .or_else(|| limit.get("secondaryWindow")),
+    );
     let allowed = limit
         .get("allowed")
         .or_else(|| entry.get("allowed"))
@@ -710,33 +720,50 @@ fn normalize_reserve_quota_snapshot(
         .and_then(value_as_bool);
     let windows_exhausted = primary
         .as_ref()
-        .map(|window| window.used_percent >= 100.0)
-        .unwrap_or(false)
-        && secondary
+        .is_some_and(|window| window.used_percent >= 100.0)
+        || secondary
             .as_ref()
-            .map(|window| window.used_percent >= 100.0)
-            .unwrap_or(true);
+            .is_some_and(|window| window.used_percent >= 100.0);
     let availability = if allowed == Some(false) || limit_reached == Some(true) || windows_exhausted
     {
         RESERVE_AVAILABILITY_UNAVAILABLE
-    } else if allowed == Some(true) || primary.is_some() || secondary.is_some() {
+    } else if allowed == Some(true) {
         RESERVE_AVAILABILITY_AVAILABLE
     } else {
         RESERVE_AVAILABILITY_UNKNOWN
     };
     Some(NormalizedReserveQuotaSnapshot {
         availability: availability.to_string(),
+        allowed,
+        limit_reached,
         primary,
         secondary,
+        primary_available_percent,
+        secondary_available_percent,
     })
 }
 
 fn unknown_reserve_quota_snapshot() -> NormalizedReserveQuotaSnapshot {
     NormalizedReserveQuotaSnapshot {
         availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
+        allowed: None,
+        limit_reached: None,
         primary: None,
         secondary: None,
+        primary_available_percent: None,
+        secondary_available_percent: None,
     }
+}
+
+fn normalize_reported_available_percent(value: Option<&Value>) -> Option<f64> {
+    value
+        .and_then(|value| {
+            value
+                .get("available_percent")
+                .or_else(|| value.get("availablePercent"))
+        })
+        .and_then(value_as_f64)
+        .filter(|value| (0.0..=100.0).contains(value))
 }
 
 pub(crate) fn normalize_usage_window(

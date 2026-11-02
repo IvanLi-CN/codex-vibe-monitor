@@ -510,6 +510,14 @@ async fn record_usage_refresh_failure(
             lease_token: None,
         });
     }
+    let _ = persist_unknown_reserve_usage_snapshot_with_lease(
+        &state.pool,
+        row.id,
+        row.plan_type.as_deref(),
+        state.config.upstream_accounts_history_retention_days,
+        Some(lease_token),
+    )
+    .await?;
     if http_status
         .is_some_and(|status| matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN))
     {
@@ -4066,12 +4074,16 @@ pub(crate) struct LatestUpstreamAccountSampleByAccountRow {
     credits_unlimited: Option<i64>,
     credits_balance: Option<String>,
     reserve_status: Option<String>,
+    reserve_allowed: Option<i64>,
+    reserve_limit_reached: Option<i64>,
     reserve_primary_used_percent: Option<f64>,
     reserve_primary_window_minutes: Option<i64>,
     reserve_primary_resets_at: Option<String>,
+    reserve_primary_available_percent: Option<f64>,
     reserve_secondary_used_percent: Option<f64>,
     reserve_secondary_window_minutes: Option<i64>,
     reserve_secondary_resets_at: Option<String>,
+    reserve_secondary_available_percent: Option<f64>,
     reserve_captured_at: Option<String>,
 }
 
@@ -4110,12 +4122,16 @@ pub(crate) async fn load_latest_usage_sample_map(
             sample.credits_unlimited,
             sample.credits_balance,
             sample.reserve_status,
+            sample.reserve_allowed,
+            sample.reserve_limit_reached,
             sample.reserve_primary_used_percent,
             sample.reserve_primary_window_minutes,
             sample.reserve_primary_resets_at,
+            sample.reserve_primary_available_percent,
             sample.reserve_secondary_used_percent,
             sample.reserve_secondary_window_minutes,
             sample.reserve_secondary_resets_at,
+            sample.reserve_secondary_available_percent,
             sample.reserve_captured_at
         FROM pool_upstream_account_limit_samples sample
         INNER JOIN (
@@ -4242,12 +4258,16 @@ pub(crate) async fn load_latest_usage_sample_map(
                     credits_unlimited: row.credits_unlimited,
                     credits_balance: row.credits_balance,
                     reserve_status: row.reserve_status,
+                    reserve_allowed: row.reserve_allowed,
+                    reserve_limit_reached: row.reserve_limit_reached,
                     reserve_primary_used_percent: row.reserve_primary_used_percent,
                     reserve_primary_window_minutes: row.reserve_primary_window_minutes,
                     reserve_primary_resets_at: row.reserve_primary_resets_at,
+                    reserve_primary_available_percent: row.reserve_primary_available_percent,
                     reserve_secondary_used_percent: row.reserve_secondary_used_percent,
                     reserve_secondary_window_minutes: row.reserve_secondary_window_minutes,
                     reserve_secondary_resets_at: row.reserve_secondary_resets_at,
+                    reserve_secondary_available_percent: row.reserve_secondary_available_percent,
                     reserve_captured_at: row.reserve_captured_at,
                 },
             )
@@ -4499,8 +4519,11 @@ pub(crate) async fn load_upstream_account_detail_with_options(
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance,
             reserve_status,
+            reserve_allowed, reserve_limit_reached,
             reserve_primary_used_percent, reserve_primary_window_minutes, reserve_primary_resets_at,
+            reserve_primary_available_percent,
             reserve_secondary_used_percent, reserve_secondary_window_minutes, reserve_secondary_resets_at,
+            reserve_secondary_available_percent,
             reserve_captured_at
         FROM pool_upstream_account_limit_samples
         WHERE account_id = ?1
@@ -4966,12 +4989,22 @@ pub(crate) fn build_summary_from_row(
             } else {
                 RESERVE_AVAILABILITY_UNKNOWN.to_string()
             },
+            allowed: sample
+                .and_then(|value| value.reserve_allowed)
+                .map(|value| value != 0),
+            limit_reached: sample
+                .and_then(|value| value.reserve_limit_reached)
+                .map(|value| value != 0),
             primary_window: sample.and_then(|value| {
                 build_window_snapshot(
                     value.reserve_primary_used_percent,
                     value.reserve_primary_window_minutes,
                     value.reserve_primary_resets_at.as_deref(),
                 )
+                .map(|mut window| {
+                    window.available_percent = value.reserve_primary_available_percent;
+                    window
+                })
             }),
             secondary_window: sample.and_then(|value| {
                 build_window_snapshot(
@@ -4979,6 +5012,10 @@ pub(crate) fn build_summary_from_row(
                     value.reserve_secondary_window_minutes,
                     value.reserve_secondary_resets_at.as_deref(),
                 )
+                .map(|mut window| {
+                    window.available_percent = value.reserve_secondary_available_percent;
+                    window
+                })
             }),
             captured_at,
         }

@@ -1593,3 +1593,38 @@ fn build_pool_upstream_request_attempt_progress(
         response_content_encoding: pending.response_content_encoding.clone(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quota_route_annotation_preserves_client_model_and_records_fallback_reason() {
+        let mut pending = PendingPoolAttemptRecord {
+            attempt_id: Some(7),
+            request_model: Some("gpt-6-luna".to_string()),
+            request_summary_json: Some(r#"{"client":"preserved"}"#.to_string()),
+            ..Default::default()
+        };
+
+        assert!(
+            annotate_pool_upstream_request_attempt_quota_route(
+                &mut pending,
+                "reserve",
+                Some("normal_quota_exhausted"),
+            )
+            .expect("annotate quota route")
+        );
+        let summary: Value = serde_json::from_str(
+            pending
+                .request_summary_json
+                .as_deref()
+                .expect("request summary"),
+        )
+        .expect("decode request summary");
+        assert_eq!(summary["client"], "preserved");
+        assert_eq!(summary["quotaRoute"], "reserve");
+        assert_eq!(summary["fallbackReason"], "normal_quota_exhausted");
+        assert_eq!(pending.request_model.as_deref(), Some("gpt-6-luna"));
+    }
+}

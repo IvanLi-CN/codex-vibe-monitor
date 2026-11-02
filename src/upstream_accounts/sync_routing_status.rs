@@ -1271,6 +1271,7 @@ pub(crate) fn build_api_key_window(
     };
     Some(RateWindowSnapshot {
         used_percent: 0.0,
+        available_percent: None,
         used_text: format!("0 {}", unit.unwrap_or(DEFAULT_API_KEY_LIMIT_UNIT)),
         limit_text,
         resets_at: None,
@@ -1288,6 +1289,7 @@ pub(crate) fn build_window_snapshot(
     let window_duration_mins = window_duration_mins?;
     Some(RateWindowSnapshot {
         used_percent,
+        available_percent: None,
         used_text: format!("{}%", format_percent(used_percent)),
         limit_text: format_window_label(window_duration_mins),
         resets_at: resets_at.map(ToOwned::to_owned),

@@ -27,6 +27,7 @@ import {
   renderTagChips,
   renderTagOverflowChip,
   reserveSummaryText,
+  reserveValueTone,
   resolveCurrentForwardProxyChipLabel,
   resolveCurrentForwardProxyChipTone,
   resolveRosterActionableStatusChips,
@@ -402,6 +403,7 @@ function GroupMemberRow({
                 label={labels.reserve ?? "Reserve"}
                 value={reserveText}
                 title={reserveText}
+                valueClassName={reserveValueTone(item.reserve?.availability)}
                 wrapValue
               />
             ) : null}
@@ -598,6 +600,7 @@ function GroupMemberGridCard({
             label={labels.reserve ?? "Reserve"}
             value={reserveText}
             title={reserveText}
+            valueClassName={reserveValueTone(item.reserve?.availability)}
             wrapValue
           />
         ) : null}

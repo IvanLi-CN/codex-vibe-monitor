@@ -83,7 +83,12 @@ pub(crate) fn encode_model_mappings_json(mappings: &[ModelMapping]) -> Result<St
 pub(crate) fn compile_model_mappings(mappings: &[ModelMapping]) -> Vec<CompiledModelMapping> {
     mappings
         .iter()
-        .filter(|mapping| mapping.enabled)
+        .filter(|mapping| {
+            mapping.enabled
+                && !mapping
+                    .target_model
+                    .eq_ignore_ascii_case(RESERVE_WIRE_MODEL)
+        })
         .map(|mapping| {
             let source_pattern_ascii_lowercase = mapping.source_model.to_ascii_lowercase();
             CompiledModelMapping {
@@ -517,6 +522,13 @@ mod tests {
             "empty-target"
         );
         assert_eq!(resolve_model_mapping(&mappings, None), None);
+    }
+
+    #[test]
+    fn reserve_wire_model_is_not_selectable_from_normal_model_mappings() {
+        let mappings = vec![mapping("gpt-5", RESERVE_WIRE_MODEL, true)];
+
+        assert_eq!(resolve_model_mapping(&mappings, Some("gpt-5")), None);
     }
 
     #[test]

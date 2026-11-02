@@ -121,6 +121,7 @@ export const LunaReserveAvailable: Story = {
         availability: "available",
         primaryWindow: {
           usedPercent: 12,
+          availablePercent: 88,
           usedText: "12% used",
           limitText: "Reserve rolling window",
           resetsAt: "2026-03-11T18:00:00.000Z",
@@ -135,6 +136,7 @@ export const LunaReserveAvailable: Story = {
         used: "used",
         availablePercent: "available",
         reset: "Reset",
+        window: "min window",
         capturedAt: "Captured",
         unknownValue: "Unknown",
       }}
