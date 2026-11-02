@@ -177,7 +177,10 @@ pub(crate) async fn begin_upstream_account_refresh_attempt_with_lease(
         WHERE (
             (
                 pool_upstream_account_refresh_state.state <> ?7
-                AND pool_upstream_account_refresh_state.lease_token IS NULL
+                AND (
+                    pool_upstream_account_refresh_state.lease_token IS NULL
+                    OR pool_upstream_account_refresh_state.last_attempt_at <= ?9
+                )
             )
             OR (
                 pool_upstream_account_refresh_state.state = ?8
