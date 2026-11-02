@@ -376,7 +376,7 @@ async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration
     use std::time::Duration as StdDuration;
 
     let _target_timing = test_timing_target(
-        "tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration",
+        "tests::stateful_sqlite::system_status_and_account_roster::system_status_and_raw_metrics::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration",
     );
     let _whole_test = test_timing_span("whole_test");
     let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
