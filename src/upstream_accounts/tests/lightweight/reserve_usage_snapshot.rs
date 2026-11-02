@@ -98,6 +98,25 @@ fn reserve_usage_snapshot_keeps_ambiguous_window_data_unknown() {
 }
 
 #[test]
+fn reserve_usage_snapshot_keeps_allowance_without_quota_observation_unknown() {
+    let payload = json!({
+        "additional_rate_limits": {
+            "gpt-reserve": {
+                "rate_limit": {
+                    "allowed": true
+                }
+            }
+        }
+    });
+
+    let reserve = normalize_usage_snapshot(&payload)
+        .expect("normalize incomplete reserve snapshot")
+        .reserve
+        .expect("reserve snapshot should be present");
+    assert_eq!(reserve.availability, RESERVE_AVAILABILITY_UNKNOWN);
+}
+
+#[test]
 fn reserve_usage_snapshot_marks_any_exhausted_window_unavailable() {
     let payload = json!({
         "additional_rate_limits": {

@@ -4978,8 +4978,8 @@ pub(crate) fn build_summary_from_row(
             .as_deref()
             .and_then(parse_to_utc_datetime)
             .is_some_and(|captured_at| {
-                now.signed_duration_since(captured_at).num_seconds()
-                    <= RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS
+                let age_secs = now.signed_duration_since(captured_at).num_seconds();
+                (0..=RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS).contains(&age_secs)
             });
         ReserveQuotaSnapshot {
             availability: if fresh {

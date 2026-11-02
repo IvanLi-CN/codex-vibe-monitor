@@ -212,6 +212,9 @@ mod tests {
             (now - chrono::Duration::seconds(RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS + 1)).to_rfc3339(),
         );
         assert!(!reserve_candidate_snapshot_is_available(&candidate, now));
+
+        candidate.reserve_captured_at = Some((now + chrono::Duration::seconds(1)).to_rfc3339());
+        assert!(!reserve_candidate_snapshot_is_available(&candidate, now));
     }
 }
 
@@ -1165,8 +1168,8 @@ pub(crate) fn reserve_candidate_snapshot_is_available(
             .as_deref()
             .and_then(parse_rfc3339_utc)
             .is_some_and(|captured_at| {
-                now.signed_duration_since(captured_at).num_seconds()
-                    <= RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS
+                let age_secs = now.signed_duration_since(captured_at).num_seconds();
+                (0..=RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS).contains(&age_secs)
             })
 }
 

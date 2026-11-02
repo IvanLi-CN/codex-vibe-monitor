@@ -724,10 +724,14 @@ fn normalize_reserve_quota_snapshot(
         || secondary
             .as_ref()
             .is_some_and(|window| window.used_percent >= 100.0);
+    let has_quota_observation = primary.is_some()
+        || secondary.is_some()
+        || primary_available_percent.is_some()
+        || secondary_available_percent.is_some();
     let availability = if allowed == Some(false) || limit_reached == Some(true) || windows_exhausted
     {
         RESERVE_AVAILABILITY_UNAVAILABLE
-    } else if allowed == Some(true) {
+    } else if allowed == Some(true) && has_quota_observation {
         RESERVE_AVAILABILITY_AVAILABLE
     } else {
         RESERVE_AVAILABILITY_UNKNOWN
