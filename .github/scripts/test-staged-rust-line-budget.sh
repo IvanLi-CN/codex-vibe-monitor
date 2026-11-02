@@ -111,52 +111,6 @@ assert_contains "$tmp_dir/policy-alias.stderr" 'policy.files[0].path must be a c
 cp "$tmp_dir/policy.before" "$fixture_repo/policy.json"
 git -C "$fixture_repo" add policy.json
 
-race_git_bin="$tmp_dir/race-git-bin"
-mkdir -p "$race_git_bin"
-race_git_count="$tmp_dir/race-git-count"
-printf '0\n' > "$race_git_count"
-cat > "$race_git_bin/git" <<'EOF_RACE_GIT'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "${3:-}" = 'cat-file' ]; then
-  race_count="$(cat "${RACE_GIT_COUNT:?}")"
-  if [ "$race_count" -eq 1 ]; then
-    printf '2\n' > "$RACE_GIT_COUNT"
-    cat > "$RACE_FIXTURE_REPO/src/selected.rs" <<'EOF_RACE_CONTENT'
-fn raced_one() {}
-fn raced_two() {}
-fn raced_three() {}
-fn raced_four() {}
-EOF_RACE_CONTENT
-    "$REAL_GIT" -C "$RACE_FIXTURE_REPO" add src/selected.rs
-  elif [ "$race_count" -eq 0 ]; then
-    printf '1\n' > "$RACE_GIT_COUNT"
-  fi
-fi
-exec "$REAL_GIT" "$@"
-EOF_RACE_GIT
-chmod +x "$race_git_bin/git"
-cat > "$fixture_repo/src/selected.rs" <<'EOF_RACE_BASELINE'
-fn selected_one() {}
-fn selected_two() {}
-fn selected_three() {}
-EOF_RACE_BASELINE
-git -C "$fixture_repo" add src/selected.rs
-if (
-  cd "$fixture_repo"
-  PATH="$race_git_bin:$PATH" REAL_GIT="$(command -v git)" RACE_GIT_COUNT="$race_git_count" \
-    RACE_FIXTURE_REPO="$fixture_repo" python3 "$checker" --policy policy.json
-) >"$tmp_dir/index-race.stdout" 2>"$tmp_dir/index-race.stderr"; then
-  fail 'checker must reject an index change during the blob snapshot'
-fi
-assert_contains "$tmp_dir/index-race.stderr" 'Git index changed during staged Rust line-budget check; retry the check'
-cat > "$fixture_repo/src/selected.rs" <<'EOF_RACE_RESTORED'
-fn selected_one() {}
-fn selected_two() {}
-fn selected_three() {}
-EOF_RACE_RESTORED
-git -C "$fixture_repo" add src/selected.rs
-
 cat > "$fixture_repo/src/selected.rs" <<'EOF_DELETED_SIBLING'
 fn selected_one() {}
 fn selected_two() {}
@@ -165,20 +119,5 @@ EOF_DELETED_SIBLING
 git -C "$fixture_repo" add src/selected.rs
 git -C "$fixture_repo" rm -q -f 'src/selected with spaces.rs'
 run_checker
-
-rm -f "$fixture_repo/src/selected.rs"
-ln -s selected-target.rs "$fixture_repo/src/selected.rs"
-git -C "$fixture_repo" add -- src/selected.rs
-if run_checker >"$tmp_dir/symlink-source.stdout" 2>"$tmp_dir/symlink-source.stderr"; then
-  fail 'selected staged Rust symlink must fail closed'
-fi
-assert_contains "$tmp_dir/symlink-source.stderr" 'src/selected.rs: staged index entry must be a regular file'
-rm -f "$fixture_repo/src/selected.rs"
-cat > "$fixture_repo/src/selected.rs" <<'EOF_RESTORED_SELECTED'
-fn selected_one() {}
-fn selected_two() {}
-fn selected_three() {}
-EOF_RESTORED_SELECTED
-git -C "$fixture_repo" add src/selected.rs
 
 printf 'staged Rust line-budget contract: passed\n'

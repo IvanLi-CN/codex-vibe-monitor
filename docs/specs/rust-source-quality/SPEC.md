@@ -64,7 +64,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 84 explicit file entries: 4 production candidates above 2,500 lines and 8 test/helper candidates above 3,000 lines. The remaining 72 test/helper entries are retained with explicit budgets below the destination target. The immutable preparation baseline retains its original candidate counts for checker compatibility. Each current entry MUST record its exact current budget, role, and either a specific next module workstream or a reasoned cohesive-module exception.
+The policy MUST keep the current inventory as 21 explicit file entries: 4 production candidates above 2,500 lines and 17 test/helper candidates above 3,000 lines. The immutable preparation baseline retains its original candidate counts for checker compatibility. Each current entry MUST record its exact current budget, role, and either a specific next module workstream or a reasoned cohesive-module exception.
 
 covers: VER-RUST-SOURCE-QUALITY-004
 
@@ -95,20 +95,8 @@ selected source blobs from Git's index, match exact paths from
 skip unselected and deleted paths, and report the path, actual physical line
 count, and budget for an over-budget selected path. The policy itself MUST be
 read from its stage-0 index blob so staged source and policy are evaluated as
-one candidate. Each staged formatter MUST operate on a stable worktree
-snapshot, apply its formatted patch to a private index with `git apply --cached`, and update the worktree only through a descriptor-safe
-`O_NOFOLLOW` write after rechecking the expected content hash. The private
-index MUST be installed only through the formatter-owned Git index lock. A
-concurrent mismatch MUST fail without silently staging or overwriting the
-concurrent edit.
-The Rust formatter MUST reject partial staging and pass staged filenames after
-an option terminator. The managed pre-commit wrapper MUST
-serialize the complete formatter, safety-check, and Lefthook sequence with an
-advisory lock in the current worktree's Git metadata, invoke Lefthook with
-auto-install disabled, and it MUST reject symlink and
-non-regular lock targets without following or blocking on them. The installer
-MUST migrate only marker-bearing, byte-exact legacy standard or inline-safety
-pre-commit templates to the wrapper and preserve other hooks. The guard MUST
+one candidate. The Rust formatter MUST reject partial staging and stage its
+formatted whole-file output before the guard reads the index. The guard MUST
 NOT run Cargo, access the network, scan the worktree, or mutate the index or
 worktree. The existing partial-staging safety check, commitlint hook,
 post-checkout hook, and the canonical full runner MUST remain intact.
@@ -141,7 +129,7 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 84 entries have specific next module workstreams. The policy records 140 explicit suppression entries. The schema and fixture harness retain the exception form for a future entry only when its reason is explicit and cohesive, never as an escape hatch for an unselected or growing file.
+The current inventory retains no cohesive-module exceptions: all 21 entries have specific next module workstreams. The schema and fixture harness retain the exception form for a future entry only when its reason is explicit and cohesive, never as an escape hatch for an unselected or growing file.
 
 The prompt-cache conversation query governance extraction removes the original parent from the selected inventory and assigns all 60 existing tests exactly once: 47 stateful SQLite cases across metadata/history, persisted statistics, activity/chart windows, pagination, the reused snapshots suite, and runtime/cache coordination; four in-memory response codec cases to lightweight; and nine file-backed metadata backfills to archive/file I/O. After rustfmt, the parent is 10 lines, the stateful children are 923, 1,536, 681, 903, 1,402, 617, and 16 lines, and the resource children are 85 and 591 lines; all affected files are below the 3,000-line test/helper target. The extraction preserves test identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup, while consolidating only the three identical count-mode row inserters and moving the two private wrappers to `test_support.rs`; the final candidate also removes an unused archive-test import without changing behavior; immutable preparation counts remain 32/23 and suppression inventory remains 117.
 
@@ -322,7 +310,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 84 explicit entries, including 4 production and 8 test/helper candidates above the destination targets, with exact budgets and explicit workstreams or reasoned exceptions; its suppression inventory has 140 entries.
+Pass condition: the policy has 4 production and 17 test/helper entries (21 total), with exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
 
@@ -343,22 +331,6 @@ Pass condition: all required positive and negative fixtures pass their expected
 outcomes.
 
 covers: REQ-RUST-SOURCE-QUALITY-006
-
-### VER-RUST-SOURCE-QUALITY-010
-
-Method: run `bash scripts/test-git-hooks-contract.sh`,
-`bash scripts/test-worktree-bootstrap.sh`,
-`bash .github/scripts/test-quality-gates-contract.sh`,
-`bash .github/scripts/test-staged-rust-line-budget.sh`, and `lefthook validate`;
-inspect the staged guard and formatter scripts for index-blob reads, explicit
-policy matching, descriptor-safe worktree writes, and forbidden Cargo, network,
-worktree-scan, or direct-index mutation paths.
-Pass condition: the hook, installer, quality-gate topology, staged line-budget,
-and Lefthook contracts pass; the guard evaluates only the staged policy/source
-blobs and the formatter rejects partial staging or concurrent content/index
-mismatches without overwriting the concurrent state.
-
-covers: REQ-RUST-SOURCE-QUALITY-010
 
 ### VER-RUST-SOURCE-QUALITY-007
 

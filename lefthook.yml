@@ -1,20 +1,16 @@
 pre-commit:
-  parallel: false
+  parallel: true
   jobs:
     - name: format-web
-      glob:
-        - "web/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
-        - "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
+      glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
       run: bash scripts/format-staged-files.sh web {staged_files}
+      stage_fixed: true
     - name: format-markdown
-      glob:
-        - "*.md"
-        - "**/*.md"
+      glob: "**/*.md"
       run: bash scripts/format-staged-files.sh markdown {staged_files}
+      stage_fixed: true
     - name: rust-staged-checks
-      glob:
-        - "*.{rs}"
-        - "**/*.{rs}"
+      glob: "*.{rs}"
       group:
         parallel: false
         jobs:

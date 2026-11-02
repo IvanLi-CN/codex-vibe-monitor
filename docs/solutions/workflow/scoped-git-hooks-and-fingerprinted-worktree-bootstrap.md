@@ -11,7 +11,6 @@ tags:
   - cargo
 status: active
 related_specs:
-  - docs/specs/rust-source-quality/SPEC.md
   - docs/specs/v7se4-worktree-bootstrap/SPEC.md
   - docs/specs/tr4ev-bun-first-toolchain/SPEC.md
 ---
@@ -30,7 +29,7 @@ Repository-wide type checking, linting, formatting, and dependency recovery prov
 
 ## Resolution
 
-- Keep only staged-path formatters in `pre-commit`: Biome for web files, Rustfmt with the repository edition for Rust, and dprint for Markdown. Add a managed pre-commit wrapper that holds a per-worktree Git metadata lock, runs the formatter wrapper's `--check` mode before Lefthook hides partial changes, and serializes the complete hook execution. Each formatter works from a stable snapshot, applies its verified output to a private index with `git apply --cached`, and writes the worktree through descriptor-safe `O_NOFOLLOW` handles before atomically installing the private index through its owned Git index lock. Formatter staging therefore does not depend on Lefthook's shared Git common-directory patch or a later blind `git add`; the Rust output is then available to the staged budget check. Treat marker-bearing standard or inline-safety pre-commit templates as safe predecessors to migrate, but preserve every other existing hook.
+- Keep only staged-path formatters in `pre-commit`: Biome for web files, Rustfmt with the repository edition for Rust, and dprint for Markdown. Keep Lefthook `stage_fixed`, but add a managed pre-commit wrapper that holds a per-worktree Git metadata lock, runs the formatter wrapper's `--check` mode before Lefthook hides partial changes, and serializes the complete hook execution. The check and formatter share their path filter, so it does not depend on Lefthook's shared Git common-directory patch; the Rust formatter stages its verified whole-file output before the staged budget check. Treat a marker-bearing standard pre-commit template as a safe predecessor to migrate, but preserve every other existing hook.
 - Put full checks behind explicit commands (`bun run typecheck:web`, `bun run verify:rust`) and retain their existing CI steps and required job names.
 - Store one status and digest per dependency surface in each worktree's Git metadata. Digest root Bun, web Bun, docs Bun, and Cargo from their manifests, lockfiles, and toolchain input. A reusable Bun state needs every manifest-direct package directory; Cargo needs every registry archive represented by `Cargo.lock` plus the cache-relative layout captured after a successful fetch. Restore only a missing or changed surface; `--force` is the intentional escape hatch.
 - Record a failed digest. Automatic checkout logs and suppresses repeat attempts for that exact input, while manual setup retries it and input changes reactivate automatic recovery.
