@@ -770,6 +770,9 @@ async fn persist_imported_oauth_waits_for_inflight_maintenance() {
 
     let probe = ImportedOauthProbeOutcome {
         token_expires_at: format_utc_iso(Utc::now() + ChronoDuration::days(30)),
+        refresh_token_expires_at: None,
+        refresh_token_expiry_source: "not_provided".to_string(),
+        refresh_token_metadata_update: true,
         credentials: StoredOauthCredentials {
             access_token: "imported-access-token".to_string(),
             refresh_token: Some("imported-refresh-token".to_string()),

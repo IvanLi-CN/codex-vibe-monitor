@@ -128,7 +128,7 @@ const baseTranslations = {
     "accountPool.eyebrow": "Pool",
     "accountPool.title": "Upstream",
     "accountPool.description":
-      "Manage Codex upstream accounts, persistent login sessions, and normalized 5h / 7d quota snapshots.",
+      "Manage Codex upstream accounts, persistent login sessions, and normalized quota snapshots.",
     "system.eyebrow": "System",
     "system.title": "System workspace",
     "system.description":
@@ -384,14 +384,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.metrics.oauth": "OAuth",
     "accountPool.upstreamAccounts.metrics.apiKey": "API keys",
     "accountPool.upstreamAccounts.metrics.attention": "Needs attention",
-    "accountPool.upstreamAccounts.primaryWindowLabel": "5h window",
-    "accountPool.upstreamAccounts.primaryWindowShortLabel": "5h",
-    "accountPool.upstreamAccounts.secondaryWindowLabel": "7d window",
-    "accountPool.upstreamAccounts.secondaryWindowShortLabel": "7d",
+    "accountPool.upstreamAccounts.primaryWindowLabel": "Primary quota window",
+    "accountPool.upstreamAccounts.primaryWindowShortLabel": "Primary",
+    "accountPool.upstreamAccounts.secondaryWindowLabel": "Secondary quota window",
+    "accountPool.upstreamAccounts.secondaryWindowShortLabel": "Secondary",
     "accountPool.upstreamAccounts.primaryWindowDescription":
-      "Primary quota window, aligned with Codex 5-hour usage semantics.",
+      "The primary quota window reported by the upstream.",
     "accountPool.upstreamAccounts.secondaryWindowDescription":
-      "Secondary quota window, aligned with Codex 7-day usage semantics.",
+      "The secondary quota window reported by the upstream.",
     "accountPool.upstreamAccounts.limitLegendTitle": "Quota legend",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth accounts show normalized upstream usage snapshots. API key accounts show local placeholder limits until routing metrics are wired in.",
@@ -924,7 +924,7 @@ const baseTranslations = {
       "OAuth completed on the server. Refresh the roster to load the final account details.",
     "accountPool.upstreamAccounts.apiKey.createTitle": "Codex API key account",
     "accountPool.upstreamAccounts.apiKey.createDescription":
-      "Store a masked API key plus local placeholder limits for the 5-hour and 7-day windows.",
+      "Store a masked API key plus local placeholder limits for the primary and secondary windows.",
     "accountPool.upstreamAccounts.apiKey.localPlaceholder": "Local placeholder usage",
     "accountPool.upstreamAccounts.editTitle": "Editable profile",
     "accountPool.upstreamAccounts.editDescription":
@@ -954,6 +954,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.refresh.empty": "No credential refresh records",
     "accountPool.upstreamAccounts.refresh.retry": "Retry",
     "accountPool.upstreamAccounts.refresh.retryCredentials": "Retry Token refresh",
+    "accountPool.upstreamAccounts.refresh.windowPending": "Existing data retained; update pending",
     "accountPool.upstreamAccounts.refresh.failureTitle": "Usage window update failed",
     "accountPool.upstreamAccounts.refresh.credentialsFailureTitle": "Token refresh failed",
     "accountPool.upstreamAccounts.refresh.credentialsReauthTitle": "Re-authorization required",
@@ -964,6 +965,35 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.refresh.state.partial": "Partial",
     "accountPool.upstreamAccounts.refresh.state.needs_reauth": "Re-authorization required",
     "accountPool.upstreamAccounts.refresh.state.error": "Error",
+    "accountPool.upstreamAccounts.tokenLifecycle.accessToken": "Access Token",
+    "accountPool.upstreamAccounts.tokenLifecycle.refreshToken": "Refresh Token",
+    "accountPool.upstreamAccounts.tokenLifecycle.expiresAt": "Expires at",
+    "accountPool.upstreamAccounts.tokenLifecycle.stateLabel": "Status",
+    "accountPool.upstreamAccounts.tokenLifecycle.sourceLabel": "Source",
+    "accountPool.upstreamAccounts.tokenLifecycle.observedAt": "Observed at",
+    "accountPool.upstreamAccounts.tokenLifecycle.present": "Present",
+    "accountPool.upstreamAccounts.tokenLifecycle.presentYes": "Yes",
+    "accountPool.upstreamAccounts.tokenLifecycle.presentNo": "No",
+    "accountPool.upstreamAccounts.tokenLifecycle.notProvided": "Not provided by upstream",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.known": "Known",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.expired": "Expired",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.stale": "Needs refresh",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.unconfirmed": "Unconfirmed",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.missing": "Missing",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.unparseable": "Could not parse",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.not_provided": "Not provided",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.unknown": "Unknown",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.jwt_exp": "JWT exp",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.oauth_expires_in": "OAuth expires_in",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.oauth_refresh_token_expires_at":
+      "OAuth Refresh Token expires_at",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.oauth_refresh_token_expires_in":
+      "OAuth Refresh Token expires_in",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.legacy_token_expires_at":
+      "Legacy account data",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.imported": "Imported credentials",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.not_provided": "Not provided by upstream",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.unknown": "Unknown",
     "accountPool.upstreamAccounts.stickyConversations.title": "Sticky key conversations",
     "accountPool.upstreamAccounts.stickyConversations.description":
       "Review the sticky keys currently attached to this upstream account, plus 24h request activity.",
@@ -1280,6 +1310,9 @@ const baseTranslations = {
       "Latest normalized primary window usage plus recent trend.",
     "accountPool.upstreamAccounts.usage.secondaryDescription":
       "Latest normalized secondary window usage plus recent trend.",
+    "accountPool.upstreamAccounts.usage.windowDuration": "Reported duration: {{duration}}",
+    "accountPool.upstreamAccounts.usage.windowDurationUnknown": "Window duration unknown",
+    "accountPool.upstreamAccounts.usage.noWindows": "No usable quota window is available yet.",
     "accountPool.upstreamAccounts.table.account": "Account",
     "accountPool.upstreamAccounts.table.lastSync": "Last success",
     "accountPool.upstreamAccounts.table.syncAndCall": "Sync / Call",
@@ -1731,7 +1764,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_ok":
       "Usage windows updated successfully",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_window_partial":
-      "One usage window was updated; retry pending",
+      "Quota window update incomplete; retry pending",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_missing":
       "Usage response contained no usable windows",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_persist_failed":
@@ -3855,7 +3888,7 @@ const baseTranslations = {
     "accountPool.eyebrow": "号池",
     "accountPool.title": "上游",
     "accountPool.description":
-      "集中管理 Codex 上游账号、持久登录状态，以及归一化后的 5 小时 / 7 天额度快照。",
+      "集中管理 Codex 上游账号、持久登录状态，以及归一化后的额度窗口快照。",
     "system.eyebrow": "系统",
     "system.title": "系统工作区",
     "system.description": "把运行状态、后台任务、共享设置与正向代理运维集中到同一个系统工作区里。",
@@ -4079,14 +4112,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.metrics.oauth": "OAuth 账号",
     "accountPool.upstreamAccounts.metrics.apiKey": "API Key",
     "accountPool.upstreamAccounts.metrics.attention": "需关注",
-    "accountPool.upstreamAccounts.primaryWindowLabel": "5 小时窗口",
-    "accountPool.upstreamAccounts.primaryWindowShortLabel": "5h",
-    "accountPool.upstreamAccounts.secondaryWindowLabel": "7 天窗口",
-    "accountPool.upstreamAccounts.secondaryWindowShortLabel": "7d",
-    "accountPool.upstreamAccounts.primaryWindowDescription":
-      "主额度窗口，对齐 Codex 的 5 小时使用语义。",
-    "accountPool.upstreamAccounts.secondaryWindowDescription":
-      "副额度窗口，对齐 Codex 的 7 天使用语义。",
+    "accountPool.upstreamAccounts.primaryWindowLabel": "主要额度窗口",
+    "accountPool.upstreamAccounts.primaryWindowShortLabel": "主要",
+    "accountPool.upstreamAccounts.secondaryWindowLabel": "次要额度窗口",
+    "accountPool.upstreamAccounts.secondaryWindowShortLabel": "次要",
+    "accountPool.upstreamAccounts.primaryWindowDescription": "上游返回的主要额度窗口。",
+    "accountPool.upstreamAccounts.secondaryWindowDescription": "上游返回的次要额度窗口。",
     "accountPool.upstreamAccounts.limitLegendTitle": "额度说明",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth 账号展示上游归一化后的真实快照；API Key 账号在路由计量接入前，展示本地占位限额。",
@@ -4603,7 +4634,7 @@ const baseTranslations = {
       "服务端已完成 OAuth，请刷新账号列表以加载最终账号详情。",
     "accountPool.upstreamAccounts.apiKey.createTitle": "Codex API Key 账号",
     "accountPool.upstreamAccounts.apiKey.createDescription":
-      "保存脱敏后的 API Key，并为 5 小时 / 7 天窗口录入本地占位限额。",
+      "保存脱敏后的 API Key，并为主要 / 次要窗口录入本地占位限额。",
     "accountPool.upstreamAccounts.apiKey.localPlaceholder": "本地占位统计",
     "accountPool.upstreamAccounts.editTitle": "账号编辑",
     "accountPool.upstreamAccounts.editDescription":
@@ -4633,6 +4664,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.refresh.empty": "暂无凭据刷新记录",
     "accountPool.upstreamAccounts.refresh.retry": "重试",
     "accountPool.upstreamAccounts.refresh.retryCredentials": "重试 Token 刷新",
+    "accountPool.upstreamAccounts.refresh.windowPending": "保留已有数据，等待更新",
     "accountPool.upstreamAccounts.refresh.failureTitle": "额度窗口更新失败",
     "accountPool.upstreamAccounts.refresh.credentialsFailureTitle": "Token 刷新失败",
     "accountPool.upstreamAccounts.refresh.credentialsReauthTitle": "需要重新授权",
@@ -4643,6 +4675,34 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.refresh.state.partial": "部分成功",
     "accountPool.upstreamAccounts.refresh.state.needs_reauth": "需要重新授权",
     "accountPool.upstreamAccounts.refresh.state.error": "错误",
+    "accountPool.upstreamAccounts.tokenLifecycle.accessToken": "Access Token",
+    "accountPool.upstreamAccounts.tokenLifecycle.refreshToken": "Refresh Token",
+    "accountPool.upstreamAccounts.tokenLifecycle.expiresAt": "过期时间",
+    "accountPool.upstreamAccounts.tokenLifecycle.stateLabel": "状态",
+    "accountPool.upstreamAccounts.tokenLifecycle.sourceLabel": "来源",
+    "accountPool.upstreamAccounts.tokenLifecycle.observedAt": "观测时间",
+    "accountPool.upstreamAccounts.tokenLifecycle.present": "是否存在",
+    "accountPool.upstreamAccounts.tokenLifecycle.presentYes": "有",
+    "accountPool.upstreamAccounts.tokenLifecycle.presentNo": "无",
+    "accountPool.upstreamAccounts.tokenLifecycle.notProvided": "上游未提供",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.known": "已知",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.expired": "已过期",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.stale": "待刷新",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.unconfirmed": "未确认",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.missing": "缺失",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.unparseable": "无法解析",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.not_provided": "未提供",
+    "accountPool.upstreamAccounts.tokenLifecycle.state.unknown": "未知",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.jwt_exp": "JWT exp",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.oauth_expires_in": "OAuth expires_in",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.oauth_refresh_token_expires_at":
+      "OAuth Refresh Token expires_at",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.oauth_refresh_token_expires_in":
+      "OAuth Refresh Token expires_in",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.legacy_token_expires_at": "历史账号数据",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.imported": "导入凭据",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.not_provided": "上游未提供",
+    "accountPool.upstreamAccounts.tokenLifecycle.source.unknown": "未知",
     "accountPool.upstreamAccounts.stickyConversations.title": "Sticky Key 对话",
     "accountPool.upstreamAccounts.stickyConversations.description":
       "查看当前账号承接的 sticky key，以及最近 24 小时请求活跃情况。",
@@ -4949,6 +5009,9 @@ const baseTranslations = {
       "最近一次归一化主窗口使用率，以及近期趋势。",
     "accountPool.upstreamAccounts.usage.secondaryDescription":
       "最近一次归一化副窗口使用率，以及近期趋势。",
+    "accountPool.upstreamAccounts.usage.windowDuration": "上游窗口时长：{{duration}}",
+    "accountPool.upstreamAccounts.usage.windowDurationUnknown": "窗口时长未知",
+    "accountPool.upstreamAccounts.usage.noWindows": "暂时没有可用的额度窗口。",
     "accountPool.upstreamAccounts.table.account": "账号",
     "accountPool.upstreamAccounts.table.lastSync": "最近成功同步",
     "accountPool.upstreamAccounts.table.syncAndCall": "同步 / 调用",
@@ -5368,7 +5431,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_refresh_ok":
       "额度窗口更新成功",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_window_partial":
-      "一个额度窗口已更新，等待重试",
+      "额度窗口更新不完整，等待下一分钟重试",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_windows_missing":
       "额度响应未包含可用窗口",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_persist_failed":

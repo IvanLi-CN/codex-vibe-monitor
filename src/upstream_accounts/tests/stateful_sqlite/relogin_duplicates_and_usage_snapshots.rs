@@ -1818,6 +1818,7 @@ async fn persist_usage_snapshot_uses_explicit_effective_plan_type() {
         primary: None,
         secondary: None,
         credits: None,
+        ..Default::default()
     };
     persist_usage_snapshot(&pool, account_id, Some("pro"), &snapshot, 30)
         .await
@@ -1862,6 +1863,7 @@ async fn persist_usage_snapshot_preserves_missing_window_from_latest_sample() {
             unlimited: false,
             balance: Some("0".to_string()),
         }),
+        ..Default::default()
     };
     persist_usage_snapshot(&pool, account_id, Some("team"), &first_snapshot, 30)
         .await
@@ -2122,6 +2124,7 @@ async fn snapshot_plan_type_fallback_prefers_latest_effective_sample() {
         primary: None,
         secondary: None,
         credits: None,
+        ..Default::default()
     };
 
     let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
@@ -2192,6 +2195,7 @@ async fn snapshot_plan_type_fallback_prefers_refreshed_claims_over_stale_non_emp
         primary: None,
         secondary: None,
         credits: None,
+        ..Default::default()
     };
 
     let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
@@ -3953,6 +3957,7 @@ async fn list_upstream_accounts_keeps_actual_usage_null_until_batch_hydrate() {
         }),
         secondary: None,
         credits: None,
+        ..Default::default()
     };
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
         .await
@@ -4009,6 +4014,7 @@ async fn get_upstream_account_window_usage_returns_batch_actual_usage() {
             resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
         }),
         credits: None,
+        ..Default::default()
     };
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
         .await
@@ -4196,6 +4202,7 @@ async fn get_upstream_account_window_usage_merges_hourly_rows_when_live_cursor_m
             resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
         }),
         credits: None,
+        ..Default::default()
     };
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
         .await
@@ -4275,6 +4282,7 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
             resets_at: Some(now.to_rfc3339()),
         }),
         credits: None,
+        ..Default::default()
     };
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
         .await

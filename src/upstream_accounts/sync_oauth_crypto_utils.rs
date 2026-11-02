@@ -621,6 +621,16 @@ pub(crate) fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageS
             .or_else(|| limit.get("secondaryWindow")),
         updated_at,
     );
+    let primary_candidate = limit
+        .get("primary_window")
+        .or_else(|| limit.get("primaryWindow"))
+        .is_some_and(|value| !value.is_null());
+    let secondary_candidate = limit
+        .get("secondary_window")
+        .or_else(|| limit.get("secondaryWindow"))
+        .is_some_and(|value| !value.is_null());
+    let observed_window_candidates = u8::from(primary_candidate) + u8::from(secondary_candidate);
+    let parsed_window_count = u8::from(primary.is_some()) + u8::from(secondary.is_some());
     let credits = value
         .get("credits")
         .map(normalize_credits_snapshot)
@@ -633,6 +643,9 @@ pub(crate) fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageS
         primary,
         secondary,
         credits,
+        observed_window_candidates,
+        parsed_window_count,
+        window_parse_failure_count: observed_window_candidates.saturating_sub(parsed_window_count),
     })
 }
 
@@ -655,7 +668,8 @@ pub(crate) fn normalize_usage_window(
                 .or_else(|| value.get("limitWindowSeconds"))
                 .and_then(value_as_i64)
                 .map(seconds_to_window_minutes)
-        })?;
+        })
+        .unwrap_or_default();
     let resets_at = value
         .get("resets_at")
         .or_else(|| value.get("resetsAt"))
@@ -674,6 +688,72 @@ pub(crate) fn normalize_usage_window(
         window_duration_mins,
         resets_at,
     })
+}
+
+pub(crate) fn oauth_token_response_lifecycle_metadata(
+    response: &OAuthTokenResponse,
+    access_token: &str,
+    observed_at: DateTime<Utc>,
+) -> OAuthTokenLifecycleMetadata {
+    let access_token_source = if parse_access_token_expiry(access_token).is_some() {
+        "jwt_exp"
+    } else {
+        "oauth_expires_in"
+    };
+    let observed_at = format_utc_iso(observed_at);
+    let (refresh_token_expires_at, refresh_token_source, refresh_token_state) =
+        if let Some(raw) = response.refresh_token_expires_at.as_deref() {
+            match parse_rfc3339_utc(raw.trim()) {
+                Some(expires_at) => (
+                    Some(format_utc_iso(expires_at)),
+                    Some("oauth_refresh_token_expires_at".to_string()),
+                    Some("known".to_string()),
+                ),
+                None => (
+                    None,
+                    Some("oauth_refresh_token_expires_at".to_string()),
+                    Some("unparseable".to_string()),
+                ),
+            }
+        } else if let Some(expires_in) = response.refresh_token_expires_in {
+            if expires_in >= 0 {
+                (
+                    Some(format_utc_iso(
+                        observed_at_datetime(&observed_at) + ChronoDuration::seconds(expires_in),
+                    )),
+                    Some("oauth_refresh_token_expires_in".to_string()),
+                    Some("known".to_string()),
+                )
+            } else {
+                (
+                    None,
+                    Some("oauth_refresh_token_expires_in".to_string()),
+                    Some("unparseable".to_string()),
+                )
+            }
+        } else {
+            (
+                None,
+                Some("not_provided".to_string()),
+                Some("not_provided".to_string()),
+            )
+        };
+    OAuthTokenLifecycleMetadata {
+        access_token_source: Some(access_token_source.to_string()),
+        access_token_observed_at: Some(observed_at.clone()),
+        refresh_token_expires_at,
+        refresh_token_source,
+        refresh_token_state,
+        refresh_token_observed_at: Some(observed_at),
+        refresh_token_rotated: response.refresh_token.is_some(),
+        refresh_token_metadata_update: response.refresh_token.is_some()
+            || response.refresh_token_expires_at.is_some()
+            || response.refresh_token_expires_in.is_some(),
+    }
+}
+
+fn observed_at_datetime(value: &str) -> DateTime<Utc> {
+    parse_rfc3339_utc(value).unwrap_or_else(Utc::now)
 }
 
 pub(crate) fn normalize_credits_snapshot(value: &Value) -> Result<CreditsSnapshot> {
@@ -1298,6 +1378,8 @@ pub(crate) fn normalize_imported_oauth_credentials(
         &access_token,
         &id_token,
     )?;
+    let (refresh_token_expires_at, refresh_token_expiry_source) =
+        resolve_imported_refresh_token_expiry(&normalized_value);
     let mut claims = parse_chatgpt_jwt_claims(&id_token)
         .map_err(|err| format!("failed to parse id_token: {err}"))?;
     if let Some(jwt_email) = claims.email.as_deref()
@@ -1330,6 +1412,9 @@ pub(crate) fn normalize_imported_oauth_credentials(
         chatgpt_account_id,
         chatgpt_user_id,
         token_expires_at,
+        refresh_token_expires_at,
+        refresh_token_expiry_source,
+        refresh_token_metadata_update: true,
         credentials: StoredOauthCredentials {
             access_token,
             refresh_token,
@@ -1339,6 +1424,33 @@ pub(crate) fn normalize_imported_oauth_credentials(
         },
         claims,
     })
+}
+
+fn resolve_imported_refresh_token_expiry(value: &Value) -> (Option<String>, String) {
+    if let Some(raw) = optional_imported_oauth_string(
+        value,
+        &["refresh_token_expires_at", "refreshTokenExpiresAt"],
+    ) {
+        return match parse_rfc3339_utc(raw.trim()) {
+            Some(expires_at) => (Some(format_utc_iso(expires_at)), "imported".to_string()),
+            None => (None, "unparseable".to_string()),
+        };
+    }
+    if let Some(raw) = ["refresh_token_expires_in", "refreshTokenExpiresIn"]
+        .iter()
+        .find_map(|key| value.get(*key))
+        .and_then(value_as_i64)
+    {
+        return if raw >= 0 {
+            (
+                Some(format_utc_iso(Utc::now() + ChronoDuration::seconds(raw))),
+                "imported".to_string(),
+            )
+        } else {
+            (None, "unparseable".to_string())
+        };
+    }
+    (None, "not_provided".to_string())
 }
 
 fn required_imported_oauth_string(

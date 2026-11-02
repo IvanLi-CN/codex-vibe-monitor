@@ -26,6 +26,18 @@ pub(crate) struct UpstreamAccountRow {
     #[sqlx(default)]
     pub(crate) has_refresh_token: Option<i64>,
     pub(crate) token_expires_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) access_token_expiry_source: Option<String>,
+    #[sqlx(default)]
+    pub(crate) access_token_expiry_observed_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) refresh_token_expires_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) refresh_token_expiry_source: Option<String>,
+    #[sqlx(default)]
+    pub(crate) refresh_token_expiry_state: Option<String>,
+    #[sqlx(default)]
+    pub(crate) refresh_token_expiry_observed_at: Option<String>,
     pub(crate) last_refreshed_at: Option<String>,
     pub(crate) last_synced_at: Option<String>,
     pub(crate) last_successful_sync_at: Option<String>,

@@ -16,7 +16,10 @@ import type { UpstreamAccountDetail, UpstreamAccountDuplicateInfo } from "../../
 import { fetchUpstreamAccountDetail } from "../../lib/api";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import { MotherAccountChip } from "../account-pool/MotherAccountToggle";
-import { UpstreamAccountUsageCard } from "../account-pool/UpstreamAccountUsageCard";
+import {
+  formatUsageWindowDuration,
+  UpstreamAccountUsageCard,
+} from "../account-pool/UpstreamAccountUsageCard";
 import { AppIcon } from "../shared/AppIcon";
 
 interface InvocationAccountDetailDrawerProps {
@@ -342,24 +345,44 @@ export function InvocationAccountDetailDrawer({
                 />
               </div>
               {detail.kind === "oauth_codex" ? (
-                <div className="grid gap-4 xl:grid-cols-2">
-                  <UpstreamAccountUsageCard
-                    title={t("accountPool.upstreamAccounts.primaryWindowLabel")}
-                    description={t("accountPool.upstreamAccounts.usage.primaryDescription")}
-                    window={detail.primaryWindow}
-                    history={detail.history}
-                    historyKey="primaryUsedPercent"
-                    emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
-                  />
-                  <UpstreamAccountUsageCard
-                    title={t("accountPool.upstreamAccounts.secondaryWindowLabel")}
-                    description={t("accountPool.upstreamAccounts.usage.secondaryDescription")}
-                    window={detail.secondaryWindow}
-                    history={detail.history}
-                    historyKey="secondaryUsedPercent"
-                    emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
-                    accentClassName="text-secondary"
-                  />
+                <div
+                  className={
+                    detail.primaryWindow && detail.secondaryWindow
+                      ? "grid gap-4 xl:grid-cols-2"
+                      : "grid gap-4"
+                  }
+                >
+                  {detail.primaryWindow ? (
+                    <UpstreamAccountUsageCard
+                      title={t("accountPool.upstreamAccounts.primaryWindowLabel")}
+                      description={t("accountPool.upstreamAccounts.usage.primaryDescription")}
+                      window={detail.primaryWindow}
+                      windowDurationLabel={t("accountPool.upstreamAccounts.usage.windowDuration", {
+                        duration:
+                          formatUsageWindowDuration(detail.primaryWindow.windowDurationMins) ??
+                          t("accountPool.upstreamAccounts.usage.windowDurationUnknown"),
+                      })}
+                      history={detail.history}
+                      historyKey="primaryUsedPercent"
+                      emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
+                    />
+                  ) : null}
+                  {detail.secondaryWindow ? (
+                    <UpstreamAccountUsageCard
+                      title={t("accountPool.upstreamAccounts.secondaryWindowLabel")}
+                      description={t("accountPool.upstreamAccounts.usage.secondaryDescription")}
+                      window={detail.secondaryWindow}
+                      windowDurationLabel={t("accountPool.upstreamAccounts.usage.windowDuration", {
+                        duration:
+                          formatUsageWindowDuration(detail.secondaryWindow.windowDurationMins) ??
+                          t("accountPool.upstreamAccounts.usage.windowDurationUnknown"),
+                      })}
+                      history={detail.history}
+                      historyKey="secondaryUsedPercent"
+                      emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
+                      accentClassName="text-secondary"
+                    />
+                  ) : null}
                 </div>
               ) : null}
             </div>

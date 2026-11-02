@@ -5063,8 +5063,30 @@ function demoUpstreamAccountRefreshPayload(account: DemoAccount) {
   const nextUsageAttemptAt = new Date(
     Date.parse(usageAttemptAt) + (usagePartial ? 60_000 : 300_000),
   ).toISOString();
+  const tokenObservedAt = credentialSuccessAt;
+  const accessTokenExpiresAt = new Date(
+    Date.parse(tokenObservedAt) + (credentialNeedsReauth ? -60 : 45) * 60_000,
+  ).toISOString();
+  const refreshTokenExpiresAt = new Date(
+    Date.parse(tokenObservedAt) + 30 * 24 * 60 * 60_000,
+  ).toISOString();
 
   return {
+    tokenLifecycle: {
+      accessToken: {
+        expiresAt: accessTokenExpiresAt,
+        state: credentialNeedsReauth ? "expired" : "known",
+        source: "jwt_exp",
+        observedAt: tokenObservedAt,
+      },
+      refreshToken: {
+        present: true,
+        expiresAt: refreshTokenExpiresAt,
+        state: credentialNeedsReauth ? "stale" : "known",
+        source: "oauth_refresh_token_expires_at",
+        observedAt: tokenObservedAt,
+      },
+    },
     credentialRefresh: {
       state: credentialNeedsReauth ? "needs_reauth" : "succeeded",
       lastAttemptAt: credentialAttemptAt,

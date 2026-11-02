@@ -21,8 +21,11 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
-        <div className="mx-auto max-w-3xl">
+      <div
+        data-visual-evidence-surface
+        className="min-h-screen bg-base-200 px-6 py-8 text-base-content"
+      >
+        <div data-visual-evidence-target className="mx-auto max-w-3xl">
           <Story />
         </div>
       </div>
@@ -36,8 +39,8 @@ type Story = StoryObj<typeof meta>;
 
 export const PrimaryWindow: Story = {
   args: {
-    title: "5h window",
-    description: "Primary quota window aligned with Codex 5-hour usage semantics.",
+    title: "Primary quota window",
+    description: "Primary quota window reported by the upstream.",
     window: {
       usedPercent: 68,
       usedText: "68% used",
@@ -48,14 +51,15 @@ export const PrimaryWindow: Story = {
     history,
     historyKey: "primaryUsedPercent",
     emptyLabel: "No usage samples yet",
+    windowDurationLabel: "Reported duration: 5h",
     noteLabel: "OAuth snapshot",
   },
 };
 
 export const PlaceholderApiKeyWindow: Story = {
   args: {
-    title: "7d window",
-    description: "Secondary weekly limit for a locally managed API key account.",
+    title: "Secondary quota window",
+    description: "Secondary quota window reported by the upstream.",
     window: {
       usedPercent: 0,
       usedText: "0 requests",
@@ -66,6 +70,7 @@ export const PlaceholderApiKeyWindow: Story = {
     history,
     historyKey: "secondaryUsedPercent",
     emptyLabel: "No usage samples yet",
+    windowDurationLabel: "Reported duration: 7d",
     noteLabel: "Local placeholder",
     accentClassName: "text-info",
   },
@@ -73,8 +78,8 @@ export const PlaceholderApiKeyWindow: Story = {
 
 export const EmptyHistory: Story = {
   args: {
-    title: "7d window",
-    description: "Known weekly snapshot without historical samples yet.",
+    title: "Secondary quota window",
+    description: "Known upstream snapshot without historical samples yet.",
     window: {
       usedPercent: 18,
       usedText: "18 requests",
@@ -85,13 +90,14 @@ export const EmptyHistory: Story = {
     history: [],
     historyKey: "secondaryUsedPercent",
     emptyLabel: "No usage samples yet",
+    windowDurationLabel: "Reported duration: 7d",
     accentClassName: "text-info",
   },
 };
 
 export const MissingWindowPlaceholder: Story = {
   args: {
-    title: "7d window",
+    title: "Secondary quota window",
     description: "Account without a configured secondary quota window.",
     window: null,
     history,

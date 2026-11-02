@@ -24,8 +24,18 @@ interface UpstreamAccountUsageCardProps {
   history: UpstreamAccountHistoryPoint[];
   historyKey: "primaryUsedPercent" | "secondaryUsedPercent";
   emptyLabel: string;
+  windowDurationLabel?: string;
   noteLabel?: string;
   accentClassName?: string;
+}
+
+export function formatUsageWindowDuration(windowDurationMins?: number | null) {
+  if (!Number.isFinite(windowDurationMins ?? NaN)) return null;
+  const minutes = Math.max(0, Math.round(windowDurationMins ?? 0));
+  if (minutes === 0) return null;
+  if (minutes % (60 * 24) === 0) return `${minutes / (60 * 24)}d`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
 }
 
 function historyLabel(value: string) {
@@ -47,6 +57,7 @@ export function UpstreamAccountUsageCard({
   history,
   historyKey,
   emptyLabel,
+  windowDurationLabel,
   noteLabel,
   accentClassName = "text-primary",
 }: UpstreamAccountUsageCardProps) {
@@ -118,6 +129,7 @@ export function UpstreamAccountUsageCard({
               {usedLabel}
             </p>
             <p>{limitLabel}</p>
+            {!missingWindow && windowDurationLabel ? <p>{windowDurationLabel}</p> : null}
             <p className="inline-flex items-center gap-1">
               <AppIcon
                 name="timer-refresh-outline"
