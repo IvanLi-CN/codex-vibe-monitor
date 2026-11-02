@@ -22,7 +22,7 @@ TARGETS = [
     "restart_schema_refreshes_existing_objects_across_primed_pool_connections",
     "tests::stateful_sqlite::proxy_backfill_and_cost_repairs::"
     "run_backfill_with_retry_succeeds_after_lock_release",
-    "tests::stateful_sqlite::system_status_and_account_roster::"
+    "tests::stateful_sqlite::system_status_and_account_roster::system_status_and_raw_metrics::"
     "system_raw_metrics_inventory_revalidates_existing_paths_after_hydration",
 ]
 

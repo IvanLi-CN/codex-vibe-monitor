@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 88,
+    "inventory_entries": 91,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -409,10 +409,28 @@
       "next_module_workstream": "Maintain retention pruning, archive recovery, manifest refresh, and upstream activity backfill fixtures."
     },
     {
-      "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
+      "path": "src/tests/stateful_sqlite/system_status_and_account_roster/system_status_and_raw_metrics.rs",
       "role": "test_helper",
-      "line_budget": 4976,
-      "next_module_workstream": "Split system status/account roster fixtures by archive, account, and projection helpers."
+      "line_budget": 924,
+      "next_module_workstream": "Maintain system status/storage snapshots, raw-metrics inventory, runtime pressure serialization, and payload fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/system_status_and_account_roster/schema_template_and_runtime_isolation.rs",
+      "role": "test_helper",
+      "line_budget": 1177,
+      "next_module_workstream": "Maintain system-task query/retention fixtures, schema template parity, pooled isolation, and test runtime builders."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/system_status_and_account_roster/account_roster_and_activity.rs",
+      "role": "test_helper",
+      "line_budget": 2022,
+      "next_module_workstream": "Maintain upstream account roster, activity projections, account read fixtures, and shared account routing helpers."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/system_status_and_account_roster/account_mutations_and_group_policy.rs",
+      "role": "test_helper",
+      "line_budget": 874,
+      "next_module_workstream": "Maintain API-key account mutations, account deletion, group policy, and retry-column fixtures."
     },
     {
       "path": "src/upstream_accounts/core_runtime_types.rs",
@@ -1065,10 +1083,10 @@
       "reason": "Retain this targeted allow for the current argument bundle at src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
+      "path": "src/tests/stateful_sqlite/system_status_and_account_roster/account_roster_and_activity.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/tests/stateful_sqlite/system_status_and_account_roster.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the current argument bundle at src/tests/stateful_sqlite/system_status_and_account_roster/account_roster_and_activity.rs; remove it when the listed boundary split is complete."
     },
     {
       "path": "src/upstream_accounts/core.rs",
