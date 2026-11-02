@@ -189,3 +189,10 @@ _Avoid_: quota balance when only a percentage and reset time are known.
 **Automatic Reserve Fallback**:
 A routing policy that tries Luna Reserve only after a normal request is classified as ordinary quota exhaustion and the policy switch is enabled. An explicit Reserve request is separate from this policy.
 _Avoid_: model suffix routing, because a normal model name ending in `luna` does not by itself select Luna Reserve.
+
+**Reserve Model Eligibility**:
+The check that determines whether a normal request model may use Luna Reserve after ordinary quota exhaustion. By default it requires a fresh upstream binding from `additional_rate_limits`, including a matching `normal_model_slug` and `metered_feature=base_model_inference`; incomplete binding data fails closed.
+_Avoid_: treating every `gpt-*-luna` model name as Reserve-eligible.
+
+**Reserve Fallback Model Policy**:
+The operator-controlled model eligibility mode for Automatic Reserve Fallback. `upstream` uses only the upstream binding, `upstream_plus_custom` adds administrator exact/glob patterns, and `custom` uses only those patterns. The policy does not change the client model or `gpt-reserve` wire model.

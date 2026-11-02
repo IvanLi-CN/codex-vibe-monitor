@@ -17,6 +17,8 @@ The project also uses “Reserve” for local invocation and capacity reservatio
 - Call the upstream capability **Luna Reserve** and call its usage allowance **Reserve Quota**.
 - Treat `gpt-reserve` as the Reserve wire model, not as a normal public model alias. A normal model whose name contains `luna` remains on Normal Quota unless fallback is explicitly selected by the routing policy.
 - Parse the upstream usage response's additional limits and retain the Reserve-specific allowance signal, usage windows, normal model slug, and snapshot freshness. A Reserve upsell indicator is supporting evidence only; it cannot establish routability by itself.
+- Require Reserve fallback eligibility to be bound to the upstream usage observation by default: the effective request model must match `normal_model_slug`, and the observation must identify `metered_feature=base_model_inference` from `additional_rate_limits`. Missing or incomplete binding data fails closed for automatic Reserve use.
+- Expose three operator policy modes for model eligibility: `upstream` (the default binding only), `upstream_plus_custom` (binding or administrator exact/glob patterns), and `custom` (patterns only). These patterns do not alter the request model or the Reserve wire model.
 - Represent Normal Quota and Luna Reserve as separate quota routes. Persist additional limits as typed records related to a usage snapshot rather than deriving availability from prices, token usage, or an unstructured model alias.
 - Add a global operator switch for Automatic Reserve Fallback. It is enabled by default for OAuth upstream accounts and controls only automatic fallback. An explicitly requested `gpt-reserve` request is not disabled by this switch.
 - Keep Reserve usage synchronization and account-pool visibility independent from the Automatic Reserve Fallback switch. Disabling fallback stops automatic Reserve use but does not hide or stop reading Reserve state.
@@ -27,6 +29,7 @@ The project also uses “Reserve” for local invocation and capacity reservatio
 - Preserve the client's requested model identity when a Reserve fallback succeeds, while recording the actual upstream wire model and selected quota route for diagnostics and usage accounting.
 - Treat an individual Reserve failure as a routing failure, not proof that Reserve is exhausted. Persist Reserve exhaustion or unavailability only after an explicit upstream signal or a confirming usage snapshot; transient transport, server, and request errors must not poison the quota state.
 - Expose the global fallback switch through the existing pool-routing settings API and UI. Expose Reserve availability and the latest usage percentage and reset time in account summaries and account details. Do not label a percentage as an absolute remaining request or token balance.
+- Expose the Reserve model-eligibility policy through the existing pool-routing settings API and UI. An explicit `gpt-reserve` request remains Reserve-only and bypasses automatic model-eligibility filtering; it is never downgraded to Normal Quota.
 
 ## Consequences
 
@@ -35,6 +38,7 @@ The project also uses “Reserve” for local invocation and capacity reservatio
 - The schema and usage API gain an additive representation for additional limits and Reserve state. Existing accounts without Reserve data remain compatible and report `unknown` rather than false availability.
 - Routing, request rewriting, usage persistence, API responses, and the account-pool UI must carry both the client-requested model and the selected quota route. The upstream wire model may be `gpt-reserve` while the client-facing model identity remains unchanged.
 - Operators can disable automatic Reserve consumption without losing visibility into which OAuth accounts expose Reserve and how much of its reported window is used.
+- Operators can restrict automatic Reserve use to upstream-declared model bindings or explicitly configured model patterns without turning ordinary `gpt-*-luna` names into implicit Reserve aliases.
 - The upstream usage endpoint exposes percentages and reset windows rather than a guaranteed absolute balance. The UI and routing logic must not infer a token balance from pricing or local usage estimates.
 - Historical Reserve snapshots can support later trend views, but the first UI surface is the current list/detail status rather than a new historical chart.
 

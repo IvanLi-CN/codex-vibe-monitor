@@ -1,5 +1,24 @@
 use super::*;
 
+async fn reserve_candidate_supports_requested_model(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    candidate: &AccountRoutingCandidateRow,
+    requested_model: Option<&str>,
+    policy: &ReserveFallbackModelPolicy,
+) -> Result<bool> {
+    let mapping = load_model_mapping_for_account(state, row.id, requested_model).await?;
+    let effective_model = mapping
+        .as_ref()
+        .map(|mapping| mapping.target_model.as_str())
+        .or(requested_model);
+    Ok(reserve_candidate_supports_model(
+        candidate,
+        effective_model,
+        policy,
+    ))
+}
+
 #[path = "selection/live_candidate.rs"]
 mod live_candidate;
 
@@ -728,6 +747,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         requested_model
     };
     let now = Utc::now();
+    let reserve_model_policy = if quota_route == PoolQuotaRoute::Reserve
+        && !requested_model.is_some_and(|model| model.eq_ignore_ascii_case(RESERVE_WIRE_MODEL))
+    {
+        Some(resolve_reserve_fallback_model_policy(
+            &load_pool_routing_settings(&state.pool).await?,
+        ))
+    } else {
+        None
+    };
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
     let mut saw_degraded_candidate = false;
@@ -834,6 +862,24 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 binding_constraint.is_none_or(|constraint| constraint.accepts_row(&row));
             let sticky_candidate =
                 load_account_routing_candidate(&state.pool, route.account_id).await?;
+            let sticky_reserve_model_eligible = match (
+                quota_route,
+                reserve_model_policy.as_ref(),
+                sticky_candidate.as_ref(),
+            ) {
+                (PoolQuotaRoute::Reserve, Some(policy), Some(candidate)) => {
+                    reserve_candidate_supports_requested_model(
+                        state,
+                        &row,
+                        candidate,
+                        requested_model,
+                        policy,
+                    )
+                    .await?
+                }
+                (PoolQuotaRoute::Reserve, Some(_), None) => false,
+                _ => true,
+            };
             let sticky_snapshot_exhausted = quota_route == PoolQuotaRoute::Normal
                 && sticky_candidate
                     .as_ref()
@@ -898,6 +944,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 || sticky_candidate
                     .as_ref()
                     .is_some_and(|candidate| reserve_candidate_is_available(&row, candidate, now)))
+                && sticky_reserve_model_eligible
                 && if quota_route == PoolQuotaRoute::Reserve {
                     is_account_selectable_for_reserve_route(&row, now)
                 } else {
@@ -1032,6 +1079,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         active_sticky_conversations: 0,
                                         in_flight_reservations: 0,
                                         reserve_status: None,
+                                        reserve_normal_model_slug: None,
+                                        reserve_metered_feature: None,
+                                        reserve_binding_source: None,
                                         reserve_primary_used_percent: None,
                                         reserve_primary_window_minutes: None,
                                         reserve_primary_resets_at: None,
@@ -1491,6 +1541,24 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 &mut selection_audit_exclusions,
                 &row,
                 "modelNotAllowed",
+            );
+            saw_other_non_rate_limited_routing_candidate = true;
+            continue;
+        }
+        if let Some(policy) = reserve_model_policy.as_ref()
+            && !reserve_candidate_supports_requested_model(
+                state,
+                &row,
+                &candidate,
+                requested_model,
+                policy,
+            )
+            .await?
+        {
+            push_routing_selection_audit_exclusion(
+                &mut selection_audit_exclusions,
+                &row,
+                "reserveModelNotEligible",
             );
             saw_other_non_rate_limited_routing_candidate = true;
             continue;

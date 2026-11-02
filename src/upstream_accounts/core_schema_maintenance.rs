@@ -1695,7 +1695,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             reserve_secondary_window_minutes INTEGER,
             reserve_secondary_resets_at TEXT,
             reserve_secondary_available_percent REAL,
-            reserve_captured_at TEXT
+            reserve_captured_at TEXT,
+            reserve_normal_model_slug TEXT,
+            reserve_metered_feature TEXT,
+            reserve_binding_source TEXT
         )
         "#,
     )
@@ -1786,6 +1789,27 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure reserve_captured_at usage sample column")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_normal_model_slug",
+    )
+    .await
+    .context("failed to ensure reserve_normal_model_slug usage sample column")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_metered_feature",
+    )
+    .await
+    .context("failed to ensure reserve_metered_feature usage sample column")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_limit_samples",
+        "reserve_binding_source",
+    )
+    .await
+    .context("failed to ensure reserve_binding_source usage sample column")?;
 
     sqlx::query(
         r#"
@@ -1964,6 +1988,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             cache_hit_overflow_mode TEXT NOT NULL DEFAULT 'queue',
             priority_handoff_admission_enabled INTEGER NOT NULL DEFAULT 1,
             automatic_reserve_fallback_enabled INTEGER NOT NULL DEFAULT 1,
+            reserve_fallback_model_policy_mode TEXT NOT NULL DEFAULT 'upstream',
+            reserve_fallback_model_patterns_json TEXT NOT NULL DEFAULT '[]',
             capability_axis_split_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -1990,6 +2016,22 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to backfill automatic_reserve_fallback_enabled")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "reserve_fallback_model_policy_mode",
+        "'upstream'",
+    )
+    .await
+    .context("failed to ensure reserve_fallback_model_policy_mode")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "reserve_fallback_model_patterns_json",
+        "'[]'",
+    )
+    .await
+    .context("failed to ensure reserve_fallback_model_patterns_json")?;
     ensure_nullable_integer_column(pool, "pool_routing_settings", "primary_sync_interval_secs")
         .await
         .context("failed to ensure pool_routing_settings.primary_sync_interval_secs")?;

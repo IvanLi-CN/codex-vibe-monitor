@@ -59,9 +59,19 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
     mut context: PoolAttemptExecutionContext<'a>,
     distinct_account_count: usize,
 ) -> Result<Option<PoolUpstreamResponse>, PoolUpstreamError> {
-    for same_account_attempt in 0..context.same_account_attempt_loop_budget {
+    let mut same_account_attempt = 0_u8;
+    let mut reserve_fallback_extension_available = false;
+    loop {
+        let using_reserve_fallback_extension = reserve_fallback_extension_available;
+        reserve_fallback_extension_available = false;
+        if same_account_attempt >= context.same_account_attempt_loop_budget
+            && !using_reserve_fallback_extension
+        {
+            break;
+        }
         if *context.same_account_only_retry_active
             && same_account_attempt >= context.overload_same_account_attempt_budget
+            && !using_reserve_fallback_extension
         {
             return Err(take_same_account_only_terminal_error(
                 context.last_error,
@@ -1779,8 +1789,15 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
         })
         .await?
         {
-            PoolAttemptResponseOutcome::Retry => continue,
-            PoolAttemptResponseOutcome::ReserveFallback => continue,
+            PoolAttemptResponseOutcome::Retry => {
+                same_account_attempt = same_account_attempt.saturating_add(1);
+                continue;
+            }
+            PoolAttemptResponseOutcome::ReserveFallback => {
+                same_account_attempt = same_account_attempt.saturating_add(1);
+                reserve_fallback_extension_available = true;
+                continue;
+            }
             PoolAttemptResponseOutcome::Failover => return Ok(None),
             PoolAttemptResponseOutcome::Response(response) => return Ok(Some(*response)),
         }

@@ -793,6 +793,17 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             )
             .await
             .is_ok();
+        let reserve_model_policy = if reserve_usage_refresh_succeeded {
+            load_pool_routing_settings(&context.state.pool)
+                .await
+                .ok()
+                .map(|row| resolve_reserve_fallback_model_policy(&row))
+        } else {
+            None
+        };
+        let effective_reserve_model = context
+            .upstream_request_model
+            .or(context.requested_model.as_deref());
         let reserve_available = reserve_usage_refresh_succeeded
             && load_account_routing_candidate(&context.state.pool, context.account.account_id)
                 .await
@@ -800,6 +811,13 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
                 .flatten()
                 .is_some_and(|candidate| {
                     reserve_candidate_snapshot_is_available(&candidate, Utc::now())
+                        && reserve_model_policy.as_ref().is_some_and(|policy| {
+                            reserve_candidate_supports_model(
+                                &candidate,
+                                effective_reserve_model,
+                                policy,
+                            )
+                        })
                 });
         if should_attempt_automatic_reserve_fallback(
             failure_kind,

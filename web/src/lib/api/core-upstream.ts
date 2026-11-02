@@ -52,6 +52,9 @@ export interface ReserveQuotaSnapshot {
   availability: "available" | "unavailable" | "unknown" | string;
   allowed?: boolean | null;
   limitReached?: boolean | null;
+  normalModelSlug?: string | null;
+  meteredFeature?: string | null;
+  bindingSource?: string | null;
   primaryWindow?: RateWindowSnapshot | null;
   secondaryWindow?: RateWindowSnapshot | null;
   capturedAt?: string | null;
@@ -536,6 +539,12 @@ export interface UpdatePoolRoutingSettingsPayload {
   cacheHitProtection?: Partial<CacheHitProtectionSettings>;
   priorityHandoffAdmissionEnabled?: boolean;
   automaticReserveFallbackEnabled?: boolean;
+  reserveFallbackModelPolicy?: ReserveFallbackModelPolicy;
+}
+
+export interface ReserveFallbackModelPolicy {
+  mode: "upstream" | "upstream_plus_custom" | "custom" | string;
+  patterns: string[];
 }
 
 export interface PoolRoutingSettings {
@@ -553,6 +562,7 @@ export interface PoolRoutingSettings {
   cacheHitProtection?: CacheHitProtectionSettings;
   priorityHandoffAdmissionEnabled?: boolean;
   automaticReserveFallbackEnabled?: boolean;
+  reserveFallbackModelPolicy?: ReserveFallbackModelPolicy;
 }
 
 export type CacheHitOverflowMode = "queue" | "reroute";

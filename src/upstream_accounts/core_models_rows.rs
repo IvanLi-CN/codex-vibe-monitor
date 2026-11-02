@@ -220,6 +220,10 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) priority_handoff_admission_enabled: Option<i64>,
     #[sqlx(default)]
     pub(crate) automatic_reserve_fallback_enabled: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reserve_fallback_model_policy_mode: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_fallback_model_patterns_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,7 +333,7 @@ pub(crate) struct PoolStickyModelRouteRow {
     pub(crate) last_seen_at: String,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, Default, FromRow)]
 pub(crate) struct AccountRoutingCandidateRow {
     pub(crate) id: i64,
     pub(crate) plan_type: Option<String>,
@@ -350,6 +354,12 @@ pub(crate) struct AccountRoutingCandidateRow {
     pub(crate) in_flight_reservations: i64,
     #[sqlx(default)]
     pub(crate) reserve_status: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_normal_model_slug: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_metered_feature: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_binding_source: Option<String>,
     #[sqlx(default)]
     pub(crate) reserve_primary_used_percent: Option<f64>,
     #[sqlx(default)]
@@ -967,6 +977,12 @@ pub(crate) struct UpstreamAccountSampleRow {
     pub(crate) reserve_allowed: Option<i64>,
     #[sqlx(default)]
     pub(crate) reserve_limit_reached: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reserve_normal_model_slug: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_metered_feature: Option<String>,
+    #[sqlx(default)]
+    pub(crate) reserve_binding_source: Option<String>,
     #[sqlx(default)]
     pub(crate) reserve_primary_used_percent: Option<f64>,
     #[sqlx(default)]

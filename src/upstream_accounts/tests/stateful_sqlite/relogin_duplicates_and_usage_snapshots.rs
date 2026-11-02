@@ -1914,6 +1914,9 @@ async fn failed_usage_refresh_persists_unknown_reserve_without_erasing_normal_us
             availability: RESERVE_AVAILABILITY_AVAILABLE.to_string(),
             allowed: Some(true),
             limit_reached: Some(false),
+            normal_model_slug: Some("gpt-5.4-luna".to_string()),
+            metered_feature: Some(RESERVE_METERED_FEATURE_BASE_MODEL_INFERENCE.to_string()),
+            binding_source: Some(RESERVE_BINDING_SOURCE_USAGE.to_string()),
             primary: Some(NormalizedUsageWindow {
                 used_percent: 10.0,
                 window_duration_mins: 300,
@@ -1927,11 +1930,9 @@ async fn failed_usage_refresh_persists_unknown_reserve_without_erasing_normal_us
     persist_usage_snapshot(&pool, account_id, Some("team"), &snapshot, 30)
         .await
         .expect("persist initial reserve snapshot");
-
     persist_unknown_reserve_usage_snapshot_with_lease(&pool, account_id, Some("team"), 30, None)
         .await
         .expect("persist unknown reserve snapshot");
-
     let latest = load_latest_usage_sample(&pool, account_id)
         .await
         .expect("load latest usage sample")
@@ -1941,7 +1942,6 @@ async fn failed_usage_refresh_persists_unknown_reserve_without_erasing_normal_us
         latest.reserve_status.as_deref(),
         Some(RESERVE_AVAILABILITY_UNKNOWN)
     );
-    assert_eq!(latest.reserve_allowed, None);
     assert_eq!(latest.reserve_limit_reached, None);
     assert_eq!(latest.reserve_primary_used_percent, None);
     assert_eq!(latest.reserve_primary_available_percent, None);

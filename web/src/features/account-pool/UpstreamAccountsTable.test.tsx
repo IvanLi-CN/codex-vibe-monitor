@@ -252,6 +252,33 @@ describe("UpstreamAccountsTable", () => {
     expect(reserveValueTone("unknown")).toBe("text-base-content/60");
   });
 
+  it("keeps missing Reserve usage percentages unknown", () => {
+    const item = {
+      id: 102,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "Incomplete Reserve account",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      reserve: {
+        availability: "available",
+        primaryWindow: {
+          usedPercent: null,
+          availablePercent: null,
+          usedText: "unknown",
+          limitText: "5h",
+          windowDurationMins: 300,
+        },
+      },
+      tags: [],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
+    } as unknown as UpstreamAccountSummary;
+
+    expect(reserveSummaryText(item, labels)).toContain("Used Unknown");
+    expect(reserveSummaryText(item, labels)).not.toContain("Used 0%");
+  });
+
   it("keeps ordinary account metadata neutral while preserving semantic status tones", () => {
     expect(enableChipTone("enabled")).toBe("success");
     expect(enableChipTone("disabled")).toBe("neutral");

@@ -343,32 +343,20 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
             .as_deref(),
         Some("1")
     );
-    let usage_columns = sqlx::query("PRAGMA table_info('pool_upstream_account_limit_samples')")
-        .fetch_all(&pool)
+    let routing_column_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('pool_routing_settings') WHERE name IN ('reserve_fallback_model_policy_mode', 'reserve_fallback_model_patterns_json')",
+    )
+        .fetch_one(&pool)
         .await
-        .expect("load upgraded usage sample table info")
-        .into_iter()
-        .filter_map(|row| row.try_get::<String, _>("name").ok())
-        .collect::<std::collections::HashSet<_>>();
-    for column in [
-        "reserve_status",
-        "reserve_allowed",
-        "reserve_limit_reached",
-        "reserve_primary_used_percent",
-        "reserve_primary_window_minutes",
-        "reserve_primary_resets_at",
-        "reserve_primary_available_percent",
-        "reserve_secondary_used_percent",
-        "reserve_secondary_window_minutes",
-        "reserve_secondary_resets_at",
-        "reserve_secondary_available_percent",
-        "reserve_captured_at",
-    ] {
-        assert!(
-            usage_columns.contains(column),
-            "expected upgraded usage sample table to contain {column}"
-        );
-    }
+        .expect("count upgraded routing settings columns");
+    assert_eq!(routing_column_count, 2);
+    let usage_column_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('pool_upstream_account_limit_samples') WHERE name IN ('reserve_status', 'reserve_allowed', 'reserve_limit_reached', 'reserve_primary_used_percent', 'reserve_primary_window_minutes', 'reserve_primary_resets_at', 'reserve_primary_available_percent', 'reserve_secondary_used_percent', 'reserve_secondary_window_minutes', 'reserve_secondary_resets_at', 'reserve_secondary_available_percent', 'reserve_captured_at', 'reserve_normal_model_slug', 'reserve_metered_feature', 'reserve_binding_source')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count upgraded usage sample columns");
+    assert_eq!(usage_column_count, 15);
     let legacy_usage = sqlx::query_as::<_, (i64, String, Option<String>, Option<f64>)>(
         "SELECT account_id, captured_at, limit_id, primary_used_percent FROM pool_upstream_account_limit_samples WHERE id = 7",
     )

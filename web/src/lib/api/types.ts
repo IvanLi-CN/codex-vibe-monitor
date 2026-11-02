@@ -212,6 +212,7 @@ export type {
   RawCompressionBacklogResponse,
   RequestCompressionAlgorithm,
   RequestCompressionLevelPreset,
+  ReserveFallbackModelPolicy,
   ReserveQuotaSnapshot,
   RetentionArchiveBatchMetrics,
   RetentionBacklogTrendPoint,

@@ -3569,6 +3569,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                           window: t("accountPool.upstreamAccounts.reserve.window"),
                           capturedAt: t("accountPool.upstreamAccounts.reserve.capturedAt"),
                           unknownValue: t("accountPool.upstreamAccounts.latestAction.unknown"),
+                          binding: t("accountPool.upstreamAccounts.reserve.binding"),
+                          meteredFeature: t("accountPool.upstreamAccounts.reserve.meteredFeature"),
                         }}
                       />
                     </div>

@@ -132,6 +132,11 @@ pub(crate) async fn update_pool_routing_settings(
         .as_ref()
         .map(|models| normalize_available_models(Some(models.clone()), "availableModels"))
         .transpose()?;
+    let reserve_fallback_model_policy = payload
+        .reserve_fallback_model_policy
+        .as_ref()
+        .map(normalize_reserve_model_policy)
+        .transpose()?;
     let crypto_key = if api_key.is_some() {
         Some(state.upstream_accounts.require_crypto_key()?)
     } else {
@@ -149,6 +154,7 @@ pub(crate) async fn update_pool_routing_settings(
         || payload.cache_hit_protection.is_some()
         || payload.priority_handoff_admission_enabled.is_some()
         || payload.automatic_reserve_fallback_enabled.is_some()
+        || reserve_fallback_model_policy.is_some()
     {
         save_pool_routing_settings(
             &state.pool,
@@ -170,6 +176,7 @@ pub(crate) async fn update_pool_routing_settings(
                     .map(|_| merged_cache_hit_protection),
                 priority_handoff_admission_enabled: payload.priority_handoff_admission_enabled,
                 automatic_reserve_fallback_enabled: payload.automatic_reserve_fallback_enabled,
+                reserve_fallback_model_policy: reserve_fallback_model_policy.as_ref(),
             },
         )
         .await?;

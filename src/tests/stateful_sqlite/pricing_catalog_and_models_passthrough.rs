@@ -2061,6 +2061,10 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         cache_hit_protection: None,
         priority_handoff_admission_enabled: Some(false),
         automatic_reserve_fallback_enabled: Some(false),
+        reserve_fallback_model_policy: Some(UpdateReserveFallbackModelPolicyRequest {
+            mode: "upstream_plus_custom".to_string(),
+            patterns: vec!["gpt-*-luna".to_string()],
+        }),
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),
@@ -2081,6 +2085,14 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     assert!(!updated.priority_handoff_admission_enabled);
     assert!(!updated.automatic_reserve_fallback_enabled);
     assert_eq!(
+        updated.reserve_fallback_model_policy.mode,
+        "upstream_plus_custom"
+    );
+    assert_eq!(
+        updated.reserve_fallback_model_policy.patterns,
+        vec!["gpt-*-luna".to_string()]
+    );
+    assert_eq!(
         updated.oauth_request_compression_algorithm,
         RequestCompressionAlgorithm::Gzip
     );
@@ -2094,6 +2106,10 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         .expect("reload pool routing settings after admission update");
     assert!(!reloaded.priority_handoff_admission_enabled);
     assert!(!reloaded.automatic_reserve_fallback_enabled);
+    assert_eq!(
+        reloaded.reserve_fallback_model_policy.patterns,
+        vec!["gpt-*-luna".to_string()]
+    );
 
     sqlx::query(
         "UPDATE pool_routing_settings SET priority_handoff_admission_enabled = 1 WHERE id = 1",
@@ -2121,6 +2137,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
             cache_hit_protection: None,
             priority_handoff_admission_enabled: Some(true),
             automatic_reserve_fallback_enabled: Some(true),
+            reserve_fallback_model_policy: None,
             timeouts: None,
         }),
     )
@@ -2206,6 +2223,7 @@ async fn pool_routing_cache_hit_settings_are_validated_and_partially_updated() {
         }),
         priority_handoff_admission_enabled: None,
         automatic_reserve_fallback_enabled: None,
+        reserve_fallback_model_policy: None,
     };
     let Json(updated) =
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
@@ -2235,6 +2253,7 @@ async fn pool_routing_cache_hit_settings_are_validated_and_partially_updated() {
         }),
         priority_handoff_admission_enabled: None,
         automatic_reserve_fallback_enabled: None,
+        reserve_fallback_model_policy: None,
     };
     let error = update_pool_routing_settings(State(state), HeaderMap::new(), Json(invalid))
         .await
@@ -2265,6 +2284,7 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
         cache_hit_protection: None,
         priority_handoff_admission_enabled: None,
         automatic_reserve_fallback_enabled: None,
+        reserve_fallback_model_policy: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2314,6 +2334,7 @@ async fn pool_routing_settings_timeout_updates_tolerate_invalid_cached_api_key_c
         cache_hit_protection: None,
         priority_handoff_admission_enabled: None,
         automatic_reserve_fallback_enabled: None,
+        reserve_fallback_model_policy: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2367,6 +2388,7 @@ async fn pool_routing_settings_api_key_updates_require_crypto_key() {
         cache_hit_protection: None,
         priority_handoff_admission_enabled: None,
         automatic_reserve_fallback_enabled: None,
+        reserve_fallback_model_policy: None,
         timeouts: None,
     };
     let err = update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
@@ -2392,6 +2414,7 @@ async fn pool_routing_settings_reject_timeouts_above_i64_max() {
         cache_hit_protection: None,
         priority_handoff_admission_enabled: None,
         automatic_reserve_fallback_enabled: None,
+        reserve_fallback_model_policy: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2432,6 +2455,7 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
         cache_hit_protection: None,
         priority_handoff_admission_enabled: None,
         automatic_reserve_fallback_enabled: None,
+        reserve_fallback_model_policy: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),

@@ -993,6 +993,7 @@ export default function UpstreamAccountsPage() {
       reserveUsed: t("accountPool.upstreamAccounts.reserve.used"),
       reserveAvailablePercent: t("accountPool.upstreamAccounts.reserve.availablePercent"),
       reserveCaptured: t("accountPool.upstreamAccounts.reserve.capturedAt"),
+      reserveBinding: t("accountPool.upstreamAccounts.reserve.binding"),
       nextReset: t("accountPool.upstreamAccounts.table.nextReset"),
       nextResetCompact: t("accountPool.upstreamAccounts.table.nextResetCompact"),
       requestsMetric: t("accountPool.upstreamAccounts.table.requestsMetric"),

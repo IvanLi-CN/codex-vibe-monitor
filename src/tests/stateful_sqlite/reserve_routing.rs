@@ -7,6 +7,17 @@ struct ReserveFallbackUpstreamState {
     request_paths: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+struct ReserveFallbackCleanupGuard {
+    upstream_handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ReserveFallbackCleanupGuard {
+    fn drop(&mut self) {
+        self.upstream_handle.abort();
+        oauth_bridge::reset_test_oauth_codex_upstream_base_url_now();
+    }
+}
+
 async fn reserve_fallback_upstream(
     State(state): State<ReserveFallbackUpstreamState>,
     method: Method,
@@ -41,6 +52,8 @@ async fn reserve_fallback_upstream(
                         "rateLimit": {
                             "allowed": true,
                             "limitReached": false,
+                            "normalModelSlug": "gpt-5.4-luna",
+                            "meteredFeature": "base_model_inference",
                             "primaryWindow": {
                                 "usedPercent": 10,
                                 "availablePercent": 90,
@@ -169,6 +182,7 @@ fn automatic_reserve_fallback_retries_same_oauth_account_with_wire_model() {
                 .expect("serve Reserve fallback upstream");
             }
         });
+        let _cleanup_guard = ReserveFallbackCleanupGuard { upstream_handle };
         oauth_bridge::set_test_oauth_codex_upstream_base_url(
             Url::parse(&format!("http://{address}/backend-api/codex"))
                 .expect("valid OAuth upstream URL"),
@@ -260,8 +274,5 @@ fn automatic_reserve_fallback_retries_same_oauth_account_with_wire_model() {
                     && summary.contains("\"fallbackReason\":\"normal_quota_exhausted\"")
             })
         }));
-
-        upstream_handle.abort();
-        oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
     });
 }

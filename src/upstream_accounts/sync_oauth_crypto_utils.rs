@@ -718,6 +718,20 @@ fn normalize_reserve_quota_snapshot(
         .or_else(|| entry.get("limit_reached"))
         .or_else(|| entry.get("limitReached"))
         .and_then(value_as_bool);
+    let normal_model_slug = limit
+        .get("normal_model_slug")
+        .or_else(|| limit.get("normalModelSlug"))
+        .or_else(|| entry.get("normal_model_slug"))
+        .or_else(|| entry.get("normalModelSlug"))
+        .and_then(value_as_string)
+        .filter(|value| !value.trim().is_empty());
+    let metered_feature = limit
+        .get("metered_feature")
+        .or_else(|| limit.get("meteredFeature"))
+        .or_else(|| entry.get("metered_feature"))
+        .or_else(|| entry.get("meteredFeature"))
+        .and_then(value_as_string)
+        .filter(|value| !value.trim().is_empty());
     let windows_exhausted = primary
         .as_ref()
         .is_some_and(|window| window.used_percent >= 100.0)
@@ -740,6 +754,10 @@ fn normalize_reserve_quota_snapshot(
         availability: availability.to_string(),
         allowed,
         limit_reached,
+        binding_source: (normal_model_slug.is_some() || metered_feature.is_some())
+            .then(|| RESERVE_BINDING_SOURCE_USAGE.to_string()),
+        normal_model_slug,
+        metered_feature,
         primary,
         secondary,
         primary_available_percent,
@@ -752,6 +770,9 @@ fn unknown_reserve_quota_snapshot() -> NormalizedReserveQuotaSnapshot {
         availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
         allowed: None,
         limit_reached: None,
+        normal_model_slug: None,
+        metered_feature: None,
+        binding_source: None,
         primary: None,
         secondary: None,
         primary_available_percent: None,
@@ -790,6 +811,9 @@ pub(crate) fn normalize_usage_window(
                 .and_then(value_as_i64)
                 .map(seconds_to_window_minutes)
         })?;
+    if !(0.0..=100.0).contains(&used_percent) || window_duration_mins <= 0 {
+        return None;
+    }
     let resets_at = value
         .get("resets_at")
         .or_else(|| value.get("resetsAt"))

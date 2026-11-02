@@ -54,6 +54,8 @@ type PoolRoutingSettingsCardProps = {
     cacheHitOverflowMode: "queue" | "reroute";
     priorityHandoffAdmissionEnabled: boolean;
     automaticReserveFallbackEnabled: boolean;
+    reserveFallbackModelPolicyMode?: "upstream" | "upstream_plus_custom" | "custom";
+    reserveFallbackModelPatterns?: string;
   };
   busy: boolean;
   writesEnabled: boolean;
@@ -74,6 +76,10 @@ type PoolRoutingSettingsCardProps = {
   }) => void;
   onPriorityHandoffAdmissionChange: (enabled: boolean) => void;
   onAutomaticReserveFallbackChange: (enabled: boolean) => void;
+  onReserveFallbackModelPolicyChange?: (patch: {
+    reserveFallbackModelPolicyMode?: "upstream" | "upstream_plus_custom" | "custom";
+    reserveFallbackModelPatterns?: string;
+  }) => void;
   onSave: () => void;
 };
 
@@ -94,6 +100,7 @@ export function PoolRoutingSettingsCard({
   onCacheHitProtectionChange,
   onPriorityHandoffAdmissionChange,
   onAutomaticReserveFallbackChange,
+  onReserveFallbackModelPolicyChange,
   onSave,
 }: PoolRoutingSettingsCardProps) {
   const { t } = useTranslation();
@@ -215,6 +222,55 @@ export function PoolRoutingSettingsCard({
               onCheckedChange={onAutomaticReserveFallbackChange}
             />
           </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SelectField
+              className="field"
+              label={t("settings.routing.reserveFallback.policyMode")}
+              name="settingsRoutingReserveFallbackPolicyMode"
+              value={draft.reserveFallbackModelPolicyMode ?? "upstream"}
+              disabled={!writesEnabled || busy}
+              options={[
+                {
+                  value: "upstream",
+                  label: t("settings.routing.reserveFallback.policyUpstream"),
+                },
+                {
+                  value: "upstream_plus_custom",
+                  label: t("settings.routing.reserveFallback.policyUpstreamPlusCustom"),
+                },
+                {
+                  value: "custom",
+                  label: t("settings.routing.reserveFallback.policyCustom"),
+                },
+              ]}
+              onValueChange={(value) =>
+                onReserveFallbackModelPolicyChange?.({
+                  reserveFallbackModelPolicyMode: value as
+                    | "upstream"
+                    | "upstream_plus_custom"
+                    | "custom",
+                })
+              }
+            />
+            <label className="field">
+              <span className="field-label">
+                {t("settings.routing.reserveFallback.policyPatterns")}
+              </span>
+              <Input
+                value={draft.reserveFallbackModelPatterns ?? ""}
+                disabled={!writesEnabled || busy}
+                placeholder={t("settings.routing.reserveFallback.policyPatternsPlaceholder")}
+                onChange={(event) =>
+                  onReserveFallbackModelPolicyChange?.({
+                    reserveFallbackModelPatterns: event.target.value,
+                  })
+                }
+              />
+            </label>
+          </div>
+          <p className="text-xs leading-snug text-base-content/60">
+            {t("settings.routing.reserveFallback.policyDescription")}
+          </p>
         </div>
         <div className="space-y-4 rounded-lg border border-base-300/75 bg-base-200/28 p-4">
           <div className="flex items-start justify-between gap-4">

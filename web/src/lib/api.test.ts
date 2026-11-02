@@ -2394,6 +2394,10 @@ describe("account pool frontend API helpers", () => {
         minimumInputTokens: 3840,
       },
       automaticReserveFallbackEnabled: true,
+      reserveFallbackModelPolicy: {
+        mode: "upstream",
+        patterns: [],
+      },
     });
   });
 

@@ -1,8 +1,11 @@
 use super::sync::sync_usage_snapshot::UsageSnapshotVersion;
 use super::*;
+#[path = "core_runtime_types/reserve.rs"]
+mod reserve;
 #[path = "core_runtime_types/runtime_state.rs"]
 mod runtime_state;
 use futures_util::FutureExt;
+pub(crate) use reserve::*;
 use std::{any::Any, collections::BTreeMap, panic::AssertUnwindSafe};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
     "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET";
@@ -2195,6 +2198,14 @@ pub(crate) struct PoolRoutingSettingsResponse {
     pub(crate) cache_hit_protection: CacheHitProtectionSettingsResponse,
     pub(crate) priority_handoff_admission_enabled: bool,
     pub(crate) automatic_reserve_fallback_enabled: bool,
+    pub(crate) reserve_fallback_model_policy: ReserveFallbackModelPolicyResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReserveFallbackModelPolicyResponse {
+    pub(crate) mode: String,
+    pub(crate) patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2241,6 +2252,16 @@ pub(crate) struct UpdatePoolRoutingSettingsRequest {
     pub(crate) priority_handoff_admission_enabled: Option<bool>,
     #[serde(default)]
     pub(crate) automatic_reserve_fallback_enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) reserve_fallback_model_policy: Option<UpdateReserveFallbackModelPolicyRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateReserveFallbackModelPolicyRequest {
+    pub(crate) mode: String,
+    #[serde(default)]
+    pub(crate) patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2458,17 +2479,6 @@ pub(crate) struct RateWindowSnapshot {
     pub(crate) resets_at: Option<String>,
     pub(crate) window_duration_mins: i64,
     pub(crate) actual_usage: Option<RateWindowActualUsage>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ReserveQuotaSnapshot {
-    pub(crate) availability: String,
-    pub(crate) allowed: Option<bool>,
-    pub(crate) limit_reached: Option<bool>,
-    pub(crate) primary_window: Option<RateWindowSnapshot>,
-    pub(crate) secondary_window: Option<RateWindowSnapshot>,
-    pub(crate) captured_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -3419,49 +3429,6 @@ pub(crate) struct NormalizedUsageSnapshot {
     pub(crate) secondary: Option<NormalizedUsageWindow>,
     pub(crate) credits: Option<CreditsSnapshot>,
     pub(crate) reserve: Option<NormalizedReserveQuotaSnapshot>,
-}
-
-pub(crate) const RESERVE_WIRE_MODEL: &str = "gpt-reserve";
-pub(crate) const RESERVE_AVAILABILITY_AVAILABLE: &str = "available";
-pub(crate) const RESERVE_AVAILABILITY_UNAVAILABLE: &str = "unavailable";
-pub(crate) const RESERVE_AVAILABILITY_UNKNOWN: &str = "unknown";
-pub(crate) const RESERVE_USAGE_SNAPSHOT_MAX_AGE_SECS: i64 = 900;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PoolQuotaRoute {
-    Normal,
-    Reserve,
-}
-
-impl PoolQuotaRoute {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Normal => "normal",
-            Self::Reserve => "reserve",
-        }
-    }
-
-    pub(crate) fn updates_shared_route_health(self) -> bool {
-        self == Self::Normal
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NormalizedUsageWindow {
-    pub(crate) used_percent: f64,
-    pub(crate) window_duration_mins: i64,
-    pub(crate) resets_at: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NormalizedReserveQuotaSnapshot {
-    pub(crate) availability: String,
-    pub(crate) allowed: Option<bool>,
-    pub(crate) limit_reached: Option<bool>,
-    pub(crate) primary: Option<NormalizedUsageWindow>,
-    pub(crate) secondary: Option<NormalizedUsageWindow>,
-    pub(crate) primary_available_percent: Option<f64>,
-    pub(crate) secondary_available_percent: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]

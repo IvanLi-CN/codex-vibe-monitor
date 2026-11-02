@@ -438,6 +438,10 @@ describe("Settings forward proxy table", () => {
       codexImagegenRewriteMode: "keep_original",
       priorityHandoffAdmissionEnabled: false,
       automaticReserveFallbackEnabled: false,
+      reserveFallbackModelPolicy: {
+        mode: "upstream",
+        patterns: [],
+      },
       cacheHitProtection: {
         enabled: true,
         lowHitRateThresholdPercent: 10,

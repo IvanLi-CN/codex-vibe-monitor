@@ -884,11 +884,11 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
             cache_hit_protection: None,
             priority_handoff_admission_enabled: None,
             automatic_reserve_fallback_enabled: None,
+            reserve_fallback_model_policy: None,
         },
     )
     .await
     .expect("save root request compression settings");
-
     for account_id in [group_only_id, account_override_id, oauth_id] {
         sqlx::query(
             r#"

@@ -64,6 +64,7 @@ export interface UpstreamAccountsTableProps {
     reserveUsed?: string;
     reserveAvailablePercent?: string;
     reserveCaptured?: string;
+    reserveBinding?: string;
     nextReset: string;
     nextResetCompact?: string;
     requestsMetric: string;
@@ -149,6 +150,11 @@ function SelectAllCheckbox({
 
 export function windowPercent(value?: number | null) {
   if (!Number.isFinite(value ?? NaN)) return 0;
+  return Math.max(0, Math.min(value ?? 0, 100));
+}
+
+function reserveWindowPercent(value?: number | null) {
+  if (!Number.isFinite(value ?? NaN)) return null;
   return Math.max(0, Math.min(value ?? 0, 100));
 }
 
@@ -829,14 +835,14 @@ export function reserveSummaryText(
       : item.reserve.availability === "unavailable"
         ? (labels.reserveUnavailable ?? item.reserve.availability)
         : (labels.reserveUnknown ?? item.reserve.availability);
+  const usedPercent = reserveWindowPercent(item.reserve.primaryWindow?.usedPercent);
+  const availablePercent = reserveWindowPercent(item.reserve.primaryWindow?.availablePercent);
   const percent = item.reserve.primaryWindow
     ? [
         labels.reserveUsed,
-        `${Math.round(windowPercent(item.reserve.primaryWindow.usedPercent))}%`,
-        item.reserve.primaryWindow.availablePercent == null ? null : labels.reserveAvailablePercent,
-        item.reserve.primaryWindow.availablePercent == null
-          ? null
-          : `${Math.round(windowPercent(item.reserve.primaryWindow.availablePercent))}%`,
+        usedPercent == null ? labels.unknown : `${Math.round(usedPercent)}%`,
+        availablePercent == null ? null : labels.reserveAvailablePercent,
+        availablePercent == null ? null : `${Math.round(availablePercent)}%`,
       ]
         .filter(Boolean)
         .join(" ")
@@ -847,7 +853,10 @@ export function reserveSummaryText(
   const captured = item.reserve.capturedAt
     ? `${labels.reserveCaptured ?? "Captured"} ${formatDateTime(item.reserve.capturedAt)}`
     : null;
-  return [statusLabel, percent, reset, captured].filter(Boolean).join(" · ");
+  const binding = item.reserve.normalModelSlug
+    ? `${labels.reserveBinding ?? "Bound"} ${item.reserve.normalModelSlug}`
+    : null;
+  return [statusLabel, percent, binding, reset, captured].filter(Boolean).join(" · ");
 }
 
 export function reserveValueTone(availability?: string | null) {

@@ -34,6 +34,8 @@ This topic covers the typed Reserve usage snapshot, additive SQLite persistence,
 - REQ-RESERVE-005: A single Reserve failure does not mark Reserve exhausted without an explicit upstream signal or confirming usage snapshot.
 - REQ-RESERVE-006: SQLite changes are additive and preserve existing databases and older usage snapshots.
 - REQ-RESERVE-007: Account list/detail API responses distinguish `available`, `unavailable`, and `unknown` and do not expose or derive an absolute remaining balance.
+- REQ-RESERVE-008: Automatic Reserve fallback requires an eligible effective request model. The default `upstream` policy requires an `additional_rate_limits` binding with `normal_model_slug` matching the effective model and `metered_feature=base_model_inference`; incomplete bindings fail closed.
+- REQ-RESERVE-009: The Reserve model policy supports `upstream`, `upstream_plus_custom`, and `custom` modes with bounded exact/glob patterns. Explicit `gpt-reserve` requests remain Reserve-only and bypass automatic model-eligibility filtering.
 
 ## Functional Behavior
 
@@ -46,6 +48,8 @@ The OAuth usage parser accepts `additional_rate_limits` as either a keyed object
 Normal requests select Normal Quota first. After classified ordinary-quota exhaustion, the router may retry the current account with `gpt-reserve` and then select another Reserve-available OAuth account within the existing failover budget. The request's client model remains the original model; request diagnostics record `quota_route=reserve`, the Reserve wire model, and the fallback reason.
 
 An explicit `gpt-reserve` request selects Reserve only and never downgrades to Normal Quota. Turning off automatic fallback prevents only the implicit route transition.
+
+Automatic fallback uses the effective model after the existing account model mapping has been resolved. By default, the account's fresh Reserve snapshot must bind that model through `normal_model_slug` and `metered_feature=base_model_inference` in `additional_rate_limits`. Administrators may choose `upstream_plus_custom` or `custom` to add bounded exact/glob model patterns; these settings only control eligibility and do not rewrite the client model.
 
 ### Operator surfaces
 
@@ -64,7 +68,8 @@ Pool routing settings expose `automatic_reserve_fallback`. OAuth account summari
 
 - VER-RESERVE-001: `cargo test reserve_usage_snapshot -- --nocapture` covers object and array parsing. covers: REQ-RESERVE-001, REQ-RESERVE-006
 - VER-RESERVE-002: `cargo test reserve_routing -- --nocapture` covers fresh availability, ordinary-first routing, and the fallback switch. covers: REQ-RESERVE-001, REQ-RESERVE-002, REQ-RESERVE-003, REQ-RESERVE-004, REQ-RESERVE-005
-- VER-RESERVE-003: `cargo test reserve_request_rewrite -- --nocapture` covers client model preservation and `gpt-reserve` wire rewriting. covers: REQ-RESERVE-003, REQ-RESERVE-004
+- VER-RESERVE-003: `cargo test reserve_request_rewrite -- --nocapture` covers client model preservation and `gpt-reserve` wire rewriting. covers: REQ-RESERVE-003, REQ-RESERVE-004, REQ-RESERVE-009
+- VER-RESERVE-007: `cargo test reserve_routing -- --nocapture` covers upstream model binding, custom model patterns, and the effective-model eligibility gate. covers: REQ-RESERVE-008, REQ-RESERVE-009
 - VER-RESERVE-004: `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings` pass locally. covers: REQ-RESERVE-006
 - VER-RESERVE-005: `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` passes all 1550 stateful tests plus the schema-template precheck. covers: REQ-RESERVE-001, REQ-RESERVE-006
 - VER-RESERVE-006: `cd web && bun run test`, `bun run typecheck:web`, and `bun run build` pass; the Web App Demo provides account-list, account-detail, and settings-toggle visual evidence. covers: REQ-RESERVE-002, REQ-RESERVE-007

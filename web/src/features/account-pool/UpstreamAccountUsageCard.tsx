@@ -193,6 +193,8 @@ interface ReserveQuotaCardProps {
     window: string;
     capturedAt: string;
     unknownValue: string;
+    binding?: string;
+    meteredFeature?: string;
   };
 }
 
@@ -283,10 +285,22 @@ export function ReserveQuotaCard({ title, description, snapshot, labels }: Reser
           <p>
             {labels.capturedAt} {capturedLabel}
           </p>
+          {snapshot?.normalModelSlug ? (
+            <p className="mt-1">
+              {labels.binding ?? "Bound model"} {snapshot.normalModelSlug}
+            </p>
+          ) : null}
+          {snapshot?.meteredFeature ? (
+            <p className="mt-1">
+              {labels.meteredFeature ?? "Metered feature"} {snapshot.meteredFeature}
+            </p>
+          ) : null}
           {snapshot?.secondaryWindow ? (
             <p className="mt-1">
               {snapshot.secondaryWindow.windowDurationMins} {labels.window} · {labels.used}{" "}
-              {Math.round(reservePercent(snapshot.secondaryWindow.usedPercent) ?? 0)}%
+              {reservePercent(snapshot.secondaryWindow.usedPercent) == null
+                ? labels.unknownValue
+                : `${Math.round(reservePercent(snapshot.secondaryWindow.usedPercent) ?? 0)}%`}
             </p>
           ) : null}
         </div>

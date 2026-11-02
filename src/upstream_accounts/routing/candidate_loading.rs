@@ -194,6 +194,9 @@ mod tests {
             active_sticky_conversations: 0,
             in_flight_reservations: 0,
             reserve_status: Some(RESERVE_AVAILABILITY_AVAILABLE.to_string()),
+            reserve_normal_model_slug: None,
+            reserve_metered_feature: None,
+            reserve_binding_source: None,
             reserve_primary_used_percent: Some(20.0),
             reserve_primary_window_minutes: Some(300),
             reserve_primary_resets_at: None,
@@ -215,6 +218,69 @@ mod tests {
 
         candidate.reserve_captured_at = Some((now + chrono::Duration::seconds(1)).to_rfc3339());
         assert!(!reserve_candidate_snapshot_is_available(&candidate, now));
+    }
+
+    #[test]
+    fn reserve_routing_requires_upstream_model_binding_or_explicit_custom_pattern() {
+        let mut candidate = AccountRoutingCandidateRow {
+            id: 1,
+            plan_type: None,
+            secondary_used_percent: None,
+            secondary_window_minutes: None,
+            secondary_resets_at: None,
+            primary_used_percent: None,
+            primary_window_minutes: None,
+            primary_resets_at: None,
+            local_primary_limit: None,
+            local_secondary_limit: None,
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            last_selected_at: None,
+            active_sticky_conversations: 0,
+            in_flight_reservations: 0,
+            reserve_status: Some(RESERVE_AVAILABILITY_AVAILABLE.to_string()),
+            reserve_normal_model_slug: Some("gpt-5.4-luna".to_string()),
+            reserve_metered_feature: Some(RESERVE_METERED_FEATURE_BASE_MODEL_INFERENCE.to_string()),
+            reserve_binding_source: Some(RESERVE_BINDING_SOURCE_USAGE.to_string()),
+            reserve_primary_used_percent: Some(20.0),
+            reserve_primary_window_minutes: Some(300),
+            reserve_primary_resets_at: None,
+            reserve_secondary_used_percent: None,
+            reserve_secondary_window_minutes: None,
+            reserve_secondary_resets_at: None,
+            reserve_captured_at: Some(Utc::now().to_rfc3339()),
+        };
+        let upstream_policy = ReserveFallbackModelPolicy {
+            mode: ReserveFallbackModelPolicyMode::Upstream,
+            patterns: Vec::new(),
+        };
+        assert!(reserve_candidate_supports_model(
+            &candidate,
+            Some("gpt-5.4-luna"),
+            &upstream_policy,
+        ));
+        assert!(!reserve_candidate_supports_model(
+            &candidate,
+            Some("gpt-5.4-sol"),
+            &upstream_policy,
+        ));
+
+        candidate.reserve_normal_model_slug = None;
+        let custom_policy = ReserveFallbackModelPolicy {
+            mode: ReserveFallbackModelPolicyMode::Custom,
+            patterns: vec!["gpt-*-luna".to_string()],
+        };
+        assert!(reserve_candidate_supports_model(
+            &candidate,
+            Some("gpt-6.1-luna"),
+            &custom_policy,
+        ));
+        assert!(!reserve_candidate_supports_model(
+            &candidate,
+            Some("gpt-6.1-sol"),
+            &custom_policy,
+        ));
     }
 }
 
@@ -1060,6 +1126,27 @@ pub(crate) async fn load_account_routing_candidates(
                 LIMIT 1
             ) AS reserve_status,
             (
+                SELECT sample.reserve_normal_model_slug
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_normal_model_slug,
+            (
+                SELECT sample.reserve_metered_feature
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_metered_feature,
+            (
+                SELECT sample.reserve_binding_source
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_binding_source,
+            (
                 SELECT sample.reserve_primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
@@ -1173,6 +1260,73 @@ pub(crate) fn reserve_candidate_snapshot_is_available(
             })
 }
 
+pub(crate) fn reserve_candidate_supports_model(
+    candidate: &AccountRoutingCandidateRow,
+    effective_model: Option<&str>,
+    policy: &ReserveFallbackModelPolicy,
+) -> bool {
+    let Some(effective_model) = effective_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let upstream_binding = candidate
+        .reserve_normal_model_slug
+        .as_deref()
+        .zip(candidate.reserve_metered_feature.as_deref())
+        .zip(candidate.reserve_binding_source.as_deref())
+        .is_some_and(|((normal_model_slug, metered_feature), binding_source)| {
+            metered_feature.eq_ignore_ascii_case(RESERVE_METERED_FEATURE_BASE_MODEL_INFERENCE)
+                && binding_source.eq_ignore_ascii_case(RESERVE_BINDING_SOURCE_USAGE)
+                && requested_model_matches_constraint(effective_model, normal_model_slug)
+        });
+    let custom_binding = policy
+        .patterns
+        .iter()
+        .any(|pattern| reserve_model_pattern_matches(pattern, effective_model));
+    match policy.mode {
+        ReserveFallbackModelPolicyMode::Upstream => upstream_binding,
+        ReserveFallbackModelPolicyMode::UpstreamPlusCustom => upstream_binding || custom_binding,
+        ReserveFallbackModelPolicyMode::Custom => custom_binding,
+    }
+}
+
+fn reserve_model_pattern_matches(pattern: &str, model: &str) -> bool {
+    let pattern = pattern.trim().to_ascii_lowercase();
+    let model = model.trim().to_ascii_lowercase();
+    if !pattern.contains(['*', '?']) {
+        return requested_model_matches_constraint(&model, &pattern);
+    }
+    let pattern = pattern.as_bytes();
+    let model = model.as_bytes();
+    let (mut pattern_index, mut model_index) = (0, 0);
+    let mut star_index = None;
+    let mut star_match_index = 0;
+    while model_index < model.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == model[model_index])
+        {
+            pattern_index += 1;
+            model_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            star_match_index = model_index;
+            pattern_index += 1;
+        } else if let Some(star_index) = star_index {
+            pattern_index = star_index + 1;
+            star_match_index += 1;
+            model_index = star_match_index;
+        } else {
+            return false;
+        }
+    }
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
+}
+
 pub(crate) async fn load_account_routing_candidate(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1266,6 +1420,27 @@ pub(crate) async fn load_account_routing_candidate(
                 ORDER BY sample.captured_at DESC, sample.id DESC
                 LIMIT 1
             ) AS reserve_status,
+            (
+                SELECT sample.reserve_normal_model_slug
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_normal_model_slug,
+            (
+                SELECT sample.reserve_metered_feature
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_metered_feature,
+            (
+                SELECT sample.reserve_binding_source
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC, sample.id DESC
+                LIMIT 1
+            ) AS reserve_binding_source,
             (
                 SELECT sample.reserve_primary_used_percent
                 FROM pool_upstream_account_limit_samples sample

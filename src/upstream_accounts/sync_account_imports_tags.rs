@@ -4076,6 +4076,9 @@ pub(crate) struct LatestUpstreamAccountSampleByAccountRow {
     reserve_status: Option<String>,
     reserve_allowed: Option<i64>,
     reserve_limit_reached: Option<i64>,
+    reserve_normal_model_slug: Option<String>,
+    reserve_metered_feature: Option<String>,
+    reserve_binding_source: Option<String>,
     reserve_primary_used_percent: Option<f64>,
     reserve_primary_window_minutes: Option<i64>,
     reserve_primary_resets_at: Option<String>,
@@ -4101,7 +4104,6 @@ pub(crate) async fn load_latest_usage_sample_map(
     if account_ids.is_empty() {
         return Ok(HashMap::new());
     }
-
     let mut latest_sample_query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
@@ -4124,6 +4126,9 @@ pub(crate) async fn load_latest_usage_sample_map(
             sample.reserve_status,
             sample.reserve_allowed,
             sample.reserve_limit_reached,
+            sample.reserve_normal_model_slug,
+            sample.reserve_metered_feature,
+            sample.reserve_binding_source,
             sample.reserve_primary_used_percent,
             sample.reserve_primary_window_minutes,
             sample.reserve_primary_resets_at,
@@ -4168,7 +4173,6 @@ pub(crate) async fn load_latest_usage_sample_map(
             acc
         },
     );
-
     let mut latest_plan_type_query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
@@ -4213,7 +4217,6 @@ pub(crate) async fn load_latest_usage_sample_map(
             acc
         },
     );
-
     Ok(latest_rows
         .drain()
         .map(|(account_id, row)| {
@@ -4260,6 +4263,9 @@ pub(crate) async fn load_latest_usage_sample_map(
                     reserve_status: row.reserve_status,
                     reserve_allowed: row.reserve_allowed,
                     reserve_limit_reached: row.reserve_limit_reached,
+                    reserve_normal_model_slug: row.reserve_normal_model_slug,
+                    reserve_metered_feature: row.reserve_metered_feature,
+                    reserve_binding_source: row.reserve_binding_source,
                     reserve_primary_used_percent: row.reserve_primary_used_percent,
                     reserve_primary_window_minutes: row.reserve_primary_window_minutes,
                     reserve_primary_resets_at: row.reserve_primary_resets_at,
@@ -4274,7 +4280,6 @@ pub(crate) async fn load_latest_usage_sample_map(
         })
         .collect())
 }
-
 pub(crate) async fn load_upstream_account_rows_by_ids(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -4298,7 +4303,6 @@ pub(crate) async fn load_upstream_account_rows_by_ids(
         .await
         .map_err(Into::into)
 }
-
 pub(crate) async fn load_upstream_account_window_usage_summaries(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -4327,7 +4331,6 @@ pub(crate) async fn load_upstream_account_window_usage_summaries(
     apply_effective_routing_rules_to_summaries(pool, config, &mut summaries).await?;
     Ok(summaries)
 }
-
 pub(crate) async fn build_bulk_upstream_account_sync_pending_rows(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -4347,7 +4350,6 @@ pub(crate) async fn build_bulk_upstream_account_sync_pending_rows(
     }
     Ok(rows)
 }
-
 pub(crate) async fn apply_bulk_upstream_account_action(
     state: Arc<AppState>,
     account_id: i64,
@@ -4459,7 +4461,6 @@ pub(crate) async fn apply_bulk_upstream_account_action(
         .await?;
     Ok(())
 }
-
 pub(crate) async fn has_ungrouped_upstream_accounts(
     pool: &Pool<Sqlite>,
     kind: Option<&str>,
@@ -4478,7 +4479,6 @@ pub(crate) async fn has_ungrouped_upstream_accounts(
     .await?;
     Ok(count > 0)
 }
-
 pub(crate) async fn load_upstream_account_detail(
     pool: &Pool<Sqlite>,
     id: i64,
@@ -4492,12 +4492,10 @@ pub(crate) async fn load_upstream_account_detail(
     )
     .await
 }
-
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LoadUpstreamAccountDetailOptions {
     pub(crate) include_recent_actions: bool,
 }
-
 pub(crate) async fn load_upstream_account_detail_with_options(
     pool: &Pool<Sqlite>,
     id: i64,
@@ -4520,6 +4518,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
             credits_has_credits, credits_unlimited, credits_balance,
             reserve_status,
             reserve_allowed, reserve_limit_reached,
+            reserve_normal_model_slug, reserve_metered_feature, reserve_binding_source,
             reserve_primary_used_percent, reserve_primary_window_minutes, reserve_primary_resets_at,
             reserve_primary_available_percent,
             reserve_secondary_used_percent, reserve_secondary_window_minutes, reserve_secondary_resets_at,
@@ -4736,7 +4735,6 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage(
     )
     .await
 }
-
 pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
     state: &AppState,
     id: i64,
@@ -4906,7 +4904,6 @@ pub(crate) async fn load_latest_usage_sample(
         .await?
         .remove(&account_id))
 }
-
 pub(crate) fn build_summary_from_row(
     row: &UpstreamAccountRow,
     sample: Option<&UpstreamAccountSampleRow>,
@@ -4995,6 +4992,9 @@ pub(crate) fn build_summary_from_row(
             limit_reached: sample
                 .and_then(|value| value.reserve_limit_reached)
                 .map(|value| value != 0),
+            normal_model_slug: sample.and_then(|value| value.reserve_normal_model_slug.clone()),
+            metered_feature: sample.and_then(|value| value.reserve_metered_feature.clone()),
+            binding_source: sample.and_then(|value| value.reserve_binding_source.clone()),
             primary_window: sample.and_then(|value| {
                 build_window_snapshot(
                     value.reserve_primary_used_percent,

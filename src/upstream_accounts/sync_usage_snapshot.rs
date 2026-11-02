@@ -38,6 +38,53 @@ pub(crate) async fn persist_unknown_reserve_usage_snapshot_with_lease(
 ) -> Result<bool> {
     let latest =
         super::sync_account_imports_tags::load_latest_usage_sample(pool, account_id).await?;
+    if let Some(latest) = latest.as_ref() {
+        let captured_at = format_utc_iso(Utc::now());
+        let update_result = sqlx::query(
+            r#"
+            UPDATE pool_upstream_account_limit_samples
+            SET reserve_status = ?1,
+                reserve_allowed = NULL,
+                reserve_limit_reached = NULL,
+                reserve_primary_used_percent = NULL,
+                reserve_primary_window_minutes = NULL,
+                reserve_primary_resets_at = NULL,
+                reserve_primary_available_percent = NULL,
+                reserve_secondary_used_percent = NULL,
+                reserve_secondary_window_minutes = NULL,
+                reserve_secondary_resets_at = NULL,
+                reserve_secondary_available_percent = NULL,
+                reserve_normal_model_slug = NULL,
+                reserve_metered_feature = NULL,
+                reserve_binding_source = NULL,
+                reserve_captured_at = ?2
+            WHERE id = ?3
+              AND captured_at = ?4
+              AND (
+                  ?5 IS NULL OR EXISTS (
+                      SELECT 1
+                      FROM pool_upstream_account_refresh_state
+                      WHERE account_id = ?6
+                        AND operation = ?7
+                        AND lease_token = ?5
+                  )
+              )
+            "#,
+        )
+        .bind(RESERVE_AVAILABILITY_UNKNOWN)
+        .bind(&captured_at)
+        .bind(latest.id)
+        .bind(&latest.captured_at)
+        .bind(expected_lease_token)
+        .bind(account_id)
+        .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
+        .execute(pool)
+        .await?;
+        if expected_lease_token.is_some() && update_result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        return Ok(update_result.rows_affected() > 0);
+    }
     let snapshot = NormalizedUsageSnapshot {
         plan_type: latest.as_ref().and_then(|sample| sample.plan_type.clone()),
         limit_id: latest
@@ -72,6 +119,9 @@ pub(crate) async fn persist_unknown_reserve_usage_snapshot_with_lease(
             availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
             allowed: None,
             limit_reached: None,
+            normal_model_slug: None,
+            metered_feature: None,
+            binding_source: None,
             primary: None,
             secondary: None,
             primary_available_percent: None,
@@ -181,6 +231,9 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
                 availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
                 allowed: None,
                 limit_reached: None,
+                normal_model_slug: None,
+                metered_feature: None,
+                binding_source: None,
                 primary: None,
                 secondary: None,
                 primary_available_percent: None,
@@ -199,27 +252,29 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
             reserve_primary_available_percent,
             reserve_secondary_used_percent, reserve_secondary_window_minutes, reserve_secondary_resets_at,
             reserve_secondary_available_percent,
-            reserve_captured_at
+            reserve_captured_at,
+            reserve_normal_model_slug, reserve_metered_feature, reserve_binding_source
         )
         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26,
+               ?27, ?28, ?29
         WHERE (
-            ?27 IS NULL OR EXISTS (
+            ?30 IS NULL OR EXISTS (
                 SELECT 1
                 FROM pool_upstream_account_refresh_state
                 WHERE account_id = ?1
-                  AND operation = ?28
-                  AND lease_token = ?27
+                  AND operation = ?31
+                  AND lease_token = ?30
             )
         )
           AND (
-              ?29 = 0
-              OR (?30 = 0 AND NOT EXISTS (
+              ?32 = 0
+              OR (?33 = 0 AND NOT EXISTS (
                   SELECT 1
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
               ))
-              OR (?30 = 1 AND (?31, ?32) = (
+              OR (?33 = 1 AND (?34, ?35) = (
                   SELECT captured_at, id
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
@@ -268,6 +323,9 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
     .bind(reserve.secondary.as_ref().and_then(|value| value.resets_at.clone()))
     .bind(reserve.secondary_available_percent)
     .bind(&now_iso)
+    .bind(&reserve.normal_model_slug)
+    .bind(&reserve.metered_feature)
+    .bind(&reserve.binding_source)
     .bind(expected_lease_token)
     .bind(UPSTREAM_ACCOUNT_REFRESH_OPERATION_USAGE_WINDOWS)
     .bind(i64::from(expected_usage_version.is_some()))

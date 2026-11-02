@@ -841,29 +841,9 @@ fn resolve_due_maintenance_dispatch_plans_requeues_reset_due_after_deferred_egre
 fn test_routing_candidate(id: i64) -> AccountRoutingCandidateRow {
     AccountRoutingCandidateRow {
         id,
-        plan_type: None,
-        secondary_used_percent: None,
-        secondary_window_minutes: None,
-        secondary_resets_at: None,
-        primary_used_percent: None,
-        primary_window_minutes: None,
-        primary_resets_at: None,
-        local_primary_limit: None,
-        local_secondary_limit: None,
-        credits_has_credits: None,
-        credits_unlimited: None,
-        credits_balance: None,
         last_selected_at: Some("2026-03-23T11:00:00Z".to_string()),
         active_sticky_conversations: 0,
-        in_flight_reservations: 0,
-        reserve_status: None,
-        reserve_primary_used_percent: None,
-        reserve_primary_window_minutes: None,
-        reserve_primary_resets_at: None,
-        reserve_secondary_used_percent: None,
-        reserve_secondary_window_minutes: None,
-        reserve_secondary_resets_at: None,
-        reserve_captured_at: None,
+        ..Default::default()
     }
 }
 
