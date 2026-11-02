@@ -1498,7 +1498,7 @@ mod in_flight_query_tests {
         .await
         .expect("create invocations");
         sqlx::query(
-            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, stream_latency_ms REAL, first_byte_latency_ms REAL)",
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, stream_latency_ms REAL, first_byte_latency_ms REAL, upstream_account_id INTEGER)",
         )
         .execute(&pool)
         .await
@@ -1556,7 +1556,7 @@ mod in_flight_query_tests {
         .await
         .expect("create invocations");
         sqlx::query(
-            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, stream_latency_ms REAL, first_byte_latency_ms REAL)",
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, stream_latency_ms REAL, first_byte_latency_ms REAL, upstream_account_id INTEGER)",
         )
         .execute(&pool)
         .await
