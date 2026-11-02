@@ -69,8 +69,8 @@ pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = concat!(
     " <> '' THEN 'untyped_failure' ELSE NULL END"
 );
 
-pub(crate) const INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL: &str = "CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0) ELSE 0 END";
-pub(crate) const INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL: &str = "CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(cache_input_tokens, 0) ELSE 0 END";
+pub(crate) const INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL: &str = "CASE WHEN (input_tokens IS NULL OR input_tokens >= 0) AND COALESCE(cache_input_tokens, 0) >= 0 AND (input_tokens IS NULL OR cache_input_tokens <= input_tokens) THEN CASE WHEN input_tokens IS NULL THEN 0 ELSE input_tokens - cache_input_tokens END ELSE 0 END";
+pub(crate) const INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL: &str = "CASE WHEN (input_tokens IS NULL OR input_tokens >= 0) AND COALESCE(cache_input_tokens, 0) >= 0 AND (input_tokens IS NULL OR cache_input_tokens <= input_tokens) THEN COALESCE(cache_input_tokens, 0) ELSE 0 END";
 
 pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "CASE ",
@@ -105,6 +105,10 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     invocation_classification_error_sql!(),
     " LIKE '[downstream_closed]%' ",
     "        THEN 'client_abort' ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
+    "        AND ",
+    invocation_classification_error_sql!(),
+    " <> '' THEN 'service_failure' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) IN ('', 'none') ",
