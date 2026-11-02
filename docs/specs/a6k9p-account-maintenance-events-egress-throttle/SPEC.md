@@ -59,6 +59,16 @@
 - UI 节点筛选使用列表中出现过的 proxy key/display name。
 - 维护限频跳过不应把账号长时间留在 `syncing` 状态。
 
+### OAuth refresh and quota window semantics
+
+- OAuth credential refresh and quota-window update are independent maintenance operations. A successful credential refresh MUST NOT implicitly request `/wham/usage`, and a quota-window failure MUST NOT roll back persisted credentials.
+- OAuth account detail responses MAY expose `tokenLifecycle`, but it MUST contain only lifecycle metadata: Access Token and Refresh Token expiry, state, source, observation time, and Refresh Token presence. Raw tokens and upstream token responses MUST NOT be returned.
+- Access Token expiry MUST prefer a parseable JWT `exp`, otherwise the OAuth response `expires_in`. Refresh Token expiry MUST use only explicit upstream `refresh_token_expires_at` or `refresh_token_expires_in`; the service MUST display that it was not provided rather than infer an expiry.
+- A rotated Refresh Token without an explicit expiry MUST clear the previous expiry association and mark the value as not provided. A transient refresh failure MUST retain the last known value and mark the lifecycle stale or pending until a later successful observation.
+- A single recognized quota window with no evidence of another window is a successful usage snapshot. Multiple candidates with only some parseable windows are incomplete; no usable window is failed. Incomplete and failed updates retain last-known data and retry on the one-minute maintenance cadence.
+- UI labels MUST use `主要额度窗口` / `次要额度窗口` (or their English equivalents), and window duration MUST come from the upstream snapshot. The service MUST NOT assume that either role is five hours or seven days, and an absent window MUST NOT render an empty detail card.
+- Account detail MUST keep credential expiry information inside the credential-refresh group and keep `nextAttemptAt` as scheduling metadata. The manual credential action refreshes credentials; the manual quota action only requests quota windows.
+
 ## 功能与行为规格（Functional/Behavior Spec）
 
 ### Event model
@@ -147,6 +157,34 @@
 
 ![Account refresh health desktop evidence](./assets/account-refresh-health-density-desktop.png)
 ![Account refresh health mobile evidence](./assets/account-refresh-health-density-mobile.png)
+
+- source_type: ui_demo
+  surface: web_page
+  target_program: mock-only
+  capture_scope: account-detail-token-lifecycle
+  requested_viewport: 1440x1100 and 393x852
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  submission_gate: owner-confirmed
+  visual_comparison: current-only; owner-confirmed
+  evidence_note: 验证凭据刷新分组展示 Access Token 与 Refresh Token 的脱敏生命周期元数据，且与额度窗口更新分组和调度时间保持区分。
+
+![Account token lifecycle desktop evidence](./assets/account-refresh-health-token-lifecycle-desktop.png)
+![Account token lifecycle mobile evidence](./assets/account-refresh-health-token-lifecycle-mobile.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Components/Upstream Account Usage Card
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: none
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: owner-confirmed
+  visual_comparison: current-only; owner-confirmed
+  evidence_note: 验证主要额度窗口使用真实上游时长、缺失窗口不伪造空数据卡片，以及组件在有数据和缺失数据状态下的布局。
+
+![Primary quota window evidence](./assets/quota-window-card-primary.png)
+![Missing quota window evidence](./assets/quota-window-card-missing.png)
 
 ## 风险 / 假设
 

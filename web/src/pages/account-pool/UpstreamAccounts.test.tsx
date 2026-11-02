@@ -1203,6 +1203,21 @@ function mockAccountsPage(options?: {
     email: "dup@example.com",
     chatgptAccountId: "org_1",
     chatgptUserId: "user_1",
+    tokenLifecycle: {
+      accessToken: {
+        expiresAt: "2026-03-16T03:00:00.000Z",
+        state: "known",
+        source: "jwt_exp",
+        observedAt: "2026-03-16T02:00:00.000Z",
+      },
+      refreshToken: {
+        present: true,
+        expiresAt: "2026-04-15T02:00:00.000Z",
+        state: "known",
+        source: "refresh_token_expires_at",
+        observedAt: "2026-03-16T02:00:00.000Z",
+      },
+    },
     history: [],
     recentActions: [
       {
@@ -1531,6 +1546,22 @@ suite6(scope);
 suite7(scope);
 
 describe("UpstreamAccountsPage grouped roster toggle", () => {
+  it("renders token lifecycle metadata inside the credential refresh group", async () => {
+    mockAccountsPage();
+    renderFlatForLegacySuites();
+
+    clickFirstRosterRow();
+    openRefreshControls();
+
+    const refreshDetails = document.body.querySelector(
+      '[data-testid="upstream-account-login-health-summary"]',
+    );
+    expect(refreshDetails?.textContent ?? "").toMatch(/Access Token|访问令牌/i);
+    expect(refreshDetails?.textContent ?? "").toMatch(/Refresh Token|刷新令牌/i);
+    expect(refreshDetails?.textContent ?? "").toMatch(/Expires|过期/i);
+    expect(refreshDetails?.textContent ?? "").toMatch(/Known|已知/i);
+  });
+
   it("keeps Token refresh separate from usage-window update", async () => {
     const runCredentialRefresh = vi.fn().mockResolvedValue(undefined);
     const runUsageRefresh = vi.fn().mockResolvedValue(undefined);

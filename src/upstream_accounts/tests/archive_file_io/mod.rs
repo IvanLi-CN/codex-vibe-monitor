@@ -10,5 +10,6 @@ pub(crate) use super::*;
     reason = "Archive compatibility fixtures mirror legacy persisted row shapes."
 )]
 mod archive_batch_compat_and_query_parsing;
+mod oauth_token_lifecycle_and_usage_windows;
 
 pub(crate) use archive_batch_compat_and_query_parsing::*;

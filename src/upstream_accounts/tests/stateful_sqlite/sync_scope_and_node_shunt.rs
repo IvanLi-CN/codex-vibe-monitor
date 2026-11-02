@@ -1023,6 +1023,9 @@ async fn imported_oauth_probe_publishes_routing_availability_on_recovery() {
     let mut availability = state.pool_routing_availability.subscribe();
     let probe = ImportedOauthProbeOutcome {
         token_expires_at: format_utc_iso(Utc::now() + ChronoDuration::days(30)),
+        refresh_token_expires_at: None,
+        refresh_token_expiry_source: "not_provided".to_string(),
+        refresh_token_metadata_update: true,
         credentials: StoredOauthCredentials {
             access_token: "imported-access-token".to_string(),
             refresh_token: Some("imported-refresh-token".to_string()),
@@ -1042,12 +1045,12 @@ async fn imported_oauth_probe_publishes_routing_availability_on_recovery() {
             primary: None,
             secondary: None,
             credits: None,
+            ..Default::default()
         }),
         maintenance_proxy_snapshot: None,
         exhausted: false,
         usage_snapshot_warning: None,
     };
-
     apply_imported_oauth_probe_result(state.as_ref(), account_id, &probe)
         .await
         .expect("apply imported OAuth recovery probe");

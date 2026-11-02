@@ -1,8 +1,11 @@
 use super::sync::sync_usage_snapshot::UsageSnapshotVersion;
 use super::*;
+#[path = "core_runtime_types/oauth_token_lifecycle.rs"]
+mod oauth_token_lifecycle;
 #[path = "core_runtime_types/runtime_state.rs"]
 mod runtime_state;
 use futures_util::FutureExt;
+pub(crate) use oauth_token_lifecycle::*;
 use std::{any::Any, collections::BTreeMap, panic::AssertUnwindSafe};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
     "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET";
@@ -1970,6 +1973,8 @@ pub(crate) struct UpstreamAccountDetail {
     pub(crate) last_refreshed_at: Option<String>,
     pub(crate) credential_refresh: UpstreamAccountRefreshStatus,
     pub(crate) usage_window_refresh: UpstreamAccountRefreshStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) token_lifecycle: Option<UpstreamTokenLifecycle>,
     pub(crate) credential_refresh_history: Vec<UpstreamAccountRefreshRecord>,
     pub(crate) history: Vec<UpstreamAccountHistoryPoint>,
     pub(crate) recent_actions: Vec<UpstreamAccountActionEvent>,
@@ -3365,21 +3370,6 @@ pub(crate) fn oauth_credentials_have_refresh_token(credentials: &StoredOauthCred
     oauth_refresh_token(credentials).is_some()
 }
 
-pub(crate) fn apply_oauth_token_response(
-    credentials: &mut StoredOauthCredentials,
-    response: OAuthTokenResponse,
-) -> String {
-    credentials.access_token = response.access_token;
-    if let Some(refresh_token) = response.refresh_token {
-        credentials.refresh_token = normalize_oauth_refresh_token(Some(refresh_token));
-    }
-    if let Some(id_token) = response.id_token {
-        credentials.id_token = id_token;
-    }
-    credentials.token_type = response.token_type;
-    format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)))
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum StoredCredentials {
@@ -3394,7 +3384,7 @@ pub(crate) struct EncryptedCredentialsPayload {
     pub(crate) ciphertext: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct NormalizedUsageSnapshot {
     pub(crate) plan_type: Option<String>,
     pub(crate) limit_id: String,
@@ -3402,6 +3392,9 @@ pub(crate) struct NormalizedUsageSnapshot {
     pub(crate) primary: Option<NormalizedUsageWindow>,
     pub(crate) secondary: Option<NormalizedUsageWindow>,
     pub(crate) credits: Option<CreditsSnapshot>,
+    pub(crate) observed_window_candidates: u8,
+    pub(crate) parsed_window_count: u8,
+    pub(crate) window_parse_failure_count: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -3421,6 +3414,10 @@ pub(crate) struct OAuthTokenResponse {
     #[serde(default)]
     pub(crate) token_type: Option<String>,
     pub(crate) expires_in: i64,
+    #[serde(default, alias = "refreshTokenExpiresAt")]
+    pub(crate) refresh_token_expires_at: Option<String>,
+    #[serde(default, alias = "refreshTokenExpiresIn")]
+    pub(crate) refresh_token_expires_in: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3449,30 +3446,6 @@ pub(crate) struct ImportedOauthCredentialsFile {
     pub(crate) _last_refresh: Option<serde_json::Value>,
     #[serde(default)]
     pub(crate) token_type: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NormalizedImportedOauthCredentials {
-    pub(crate) source_id: String,
-    pub(crate) file_name: String,
-    pub(crate) email: String,
-    pub(crate) display_name: String,
-    pub(crate) chatgpt_account_id: String,
-    pub(crate) chatgpt_user_id: Option<String>,
-    pub(crate) token_expires_at: String,
-    pub(crate) credentials: StoredOauthCredentials,
-    pub(crate) claims: ChatgptJwtClaims,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ImportedOauthProbeOutcome {
-    pub(crate) token_expires_at: String,
-    pub(crate) credentials: StoredOauthCredentials,
-    pub(crate) claims: ChatgptJwtClaims,
-    pub(crate) usage_snapshot: Option<NormalizedUsageSnapshot>,
-    pub(crate) maintenance_proxy_snapshot: Option<AccountMaintenanceProxySnapshot>,
-    pub(crate) exhausted: bool,
-    pub(crate) usage_snapshot_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -1783,6 +1783,9 @@ async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse(
         chatgpt_account_id: "acct_alpha".to_string(),
         chatgpt_user_id: Some("user_alpha".to_string()),
         token_expires_at: "2026-03-20T00:00:00Z".to_string(),
+        refresh_token_expires_at: None,
+        refresh_token_expiry_source: "not_provided".to_string(),
+        refresh_token_metadata_update: true,
         credentials: StoredOauthCredentials {
             access_token: "access-token".to_string(),
             refresh_token: Some("refresh-token".to_string()),
@@ -1798,6 +1801,9 @@ async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse(
     };
     let probe = ImportedOauthProbeOutcome {
         token_expires_at: "2026-03-20T00:00:00Z".to_string(),
+        refresh_token_expires_at: None,
+        refresh_token_expiry_source: "not_provided".to_string(),
+        refresh_token_metadata_update: true,
         credentials: normalized.credentials.clone(),
         claims: normalized.claims.clone(),
         usage_snapshot: None,
@@ -3160,6 +3166,7 @@ fn imported_snapshot_is_exhausted_when_any_limit_is_full_or_credits_are_empty() 
         }),
         secondary: None,
         credits: None,
+        ..Default::default()
     };
     assert!(imported_snapshot_is_exhausted(&primary_exhausted));
 
@@ -3182,6 +3189,7 @@ fn imported_snapshot_is_exhausted_when_any_limit_is_full_or_credits_are_empty() 
             unlimited: false,
             balance: Some("0".to_string()),
         }),
+        ..Default::default()
     };
     assert!(imported_snapshot_is_exhausted(&credits_exhausted));
 }
@@ -3219,6 +3227,12 @@ async fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts(
             encrypted_credentials: None,
             has_refresh_token: Some(1),
             token_expires_at: None,
+            access_token_expiry_source: None,
+            access_token_expiry_observed_at: None,
+            refresh_token_expires_at: None,
+            refresh_token_expiry_source: None,
+            refresh_token_expiry_state: None,
+            refresh_token_expiry_observed_at: None,
             last_refreshed_at: None,
             last_synced_at: None,
             last_successful_sync_at: None,
@@ -3345,25 +3359,6 @@ fn parse_chatgpt_jwt_claims_extracts_identity_fields() {
     assert_eq!(claims.chatgpt_plan_type.as_deref(), Some("pro"));
     assert_eq!(claims.chatgpt_user_id.as_deref(), Some("user_123"));
     assert_eq!(claims.chatgpt_account_id.as_deref(), Some("org_123"));
-}
-
-#[test]
-fn parse_access_token_expiry_reads_jwt_exp_and_rejects_invalid_payloads() {
-    let header = URL_SAFE_NO_PAD.encode(b"{}");
-    let numeric_payload = URL_SAFE_NO_PAD.encode(json!({"exp": 1_800_000_000}).to_string());
-    let numeric_token = format!("{header}.{numeric_payload}.{header}");
-    assert_eq!(
-        parse_access_token_expiry(&numeric_token),
-        Utc.timestamp_opt(1_800_000_000, 0).single()
-    );
-
-    let string_payload = URL_SAFE_NO_PAD.encode(json!({"exp": "1800000001"}).to_string());
-    let string_token = format!("{header}.{string_payload}.{header}");
-    assert_eq!(
-        parse_access_token_expiry(&string_token),
-        Utc.timestamp_opt(1_800_000_001, 0).single()
-    );
-    assert!(parse_access_token_expiry("opaque-access-token").is_none());
 }
 
 #[test]

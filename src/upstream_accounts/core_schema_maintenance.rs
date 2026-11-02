@@ -23,6 +23,12 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             encrypted_credentials TEXT,
             has_refresh_token INTEGER NOT NULL DEFAULT 1,
             token_expires_at TEXT,
+            access_token_expiry_source TEXT,
+            access_token_expiry_observed_at TEXT,
+            refresh_token_expires_at TEXT,
+            refresh_token_expiry_source TEXT,
+            refresh_token_expiry_state TEXT,
+            refresh_token_expiry_observed_at TEXT,
             last_refreshed_at TEXT,
             last_synced_at TEXT,
             last_successful_sync_at TEXT,
@@ -145,6 +151,18 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_integer_column_with_default(pool, "pool_upstream_accounts", "has_refresh_token", "1")
         .await
         .context("failed to ensure pool_upstream_accounts.has_refresh_token")?;
+    for column in [
+        "access_token_expiry_source",
+        "access_token_expiry_observed_at",
+        "refresh_token_expires_at",
+        "refresh_token_expiry_source",
+        "refresh_token_expiry_state",
+        "refresh_token_expiry_observed_at",
+    ] {
+        ensure_nullable_text_column(pool, "pool_upstream_accounts", column)
+            .await
+            .with_context(|| format!("failed to ensure pool_upstream_accounts.{column}"))?;
+    }
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_selected_at")
         .await
         .context("failed to ensure pool_upstream_accounts.last_selected_at")?;
