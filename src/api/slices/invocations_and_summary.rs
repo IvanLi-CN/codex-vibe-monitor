@@ -19282,6 +19282,7 @@ where
                 occurred_at,
                 status,
                 total_tokens,
+                input_tokens,
                 cost,
                 cache_input_tokens,
                 payload,
