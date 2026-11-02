@@ -69,6 +69,14 @@ Pool routing settings expose `automatic_reserve_fallback`. OAuth account summari
 - VER-RESERVE-005: `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` passes all 1550 stateful tests plus the schema-template precheck. covers: REQ-RESERVE-001, REQ-RESERVE-006
 - VER-RESERVE-006: `cd web && bun run test`, `bun run typecheck:web`, and `bun run build` pass; the Web App Demo provides account-list, account-detail, and settings-toggle visual evidence. covers: REQ-RESERVE-002, REQ-RESERVE-007
 
+## Visual Evidence
+
+![OAuth Luna Reserve account list](./assets/oauth-luna-reserve-web-demo-list.png)
+
+![OAuth Luna Reserve account detail](./assets/oauth-luna-reserve-web-demo-detail-reserve.png)
+
+![Automatic Reserve fallback setting](./assets/oauth-luna-reserve-web-demo-settings-toggle.png)
+
 ## Related ADRs
 
 - [ADR 0051: OAuth Luna Reserve fallback routing](../../adr/0051-oauth-luna-reserve-fallback.md)
