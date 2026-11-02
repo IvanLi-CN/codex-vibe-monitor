@@ -220,6 +220,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                     "waiting_resources",
                     Some(id),
                 );
+                observation.mark_work_started();
                 let started = Instant::now();
                 let options = MaintenanceExecutionOptions {
                     manual: true,
@@ -248,9 +249,18 @@ pub(crate) async fn run_owned_maintenance_cli(
                     ),
                 )
                 .await;
-                let finished_at = format_utc_iso_millis(Utc::now());
                 match result {
-                    Ok(result) => {
+                    Ok(mut result) => {
+                        let execution_duration_ms =
+                            crate::maintenance::freeze_and_finalize_retention_owner_observation(
+                                task_key,
+                                &observation,
+                                Some(&mut result.details),
+                            );
+                        let duration_ms = execution_duration_ms.unwrap_or_else(|| {
+                            started.elapsed().as_millis().min(i64::MAX as u128) as i64
+                        });
+                        let finished_at = format_utc_iso_millis(Utc::now());
                         let status = match result.completion {
                             "failed" => "failed",
                             "partial" | "deferred" => "skipped",
@@ -262,7 +272,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                                 id,
                                 status,
                                 &finished_at,
-                                started.elapsed().as_millis() as i64,
+                                duration_ms,
                                 Some(&result.summary),
                                 None,
                                 Some(result.completion),
@@ -277,13 +287,23 @@ pub(crate) async fn run_owned_maintenance_cli(
                         }
                     }
                     Err(error) => {
+                        let execution_duration_ms =
+                            crate::maintenance::freeze_and_finalize_retention_owner_observation(
+                                task_key,
+                                &observation,
+                                None,
+                            );
+                        let duration_ms = execution_duration_ms.unwrap_or_else(|| {
+                            started.elapsed().as_millis().min(i64::MAX as u128) as i64
+                        });
+                        let finished_at = format_utc_iso_millis(Utc::now());
                         observation.finish_with_status_and_reason("failed", Some("execution_failed"));
                         let finish = store
                             .finish_run(
                                 id,
                                 "failed",
                                 &finished_at,
-                                started.elapsed().as_millis() as i64,
+                                duration_ms,
                                 None,
                                 Some(&error.to_string()),
                             )

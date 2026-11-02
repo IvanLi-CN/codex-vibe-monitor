@@ -182,6 +182,14 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                     match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root)
                     {
                         Ok(content) => content,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            return Err(anyhow::Error::new(crate::BackfillPartialFailure {
+                                source: error.into(),
+                                next_cursor_id: committed_cursor_id,
+                                scanned: committed_scanned,
+                                updated: committed_updated,
+                            }));
+                        }
                         Err(_) => {
                             summary.skipped_missing_file += 1;
                             push_backfill_sample(
@@ -396,6 +404,14 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
                     Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return Err(anyhow::Error::new(crate::BackfillPartialFailure {
+                            source: error.into(),
+                            next_cursor_id: committed_cursor_id,
+                            scanned: committed_scanned,
+                            updated: committed_updated,
+                        }));
+                    }
                     Err(_) => {
                         summary.skipped_missing_file += 1;
                         push_backfill_sample(
@@ -604,6 +620,14 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
                     Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return Err(anyhow::Error::new(crate::BackfillPartialFailure {
+                            source: error.into(),
+                            next_cursor_id: committed_cursor_id,
+                            scanned: committed_scanned,
+                            updated: committed_updated,
+                        }));
+                    }
                     Err(_) => {
                         summary.skipped_missing_file += 1;
                         push_backfill_sample(

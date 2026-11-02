@@ -594,7 +594,7 @@ pub(crate) async fn prepare_verified_summary_archive_snapshot(
     })
 }
 
-pub(crate) async fn store_verified_summary_archive_snapshot_tx(
+pub(crate) async fn validate_verified_summary_archive_snapshot_tx(
     connection: &mut SqliteConnection,
     proof: &VerifiedSummaryArchiveSnapshot,
 ) -> Result<()> {
@@ -633,11 +633,19 @@ pub(crate) async fn store_verified_summary_archive_snapshot_tx(
     if !matches_manifest {
         bail!("Summary Snapshot manifest changed after task-local validation");
     }
+    Ok(())
+}
+
+pub(crate) async fn store_verified_summary_archive_snapshot_tx(
+    connection: &mut SqliteConnection,
+    proof: &VerifiedSummaryArchiveSnapshot,
+) -> Result<()> {
+    validate_verified_summary_archive_snapshot_tx(connection, proof).await?;
     store_summary_archive_snapshot_final_metadata_tx(
         connection,
-        archive_batch_id,
-        manifest_sha256,
-        &pages,
+        proof.archive_batch_id,
+        &proof.manifest_sha256,
+        &proof.pages,
     )
     .await
 }

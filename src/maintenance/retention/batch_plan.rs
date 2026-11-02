@@ -47,10 +47,21 @@ pub(crate) struct RetentionBatchMetrics {
     pub(crate) summary_proof_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RetryArchiveHint {
+    pub(crate) dataset: String,
+    pub(crate) day_key: String,
+    pub(crate) source_ids: Vec<i64>,
+    pub(crate) file_path: String,
+    pub(crate) sha256: String,
+}
+
 tokio::task_local! {
     pub(super) static TASK_BATCH_METRICS: RefCell<Vec<RetentionBatchMetrics>>;
     pub(super) static TASK_DISCOVERED_ROWS: RefCell<BTreeMap<String, usize>>;
     pub(super) static TASK_CANDIDATE_WINDOWS: RefCell<BTreeMap<String, bool>>;
+    pub(super) static TASK_RETRY_WINDOW_REMAINING: RefCell<Option<usize>>;
+    pub(super) static TASK_RETRY_ARCHIVE_HINTS: RefCell<Vec<RetryArchiveHint>>;
 }
 
 pub(crate) fn record_discovered_rows(dataset: &str, rows: usize) {
@@ -81,6 +92,96 @@ pub(crate) fn candidate_window_has_more(dataset: &str) -> Option<bool> {
         .try_with(|windows| windows.borrow().get(dataset).copied())
         .ok()
         .flatten()
+}
+
+pub(crate) fn record_retry_archive_hint(
+    dataset: &str,
+    day_key: &str,
+    source_ids: &[i64],
+    file_path: &str,
+    sha256: &str,
+) {
+    let mut source_ids = source_ids.to_vec();
+    source_ids.sort_unstable();
+    source_ids.dedup();
+    if source_ids.is_empty() {
+        return;
+    }
+    let _ = TASK_RETRY_ARCHIVE_HINTS.try_with(|hints| {
+        let mut hints = hints.borrow_mut();
+        if hints.iter().any(|hint| hint.file_path == file_path) {
+            return;
+        }
+        hints.push(RetryArchiveHint {
+            dataset: dataset.to_string(),
+            day_key: day_key.to_string(),
+            source_ids,
+            file_path: file_path.to_string(),
+            sha256: sha256.to_string(),
+        });
+    });
+}
+
+pub(crate) fn retry_archive_hint(
+    dataset: &str,
+    day_key: &str,
+    source_ids: &[i64],
+) -> Option<RetryArchiveHint> {
+    let retry_active = TASK_RETRY_WINDOW_REMAINING
+        .try_with(|remaining| remaining.borrow().is_some())
+        .unwrap_or(false);
+    if !retry_active {
+        return None;
+    }
+    let mut source_ids = source_ids.to_vec();
+    source_ids.sort_unstable();
+    source_ids.dedup();
+    TASK_RETRY_ARCHIVE_HINTS
+        .try_with(|hints| {
+            hints
+                .borrow()
+                .iter()
+                .find(|hint| {
+                    hint.dataset == dataset
+                        && hint.day_key == day_key
+                        && source_ids
+                            .iter()
+                            .all(|id| hint.source_ids.binary_search(id).is_ok())
+                })
+                .cloned()
+        })
+        .ok()
+        .flatten()
+}
+
+/// Remove the uncommitted tail of a batch before retrying it in the same owner
+/// execution. Keep the remaining selected-window budget so a retry cannot
+/// silently select a fresh window after committing only a prefix.
+pub(super) fn retain_committed_batch_prefixes_for_retry() {
+    let committed_rows = TASK_BATCH_METRICS
+        .try_with(|metrics| {
+            metrics
+                .borrow()
+                .iter()
+                .map(|batch| batch.committed_rows)
+                .sum::<usize>()
+        })
+        .unwrap_or_default();
+    let _ = TASK_RETRY_WINDOW_REMAINING.try_with(|remaining| {
+        *remaining.borrow_mut() = Some(ARCHIVE_BATCH_TARGET_ROWS.saturating_sub(committed_rows));
+    });
+    let _ = TASK_BATCH_METRICS.try_with(|metrics| {
+        metrics.borrow_mut().retain_mut(|batch| {
+            if batch.committed_rows == 0 {
+                return false;
+            }
+            if batch.committed_rows < batch.batch_rows {
+                batch.batch_rows = batch.committed_rows;
+                batch.small_batch_reason = Some("internal_pressure_retry".to_string());
+            }
+            true
+        });
+    });
 }
 
 pub(crate) struct BatchObservation {
@@ -248,7 +349,15 @@ pub(super) fn collect_run_metrics(summary: &mut RetentionRunSummary) {
 /// File work is amortized across a selected batch, independently of the SQL write limiter.
 /// A run selects once per dataset; another run selects the remaining live rows afresh.
 pub(crate) fn archive_candidate_limit(_config: &AppConfig) -> usize {
-    ARCHIVE_BATCH_TARGET_ROWS
+    TASK_RETRY_WINDOW_REMAINING
+        .try_with(|remaining| {
+            remaining
+                .borrow()
+                .map_or(ARCHIVE_BATCH_TARGET_ROWS, |remaining| {
+                    remaining.min(ARCHIVE_BATCH_TARGET_ROWS)
+                })
+        })
+        .unwrap_or(ARCHIVE_BATCH_TARGET_ROWS)
 }
 
 pub(crate) fn select_archive_batch<T>(rows: Vec<T>, bytes: impl Fn(&T) -> usize) -> Vec<T> {
@@ -865,18 +974,12 @@ pub(super) async fn prepare_summary_proof(
         return Err(error);
     }
     transaction_resources.mark_transaction_finished();
-    transaction_resources
-        .return_to_pool()
+    let archive_lock = transaction_resources
+        .return_to_pool_retaining_archive_fence()
         .await
-        .context("return summary manifest transaction connection to pool")?;
+        .context("return summary manifest transaction connection while retaining archive fence")?;
     // Summary pages are persisted by the monthly writer exactly once. This phase only validates
     // the published artifact and the already durable page set before granting deletion authority.
-    let archive_lock = retention_archive_file_try_lock(archive_path)?;
-    if sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())?
-        != outcome.sha256
-    {
-        bail!("summary archive artifact changed before semantic proof");
-    }
     let proof = prepare_verified_summary_archive_snapshot(pool, batch_id, &outcome.sha256).await?;
     if persist_summary_proof(pool, &proof).await?.is_none() {
         drop(archive_lock);
@@ -951,5 +1054,37 @@ mod tests {
             select_archive_batch(vec![1, 2, 3], |_| 9 * 1024 * 1024),
             vec![1]
         );
+    }
+
+    #[tokio::test]
+    async fn retry_window_limit_preserves_the_original_selected_scope() {
+        let config = crate::tests::test_config();
+        TASK_BATCH_METRICS
+            .scope(
+                RefCell::new(Vec::new()),
+                TASK_RETRY_WINDOW_REMAINING.scope(RefCell::new(None), async {
+                    let mut observation = BatchObservation::begin(
+                        "pool_upstream_request_attempts",
+                        "2026-08",
+                        ARCHIVE_BATCH_TARGET_ROWS,
+                    );
+                    observation.committed(64, Duration::ZERO);
+                    observation.complete();
+                    drop(observation);
+
+                    retain_committed_batch_prefixes_for_retry();
+
+                    assert_eq!(
+                        TASK_RETRY_WINDOW_REMAINING.with(|remaining| *remaining.borrow()),
+                        Some(936)
+                    );
+                    assert_eq!(archive_candidate_limit(&config), 936);
+                    let metrics = TASK_BATCH_METRICS.with(|metrics| metrics.borrow().clone());
+                    assert_eq!(metrics.len(), 1);
+                    assert_eq!(metrics[0].batch_rows, 64);
+                    assert_eq!(metrics[0].committed_rows, 64);
+                }),
+            )
+            .await;
     }
 }

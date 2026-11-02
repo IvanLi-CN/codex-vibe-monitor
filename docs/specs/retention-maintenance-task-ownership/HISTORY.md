@@ -8,6 +8,7 @@
 
 ## Replacements / Background
 
+- ADR 0048 accepts file-phase mutual exclusion while preserving task execution leases, native drain, independent ownership and existing proofs. The selected work unit and required stages determine run completion independently of remaining backlog; these corrections remain pending implementation.
 - 主人已确认完整需求集合，关联 ADR 已接受；已按主人明确批准的实现计划进入实现与验证。
 - [Bounded retention runs](../bounded-retention-runs/SPEC.md) 继续拥有归档预算、正确性和资源合同。本主题接管其中会话派生维护的归档阶段归属、跨任务组合完成度和自动触发暂停的含义；不整体取代该主题。
 - [Invocation identity](../proxy-invocation-identity/SPEC.md) 与 [raw retention recovery](../autonomous-retention-recovery/SPEC.md) 继续拥有身份和文件删除安全。本主题调整执行者归属，不放宽保护条件。

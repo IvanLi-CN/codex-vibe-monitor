@@ -111,6 +111,9 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         sqlx::query("BEGIN IMMEDIATE")
             .execute(resources.connection_mut())
             .await?;
+        let Some(file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+            return Err(super::super::retention::retention_write_deferred(OPERATION));
+        };
         if let Some(backup) = backup_path.as_deref() {
             fs::hard_link(final_file_path, backup).context("preserve archive rollback copy")?;
             backup_created = true;
@@ -122,7 +125,11 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         sqlx::query(
             "UPDATE archive_batches
              SET cleanup_state = ?1, cleanup_source_safe_start_date = NULL,
-                 sha256 = ?2, row_count = COALESCE(?3, row_count)
+                 sha256 = ?2, row_count = COALESCE(?3, row_count),
+                 status = CASE
+                     WHEN status = ?9 THEN ?10
+                     ELSE status
+                 END
              WHERE dataset = ?4 AND month_key = ?5 AND file_path = ?6
                AND cleanup_state IN (?7, ?8)",
         )
@@ -134,6 +141,11 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(final_file_path.to_string_lossy().to_string())
         .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
         .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+        // A replacement is not a completed source conversion until the caller's source-table
+        // transaction commits. Keeping an existing completed manifest materializing prevents a
+        // pressure-deferred delete from exposing the same rows as both live and archived.
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(ARCHIVE_STATUS_MATERIALIZING)
         .execute(resources.connection_mut())
         .await?;
         fs::rename(temporary_file_path, final_file_path).context("publish prepared archive")?;
@@ -143,6 +155,7 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         // Keep the established rename -> file/directory sync -> manifest COMMIT
         // durability contract. Complete hashing and later cleanup are outside it.
         sync_published_archive_file(final_file_path)?;
+        drop(file_phase);
         let commit_started = Instant::now();
         commit_attempted = true;
         sqlx::query("COMMIT")
@@ -175,7 +188,14 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
             // The manifest is durable and SQLite has returned its connection.
             // Keep only the directory fence while removing the rollback link.
             if let Some(backup) = backup_path.as_deref() {
+                let Some(file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+                    drop(fence);
+                    return Err(super::super::retention::retention_write_deferred(
+                        "legacy_archive_file_cleanup",
+                    ));
+                };
                 remove_backup_and_sync_parent(backup)?;
+                drop(file_phase);
             }
             drop(fence);
             clear_replacement_journal_after_file_cleanup(
@@ -204,6 +224,12 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
             let fence = resources
                 .rollback_and_close_retaining_archive_fence()
                 .await?;
+            let Some(file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+                drop(fence);
+                return Err(error.context(
+                    "archive replacement compensation deferred while the file phase is busy",
+                ));
+            };
             compensate_uncommitted_publication(
                 final_file_path,
                 backup_path.as_deref(),
@@ -211,6 +237,7 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
                 renamed,
             )
             .context("archive replacement rollback file compensation deferred")?;
+            drop(file_phase);
             drop(fence);
             // No filesystem fence may be retained while waiting for another
             // database admission. Exact-path predicates cannot clear a newer retry.
@@ -262,7 +289,9 @@ async fn ensure_no_pending_replacement(
     .await?
     .flatten();
     if prepared.is_some() || manifest.is_some() {
-        anyhow::bail!("archive replacement recovery is still pending");
+        return Err(super::super::retention::retention_write_deferred(
+            "archive_replacement_recovery",
+        ));
     }
     Ok(())
 }

@@ -109,6 +109,10 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
             )
             .await?;
 
+            // Do not hold the SQLite transaction while the archive file phase waits for or runs
+            // native file work. The replay transaction is reopened after the source is prepared.
+            tx.commit().await?;
+
             replay_started_any_pending_batch = true;
             let mut temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
             let archive_pool =
@@ -119,6 +123,7 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
                 ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut archive_conn)
                     .await?;
             }
+            let mut tx = pool.begin().await?;
             let (replay_outcome, cached_rows) =
                 replay_pool_upstream_node_health_archive_rows_tx_with_budget(
                     tx.as_mut(),

@@ -75,6 +75,16 @@ async function flushEffects() {
   });
 }
 
+function formatBrowserLocalTime(value: string): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  }).format(new Date(value));
+}
+
 describe("SystemTasksPage", () => {
   beforeEach(() => {
     HTMLElement.prototype.scrollIntoView = () => undefined;
@@ -259,7 +269,7 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("压力冷却让行");
     expect(host?.textContent).toContain("请求时间");
     expect(host?.textContent).toContain("等待开始");
-    expect(host?.textContent).toContain("08:00:01");
+    expect(host?.textContent).toContain(formatBrowserLocalTime("2026-10-01T00:00:01.000Z"));
     expect(within(host as HTMLElement).getAllByText("第 1 位 · 手动")).toHaveLength(1);
     expect(host?.textContent).toContain("raw_compression");
     expect(host?.textContent).not.toContain("查看运行计量");

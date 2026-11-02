@@ -195,6 +195,99 @@ async fn backfill_proxy_prompt_cache_keys_tracks_skip_counters() {
 }
 
 #[tokio::test]
+async fn metadata_backfills_preserve_cursor_when_file_phase_is_busy() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let temp_dir = make_temp_test_dir("proxy-metadata-backfill-file-phase-busy");
+    let prompt_path = temp_dir.join("prompt.json");
+    let tier_path = temp_dir.join("tier.json");
+    let reasoning_path = temp_dir.join("reasoning.json");
+    write_backfill_request_payload(&prompt_path, Some("pck-file-phase-busy"));
+    write_backfill_request_payload_with_requested_service_tier(
+        &tier_path,
+        Some("priority"),
+        ProxyCaptureTarget::Responses,
+    );
+    write_backfill_request_payload_with_reasoning(
+        &reasoning_path,
+        None,
+        Some("high"),
+        ProxyCaptureTarget::Responses,
+    );
+
+    insert_proxy_prompt_cache_backfill_row(
+        &pool,
+        "proxy-metadata-prompt-file-phase-busy",
+        &prompt_path,
+        r#"{"endpoint":"/v1/responses"}"#,
+    )
+    .await;
+    insert_proxy_prompt_cache_backfill_row(
+        &pool,
+        "proxy-metadata-tier-file-phase-busy",
+        &tier_path,
+        r#"{"endpoint":"/v1/responses"}"#,
+    )
+    .await;
+    insert_proxy_prompt_cache_backfill_row(
+        &pool,
+        "proxy-metadata-reasoning-file-phase-busy",
+        &reasoning_path,
+        r#"{"endpoint":"/v1/responses"}"#,
+    )
+    .await;
+
+    let _file_phase =
+        crate::maintenance::acquire_file_phase_permit("test_metadata_backfill_file_phase_busy")
+            .await
+            .expect("hold the shared file phase permit");
+
+    let prompt_error = backfill_proxy_prompt_cache_keys_from_cursor(&pool, 0, None, None, None)
+        .await
+        .expect_err("prompt cache backfill must defer while file phase is busy");
+    let prompt_partial = prompt_error
+        .downcast_ref::<BackfillPartialFailure>()
+        .expect("prompt cache backfill must preserve partial progress");
+    assert_eq!(
+        (prompt_partial.next_cursor_id, prompt_partial.scanned),
+        (0, 0)
+    );
+    assert!(prompt_error.to_string().contains("raw file phase is busy"));
+
+    let tier_error = backfill_proxy_requested_service_tiers_from_cursor(&pool, 0, None, None, None)
+        .await
+        .expect_err("requested service tier backfill must defer while file phase is busy");
+    let tier_partial = tier_error
+        .downcast_ref::<BackfillPartialFailure>()
+        .expect("requested service tier backfill must preserve partial progress");
+    assert_eq!((tier_partial.next_cursor_id, tier_partial.scanned), (0, 0));
+    assert!(tier_error.to_string().contains("raw file phase is busy"));
+
+    let reasoning_error = backfill_proxy_reasoning_efforts_from_cursor(&pool, 0, None, None, None)
+        .await
+        .expect_err("reasoning effort backfill must defer while file phase is busy");
+    let reasoning_partial = reasoning_error
+        .downcast_ref::<BackfillPartialFailure>()
+        .expect("reasoning effort backfill must preserve partial progress");
+    assert_eq!(
+        (reasoning_partial.next_cursor_id, reasoning_partial.scanned),
+        (0, 0)
+    );
+    assert!(
+        reasoning_error
+            .to_string()
+            .contains("raw file phase is busy")
+    );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn backfill_proxy_requested_service_tiers_updates_payload_and_is_idempotent() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

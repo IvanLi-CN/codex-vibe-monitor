@@ -623,6 +623,9 @@ pub(crate) fn response_payload_looks_like_sse_from_raw_file(
     path: &Path,
     content_encoding: Option<&str>,
 ) -> std::result::Result<bool, String> {
+    let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+        return Err("raw file phase is busy".to_string());
+    };
     let mut reader = open_decoded_response_reader(path, content_encoding)?;
     let mut decoded_prefix = Vec::new();
     reader

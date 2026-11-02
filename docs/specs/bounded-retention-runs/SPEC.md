@@ -138,11 +138,15 @@ invocation owner 的总量 MUST 来自本轮开始时固定 cutoff/source fence 
 
 Managed-task dispatcher MUST 使用有限 worker、有限 finalizer、显式 finish queue 和结果写入退避，不得 inline-await 整个任务或无限启动 worker。同一 task key MUST 只有一个执行 lease；等待 heavy file gate、SQLite 准入或其他资源时不得持有数据库连接、写许可或文件 fence，准入后 MUST 重验 owner identity、source fence 和可执行范围。shutdown/cancel MUST 等 native file worker 退出后才释放 lease，并 MUST 将 `partial`、`deferred`、`failed` 与 `no-work` 的事实分别写入历史。
 
+重文件互斥 MUST 只覆盖实际文件操作阶段；任务的主库 SQL、压力退避与进度持久化不得占用该许可。安全边界后允许其他任务取得许可，本轮选中工作与执行 lease 仍由原任务持有；native worker 排空及 artifact/source identity 校验不得因释放和重新准入而省略。
+
 ### REQ-BRR-023 — 同月目标与服务速率
 
 同一数据集、同一月份 MUST 更新同一规范目标 `archives/<dataset>/<year>/<dataset>-YYYY-MM.sqlite.gz`；在事务外为本轮聚合候选准备文件，只进行一次目标发布。发布及源转换保持 Verified Archive、摘要完整性、raw 所有权和短事务准入规则；重复源身份不得重复计数。既有其他布局的归档保持读取兼容。
 
 普通负载容量的首轮工程目标为对应到达速率约 50 倍：以每日 30,000 条 invocation 和 1.2 倍上游尝试计，成功提交服务速率分别至少 17.4 和 20.8 rows/s。两个数据集 MUST 分别报告批次行数、服务速率、到达速率、倍率、文件准备耗时、锁等待及超时次数。该目标与固定百万级存量在 24 小时内消化、在线 p95/p99 不劣于基线共同实测；压缩写入或 staging 行数不能冒充成功提交。
+
+单次任务服务速率 MUST 以实际执行期间的成功提交量除以执行耗时，包含任务内部等待与重试，排除调度器放行前的等待；服务倍率使用同数据集、同单位的已观测到达速率。持续收敛的实际时间窗口 MUST 保留轮间间隔及调度影响，不能用单次服务倍率证明至少 10 倍的持续处理目标，也不得以该最低目标放宽既有更强容量验收。
 
 ### REQ-BRR-024 — 写许可内只保留必要数据库工作
 
@@ -246,6 +250,7 @@ Managed-task dispatcher MUST 使用有限 worker、有限 finalizer、显式 fin
 - [Monthly Summary page checkpoints](../../adr/0042-monthly-summary-page-checkpoints.md)
 - [Reuse proven monthly archive after budget stop](../../adr/0043-reuse-proven-monthly-archive-after-budget-stop.md)
 - [Retention work units and operation budgets](../../adr/0045-retention-work-unit-operation-budgets.md)
+- [Maintenance file permits at operation boundaries](../../adr/0048-maintenance-file-permits-at-operation-boundaries.md)
 
 ## References
 

@@ -57,6 +57,9 @@ pub(crate) fn parse_nonstream_response_payload_from_raw_file(
     path: &Path,
     content_encoding: Option<&str>,
 ) -> std::result::Result<ResponseCaptureInfo, String> {
+    let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+        return Err("raw file phase is busy".to_string());
+    };
     let mut reader = open_decoded_response_reader(path, content_encoding)?;
     let mut decoded = Vec::new();
     reader
@@ -84,6 +87,9 @@ pub(crate) fn parse_target_response_payload_from_raw_file(
     content_encoding: Option<&str>,
 ) -> std::result::Result<ResponseCaptureInfo, String> {
     if is_stream_hint && target != ProxyCaptureTarget::StandaloneSearch {
+        let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+            return Err("raw file phase is busy".to_string());
+        };
         let reader = open_decoded_response_reader(path, content_encoding)?;
         parse_stream_response_payload_from_reader(reader).map_err(|err| err.to_string())
     } else {
@@ -1665,6 +1671,12 @@ pub(crate) fn read_proxy_raw_bytes(
     path: &str,
     fallback_root: Option<&Path>,
 ) -> io::Result<Vec<u8>> {
+    let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "raw file phase is busy",
+        ));
+    };
     let mut last_error = None;
     for candidate in resolved_raw_path_read_candidates(path, fallback_root) {
         match fs::read(&candidate) {
@@ -1782,6 +1794,14 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                     raw_path_fallback_root,
                 ) {
                     Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return Err(anyhow::Error::new(crate::BackfillPartialFailure {
+                            source: error.into(),
+                            next_cursor_id: committed_cursor_id,
+                            scanned: committed_scanned,
+                            updated: committed_updated,
+                        }));
+                    }
                     Err(_) => {
                         summary.skipped_missing_file += 1;
                         push_backfill_sample(

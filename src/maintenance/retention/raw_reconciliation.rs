@@ -52,9 +52,65 @@ pub(crate) fn is_raw_orphan_sweep_candidate_budget_expired(error: &anyhow::Error
         .any(|cause| cause.is::<RawOrphanSweepCandidateBudgetExpired>())
 }
 
+pub(crate) enum RetentionRawFileMetadataProbe {
+    FilePhaseBusy,
+    CandidateBudgetExpired,
+    Ready(io::Result<fs::Metadata>),
+}
+
 pub(crate) struct RawOrphanSweepPassContext {
     pub(crate) _pressure_permit: crate::db_pressure::DbBackgroundPermit,
     pub(crate) candidate_deadline: Instant,
+}
+
+async fn wait_for_raw_orphan_sweep_pressure_cooldown(
+    gate: &crate::db_pressure::DbPressureGate,
+    retry_started: Instant,
+    retry_attempts: &mut usize,
+) -> Option<&'static str> {
+    let Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms }) =
+        gate.background_deny_reason()
+    else {
+        return None;
+    };
+    if *retry_attempts >= RETENTION_PRESSURE_RETRY_MAX_ATTEMPTS
+        || retry_started.elapsed() >= RETENTION_PRESSURE_RETRY_BUDGET
+    {
+        return Some("pressure_cooldown");
+    }
+
+    let mut wait = Duration::from_millis(remaining_ms.saturating_add(50));
+    wait = wait.min(RETENTION_PRESSURE_RETRY_BUDGET.saturating_sub(retry_started.elapsed()));
+    if let Some(remaining) = retention_run_remaining_budget() {
+        wait = wait.min(remaining);
+    }
+    if wait.is_zero() {
+        return Some(if retention_run_budget_expired() {
+            "retention_work_budget"
+        } else {
+            "pressure_cooldown"
+        });
+    }
+
+    *retry_attempts += 1;
+    tracing::debug!(
+        operation = "raw_orphan_sweep",
+        attempt = *retry_attempts,
+        max_attempts = RETENTION_PRESSURE_RETRY_MAX_ATTEMPTS,
+        wait_ms = wait.as_millis() as u64,
+        "raw orphan sweep retry waiting for SQLite pressure cooldown"
+    );
+    let sleep = tokio::time::sleep(wait);
+    if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => return Some("shutdown"),
+            _ = sleep => {}
+        }
+    } else {
+        sleep.await;
+    }
+    retention_run_budget_expired().then_some("retention_work_budget")
 }
 
 impl RawOrphanSweepPassContext {
@@ -137,18 +193,29 @@ impl RawOrphanSweepPassContext {
 }
 
 pub(crate) async fn read_retention_raw_directory_slice_with_budget(
+    context: &RawOrphanSweepPassContext,
     root: &Path,
-    directory: Option<ReadDir>,
+    directory: &mut Option<ReadDir>,
 ) -> Result<RetentionRawDirectorySlice> {
     let root = root.to_owned();
     #[cfg(test)]
     retention_test_raw_directory_entry_event();
-    // A ReadDir cannot be cancelled safely once moved into a blocking worker. Await the
-    // single worker to preserve its position and avoid accumulating detached scans after a
-    // slow filesystem call; the caller checks the budget again before admitting its results.
-    tokio::task::spawn_blocking(move || read_retention_raw_directory_slice(&root, directory))
-        .await
-        .map_err(|error| anyhow!("raw directory scan worker failed: {error}"))?
+    let Some(_remaining) = context.candidate_budget_remaining() else {
+        return Err(raw_orphan_sweep_candidate_budget_expired());
+    };
+    // Keep the ReadDir in the caller until file-phase admission succeeds. Once moved into the
+    // blocking worker, await it to preserve the traversal cursor across normal budget handling.
+    let Some(file_phase) = try_acquire_file_phase_permit() else {
+        retention_record_defer("raw_directory_scan", "file_phase_busy");
+        return Err(retention_write_deferred("raw_directory_scan"));
+    };
+    let directory = directory.take();
+    tokio::task::spawn_blocking(move || {
+        let _file_phase = file_phase;
+        read_retention_raw_directory_slice(&root, directory)
+    })
+    .await
+    .map_err(|error| anyhow!("raw directory scan worker failed: {error}"))?
 }
 
 pub(crate) async fn retention_raw_file_metadata_with_budget(
@@ -158,11 +225,43 @@ pub(crate) async fn retention_raw_file_metadata_with_budget(
     let path = path.to_owned();
     context
         .run_with_candidate_budget(async move {
-            tokio::task::spawn_blocking(move || retention_raw_file_metadata(&path))
-                .await
-                .map_err(|error| anyhow!("raw metadata worker failed: {error}"))
+            let file_phase = acquire_file_phase_permit("raw_file_metadata").await?;
+            tokio::task::spawn_blocking(move || {
+                let _file_phase = file_phase;
+                retention_raw_file_metadata(&path)
+            })
+            .await
+            .map_err(|error| anyhow!("raw metadata worker failed: {error}"))
         })
         .await
+}
+
+pub(crate) async fn try_retention_raw_file_metadata_with_file_phase(
+    path: &Path,
+    candidate_budget: Option<Duration>,
+) -> Result<RetentionRawFileMetadataProbe> {
+    let Some(remaining) = candidate_budget else {
+        return Ok(RetentionRawFileMetadataProbe::CandidateBudgetExpired);
+    };
+    let Some(file_phase) = try_acquire_file_phase_permit() else {
+        return Ok(RetentionRawFileMetadataProbe::FilePhaseBusy);
+    };
+    let path = path.to_owned();
+    let mut worker = tokio::task::spawn_blocking(move || {
+        let _file_phase = file_phase;
+        retention_raw_file_metadata(&path)
+    });
+    match tokio::time::timeout(remaining, &mut worker).await {
+        Ok(joined) => joined
+            .map(RetentionRawFileMetadataProbe::Ready)
+            .map_err(|error| anyhow!("raw metadata worker failed: {error}")),
+        Err(_) => {
+            // Dropping the join handle detaches the worker; its closure still owns the permit
+            // until the blocking metadata operation exits, while the caller releases SQL/fence
+            // resources and retries this candidate later.
+            Ok(RetentionRawFileMetadataProbe::CandidateBudgetExpired)
+        }
+    }
 }
 
 pub(crate) async fn acquire_raw_orphan_sweep_pass_context() -> Result<RawOrphanSweepPassContext> {
@@ -177,29 +276,66 @@ pub(crate) async fn acquire_raw_orphan_sweep_pass_context() -> Result<RawOrphanS
         None => crate::db_pressure::global_db_pressure_gate(),
     };
 
-    if let Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. }) =
-        pressure_gate.background_deny_reason()
-    {
-        retention_record_defer("raw_orphan_sweep", "pressure_cooldown");
-        return Err(raw_orphan_sweep_admission_deferred(
-            "background_slot",
-            "pressure_cooldown",
-        ));
-    }
+    let pressure_retry_started = Instant::now();
+    let mut pressure_retry_attempts = 0;
+    let pressure_permit = loop {
+        if pressure_gate
+            .background_deny_reason()
+            .is_some_and(|reason| {
+                matches!(
+                    reason,
+                    crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. }
+                )
+            })
+        {
+            if let Some(cause) = wait_for_raw_orphan_sweep_pressure_cooldown(
+                pressure_gate,
+                pressure_retry_started,
+                &mut pressure_retry_attempts,
+            )
+            .await
+            {
+                retention_record_defer("raw_orphan_sweep", cause);
+                return Err(raw_orphan_sweep_admission_deferred(
+                    "background_slot",
+                    cause,
+                ));
+            }
+            continue;
+        }
 
-    let pressure_permit = pressure_gate
-        .begin_priority_background_with_queue_wait("raw_orphan_sweep", RETENTION_FAIRNESS_INTERVAL)
-        .await
-        .map_err(|reason| {
-            let cause = match reason {
-                crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
-                    "pressure_cooldown"
+        match pressure_gate
+            .begin_priority_background_with_queue_wait(
+                "raw_orphan_sweep",
+                RETENTION_FAIRNESS_INTERVAL,
+            )
+            .await
+        {
+            Ok(permit) => break permit,
+            Err(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. }) => {
+                if let Some(cause) = wait_for_raw_orphan_sweep_pressure_cooldown(
+                    pressure_gate,
+                    pressure_retry_started,
+                    &mut pressure_retry_attempts,
+                )
+                .await
+                {
+                    retention_record_defer("raw_orphan_sweep", cause);
+                    return Err(raw_orphan_sweep_admission_deferred(
+                        "background_slot",
+                        cause,
+                    ));
                 }
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy => "background_busy",
-            };
-            retention_record_defer("raw_orphan_sweep", cause);
-            raw_orphan_sweep_admission_deferred("background_slot", cause)
-        })?;
+            }
+            Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy) => {
+                retention_record_defer("raw_orphan_sweep", "background_busy");
+                return Err(raw_orphan_sweep_admission_deferred(
+                    "background_slot",
+                    "background_busy",
+                ));
+            }
+        }
+    };
 
     let coordinator = retention_write_coordinator_handle();
     let write_permit = match RETENTION_SHUTDOWN.try_with(Clone::clone) {

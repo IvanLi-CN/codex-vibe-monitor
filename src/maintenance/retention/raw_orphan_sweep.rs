@@ -106,8 +106,9 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
 
     let candidate_entries = if traversal.pending_candidates.is_empty() {
         let scan = match read_retention_raw_directory_slice_with_budget(
+            &context,
             &raw_root,
-            traversal.directory.take(),
+            &mut traversal.directory,
         )
         .await
         {
@@ -497,18 +498,30 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 break;
             }
         };
-        let directory_lock =
-            match retention_try_archive_locks_scope(async { retention_archive_file_lock(&path) })
-                .await
-            {
-                Ok(lock) => lock,
-                Err(_) => {
-                    drop(inventory_admission);
-                    result.complete = false;
-                    result.failures += 1;
-                    continue;
-                }
-            };
+        let directory_lock = match retention_try_archive_locks_scope(async {
+            retention_archive_file_try_lock(&path)
+        })
+        .await
+        {
+            Ok(lock) => lock,
+            Err(error) if is_retention_write_deferred(&error) => {
+                drop(inventory_admission);
+                result.complete = false;
+                result.deferred = true;
+                result.admission_stage = Some("archive_file_phase".to_string());
+                result.admission_cause = Some("archive_directory_lock_busy".to_string());
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(_) => {
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                continue;
+            }
+        };
         match retention_raw_candidate_is_referenced(
             pool,
             config,
@@ -556,26 +569,23 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             result.failures += 1;
             continue;
         }
-        let unlink_metadata = match retention_raw_file_metadata_with_budget(&context, &path).await {
-            Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
-            Ok(Ok(_)) => {
-                drop(directory_lock);
-                drop(inventory_admission);
-                continue;
-            }
-            Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => {
-                drop(directory_lock);
-                drop(inventory_admission);
-                continue;
-            }
-            Ok(Err(_)) => {
+        let unlink_metadata = match try_retention_raw_file_metadata_with_file_phase(
+            &path,
+            context.candidate_budget_remaining(),
+        )
+        .await
+        {
+            Ok(RetentionRawFileMetadataProbe::FilePhaseBusy) => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 result.complete = false;
-                result.failures += 1;
-                continue;
+                result.deferred = true;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
             }
-            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+            Ok(RetentionRawFileMetadataProbe::CandidateBudgetExpired) => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 result.complete = false;
@@ -583,6 +593,30 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Ok(metadata)))
+                if metadata.file_type().is_file() =>
+            {
+                metadata
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Ok(_))) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                continue;
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Err(error)))
+                if error.kind() == io::ErrorKind::NotFound =>
+            {
+                drop(directory_lock);
+                drop(inventory_admission);
+                continue;
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Err(_))) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                continue;
             }
             Err(_) => {
                 drop(directory_lock);
@@ -661,38 +695,57 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());
             break;
         }
-        let final_unlink_metadata =
-            match retention_raw_file_metadata_with_budget(&context, &path).await {
-                Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
-                Ok(Ok(_)) | Ok(Err(_)) => {
-                    drop(directory_lock);
-                    drop(inventory_admission);
-                    result.complete = false;
-                    traversal
-                        .pending_candidates
-                        .push_back(candidate_entries[candidate_index].clone());
-                    continue;
-                }
-                Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
-                    drop(directory_lock);
-                    drop(inventory_admission);
-                    result.complete = false;
-                    traversal
-                        .pending_candidates
-                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
-                    break;
-                }
-                Err(_) => {
-                    drop(directory_lock);
-                    drop(inventory_admission);
-                    result.complete = false;
-                    result.failures += 1;
-                    traversal
-                        .pending_candidates
-                        .push_back(candidate_entries[candidate_index].clone());
-                    continue;
-                }
-            };
+        let final_unlink_metadata = match try_retention_raw_file_metadata_with_file_phase(
+            &path,
+            context.candidate_budget_remaining(),
+        )
+        .await
+        {
+            Ok(RetentionRawFileMetadataProbe::FilePhaseBusy) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.deferred = true;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Ok(RetentionRawFileMetadataProbe::CandidateBudgetExpired) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Ok(metadata)))
+                if metadata.file_type().is_file() =>
+            {
+                metadata
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Ok(_)))
+            | Ok(RetentionRawFileMetadataProbe::Ready(Err(_))) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .push_back(candidate_entries[candidate_index].clone());
+                continue;
+            }
+            Err(_) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                traversal
+                    .pending_candidates
+                    .push_back(candidate_entries[candidate_index].clone());
+                continue;
+            }
+        };
         let final_unlink_identity = retention_raw_file_identity(&final_unlink_metadata);
         let final_unlink_size = match i64::try_from(final_unlink_metadata.len()) {
             Ok(size) => size,
@@ -738,9 +791,20 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         // durable release-pending row and held fence let the next slice recover without a second
         // unlink attempt.
         let unlink_path = path.clone();
+        let Some(file_phase) = try_acquire_file_phase_permit() else {
+            drop(directory_lock);
+            drop(inventory_admission);
+            result.complete = false;
+            result.deferred = true;
+            traversal
+                .pending_candidates
+                .extend(candidate_entries.iter().skip(candidate_index).cloned());
+            break;
+        };
         let unlink_operation = context
             .run_with_candidate_budget(async move {
                 tokio::task::spawn_blocking(move || {
+                    let _file_phase = file_phase;
                     let file_result = match fs::remove_file(&unlink_path) {
                         Ok(()) => (true, sync_retention_raw_parent(&unlink_path)),
                         Err(error) => (false, Err(error)),
@@ -1120,7 +1184,7 @@ pub(crate) async fn persist_raw_orphan_sweep_schedule_with_evidence_and_removal(
         return result;
     }
 
-    // A pressure-cooldown rejection still needs a durable five-minute defer and fixed admission
+    // A pressure-cooldown rejection still needs a durable short retry and fixed admission
     // evidence. The fallback intentionally takes only the coordinator write permit, so persisting
     // the cursor does not require the background slot that was just denied.
     let Some((write_permit, _)) =

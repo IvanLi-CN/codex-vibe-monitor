@@ -634,18 +634,20 @@ impl ObservabilityRuntime {
         &self,
         key: &'static str,
         outcome: &'static str,
-        duration: Duration,
+        duration: Option<Duration>,
     ) {
         self.counter(
             "cvm_task_runs_total",
             &[("task_key", key), ("outcome", outcome)],
             1,
         );
-        self.duration(
-            "cvm_task_run_duration_seconds",
-            &[("task_key", key)],
-            duration,
-        );
+        if let Some(duration) = duration {
+            self.duration(
+                "cvm_task_run_duration_seconds",
+                &[("task_key", key)],
+                duration,
+            );
+        }
     }
     pub(crate) fn start_exporter(
         self: &Arc<Self>,
@@ -903,6 +905,20 @@ mod contract_tests {
         let disabled = ObservabilityRuntime::new(false);
         disabled.record_duration_ms("p1.ack_duration_ms", "p1", 25.0);
         assert!(disabled.render().is_empty());
+    }
+
+    #[test]
+    fn task_completion_without_duration_keeps_outcome_count_unknown() {
+        let metrics = ObservabilityRuntime::new(true);
+        metrics.task_completed("raw_orphan_sweep", "skipped", None);
+        let unknown = metrics.render();
+        assert!(unknown.contains("cvm_task_runs_total"));
+        assert!(!unknown.contains("cvm_task_run_duration_seconds"));
+
+        metrics.task_completed("raw_orphan_sweep", "success", Some(Duration::ZERO));
+        let observed_zero = metrics.render();
+        assert!(observed_zero.contains("cvm_task_run_duration_seconds_count"));
+        assert!(observed_zero.contains("cvm_task_run_duration_seconds_sum"));
     }
 
     #[test]

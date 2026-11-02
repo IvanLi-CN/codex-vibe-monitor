@@ -53,6 +53,8 @@ pub(crate) struct InvocationArchiveCandidate {
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) source: String,
+    #[sqlx(default)]
+    pub(crate) model: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
@@ -61,6 +63,24 @@ pub(crate) struct InvocationArchiveCandidate {
     pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_input: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_cache_write: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_cache_read: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_output: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_reasoning: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) error_message: Option<String>,
+    #[sqlx(default)]
+    pub(crate) failure_kind: Option<String>,
+    #[sqlx(default)]
+    pub(crate) failure_class: Option<String>,
+    #[sqlx(default)]
+    pub(crate) is_actionable: Option<i64>,
     pub(crate) first_token_ms: Option<f64>,
     pub(crate) payload: Option<String>,
     pub(crate) request_raw_path: Option<String>,
@@ -74,9 +94,11 @@ pub(crate) async fn load_invocation_archive_candidates_by_ids(
     let ids_json = serde_json::to_string(ids)?;
     sqlx::query_as::<_, InvocationArchiveCandidate>(
         r#"
-        SELECT id, invoke_id, occurred_at, source, status, input_tokens, output_tokens,
-               cache_input_tokens, reasoning_tokens, total_tokens, cost, first_token_ms,
-               payload, request_raw_path, response_raw_path
+        SELECT id, invoke_id, occurred_at, source, model, status, input_tokens, output_tokens,
+               cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input,
+               cost_cache_write, cost_cache_read, cost_output, cost_reasoning, error_message,
+               failure_kind, failure_class, is_actionable, first_token_ms, payload,
+               request_raw_path, response_raw_path
         FROM codex_invocations
         WHERE id IN (SELECT value FROM json_each(?1))
         ORDER BY id ASC
@@ -405,6 +427,9 @@ pub(crate) fn remove_temp_sqlite_artifacts(path: &Path) {
     if crate::is_archive_file_operation_active(path) {
         return;
     }
+    let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+        return;
+    };
     remove_temp_sqlite_artifacts_unchecked(path);
 }
 
@@ -426,7 +451,25 @@ pub(crate) fn remove_temp_archive_file_operation_artifacts_unchecked(path: &Path
 impl Drop for TempSqliteCleanup {
     fn drop(&mut self) {
         if !self.keep {
-            remove_temp_sqlite_artifacts(&self.path);
+            if crate::is_archive_file_operation_active(&self.path) {
+                let path = self.path.clone();
+                let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                    return;
+                };
+                drop(handle.spawn(async move {
+                    while crate::is_archive_file_operation_active(&path) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    let file_phase =
+                        crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
+                    crate::maintenance::with_file_phase_permit(file_phase, async move {
+                        remove_temp_sqlite_artifacts_unchecked(&path);
+                    })
+                    .await;
+                }));
+            } else {
+                remove_temp_sqlite_artifacts(&self.path);
+            }
         }
     }
 }
@@ -548,7 +591,7 @@ pub(crate) struct TimestampedArchiveCandidate {
 pub(crate) const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reported_cache_write_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 pub(crate) const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
-pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, routing_source, routing_selection_audit_json, upstream_base_url_host, group_name_snapshot, proxy_binding_key_snapshot, request_model, upstream_request_model, model_mapping_pattern, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, upstream_request_compression_algorithm, upstream_request_compression_mode, upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes, upstream_request_header_bytes_approx, upstream_response_body_bytes, upstream_response_header_bytes_approx, compact_support_status, compact_support_reason, request_summary_json, response_summary_json, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, response_content_encoding, created_at";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, attempt_public_id, invoke_id, occurred_at, occurred_epoch_ms, endpoint, route_mode, sticky_key, routing_source, routing_selection_audit_json, upstream_base_url_host, group_name_snapshot, proxy_binding_key_snapshot, request_model, upstream_request_model, model_mapping_pattern, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, upstream_request_compression_algorithm, upstream_request_compression_mode, upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes, upstream_request_header_bytes_approx, upstream_response_body_bytes, upstream_response_header_bytes_approx, compact_support_status, compact_support_reason, request_summary_json, response_summary_json, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, response_content_encoding, created_at";
 pub(crate) const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
 
 pub(crate) const CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL: &str = r#"
@@ -624,6 +667,7 @@ CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
     attempt_public_id TEXT,
     invoke_id TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
+    occurred_epoch_ms INTEGER,
     endpoint TEXT NOT NULL,
     route_mode TEXT NOT NULL,
     sticky_key TEXT,

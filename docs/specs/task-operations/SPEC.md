@@ -47,6 +47,7 @@
 - 准入延后任务 MUST 显示观测到的等待原因、观测时间，以及有权威依据时的重试或下次资格时间。不得根据历史延期记录或一般系统告警推测任务仍在等待。
 - 当前执行与两类等待 MUST 独立于目录筛选刷新，明确区分空结果、观测过期与观测未知；父子任务共享实例时不得重复计数。
 - dispatcher MUST 使用有限 worker/finalizer 和显式结果队列，不得 inline-await 完整任务或无限启动；同一 task key MUST 只有一个 execution lease。等待 heavy file gate、SQLite 准入或写许可时不得持有数据库连接、写许可或文件 fence，shutdown/cancel 只有在 native worker 退出后才可释放 lease。
+- 重文件互斥 MUST 以实际文件操作阶段为边界，不能覆盖整项任务的业务 SQL、压力退避或进度写入。安全边界后 MUST 释放重文件许可供其他任务推进；重新准入须沿用 artifact/source identity 校验，native worker 未排空时不得释放。任务执行 lease 和本轮选中工作范围保持到本轮结束。
 
 ### REQ-TASK-OPS-006 — 固定任务配色
 
@@ -86,6 +87,8 @@
 - 历史写入和采集 MUST 有界、异步、可合并且不会阻塞任务工作；新增执行区间、让行区间和覆盖诊断归维护库，性能指标库继续保存聚合指标。观测不可用不得回退为业务主库同步写入，也不得改变任务准入、启停、调度周期或无追赶规则。
 - 停机、采集失败、丢弃、维护库不可用及功能启用前的无证据时段 MUST 显示缺失或未知覆盖。重启前未确认结束的运行须标明中断／结束未知，不得延伸至当前或伪造成功；已知记录不因部分缺口而消失。
 - 旧历史记录中含入队含义的 `started_at` 和可能包含排队的 `duration_ms` MUST 保留原有兼容含义；不得重命名为实际执行起点，也不得通过旧耗时反推起点。新的字段或区间记录须通过前向、幂等且有界的维护库迁移安装，已有配置与任务颜色不被覆盖。
+- 详情运行记录 MUST 将触发时间、调度等待、实际执行开始与任务执行耗时分开表达。调度器接受请求后、放行前的等待归调度器，MUST NOT 计入任务执行耗时或任务服务速率；任务实际开始后的锁等待、资源等待和压力重试 MUST 计入执行耗时。缺少实际执行时间证据时 MUST 显示未知，不得以触发到结束的时间替代。详情和时间线中的运行时间与下次触发时间 MUST 按浏览器时区显示，保留 UTC cron 表达式自身的计划语义；运行记录 MUST 显示可关联的持久执行身份，缺少 execution UID 时明确使用运行记录 ID，不伪造 UID。
+- 详情运行记录 MUST 通过可选可空的 `executionUid`、`actualStartedAt`、`actualFinishedAt`、`executionDurationMs` 和 `schedulerWaitMs` 表达执行身份和计时，复用维护库已有执行字段。旧 `startedAt`、`finishedAt` 和 `durationMs` 保持原有兼容语义；实际执行起点 MUST 在调度放行后的 owner 入口记录，不能延迟到首个 SQL 微批成功。执行用时由单调时钟记录，缺测和零分母不能产生服务速率或倍率。
 - 时间线读取 MUST 使用有界、可续取的窗口查询与增量刷新；高频刷新不得每次加载完整历史、扫描业务表或以静默数量截断冒充完整请求窗口的覆盖。压力区间保留须满足请求窗口覆盖，并合并相同状态及原因的相邻区间，不能为了前端一秒动画每秒写入相同状态。
 
 ### REQ-TASK-OPS-010 — 有证据的任务计量
@@ -97,6 +100,7 @@
 - Retention 主计量范围 MUST 使用待归档 invocation 行；裁剪详情、上游尝试、会话、文件、字节和归档批次分别计量。不得把混合处理总数放到 invocation 积压轴上。归档回填中的扫描批次数与更新行数或账号数不得合成为同单位的子集关系。
 - `retention_archive` MUST 只声明 invocation archive scope；pool upstream attempt、forward proxy attempt、invocation detail、quota snapshot、model route 和 task-run history MUST 使用各自 owner、unit、scope 与 schedule。cold raw compression 和 expired archive cleanup 继续由 `raw_compression` 与 `prune_archive_batches` 负责，既有 identity/raw orphan 与 Prompt-cache owner 不得并入 invocation 计量。
 - 新 owner MUST 将 `no-work`、`complete`、`partial`、`deferred`、`failed` 与 `discovered`、`selected`、`committed`、`globalBacklogTotal` 和 `selectedScope` 一起记录；`processedCount` 只能等于该 owner 的已提交事实。旧 composite history 的 `completed` 和 mixed summary 继续按 ownership version 读取，不被重算或当作新 owner 事实。
+- 任务服务速率 MUST 使用同一次任务执行的已提交工作量和执行耗时；服务倍率 MUST 使用同数据集、同单位的该速率与已观测到达速率，不能混入调度等待、使用单个阶段耗时代替执行耗时或将缺测值补零。界面 MUST 保持耗时与速率口径一致，移除重复的公式提示。持续积压收敛与 ETA 继续采用跨运行的真实时间窗口，不得以单次任务服务倍率代替。
 - 采集 MUST 在既有工作边界记录事实并异步进入维护库，独立于页面打开。页面读取不得补做全量 COUNT、文件遍历或业务重建以填充图表；任务预算、业务正确性、启停与调度规则保持原有边界。
 
 ### REQ-TASK-OPS-011 — 最近 100 次运行样本
@@ -225,15 +229,15 @@
 
 ### VER-TASK-OPS-008
 
-- Method: restart, page-closed collection, migration, delayed/dropped history writes, queue-wait, parent/child, retention-boundary and dense-window fixtures; API pagination and frontend clock checks.
+- Method: restart, page-closed collection, migration, delayed/dropped history writes, queue-wait, parent/child, retention-boundary and dense-window fixtures; API pagination and frontend clock checks, including browser timezones with different UTC offsets and daylight-saving boundaries.
 - covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-008`, `REQ-TASK-OPS-009`
-- Pass condition: history survives restart without live-run resurrection or duplicate bars; short runs appear while no page is open; actual execution time excludes request waiting; legacy unknowns and downtime remain visible; intersecting boundary intervals survive retention; dense groups retain inspectable run identities; reads remain bounded and observations never add synchronous main-database writes.
+- Pass condition: history survives restart without live-run resurrection or duplicate bars; short runs appear while no page is open; actual execution time excludes request waiting; trigger, actual-start, and next-trigger timestamps follow the browser timezone while UTC cron semantics stay intact; execution UID or explicitly labelled run-record ID remains visible and stable; legacy unknowns and downtime remain visible; intersecting boundary intervals survive retention; dense groups retain inspectable run identities; reads remain bounded and observations never add synchronous main-database writes.
 
 ### VER-TASK-OPS-009
 
-- Method: per-task metric fixtures covering complete backlog, bounded candidate selection, ineligible inspected items, retries, queue consumption, partial commit followed by failure, incompatible units, truncated lower bounds and every actual trigger path.
+- Method: per-task metric fixtures covering complete backlog, bounded candidate selection, ineligible inspected items, retries, queue consumption, partial commit followed by failure, incompatible units, truncated lower bounds and every actual trigger path. A timing fixture separates 1,360 seconds of scheduler waiting from 500 seconds of execution, with internal lock waiting already included in those 500 seconds, 866 committed rows, and an observed arrival rate of 0.673 rows/second.
 - covers: `REQ-TASK-OPS-010`, `REQ-TASK-OPS-011`
-- Pass condition: metrics preserve their meaning, unit, scope and coverage; partial scans do not become full totals; committed items are counted once; failures preserve commits; at most 100 ordered identities are returned while retention preserves the latest 100 per task; queued-only requests are excluded and skipped attempts remain visible; collection does not depend on an open page or add synchronous main-database writes.
+- Pass condition: metrics preserve their meaning, unit, scope and coverage; partial scans do not become full totals; committed items are counted once; failures preserve commits; at most 100 ordered identities are returned while retention preserves the latest 100 per task; queued-only requests are excluded and skipped attempts remain visible; collection does not depend on an open page or add synchronous main-database writes. The timing fixture shows 500 seconds of execution and 1,360 seconds of scheduler waiting separately, with a service rate of 1.73 rows/second and a multiple of 2.6; internal waits are not subtracted, scheduler waits are not added, and the formula hint is absent.
 
 ### VER-TASK-OPS-010
 
@@ -294,6 +298,7 @@
 - [Task Runtime Observation and Effective Schedules](../../adr/0024-task-runtime-observation-and-effective-schedules.md)
 - [Durable Task Execution and Deferral Timelines](../../adr/0026-durable-task-execution-and-deferral-timelines.md)
 - [Versioned Managed Task Timeline SSE Compatibility](../../adr/0030-versioned-managed-task-timeline-sse-compatibility.md)
+- [Maintenance File Permits at Operation Boundaries](../../adr/0048-maintenance-file-permits-at-operation-boundaries.md)
 
 ## Visual Evidence
 

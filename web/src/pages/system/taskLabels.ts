@@ -1,3 +1,4 @@
+import { formatManagedTaskTimestamp } from "../../features/system/taskRunFacts";
 import type { ManagedTask } from "../../lib/api";
 
 export function managedTaskTriggerLabel(
@@ -134,20 +135,8 @@ export function managedTaskNextTriggerLabel(task: ManagedTask): string {
   if (!task.enabled) return isRetentionMaintenanceTask(task.taskKey) ? "自动触发已暂停" : "已停用";
   const nextTriggerAt = task.nextTriggerAt ?? task.effectiveSchedule?.nextTriggerAt;
   if (nextTriggerAt) {
-    const timestamp = Date.parse(nextTriggerAt);
-    if (!Number.isNaN(timestamp)) {
-      const formatted = new Intl.DateTimeFormat("zh-CN", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-        timeZone: "UTC",
-      }).format(new Date(timestamp));
-      return `${formatted} UTC`;
-    }
+    const formatted = formatManagedTaskTimestamp(nextTriggerAt);
+    if (formatted !== "未知") return formatted;
   }
   if (task.isManual || task.triggerMode === "manual") return "手动触发";
   if (task.triggerMode === "event") return "等待事件";

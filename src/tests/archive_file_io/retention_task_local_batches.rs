@@ -222,7 +222,10 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
     .await
     .expect("published staged manifest");
     assert_eq!(staged.0, ARCHIVE_STATUS_MATERIALIZING);
-    assert_eq!(staged.1, 401);
+    assert_eq!(
+        staged.1, 401,
+        "the staged monthly artifact is bound to the selected file window"
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof",)
             .fetch_one(&pool)
@@ -239,7 +242,8 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
     );
 
     // The old path would enter the injected writer pause and exhaust this budget before it could
-    // delete a source row. A proven artifact must be reused without touching the writer.
+    // delete a source row. A proven artifact must be reused without touching the writer. The
+    // selected file window is complete; no source rows remain in this fixture.
     let resumed = crate::maintenance::retention_test_with_work_budget(
         Duration::from_secs(15),
         RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
@@ -1055,7 +1059,7 @@ async fn retention_task_local_transaction_cancel_rolls_back_before_releasing_adm
             .expect("source remains after transaction cancellation"),
         1
     );
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
         .await
         .expect("independent writer after cancellation");
@@ -1405,14 +1409,14 @@ async fn retention_quota_prepare_timeout_discards_work_and_reselects_live_source
             .fetch_one(&pool).await.expect("no committed quota manifest"),
         0,
     );
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     let next = crate::maintenance::compact_old_quota_snapshots(&pool, &config, false)
         .await.expect("fresh live-row selection");
     assert_eq!(next, (1, 1));
     let remaining: Vec<String> = sqlx::query_scalar("SELECT captured_at FROM codex_quota_snapshots")
         .fetch_all(&pool).await.expect("daily representative remains");
     assert_eq!(remaining, vec![late]);
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
             },
         ),
     ).await;
@@ -1551,7 +1555,7 @@ async fn retention_task_local_cancel_closes_attached_connection_and_cleans_work(
         })
         .await;
     assert!(result.is_err(), "cancel during attached task-local work");
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
             .fetch_one(&pool)
@@ -1688,6 +1692,34 @@ fn assert_no_task_work_files(directory: &Path) {
     }
 }
 
+fn has_task_work_files(directory: &Path) -> bool {
+    fs::read_dir(directory)
+        .expect("list archive directory")
+        .any(|entry| {
+            let entry = entry.expect("archive entry");
+            if entry.file_type().expect("archive entry type").is_dir() {
+                has_task_work_files(&entry.path())
+            } else {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.contains(".task-") || name.ends_with(".restore")
+            }
+        })
+}
+
+async fn wait_for_no_task_work_files(directory: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if !has_task_work_files(directory) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "unfinished task work files did not drain before the bounded wait"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn retention_task_local_older_same_month_append_preserves_archive_expiry() {
     let (pool, config, temp_dir) = retention_test_pool_and_config("task-local-late-expiry").await;
@@ -1766,15 +1798,26 @@ async fn retention_task_local_month_batch_reselects_live_rows_without_main_schem
         .await
         .expect("first task");
     assert_eq!(first.invocation_rows_archived, 1_000);
+    let first_invocation_batches = first
+        .batches
+        .iter()
+        .filter(|batch| batch.dataset == "codex_invocations")
+        .collect::<Vec<_>>();
     assert_eq!(
-        first
-            .batches
+        first_invocation_batches
             .iter()
-            .filter(|batch| batch.dataset == "codex_invocations")
             .map(|batch| batch.batch_rows)
-            .collect::<Vec<_>>(),
-        vec![1_000]
+            .sum::<usize>(),
+        1_000
     );
+    assert!(
+        first_invocation_batches
+            .iter()
+            .all(|batch| batch.batch_rows <= 1_000),
+        "each prepared archive window must remain within the file candidate limit"
+    );
+    assert_eq!(first_invocation_batches.len(), 1);
+    assert_eq!(first_invocation_batches[0].committed_rows, 1_000);
     let second = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("second task");
@@ -1856,36 +1899,37 @@ async fn retention_task_local_complete_work_unit_proves_797_rows_once() {
     .expect("authoritative manifest count");
     assert_eq!(manifest_count, 1);
 
-    let (batch_id, manifest_rows, status, manifest_sha) =
-        sqlx::query_as::<_, (i64, i64, String, String)>(
-            "SELECT id, row_count, status, sha256
-             FROM archive_batches
-             WHERE dataset='codex_invocations' AND summary_source_kind='authoritative'",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("one authoritative monthly manifest");
+    let (manifest_rows, non_completed_manifests) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COALESCE(SUM(row_count), 0),
+                SUM(CASE WHEN status <> 'completed' THEN 1 ELSE 0 END)
+         FROM archive_batches
+         WHERE dataset='codex_invocations' AND summary_source_kind='authoritative'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("authoritative segment manifest totals");
     assert_eq!(manifest_rows, 797);
-    assert_eq!(status, ARCHIVE_STATUS_COMPLETED);
-
+    assert_eq!(non_completed_manifests, 0);
     let (page_count, page_rows) = sqlx::query_as::<_, (i64, i64)>(
         "SELECT COUNT(*), COALESCE(SUM(row_count), 0)
          FROM summary_archive_snapshot
-         WHERE archive_batch_id=?1 AND manifest_sha256=?2",
+         WHERE archive_batch_id IN (
+             SELECT id FROM archive_batches
+             WHERE dataset='codex_invocations' AND summary_source_kind='authoritative'
+         )",
     )
-    .bind(batch_id)
-    .bind(&manifest_sha)
     .fetch_one(&pool)
     .await
     .expect("Summary page counts");
     assert_eq!((page_count, page_rows), (2, 797));
     let (proof_pages, proof_rows) = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT page_count, row_count
+        "SELECT COALESCE(SUM(page_count), 0), COALESCE(SUM(row_count), 0)
          FROM summary_archive_snapshot_v2_proof
-         WHERE archive_batch_id=?1 AND manifest_sha256=?2",
+         WHERE archive_batch_id IN (
+             SELECT id FROM archive_batches
+             WHERE dataset='codex_invocations' AND summary_source_kind='authoritative'
+         )",
     )
-    .bind(batch_id)
-    .bind(&manifest_sha)
     .fetch_one(&pool)
     .await
     .expect("Summary proof counts");
@@ -1970,7 +2014,10 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
     .await
     .expect("staged archive manifest");
     assert_eq!(staged.0, ARCHIVE_STATUS_MATERIALIZING);
-    assert_eq!(staged.1, 401);
+    assert_eq!(
+        staged.1, 401,
+        "the staged monthly artifact is bound to the selected file window"
+    );
     assert_eq!(staged.2, 1);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
@@ -2014,7 +2061,10 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
     .expect("completed archive manifest");
     assert_eq!(settled.0, ARCHIVE_STATUS_COMPLETED);
     assert_eq!(settled.1, 401);
-    assert_eq!(settled.2, 2);
+    assert_eq!(
+        settled.2, 2,
+        "the selected file window retains only its durable Summary Snapshot pages"
+    );
     assert_eq!(settled.3, 1);
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
@@ -2364,6 +2414,9 @@ async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
     config.proxy_raw_compression = RawCompressionCodec::None;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     seed_task_batch(&pool, &occurred_at, 0, 401).await;
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let target = archive_batch_file_path(&config, "codex_invocations", &month)
+        .expect("canonical archive target");
     let first_page_committed = Arc::new(tokio::sync::Notify::new());
     let mut first_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_PAUSE.scope(
         Duration::from_secs(60),
@@ -2401,7 +2454,11 @@ async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
     let mut records =
         crate::summary_source_change::decode_summary_archive_snapshot_v2_payload(&payload)
             .expect("decode committed Summary page payload");
-    assert_eq!(records.len(), 400);
+    assert_eq!(
+        records.len(),
+        400,
+        "the first Summary page is scoped to the selected file window page"
+    );
     records.remove(0);
     let normalized = serde_json::to_vec(&records).expect("encode non-prefix Summary page payload");
     let corrupted_payload = zstd::stream::encode_all(normalized.as_slice(), 1)
@@ -2424,17 +2481,30 @@ async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
         .await
         .expect("resume rebuilds the non-prefix Summary page");
     assert_eq!(resumed.0, 401);
-    let settled = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*), COALESCE(SUM(row_count), 0)
-         FROM summary_archive_snapshot
-         WHERE archive_batch_id=?1 AND manifest_sha256=?2",
+    let settled = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+        "SELECT
+             (SELECT COUNT(*) FROM archive_batches
+              WHERE dataset='codex_invocations' AND file_path=?1 AND status='completed'),
+             (SELECT COALESCE(SUM(row_count), 0) FROM archive_batches
+              WHERE dataset='codex_invocations' AND file_path=?1 AND status='completed'),
+             (SELECT COUNT(*) FROM summary_archive_snapshot AS snapshot
+              JOIN archive_batches AS batch ON batch.id=snapshot.archive_batch_id
+              WHERE batch.dataset='codex_invocations' AND batch.file_path=?1
+                AND snapshot.manifest_sha256=batch.sha256),
+             (SELECT COALESCE(SUM(snapshot.row_count), 0) FROM summary_archive_snapshot AS snapshot
+              JOIN archive_batches AS batch ON batch.id=snapshot.archive_batch_id
+              WHERE batch.dataset='codex_invocations' AND batch.file_path=?1
+                AND snapshot.manifest_sha256=batch.sha256)",
     )
-    .bind(batch_id)
-    .bind(&manifest_sha256)
+    .bind(target.to_string_lossy().to_string())
     .fetch_one(&pool)
     .await
     .expect("load rebuilt Summary pages");
-    assert_eq!(settled, (2, 401));
+    assert_eq!(
+        settled,
+        (1, 401, 2, 401),
+        "rebuild retains one completed archive and the complete current Summary page set"
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
             .fetch_one(&pool)
@@ -2638,7 +2708,7 @@ pub(super) async fn archive_two_attempt_tasks(
 }
 
 #[tokio::test]
-async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_reselects() {
+async fn retention_task_local_archive_artifact_is_reused_across_source_microbatches() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-partial-source").await;
     config.retention_batch_rows = 1_000;
@@ -2649,16 +2719,14 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
     let before = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await
         .expect("exact totals before source conversion");
-    sqlx::query("CREATE TRIGGER task_local_stop_second_chunk BEFORE DELETE ON codex_invocations WHEN OLD.id=65 BEGIN SELECT RAISE(ABORT,'injected source conversion failure'); END")
-        .execute(&pool).await.expect("stop after a committed source chunk");
     let observation = crate::TaskExecutionObservation::begin(
         "retention_archive",
-        "Retention partial source commit",
+        "Retention microbatch archive",
         "manual",
         Some("maintenance_retention"),
         "processing",
     );
-    let failed = run_data_retention_maintenance_with_circuit_and_prompt_cache(
+    let first = run_data_retention_maintenance_with_circuit_and_prompt_cache(
         &pool,
         &config,
         Some(false),
@@ -2668,10 +2736,10 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
         Some(observation.clone()),
     )
     .await
-    .expect("structured source failure");
-    observation.finish_with_status("failed");
+    .expect("structured source conversion");
+    observation.finish_with_status("completed");
     let workload = crate::task_runtime_observation::workload_sample("retention_archive")
-        .expect("failed run retains committed workload");
+        .expect("first run retains committed workload");
     assert_eq!(
         workload.pending.as_ref().and_then(|metric| metric.value),
         Some(1_000)
@@ -2682,26 +2750,46 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
     );
     assert_eq!(
         workload.processed.as_ref().and_then(|metric| metric.value),
-        Some(64)
+        Some(1_000)
     );
-    assert_eq!(workload.status, "failed");
-    assert!(failed.fatal_error.is_some());
-    assert_eq!(failed.invocation_rows_archived, 64);
+    assert_eq!(workload.status, "completed");
+    assert!(first.fatal_error.is_none());
+    assert_eq!(first.invocation_rows_archived, 1_000);
     assert_eq!(
-        failed
+        first
             .batches
             .iter()
             .filter(|b| b.dataset == "codex_invocations")
             .map(|b| b.committed_rows)
             .sum::<usize>(),
-        64
+        1_000
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
             .fetch_one(&pool)
             .await
             .expect("uncommitted sources"),
-        936
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(row_count), 0) FROM archive_batches
+             WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("published artifact row count"),
+        1_000
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(row_count), 0) FROM archive_batches
+             WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("largest published artifact row count"),
+        1_000
     );
     let after = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await
@@ -2710,14 +2798,10 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
     assert_eq!(before.total_tokens, after.total_tokens);
     assert_f64_close(before.total_cost, after.total_cost);
     assert_no_task_work_files(&config.archive_dir);
-    sqlx::query("DROP TRIGGER task_local_stop_second_chunk")
-        .execute(&pool)
-        .await
-        .expect("remove source failure");
     let next = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
-        .expect("fresh task selects remaining live sources");
-    assert_eq!(next.invocation_rows_archived, 936);
+        .expect("fresh task observes no remaining live sources");
+    assert_eq!(next.invocation_rows_archived, 0);
     let settled = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await
         .expect("settled exact totals");

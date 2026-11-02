@@ -13,9 +13,13 @@ import SystemTaskDetailPage from "./SystemTaskDetailPage";
 const streamMocks = vi.hoisted(() => ({
   useSubscriptionTopic: vi.fn(),
 }));
+const timeZoneMock = vi.hoisted(() => ({ value: "Asia/Shanghai" }));
 
 vi.mock("../../hooks/useSubscriptionTopic", () => ({
   useSubscriptionTopic: streamMocks.useSubscriptionTopic,
+}));
+vi.mock("../../lib/timeZone", () => ({
+  getBrowserTimeZone: () => timeZoneMock.value,
 }));
 
 vi.mock("../../features/system/TaskWorkloadTrend", async () => {
@@ -86,14 +90,21 @@ function makeDetail(
       {
         id: 1,
         triggerKind: "manual",
-        startedAt: "2026-10-04T12:00:00.000Z",
+        startedAt: "2026-10-04T11:59:00.000Z",
+        executionUid: "test-execution-1",
+        actualStartedAt: "2026-10-04T12:00:00.000Z",
+        actualFinishedAt: recentRunStatus === "success" ? "2026-10-04T12:00:01.000Z" : null,
+        executionDurationMs: recentRunStatus === "success" ? 1000 : null,
+        schedulerWaitMs: recentRunStatus === "success" ? 60_000 : null,
         finishedAt: recentRunStatus === "success" ? "2026-10-04T12:00:01.000Z" : null,
-        durationMs: recentRunStatus === "success" ? 1000 : null,
+        durationMs: recentRunStatus === "success" ? 61_000 : null,
         status: recentRunStatus,
         summary: "本轮维护结果",
         details: {
           ownershipVersion: 1,
           dryRun: false,
+          resourceWaitMs: 30_000,
+          fileResourceWaitMs: 20_000,
           conversationIdentitiesChecked: 32,
           conversationIdentitiesReleased: 4,
           hourPrefixesChecked: 32,
@@ -155,6 +166,7 @@ async function waitForText(text: string | RegExp) {
 
 describe("SystemTaskDetailPage", () => {
   beforeEach(() => {
+    timeZoneMock.value = "Asia/Shanghai";
     currentDetail = makeDetail("invocation_identity_cleanup");
     failDetailLoad = false;
     failManualRun = false;
@@ -238,6 +250,74 @@ describe("SystemTaskDetailPage", () => {
       links.querySelector('a[href="/system/tasks/invocation_identity_cleanup"]'),
     ).not.toBeNull();
     expect(links.querySelector('a[href="/system/tasks/raw_orphan_sweep"]')).not.toBeNull();
+  });
+
+  it("separates trigger, execution, and scheduler timing and copies the full identity", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    currentDetail = makeDetail("retention_archive");
+    renderPage("retention_archive");
+    await waitForText("数据保留与归档");
+
+    expect(host?.textContent).toContain("触发时间");
+    expect(host?.textContent).toContain("实际开始");
+    expect(host?.textContent).toContain("实际结束");
+    expect(host?.textContent).toContain("执行用时");
+    expect(host?.textContent).toContain("调度等待");
+    expect(host?.textContent).toContain("调度侧资源准入等待");
+    expect(host?.textContent).toContain("文件资源等待");
+    expect(host?.textContent).toContain("test-execution-1");
+    expect(host?.textContent).toContain("1.0 s");
+    expect(host?.textContent).toContain("60.0 s");
+    expect(host?.textContent).toContain("30.0 s");
+    expect(host?.textContent).toContain("20.0 s");
+    expect(host?.textContent).not.toContain("61.0 s");
+
+    await user.click(within(host as HTMLElement).getByRole("button", { name: "复制执行身份" }));
+    await waitFor(() => expect(host?.textContent).toContain("已复制"));
+    expect(writeText).toHaveBeenCalledWith("test-execution-1");
+  });
+
+  it("uses the browser timezone for absolute task timestamps", async () => {
+    currentDetail = makeDetail("invocation_identity_cleanup");
+    renderPage("invocation_identity_cleanup");
+    await waitForText("调用身份清理");
+    expect(host?.textContent).toContain("19:59:00");
+
+    timeZoneMock.value = "UTC";
+    rerenderPage("invocation_identity_cleanup");
+    expect(host?.textContent).toContain("11:59:00");
+
+    timeZoneMock.value = "America/Los_Angeles";
+    rerenderPage("invocation_identity_cleanup");
+    expect(host?.textContent).toContain("04:59:00");
+    expect(host?.textContent).toContain("2026/10/04");
+  });
+
+  it("keeps legacy run duration unknown when actual execution timing is absent", async () => {
+    const legacyDetail = makeDetail("invocation_identity_cleanup") as {
+      recentRuns: Array<Record<string, unknown>>;
+    };
+    legacyDetail.recentRuns = [
+      {
+        id: 99,
+        startedAt: "2026-10-04T12:00:00.000Z",
+        finishedAt: "2026-10-04T12:31:00.000Z",
+        durationMs: 1_860_000,
+        status: "success",
+      },
+    ];
+    currentDetail = legacyDetail;
+    renderPage("invocation_identity_cleanup");
+    await waitForText("调用身份清理");
+
+    expect(host?.textContent).toContain("运行记录 ID：99");
+    expect(host?.textContent).toContain("执行用时");
+    expect(host?.textContent).not.toContain("1860.0 s");
   });
 
   it("applies runtime and detail subscription updates", async () => {

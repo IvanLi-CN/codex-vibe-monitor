@@ -113,7 +113,7 @@ for (const width of [1280, 393]) {
         exact: true,
       });
       await expect(facts).toBeVisible();
-      await expect(facts).toContainText("实际运行 · 结果：完成");
+      await expect(facts).toContainText("实际运行 · 结果：本轮完成");
       await expect(facts).toContainText(task.scope);
       await expect(facts).toContainText(task.unit);
       await expect(facts).toContainText(task.backlog);

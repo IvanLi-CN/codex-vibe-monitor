@@ -611,6 +611,92 @@ async fn successful_owner_run_clears_prior_retry_state() {
 }
 
 #[tokio::test]
+async fn successful_automatic_owner_progress_clears_stale_retry_state_before_next_catchup() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let task_key = "retention_archive";
+    let failed_run = store
+        .begin_run(task_key, "2026-10-01T00:00:00.000Z", "schedule", None)
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation_and_retry(
+            failed_run,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("pressure gate"),
+            None,
+            Some("failed"),
+            None,
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "result": "failed",
+                "globalBacklogTotal": 100,
+                "committed": 0,
+                "selectedScope": {"committed": 0, "hasMore": true},
+                "waitReason": "sqlite_pressure"
+            })),
+            30,
+            "sqlite_pressure",
+        )
+        .await
+        .unwrap();
+
+    let retry_reason: Option<String> =
+        sqlx::query_scalar("SELECT reason FROM maintenance_owner_retry_state WHERE task_key=?")
+            .bind(task_key)
+            .fetch_optional(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(retry_reason.as_deref(), Some("sqlite_pressure"));
+
+    let successful_run = store
+        .begin_run(task_key, "2026-10-01T00:01:00.000Z", "catchup", None)
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation(
+            successful_run,
+            "success",
+            "2026-10-01T00:01:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "result": "complete",
+                "globalBacklogTotal": 100,
+                "committed": 1,
+                "processedCount": 1,
+                "selectedScope": {"committed": 1, "hasMore": true},
+                "waitReason": null,
+                "dryRun": false
+            })),
+        )
+        .await
+        .unwrap();
+
+    let state: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT tasks.next_catchup_at,tasks.catchup_reason,retry.reason
+         FROM managed_tasks tasks
+         LEFT JOIN maintenance_owner_retry_state retry ON retry.task_key=tasks.task_key
+         WHERE tasks.task_key=?",
+    )
+    .bind(task_key)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert!(state.0.is_some());
+    assert_eq!(state.1.as_deref(), Some("backlog_remaining"));
+    assert_eq!(state.2, None);
+}
+
+#[tokio::test]
 async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();
@@ -642,6 +728,91 @@ async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
         .await
         .unwrap();
     assert_eq!(after, 6);
+}
+
+#[tokio::test]
+async fn retention_owner_preview_and_admission_defer_use_real_owner_classification() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("owner-preview-classification").await;
+    let account_id = 8_901_i64;
+    let timestamp = format_utc_iso_millis(Utc::now());
+    sqlx::query(
+        "INSERT INTO pool_upstream_accounts (id, kind, provider, display_name, status, enabled, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+    )
+    .bind(account_id)
+    .bind("api_key")
+    .bind("test")
+    .bind("Owner classification test")
+    .bind("active")
+    .bind(true)
+    .bind(&timestamp)
+    .execute(&pool)
+    .await
+    .expect("seed model route account");
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, last_seen_at) VALUES (?1, ?2, ?3)",
+    )
+    .bind(account_id)
+    .bind("gpt-owner-classification")
+    .bind("2000-01-01T00:00:00.000Z")
+    .execute(&pool)
+    .await
+    .expect("seed expired model route");
+
+    let preview = crate::maintenance::run_retention_owner_task(
+        &pool,
+        &config,
+        "model_route_expiry",
+        true,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("run model route dry-run owner");
+    assert_eq!(preview.discovered, 1);
+    assert_eq!(preview.selected, 1);
+    assert_eq!(preview.committed, 0);
+    assert_eq!(preview.completion, "complete");
+
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE account_id=?1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count preview routes");
+    assert_eq!(remaining, 1);
+
+    let deferred = crate::maintenance::retention_test_with_work_budget(
+        Duration::ZERO,
+        crate::maintenance::run_retention_owner_task(
+            &pool,
+            &config,
+            "model_route_expiry",
+            false,
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("run model route deferred owner");
+    assert_eq!(deferred.discovered, 1);
+    assert_eq!(deferred.selected, 0);
+    assert_eq!(deferred.committed, 0);
+    assert_eq!(deferred.completion, "deferred");
+    assert_eq!(
+        deferred.wait_reason.as_deref(),
+        Some("retention_work_budget")
+    );
+
+    let remaining_after_defer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE account_id=?1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count deferred routes");
+    assert_eq!(remaining_after_defer, 1);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]

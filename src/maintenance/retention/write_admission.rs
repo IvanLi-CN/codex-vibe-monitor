@@ -29,7 +29,7 @@ pub(crate) const RETENTION_RAW_RECONCILIATION_PENDING_BATCH: usize = 8;
 pub(crate) const RETENTION_RAW_RECONCILIATION_DIRECTORY_ENTRY_BATCH: usize = 128;
 pub(crate) const RETENTION_RAW_RECONCILIATION_SCOPE: &str = "raw_payload_files";
 pub(crate) const RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS: i64 = 1;
-pub(crate) const RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS: i64 = 5 * 60;
+pub(crate) const RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS: i64 = 1;
 pub(crate) const RETENTION_RAW_RECONCILIATION_EMPTY_RETRY_SECS: i64 = 5 * 60;
 pub(crate) const RETENTION_RAW_RECONCILIATION_CANDIDATE_BUDGET: Duration = Duration::from_secs(2);
 pub(crate) const RETENTION_RAW_RECONCILIATION_FAILURE_BACKOFF_SECS: [i64; 5] =
@@ -144,6 +144,7 @@ tokio::task_local! {
         std::sync::Arc<std::sync::atomic::AtomicBool>;
     pub(crate) static RETENTION_TEST_RAW_MIDPASS_WRITE_DENY:
         std::sync::Arc<std::sync::atomic::AtomicBool>;
+    pub(crate) static RETENTION_TEST_BACKLOG_OBSERVATION_FAILURE: ();
     pub(crate) static RETENTION_TEST_INVOCATION_STAGE_TRACE:
         std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>;
 }
@@ -871,6 +872,12 @@ pub(crate) fn retention_run_defer_reason() -> Option<String> {
         .flatten()
 }
 
+pub(crate) fn retention_clear_run_defer_reason() {
+    let _ = RETENTION_RUN_DEFER_REASON.try_with(|reason| {
+        *reason.borrow_mut() = None;
+    });
+}
+
 #[cfg(test)]
 pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
     budget: Duration,
@@ -1114,6 +1121,13 @@ pub(crate) fn retention_write_deferred(operation: &'static str) -> anyhow::Error
     anyhow::Error::new(RetentionWriteDeferred { operation })
 }
 
+pub(crate) fn retention_write_deferred_operation(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<RetentionWriteDeferred>())
+        .map(|deferred| deferred.operation)
+}
+
 pub(crate) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause.is::<RetentionWriteDeferred>() || cause.is::<RawOrphanSweepAdmissionDeferred>()
@@ -1298,6 +1312,7 @@ pub(crate) struct RetentionWriteCommit {
     pub(crate) lock_wait: Duration,
     pub(crate) execute_elapsed: Duration,
     pub(crate) commit_elapsed: Duration,
+    pub(crate) write_hold_elapsed: Option<Duration>,
     pub(crate) raw_reference_check_elapsed: Option<Duration>,
     pub(crate) p1_waiter_count: usize,
     pub(crate) candidate_remaining_hint: usize,
@@ -1327,6 +1342,7 @@ macro_rules! retention_record_commit_with_reference_check {
                 lock_wait: $lock_wait,
                 execute_elapsed: $execute_elapsed,
                 commit_elapsed: $commit_elapsed,
+                write_hold_elapsed: None,
                 raw_reference_check_elapsed: $raw_reference_check_elapsed,
                 p1_waiter_count: $p1_waiter_count,
                 candidate_remaining_hint: $candidate_remaining_hint,
@@ -1369,6 +1385,11 @@ macro_rules! retention_record_commit {
 pub(crate) use retention_record_commit;
 
 pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) -> bool {
+    let mut health = RETENTION_WRITE_HEALTH
+        .lock()
+        .expect("retention write health");
+    let breached = observe_retention_write_commit_with_hold(&mut health, &commit);
+    drop(health);
     let RetentionWriteCommit {
         operation,
         admission_mode,
@@ -1378,28 +1399,11 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) -> boo
         lock_wait,
         execute_elapsed,
         commit_elapsed,
+        write_hold_elapsed,
         raw_reference_check_elapsed,
         p1_waiter_count,
         candidate_remaining_hint,
     } = commit;
-    let mut health = RETENTION_WRITE_HEALTH
-        .lock()
-        .expect("retention write health");
-    let breached = observe_retention_write_commit(
-        &mut health,
-        operation,
-        admission_mode,
-        rows,
-        estimated_bytes,
-        prepare_elapsed,
-        lock_wait,
-        execute_elapsed,
-        commit_elapsed,
-        raw_reference_check_elapsed,
-        p1_waiter_count,
-        candidate_remaining_hint,
-    );
-    drop(health);
     if breached {
         warn!(
             operation,
@@ -1410,6 +1414,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) -> boo
             lock_wait_ms = lock_wait.as_millis() as u64,
             execute_ms = execute_elapsed.as_millis() as u64,
             commit_ms = commit_elapsed.as_millis() as u64,
+            write_hold_ms = ?write_hold_elapsed.map(|elapsed| elapsed.as_millis() as u64),
             raw_reference_check_ms = ?raw_reference_check_elapsed.map(|elapsed| elapsed.as_millis() as u64),
             p1_waiter_count,
             candidate_remaining_hint,
@@ -1424,6 +1429,8 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) -> boo
             prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
             lock_wait_ms = lock_wait.as_millis() as u64,
             execute_ms = execute_elapsed.as_millis() as u64,
+            commit_ms = commit_elapsed.as_millis() as u64,
+            write_hold_ms = ?write_hold_elapsed.map(|elapsed| elapsed.as_millis() as u64),
             raw_reference_check_ms = ?raw_reference_check_elapsed.map(|elapsed| elapsed.as_millis() as u64),
             p1_waiter_count,
             candidate_remaining_hint,
@@ -1448,7 +1455,45 @@ pub(crate) fn observe_retention_write_commit(
     p1_waiter_count: usize,
     candidate_remaining_hint: usize,
 ) -> bool {
-    let elapsed = execute_elapsed.saturating_add(commit_elapsed);
+    observe_retention_write_commit_with_hold(
+        health,
+        &RetentionWriteCommit {
+            operation,
+            admission_mode,
+            rows,
+            estimated_bytes,
+            prepare_elapsed,
+            lock_wait,
+            execute_elapsed,
+            commit_elapsed,
+            write_hold_elapsed: None,
+            raw_reference_check_elapsed,
+            p1_waiter_count,
+            candidate_remaining_hint,
+        },
+    )
+}
+
+pub(crate) fn observe_retention_write_commit_with_hold(
+    health: &mut RetentionWriteHealthState,
+    commit: &RetentionWriteCommit,
+) -> bool {
+    let RetentionWriteCommit {
+        operation,
+        admission_mode,
+        rows,
+        estimated_bytes,
+        prepare_elapsed,
+        lock_wait,
+        execute_elapsed,
+        commit_elapsed,
+        write_hold_elapsed,
+        raw_reference_check_elapsed,
+        p1_waiter_count,
+        candidate_remaining_hint,
+    } = *commit;
+    let elapsed =
+        write_hold_elapsed.unwrap_or_else(|| execute_elapsed.saturating_add(commit_elapsed));
     let breached =
         health
             .budgets
@@ -1542,6 +1587,10 @@ impl RetentionWriteAdmission {
 
     pub(crate) fn p1_waiter_count(&self) -> usize {
         self.p1_waiter_count
+    }
+
+    pub(crate) fn write_hold_elapsed(&self) -> Duration {
+        self.write_permit.held_since().elapsed()
     }
 
     fn release_write_permit_keep_pressure_slot(self) -> crate::db_pressure::DbBackgroundPermit {
