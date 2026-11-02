@@ -1432,7 +1432,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require_fail_closed(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
     lefthook_install = step_config(tooling_job, "Install Lefthook for hook smoke", "ci-pr.yml.jobs.repository-tooling-checks")
     require(
-        lefthook_install.get("run") == "bun install --global lefthook@2.1.10",
+        lefthook_install.get("run") == "bun install --global lefthook@2.2.1",
         "ci-pr.yml.jobs.repository-tooling-checks: Lefthook smoke must use the pinned external binary",
     )
     checkout = checkout_step(tooling_job, "Checkout", "ci-pr.yml.jobs.repository-tooling-checks")
@@ -1868,7 +1868,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require_fail_closed(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
     lefthook_install = step_config(tooling_job, "Install Lefthook for hook smoke", "ci-main.yml.jobs.repository-tooling-checks")
     require(
-        lefthook_install.get("run") == "bun install --global lefthook@2.1.10",
+        lefthook_install.get("run") == "bun install --global lefthook@2.2.1",
         "ci-main.yml.jobs.repository-tooling-checks: Lefthook smoke must use the pinned external binary",
     )
     scripts_step = step_config(tooling_job, "Check quality-gates scripts", "ci-main.yml.jobs.repository-tooling-checks")

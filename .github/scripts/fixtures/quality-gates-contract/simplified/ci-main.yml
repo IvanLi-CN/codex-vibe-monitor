@@ -329,7 +329,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install Lefthook for hook smoke
-        run: bun install --global lefthook@2.1.10
+        run: bun install --global lefthook@2.2.1
 
       - name: Install front-end dependencies
         working-directory: web
