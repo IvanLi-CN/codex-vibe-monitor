@@ -127,6 +127,52 @@ fn timeseries_topic_applies_terminal_replacement_at_snapshot_once() {
 }
 
 #[test]
+fn timeseries_topic_keeps_watermarks_and_aggregates_when_delta_is_rejected() {
+    let now = Utc::now();
+    let occurred_at = format_naive(now.with_timezone(&Shanghai).naive_local());
+    let bucket_epoch = align_reporting_bucket_epoch(now.timestamp(), 60, Shanghai)
+        .expect("aligned materializer bucket");
+    let original_aggregate = BucketAggregate {
+        total_count: 1,
+        ..Default::default()
+    };
+    let mut base = TimeseriesTopicMaterializedBase {
+        range_start: now - ChronoDuration::seconds(10),
+        range_end: now + ChronoDuration::seconds(60),
+        range_spec: "1m".to_string(),
+        bucket_selection: TimeseriesBucketSelection {
+            bucket_seconds: 60,
+            effective_bucket: "1m".to_string(),
+            available_buckets: vec!["1m".to_string()],
+            bucket_limited_to_daily: false,
+        },
+        reporting_tz: Shanghai,
+        source_scope: InvocationSourceScope::All,
+        upstream_account_id: None,
+        snapshot_id: 10,
+        terminal_sequence: 5,
+        aggregates: BTreeMap::from([(bucket_epoch, original_aggregate.clone())]),
+    };
+    let mut invalid_delta =
+        TimeseriesTerminalDelta::from(&crate::api::summary_projection_test_invocation());
+    invalid_delta.occurred_at = occurred_at;
+    invalid_delta.total_tokens = Some(3);
+    invalid_delta.input_tokens = Some(1);
+    invalid_delta.output_tokens = Some(1);
+
+    let error = base
+        .apply_terminal_delta(6, Some(99), &invalid_delta)
+        .expect_err("inconsistent terminal token totals must fail closed");
+    assert!(matches!(error, crate::stats::ApiError::Unavailable(_)));
+    assert_eq!(base.snapshot_id, 10);
+    assert_eq!(base.terminal_sequence, 5);
+    assert_eq!(
+        format!("{:?}", base.aggregates.get(&bucket_epoch)),
+        format!("{:?}", Some(&original_aggregate))
+    );
+}
+
+#[test]
 fn timeseries_topic_routes_hour_aligned_history_through_rollup_baseline() {
     let end = Utc::now();
     let range_window = RangeWindow {

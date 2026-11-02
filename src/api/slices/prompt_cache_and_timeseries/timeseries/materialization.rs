@@ -15,7 +15,7 @@ use super::queries::{
     timeseries_topic_uses_hourly_rollup_baseline,
 };
 use super::*;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct TimeseriesTopicMaterializedBase {
     pub(crate) range_start: DateTime<Utc>,
     pub(crate) range_end: DateTime<Utc>,
@@ -314,17 +314,31 @@ impl TimeseriesTopicMaterializedBase {
         let Some(terminal) = terminal else {
             return Ok(());
         };
+        let mut candidate = self.clone();
         for delta in &terminal.deltas {
-            self.apply_terminal_delta(
+            candidate.apply_terminal_delta_inner(
                 delta.terminal_sequence,
                 delta.persisted_row_id,
                 &delta.timeseries,
             )?;
         }
+        *self = candidate;
         Ok(())
     }
 
     pub(crate) fn apply_terminal_delta(
+        &mut self,
+        terminal_sequence: u64,
+        persisted_row_id: Option<i64>,
+        delta: &TimeseriesTerminalDelta,
+    ) -> Result<(), ApiError> {
+        let mut candidate = self.clone();
+        candidate.apply_terminal_delta_inner(terminal_sequence, persisted_row_id, delta)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn apply_terminal_delta_inner(
         &mut self,
         terminal_sequence: u64,
         persisted_row_id: Option<i64>,

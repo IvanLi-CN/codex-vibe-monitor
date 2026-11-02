@@ -316,6 +316,7 @@ pub(crate) fn add_pending_timeseries_deltas(
     max_row_id: Option<i64>,
     snapshot_id: i64,
 ) -> Result<usize, ApiError> {
+    let mut candidate = aggregates.clone();
     let mut applied = 0_usize;
     let selection = TimeseriesProjectionSelection {
         source_scope: timeseries_projection_scope(source_scope),
@@ -349,13 +350,14 @@ pub(crate) fn add_pending_timeseries_deltas(
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred.timestamp(), bucket_seconds, reporting_tz)?;
         add_timeseries_terminal_delta_to_aggregate(
-            aggregates.entry(bucket_epoch).or_default(),
+            candidate.entry(bucket_epoch).or_default(),
             &delta,
         )?;
         applied = applied
             .checked_add(1)
             .ok_or_else(|| timeseries_aggregate_overflow("pending delta count"))?;
     }
+    *aggregates = candidate;
     Ok(applied)
 }
 
@@ -365,6 +367,7 @@ pub(crate) fn add_terminal_timeseries_records(
     bucket_seconds: i64,
     reporting_tz: Tz,
 ) -> Result<(), ApiError> {
+    let mut candidate = aggregates.clone();
     for record in records {
         if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
             continue;
@@ -375,10 +378,11 @@ pub(crate) fn add_terminal_timeseries_records(
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred.timestamp(), bucket_seconds, reporting_tz)?;
         add_exact_record_to_timeseries_aggregate(
-            aggregates.entry(bucket_epoch).or_default(),
+            candidate.entry(bucket_epoch).or_default(),
             &record,
         )?;
     }
+    *aggregates = candidate;
     Ok(())
 }
 
@@ -540,11 +544,11 @@ fn validate_bucket_aggregate(aggregate: &BucketAggregate) -> Result<(), ApiError
             return Err(timeseries_aggregate_overflow(field));
         }
     }
-    if aggregate.cache_input_tokens > aggregate.input_tokens {
-        return Err(ApiError::unavailable(anyhow!(
-            "timeseries aggregate cache input tokens exceed input tokens"
-        )));
-    }
+    // Historical rollups may have a trusted total and a partially populated component set. In
+    // that representation, a missing input component is materialized as zero while a cache-input
+    // value can still be present. Fact and delta validation enforces cache <= input when both
+    // components are observed; aggregate validation must preserve total-only rollups and let the
+    // response layer hide incomplete components.
     for (field, value) in [
         ("total cost", aggregate.total_cost),
         ("non-success cost", aggregate.non_success_cost),
@@ -698,10 +702,11 @@ pub(crate) fn add_rollup_rows_to_timeseries_aggregates(
     bucket_seconds: i64,
     reporting_tz: Tz,
 ) -> Result<(), ApiError> {
+    let mut candidate = aggregates.clone();
     for row in rows {
         let bucket_epoch =
             align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+        if let Some(entry) = candidate.get_mut(&bucket_epoch) {
             merge_timeseries_bucket_aggregate(
                 entry,
                 BucketAggregate {
@@ -736,6 +741,7 @@ pub(crate) fn add_rollup_rows_to_timeseries_aggregates(
             )?;
         }
     }
+    *aggregates = candidate;
     Ok(())
 }
 
@@ -745,10 +751,11 @@ pub(crate) fn add_invocation_rollup_rows_to_timeseries_aggregates(
     bucket_seconds: i64,
     reporting_tz: Tz,
 ) -> Result<(), ApiError> {
+    let mut candidate = aggregates.clone();
     for row in rows {
         let bucket_epoch =
             align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+        if let Some(entry) = candidate.get_mut(&bucket_epoch) {
             merge_timeseries_bucket_aggregate(
                 entry,
                 BucketAggregate {
@@ -782,6 +789,7 @@ pub(crate) fn add_invocation_rollup_rows_to_timeseries_aggregates(
             )?;
         }
     }
+    *aggregates = candidate;
     Ok(())
 }
 
@@ -791,16 +799,18 @@ pub(crate) fn add_exact_records_to_timeseries_aggregates(
     bucket_seconds: i64,
     reporting_tz: Tz,
 ) -> Result<(), ApiError> {
+    let mut candidate = aggregates.clone();
     for record in records {
         let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
             continue;
         };
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
-        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+        if let Some(entry) = candidate.get_mut(&bucket_epoch) {
             add_exact_record_to_timeseries_aggregate(entry, &record)?;
         }
     }
+    *aggregates = candidate;
     Ok(())
 }
 
@@ -1133,10 +1143,11 @@ pub(crate) fn timeseries_point_from_aggregate(
     end: DateTime<Utc>,
     agg: &BucketAggregate,
 ) -> TimeseriesPoint {
-    let has_calls = agg
-        .total_count
-        .max(agg.success_count + agg.failure_count + agg.in_flight_count.max(0))
-        > 0;
+    let outcome_count = agg
+        .success_count
+        .saturating_add(agg.failure_count)
+        .saturating_add(agg.in_flight_count.max(0));
+    let has_calls = agg.total_count.max(outcome_count) > 0;
     let token_components_complete = agg.total_tokens <= 0
         || (agg.token_components_observed
             && agg.token_component_incomplete_count == 0

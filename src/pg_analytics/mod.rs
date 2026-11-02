@@ -1020,6 +1020,11 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
     let status = crate::analytics_changes::normalize_analytics_text(row.status.as_deref());
     let error_message =
         crate::analytics_changes::normalize_analytics_text(row.error_message.as_deref());
+    let classification_error_message =
+        crate::analytics_changes::normalize_analytics_classification_error_message(
+            payload.as_ref(),
+            row.error_message.as_deref(),
+        );
     let stored_failure_kind = crate::analytics_changes::normalize_analytics_failure_kind(
         payload.as_ref(),
         row.failure_kind.as_deref(),
@@ -1028,7 +1033,7 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
         crate::analytics_changes::normalize_analytics_text(row.failure_class.as_deref());
     let classification = crate::api::resolve_failure_classification(
         status.as_deref(),
-        error_message.as_deref(),
+        classification_error_message.as_deref(),
         stored_failure_kind.as_deref(),
         stored_failure_class.as_deref(),
         row.is_actionable,
@@ -3933,6 +3938,27 @@ mod tests {
         assert_eq!(payload_none.failure_kind, None);
         assert_eq!(payload_none.failure_class, None);
         assert!(payload_none.success_like);
+
+        let downstream_error = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 45,
+            invoke_id: "invoke-45".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            status: Some("completed".to_string()),
+            failure_kind: Some("none".to_string()),
+            payload: Some(
+                r#"{"downstreamErrorMessage":"downstream closed while streaming upstream response"}"#
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+        .expect("downstream payload error should classify as an abort");
+        assert_eq!(
+            downstream_error.failure_class.as_deref(),
+            Some("client_abort")
+        );
+        assert!(!downstream_error.success_like);
     }
 
     #[test]
@@ -4079,7 +4105,7 @@ mod tests {
             r#"
             INSERT INTO pool_upstream_request_attempts
                 (id, invoke_id, occurred_at, attempt_index, upstream_account_id)
-            VALUES (1, 'invoke-attempt-account', '2026-10-31T00:00:00Z', 1, 42)
+            VALUES (1, 'invoke-attempt-account', '2026-10-31T00:00:00.000Z', 1, 42)
             "#,
         )
         .execute(connection.as_mut())

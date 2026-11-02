@@ -26,16 +26,31 @@ fn summary_live_wait_arithmetic_fails_closed_on_non_finite_values() {
 }
 
 #[test]
+fn runtime_summary_overlay_rejects_negative_cache_write_tokens() {
+    let mut record = invocation_cost_audit_tests::sample_invocation(None);
+    record.cache_write_tokens = Some(-1);
+    let mut delta = RuntimeSummaryOverlayDelta::default();
+
+    assert!(matches!(
+        delta.add_terminal_record(&record),
+        Err(ApiError::Unavailable(_))
+    ));
+}
+
+#[test]
 fn projection_sql_keeps_success_aliases_and_invocation_identity() {
     assert!(INVOCATION_RESOLVED_FAILURE_CLASS_SQL.contains("'succeeded'"));
     assert!(INVOCATION_RESOLVED_FAILURE_CLASS_SQL.contains("'ok'"));
     let sql = invocation_upstream_account_id_from_attempt_fallback_sql("inv");
-    assert!(sql.contains("attempt.occurred_at = inv.occurred_at"));
+    assert!(sql.contains("julianday(attempt.occurred_at"));
+    assert!(sql.contains("julianday(inv.occurred_at"));
 }
 
 #[tokio::test]
 async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
-    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
         .await
         .expect("connect resolver test database");
     sqlx::query(
@@ -51,7 +66,9 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
          ('warning_success', '', 'none', NULL, '{}'),
          ('completed', '', 'unknown_legacy_kind', NULL, '{}'),
          ('completed', '', 'none', NULL, '{"failureKind":"upstream_stream_error"}'),
-         ('completed', '', 'upstream_stream_error', NULL, '{"failureKind":"none"}')"#,
+         ('completed', '', 'upstream_stream_error', NULL, '{"failureKind":"none"}'),
+         ('completed', '', 'upstream_stream_error', NULL, '{"failureKind":""}'),
+         ('completed', '', 'none', NULL, '{"downstreamErrorMessage":"downstream closed while streaming upstream response"}')"#,
     )
     .execute(&pool)
     .await
@@ -70,7 +87,9 @@ async fn projection_sql_resolves_legacy_none_and_unknown_errors_like_rust() {
             "none",
             "service_failure",
             "service_failure",
-            "none"
+            "none",
+            "service_failure",
+            "client_abort"
         ]
     );
 }

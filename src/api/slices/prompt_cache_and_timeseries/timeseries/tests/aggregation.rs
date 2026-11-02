@@ -375,6 +375,39 @@ fn terminal_deltas_and_rollups_fail_closed_without_partial_mutation() {
 }
 
 #[test]
+fn exact_record_batches_commit_only_after_every_record_is_valid() {
+    let valid = record(105, "2026-10-30T00:00:12Z");
+    let mut invalid = record(106, "2026-10-30T00:00:12Z");
+    invalid.total_tokens = Some(-1);
+    let bucket_epoch = align_reporting_bucket_epoch(
+        parse_to_utc_datetime(&valid.occurred_at)
+            .expect("valid record timestamp")
+            .timestamp(),
+        60,
+        chrono_tz::Asia::Shanghai,
+    )
+    .expect("aligned record bucket");
+    let original = BucketAggregate {
+        total_count: 7,
+        ..Default::default()
+    };
+    let mut aggregates = BTreeMap::from([(bucket_epoch, original.clone())]);
+
+    let error = super::aggregation::add_exact_records_to_timeseries_aggregates(
+        &mut aggregates,
+        vec![valid, invalid],
+        60,
+        chrono_tz::Asia::Shanghai,
+    )
+    .expect_err("an invalid record must reject the whole batch");
+    assert!(matches!(error, crate::stats::ApiError::Unavailable(_)));
+    assert_eq!(
+        format!("{:?}", aggregates.get(&bucket_epoch)),
+        format!("{:?}", Some(&original))
+    );
+}
+
+#[test]
 fn runtime_overlay_rejects_inconsistent_tokens_and_invalid_timing() {
     let start = Utc
         .with_ymd_and_hms(2026, 10, 30, 0, 0, 0)
