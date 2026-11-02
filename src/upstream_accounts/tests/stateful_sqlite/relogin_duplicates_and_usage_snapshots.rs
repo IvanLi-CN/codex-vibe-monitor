@@ -1823,7 +1823,6 @@ async fn persist_usage_snapshot_uses_explicit_effective_plan_type() {
     persist_usage_snapshot(&pool, account_id, Some("pro"), &snapshot, 30)
         .await
         .expect("persist snapshot");
-
     let stored_plan_type = sqlx::query_scalar::<_, Option<String>>(
         r#"
             SELECT plan_type
@@ -1869,7 +1868,6 @@ async fn persist_usage_snapshot_preserves_missing_window_from_latest_sample() {
         .await
         .expect("persist complete usage snapshot");
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-
     let partial_snapshot = NormalizedUsageSnapshot {
         primary: Some(NormalizedUsageWindow {
             used_percent: 24.0,
@@ -2126,7 +2124,6 @@ async fn snapshot_plan_type_fallback_prefers_latest_effective_sample() {
         credits: None,
         ..Default::default()
     };
-
     let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
         .await
         .expect("resolve snapshot plan type");
@@ -2197,7 +2194,6 @@ async fn snapshot_plan_type_fallback_prefers_refreshed_claims_over_stale_non_emp
         credits: None,
         ..Default::default()
     };
-
     let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
         .await
         .expect("resolve snapshot plan type");
@@ -3609,7 +3605,6 @@ async fn enrich_window_actual_usage_for_summaries_counts_live_window_rows() {
         Some(61.0),
     )
     .await;
-
     let primary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(45));
     let secondary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
     let failed_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(10));
@@ -4041,7 +4036,6 @@ async fn get_upstream_account_window_usage_returns_batch_actual_usage() {
         Some(0.01),
     )
     .await;
-
     let Json(response) = get_upstream_account_window_usage(
         State(state),
         Json(UpstreamAccountWindowUsageRequest {
@@ -4207,7 +4201,6 @@ async fn get_upstream_account_window_usage_merges_hourly_rows_when_live_cursor_m
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
         .await
         .expect("persist hydrate usage snapshot");
-
     let archived_hourly_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
     insert_upstream_account_usage_hourly_row(
         &state.pool,
@@ -4287,7 +4280,6 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
         .await
         .expect("persist hydrate usage snapshot");
-
     let boundary_row_at =
         shanghai_local_iso(now - ChronoDuration::hours(5) + ChronoDuration::seconds(15));
     let full_minute_row_at = shanghai_local_iso(now - ChronoDuration::hours(4));

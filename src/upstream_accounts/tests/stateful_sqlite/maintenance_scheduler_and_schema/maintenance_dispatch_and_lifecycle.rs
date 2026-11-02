@@ -471,7 +471,6 @@ async fn drain_background_tasks_waits_for_queued_maintenance_syncs() {
         .await
         .expect("maintenance pass should dispatch");
     wait_for_atomic_true(started.as_ref()).await;
-
     let mut drain_task = tokio::spawn({
         let runtime = state.upstream_accounts.clone();
         async move {
@@ -794,7 +793,6 @@ async fn persist_imported_oauth_waits_for_inflight_maintenance() {
         exhausted: false,
         usage_snapshot_warning: Some("usage snapshot unavailable".to_string()),
     };
-
     let mut import_task = tokio::spawn({
         let state = state.clone();
         async move {
