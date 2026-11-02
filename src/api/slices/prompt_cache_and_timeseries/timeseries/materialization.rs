@@ -1,7 +1,8 @@
 use super::aggregation::{
     add_terminal_timeseries_records, add_timeseries_terminal_delta_to_aggregate,
-    build_materialized_timeseries_response, fill_timeseries_buckets,
-    fold_minute_projection_aggregates, overlay_runtime_timeseries_snapshot,
+    build_materialized_timeseries_response, collect_in_flight_aggregate_records,
+    fill_timeseries_buckets, fold_minute_projection_aggregates,
+    overlay_runtime_timeseries_snapshot,
 };
 use super::minute_projection::{
     TimeseriesMinuteProjectionV2Load, TimeseriesMinuteProjectionWarmOutcome,
@@ -27,6 +28,7 @@ pub(crate) struct TimeseriesTopicMaterializedBase {
     pub(crate) snapshot_id: i64,
     pub(crate) terminal_sequence: u64,
     pub(crate) aggregates: BTreeMap<i64, BucketAggregate>,
+    pub(crate) db_runtime_records: HashMap<(String, String), InvocationAggregateRecord>,
 }
 
 impl TimeseriesTopicMaterializedBase {
@@ -274,6 +276,28 @@ impl TimeseriesTopicMaterializedBase {
             (snapshot_id, aggregates)
         };
 
+        let in_flight_records = match params.upstream_account_id {
+            Some(account_id) => {
+                query_in_flight_invocation_aggregate_records_from_live_range_for_account(
+                    &state.pool,
+                    ExactUtcRange { start, end },
+                    source_scope,
+                    Some(snapshot_id),
+                    account_id,
+                )
+                .await?
+            }
+            None => {
+                query_in_flight_invocation_aggregate_records_from_live_range(
+                    &state.pool,
+                    ExactUtcRange { start, end },
+                    source_scope,
+                    Some(snapshot_id),
+                )
+                .await?
+            }
+        };
+        let db_runtime_records = collect_in_flight_aggregate_records(&in_flight_records);
         fill_timeseries_buckets(&mut aggregates, start, end, bucket_seconds, reporting_tz)?;
 
         Ok(Self {
@@ -287,6 +311,7 @@ impl TimeseriesTopicMaterializedBase {
             snapshot_id,
             terminal_sequence: 0,
             aggregates,
+            db_runtime_records,
         })
     }
 
@@ -397,6 +422,7 @@ impl TimeseriesTopicMaterializedBase {
             end,
             self.bucket_selection.bucket_seconds,
             self.reporting_tz,
+            Some(&self.db_runtime_records),
         )?;
         let Json(response) = build_materialized_timeseries_response(
             self.range_start,

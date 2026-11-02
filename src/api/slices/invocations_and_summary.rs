@@ -175,6 +175,7 @@ pub(crate) use invocation_query::{
 
 pub(crate) use invocation_projection_sql::{
     INVOCATION_FAILURE_KIND_SQL, INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL, INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL,
     invocation_resolved_failure_class_sql_for,
 };
 pub(crate) use invocation_query::build_invocation_filters;
@@ -2938,14 +2939,16 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0) ELSE 0 END), 0) AS cache_write_tokens, \
-         COALESCE(SUM(CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(cache_input_tokens, 0) ELSE 0 END), 0) AS cache_input_tokens, \
+         COALESCE(SUM({valid_cache_write_tokens_sql}), 0) AS cache_write_tokens, \
+         COALESCE(SUM({valid_cache_input_tokens_sql}), 0) AS cache_input_tokens, \
          COALESCE(SUM(output_tokens), 0) AS output_tokens, \
          MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
          FROM codex_invocations WHERE 1 = 1",
         status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
         resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
+        valid_cache_write_tokens_sql = INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL,
+        valid_cache_input_tokens_sql = INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL,
     );
     let mut totals_query = QueryBuilder::new(totals_sql);
     apply_invocation_records_filters(
@@ -3089,14 +3092,16 @@ async fn build_invocation_summary_on_connection(
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0) ELSE 0 END), 0) AS cache_write_tokens, \
-         COALESCE(SUM(CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(cache_input_tokens, 0) ELSE 0 END), 0) AS cache_input_tokens, \
+         COALESCE(SUM({valid_cache_write_tokens_sql}), 0) AS cache_write_tokens, \
+         COALESCE(SUM({valid_cache_input_tokens_sql}), 0) AS cache_input_tokens, \
          COALESCE(SUM(output_tokens), 0) AS output_tokens, \
          MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
          FROM codex_invocations WHERE 1 = 1",
         status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
         resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
+        valid_cache_write_tokens_sql = INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL,
+        valid_cache_input_tokens_sql = INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL,
     );
     let mut totals_query = QueryBuilder::new(totals_sql);
     apply_invocation_records_filters(
@@ -17056,7 +17061,11 @@ pub(crate) async fn load_live_invocation_ids_in_range(
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(
+                crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(
+                    "codex_invocations",
+                ),
+            )
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -17144,7 +17153,9 @@ async fn query_non_success_tokens_exact_tail(
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(invocation_upstream_account_id_with_attempt_fallback_sql(
+                "codex_invocations",
+            ))
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -17208,7 +17219,9 @@ async fn query_non_success_tokens_unreplayed_live_tail(
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(invocation_upstream_account_id_with_attempt_fallback_sql(
+                "codex_invocations",
+            ))
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -19253,6 +19266,7 @@ where
         sqlite_nonnegative_timing_sql(&format!("({final_first_token_sql})"));
     let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
     let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
+    let valid_cache_input_tokens_sql = INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL;
     let filtered_prompt_cache_key_sql = "filtered_invocations.prompt_cache_key";
     let preaggregated_conversation_created_at_sql = if use_attempt_fallback {
         prompt_cache_conversation_created_at_sql(filtered_prompt_cache_key_sql, source_scope)
@@ -19393,7 +19407,7 @@ where
             COALESCE(SUM(CASE WHEN {failure_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) AS failure_tokens,
             CAST(COALESCE(SUM(CASE WHEN {failure_sql} THEN COALESCE(cost, 0) ELSE 0 END), 0) AS REAL) AS failure_cost,
             CAST(COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(cost, 0) ELSE 0 END), 0) AS REAL) AS non_success_cost,
-            COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_input_tokens,
+            COALESCE(SUM({valid_cache_input_tokens_sql}), 0) AS cache_input_tokens,
             CAST(COALESCE(SUM(COALESCE(cost, 0)), 0) AS REAL) AS total_cost,
             SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
@@ -20038,6 +20052,8 @@ where
         "0"
     };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let valid_cache_write_tokens_sql = INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL;
+    let valid_cache_input_tokens_sql = INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL;
     let success_like_sql = format!(
         "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') AND ({failure_class_sql}) = 'none'",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
@@ -20079,8 +20095,8 @@ where
             COUNT(*) AS request_count,
             COALESCE(SUM(CASE WHEN {success_like_sql} THEN 1 ELSE 0 END), 0) AS success_count,
             COALESCE(SUM(CASE WHEN {failure_count_sql} THEN 1 ELSE 0 END), 0) AS failure_count,
-            COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens,
-            COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_read_tokens,
+            COALESCE(SUM({valid_cache_write_tokens_sql}), 0) AS cache_write_tokens,
+            COALESCE(SUM({valid_cache_input_tokens_sql}), 0) AS cache_read_tokens,
             COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
             CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_input_sql} ELSE 0 END), 0) AS REAL) AS cost_input,
             CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_cache_write_sql} ELSE 0 END), 0) AS REAL) AS cost_cache_write,

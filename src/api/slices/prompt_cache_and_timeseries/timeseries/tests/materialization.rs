@@ -28,6 +28,7 @@ fn contract_test_timeseries_topic_materializer_preserves_exact_p95() {
         snapshot_id: 0,
         terminal_sequence: 0,
         aggregates: BTreeMap::new(),
+        db_runtime_records: HashMap::new(),
     };
     let delta = |ttfb_ms, first_token_ms| TimeseriesTerminalDelta {
         occurred_at: occurred_at.clone(),
@@ -91,6 +92,7 @@ fn timeseries_topic_applies_terminal_replacement_at_snapshot_once() {
         snapshot_id: 17,
         terminal_sequence: 0,
         aggregates: BTreeMap::new(),
+        db_runtime_records: HashMap::new(),
     };
     let delta = TimeseriesTerminalDelta {
         occurred_at,
@@ -158,6 +160,7 @@ fn timeseries_topic_keeps_watermarks_and_aggregates_when_delta_is_rejected() {
         snapshot_id: 10,
         terminal_sequence: 5,
         aggregates: BTreeMap::from([(bucket_epoch, original_aggregate.clone())]),
+        db_runtime_records: HashMap::new(),
     };
     let mut invalid_delta =
         TimeseriesTerminalDelta::from(&crate::api::summary_projection_test_invocation());

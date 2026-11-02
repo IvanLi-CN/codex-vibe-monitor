@@ -1,6 +1,12 @@
+macro_rules! invocation_classification_error_text_sql {
+    () => {
+        "SUBSTR(TRIM(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, '') || ' ' || COALESCE(error_message, '')), 1, 256)"
+    };
+}
+
 macro_rules! invocation_classification_error_sql {
     () => {
-        "LOWER(TRIM(COALESCE(error_message, '') || ' ' || COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, '')))"
+        concat!("LOWER(", invocation_classification_error_text_sql!(), ")")
     };
 }
 
@@ -8,6 +14,15 @@ pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = concat!(
     "CASE WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''), ''))) NOT IN ('', 'none') THEN TRIM(COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) AND json_type(payload, '$.failureKind') = 'text' THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END), ''), NULLIF(TRIM(failure_kind), ''))) WHEN ",
     invocation_classification_error_sql!(),
     " LIKE '%downstream closed while streaming upstream response%' THEN 'downstream_closed' WHEN ",
+    "SUBSTR(",
+    invocation_classification_error_text_sql!(),
+    ", 1, 1) = '[' AND INSTR(",
+    invocation_classification_error_text_sql!(),
+    ", ']') > 2 THEN SUBSTR(",
+    invocation_classification_error_text_sql!(),
+    ", 2, INSTR(",
+    invocation_classification_error_text_sql!(),
+    ", ']') - 2) WHEN ",
     invocation_classification_error_sql!(),
     " LIKE '%failed to read request body stream%' OR ",
     invocation_classification_error_sql!(),
@@ -53,6 +68,9 @@ pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = concat!(
     invocation_classification_error_sql!(),
     " <> '' THEN 'untyped_failure' ELSE NULL END"
 );
+
+pub(crate) const INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL: &str = "CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0) ELSE 0 END";
+pub(crate) const INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL: &str = "CASE WHEN COALESCE(input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) >= 0 AND COALESCE(cache_input_tokens, 0) <= COALESCE(input_tokens, 0) THEN COALESCE(cache_input_tokens, 0) ELSE 0 END";
 
 pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "CASE ",
@@ -154,6 +172,11 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        OR ",
     invocation_classification_error_sql!(),
     " LIKE '%upstream handshake timed out%' ",
+    "        OR (SUBSTR(",
+    invocation_classification_error_text_sql!(),
+    ", 1, 1) = '[' AND INSTR(",
+    invocation_classification_error_text_sql!(),
+    ", ']') > 2) ",
     "        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' ",
     "        THEN 'service_failure' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",

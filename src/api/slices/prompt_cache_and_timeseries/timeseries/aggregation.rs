@@ -413,6 +413,7 @@ pub(crate) fn overlay_runtime_timeseries_snapshot(
     end: DateTime<Utc>,
     bucket_seconds: i64,
     reporting_tz: Tz,
+    db_runtime_records: Option<&HashMap<(String, String), InvocationAggregateRecord>>,
 ) -> Result<(), ApiError> {
     let mut candidate = aggregates.clone();
     overlay_runtime_timeseries_snapshot_inner(
@@ -424,6 +425,7 @@ pub(crate) fn overlay_runtime_timeseries_snapshot(
         end,
         bucket_seconds,
         reporting_tz,
+        db_runtime_records,
     )?;
     *aggregates = candidate;
     Ok(())
@@ -438,14 +440,20 @@ fn overlay_runtime_timeseries_snapshot_inner(
     end: DateTime<Utc>,
     bucket_seconds: i64,
     reporting_tz: Tz,
+    db_runtime_records: Option<&HashMap<(String, String), InvocationAggregateRecord>>,
 ) -> Result<(), ApiError> {
     for record in runtime_records {
         if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
             continue;
         }
+        let key = (record.invoke_id.clone(), record.occurred_at.clone());
+        let account_matches = upstream_account_id.is_none_or(|account_id| {
+            record.upstream_account_id == Some(account_id)
+                || (record.upstream_account_id.is_none()
+                    && db_runtime_records.is_some_and(|records| records.contains_key(&key)))
+        });
         if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
-            || upstream_account_id
-                .is_some_and(|account_id| record.upstream_account_id != Some(account_id))
+            || !account_matches
         {
             continue;
         }
@@ -1010,10 +1018,9 @@ fn overlay_runtime_timeseries_in_flight_inner(
         }
         if let Some(expected_upstream_account_id) = upstream_account_id
             && record.upstream_account_id != Some(expected_upstream_account_id)
+            && !(record.upstream_account_id.is_none() && db_runtime_records.contains_key(&key))
         {
-            if record.upstream_account_id.is_some()
-                && let Some(db_record) = db_runtime_records.get(&key)
-            {
+            if let Some(db_record) = db_runtime_records.get(&key) {
                 subtract_stale_db_runtime_record(
                     aggregates,
                     db_record,

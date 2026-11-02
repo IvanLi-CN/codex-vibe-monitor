@@ -465,6 +465,7 @@ fn runtime_overlay_rejects_inconsistent_tokens_and_invalid_timing() {
         end,
         60,
         chrono_tz::Asia::Shanghai,
+        None,
     )
     .expect_err("inconsistent runtime token components must fail closed");
     assert!(matches!(
@@ -489,6 +490,7 @@ fn runtime_overlay_rejects_inconsistent_tokens_and_invalid_timing() {
         end,
         60,
         chrono_tz::Asia::Shanghai,
+        None,
     )
     .expect_err("non-finite runtime timing must fail closed");
     assert!(matches!(
