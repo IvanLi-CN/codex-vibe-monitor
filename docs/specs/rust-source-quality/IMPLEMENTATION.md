@@ -17,7 +17,7 @@ The contract is implemented by the following checked-in surfaces:
   group. The managed pre-commit wrapper serializes the complete hook per
   worktree; the Rust formatter rejects partial staging and explicitly stages
   its formatted whole-file output before the guard reads the index.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 84 current explicit file budgets (4 production and 80 test/helper), and 140 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 83 current explicit file budgets (3 production and 80 test/helper), and 140 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - The Rust 1.99.1 upgrade retains the existing test-facade re-export boundaries and registers seven additional conditional `unused_imports` allows required by all-target Clippy; no runtime, SQL, API, or test-resource behavior changes.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -540,3 +540,30 @@ network operation to the commit hook.
 No additional production runtime changes, public protocol changes, persistence
 changes, release behavior, Web changes, Docker execution, or runtime acceptance
 evidence belong to this implementation state.
+
+## Upstream Account Import, Tag, and Account Read Extraction
+
+The upstream-account extraction starts from live main
+`524341345a5f038ce02b1382ee82c7fbf59ade54` and completes governance of the
+5,644-line `src/upstream_accounts/sync_account_imports_tags.rs` parent in one
+source-quality PR. The parent is now a 25-line facade with direct module
+declarations and crate-visible re-exports. Its responsibilities are organized
+as `system_tags.rs` (309 lines), `sync.rs` (1,848), `import_identity.rs`
+(1,155), `tags.rs` (582), and `account_reads.rs` (1,745); the existing
+`oauth_lifecycle.rs` child remains at 234 lines. Every resulting production
+file is below the 2,500-line target.
+
+The extraction preserves existing function names, visibility, SQL text,
+transaction boundaries, async ordering, locks and leases, retry behavior,
+routing-state publication, status/error mapping, and crate-visible call paths.
+The parent is removed from the explicit policy inventory only after the
+complete extraction; the policy now has 83 explicit entries (3 production and
+80 test/helper) and 140 suppression entries. The two parent-bound suppression
+records move to `sync.rs` with their original declarations and reasons.
+`src/api/slices/invocations_and_summary.rs` and `src/schema.rs` are
+unchanged, and no `include!` composition is introduced.
+
+Validation for this extraction is the canonical Rust source-quality runner and
+fixture harness, focused upstream-account synchronization/import/tag/detail
+coverage, locked all-target checking, all-features Clippy, the applicable
+backend resource profile, and `git diff --check`.

@@ -64,7 +64,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 84 explicit file entries: 4 production candidates above 2,500 lines and 80 test/helper candidates above 3,000 lines. The immutable preparation baseline retains its original candidate counts for checker compatibility. Each current entry MUST record its exact current budget, role, and either a specific next module workstream or a reasoned cohesive-module exception.
+The policy MUST keep the current inventory as 83 explicit file entries: 3 production candidates above 2,500 lines and 80 test/helper candidates above 3,000 lines. The immutable preparation candidate counts remain 32 production and 23 test/helper entries for checker compatibility. Each current entry MUST record its exact current budget, role, and either a specific next module workstream or a reasoned cohesive-module exception.
 
 covers: VER-RUST-SOURCE-QUALITY-004
 
@@ -129,7 +129,7 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 84 entries have specific next module workstreams. The schema and fixture harness retain the exception form for a future entry only when its reason is explicit and cohesive, never as an escape hatch for an unselected or growing file.
+The current inventory retains no cohesive-module exceptions: all 83 entries have specific next module workstreams. The schema and fixture harness retain the exception form for a future entry only when its reason is explicit and cohesive, never as an escape hatch for an unselected or growing file.
 
 The prompt-cache conversation query governance extraction removes the original parent from the selected inventory and assigns all 60 existing tests exactly once: 47 stateful SQLite cases across metadata/history, persisted statistics, activity/chart windows, pagination, the reused snapshots suite, and runtime/cache coordination; four in-memory response codec cases to lightweight; and nine file-backed metadata backfills to archive/file I/O. After rustfmt, the parent is 10 lines, the stateful children are 923, 1,536, 681, 903, 1,402, 617, and 16 lines, and the resource children are 85 and 591 lines; all affected files are below the 3,000-line test/helper target. The extraction preserves test identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup, while consolidating only the three identical count-mode row inserters and moving the two private wrappers to `test_support.rs`; the final candidate also removes an unused archive-test import without changing behavior; immutable preparation counts remain 32/23 and suppression inventory remains 117.
 
@@ -310,7 +310,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 4 production and 80 test/helper entries (84 total), with exact budgets and explicit workstreams or reasoned exceptions.
+Pass condition: the policy has 3 production and 80 test/helper entries (83 total), with exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
 
@@ -349,6 +349,18 @@ covers: REQ-RUST-SOURCE-QUALITY-008
 Method: validate the cold Bootstrap fixture through the canonical lightweight runner with its mandatory schema-template prerequisite, original one-second deadline, and all-slots override; retain the complete candidate's required backend and source-quality gates. Pass condition: actual outer deadline expiry observed in the same spawned task, one successful hydration join, a published Bootstrap fallback fence, and every original Projection/current/1d/7d assertion pass. Static review MUST confirm that each select outcome consumes its JoinHandle result once and that the observer changes no production error, clock, admission, or retry behavior. A single pass does not establish execution of both select arms, the exact stage or underlying cause of the elapsed deadline, or resolution of the separate four-second Rolling failure. Preserve earlier failed formal runs and temporary observations independently.
 
 covers: REQ-RUST-SOURCE-QUALITY-009
+
+### VER-RUST-SOURCE-QUALITY-010
+
+Method: run the Git hook contract and staged Rust line-budget fixture suite,
+including the index-race, partial-staging, deleted-path, and staged-policy
+cases.
+Pass condition: the installed hook preserves staged Web/Markdown/Rust
+formatting, rejects partial Rust staging, reads source and policy from the
+stage-0 index, enforces selected budgets, skips unselected or deleted paths,
+and performs no Cargo, network, worktree, or index mutation.
+
+covers: REQ-RUST-SOURCE-QUALITY-010
 
 No owner-visible UI changes are part of this contract. Backend runtime regressions require the canonical tests above; temporary stress samples are supporting diagnosis rather than a separate performance acceptance claim.
 
