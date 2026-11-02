@@ -31,10 +31,10 @@ PHASE_RE = re.compile(
     r"elapsed_ms=(?P<elapsed>[0-9]+)"
 )
 TARGET_START_MARKER_RE = re.compile(
-    r"stateful-test-timing target_start=(?P<target>tests::stateful_sqlite::[a-z0-9_]+::[a-z0-9_]+)"
+    r"stateful-test-timing target_start=(?P<target>tests::stateful_sqlite::[a-z0-9_]+(?:::[a-z0-9_]+)+)"
 )
 TARGET_END_MARKER_RE = re.compile(
-    r"stateful-test-timing target_end=(?P<target>tests::stateful_sqlite::[a-z0-9_]+::[a-z0-9_]+)"
+    r"stateful-test-timing target_end=(?P<target>tests::stateful_sqlite::[a-z0-9_]+(?:::[a-z0-9_]+)+)"
 )
 WALL_RE = re.compile(
     r"^stateful-performance ref=(?P<ref>control|candidate) "
