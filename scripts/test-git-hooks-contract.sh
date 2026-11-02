@@ -713,6 +713,41 @@ wait "$second_installer_lock_pid" || fail 'second linked hooks:install invocatio
 [ ! -e "$installer_lock_overlap" ] || fail 'linked hooks:install invocations were not serialized'
 git -C "$partial_repo" worktree remove --force "$installer_lock_linked_repo"
 
+installer_race_repo="$tmp_dir/installer-race"
+installer_race_fake_bin="$tmp_dir/installer-race-fake-bin"
+mkdir -p "$installer_race_repo/scripts" "$installer_race_fake_bin"
+cp "$repo_root/lefthook.yml" "$installer_race_repo/lefthook.yml"
+cp "$repo_root/scripts/install-lefthook-hooks.sh" "$installer_race_repo/scripts/install-lefthook-hooks.sh"
+chmod +x "$installer_race_repo/scripts/install-lefthook-hooks.sh"
+git -C "$installer_race_repo" init -q
+(
+  cd "$installer_race_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
+)
+cat > "$installer_race_fake_bin/lefthook" <<'EOF_INSTALLER_RACE_LEFTHOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = 'version' ]; then
+  exec "${REAL_LEFTHOOK:?}" "$@"
+fi
+if [ "${1:-}" = 'install' ] && [ "$#" -gt 2 ]; then
+  printf '# concurrent writer\n' > "${RACE_HOOK_TARGET:?}"
+fi
+exec "${REAL_LEFTHOOK:?}" "$@"
+EOF_INSTALLER_RACE_LEFTHOOK
+chmod +x "$installer_race_fake_bin/lefthook"
+installer_race_log="$tmp_dir/installer-race.log"
+if (
+  cd "$installer_race_repo"
+  PATH="$installer_race_fake_bin:$PATH" REAL_LEFTHOOK="$lefthook_bin" \
+    RACE_HOOK_TARGET="$installer_race_repo/.git/hooks/pre-commit" \
+    bash scripts/install-lefthook-hooks.sh > "$installer_race_log" 2>&1
+); then
+  fail 'hooks:install must reject a hook changed after its snapshot'
+fi
+assert_contains "$installer_race_log" 'changed during safe hook installation'
+assert_contains "$installer_race_repo/.git/hooks/pre-commit" '# concurrent writer'
+
 core_hooks_path_repo="$tmp_dir/core-hooks-path"
 mkdir -p "$core_hooks_path_repo/scripts"
 cp "$repo_root/scripts/install-lefthook-hooks.sh" "$core_hooks_path_repo/scripts/install-lefthook-hooks.sh"

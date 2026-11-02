@@ -66,6 +66,7 @@ if [ "${CODEX_HOOKS_INSTALL_LOCK_HELD:-}" != '1' ]; then
       die "hooks directory changed while opening\n"
         unless $opened_hooks_directory eq $expected_hooks_directory;
       flock($hooks, LOCK_EX) or die "unable to acquire hooks directory lock: $!\n";
+      $ENV{CODEX_HOOKS_DIRECTORY_LOCK_HELD} = 1;
     }
     chdir $caller_directory or die "unable to restore current directory: $!\n";
     $ENV{CODEX_HOOKS_INSTALL_LOCK_HELD} = 1;
@@ -192,7 +193,434 @@ customize_legacy_pre_commit_template() {
   grep -Fq 'bash scripts/check-staged-formatter-safety.sh' "$template_hook_path"
 }
 
+customize_post_checkout_template() {
+  local template_hook_path="$1"
+  local original_line='call_lefthook run "post-checkout" "$@"'
+
+  [ "$(grep -Fxc "$original_line" "$template_hook_path" || true)" = '1' ] || return 1
+  perl -0pi -e 's{call_lefthook run "post-checkout" "\$@"}{call_lefthook run "post-checkout" --no-auto-install "\$@"}' "$template_hook_path"
+  grep -Fq 'call_lefthook run "post-checkout" --no-auto-install' "$template_hook_path"
+}
+
+hook_snapshot() {
+  local hook_path="$1"
+
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -MIPC::Open2 -e '
+    my ($repo_root, $hook_path) = @ARGV;
+    my $separator = rindex($hook_path, "/");
+    die "unable to determine hook parent directory\n" if $separator < 1;
+    my $directory_path = substr($hook_path, 0, $separator);
+    my $hook_name = substr($hook_path, $separator + 1);
+    my $expected_directory = abs_path($directory_path)
+      or die "unable to resolve hook parent directory: $!\n";
+    sysopen my $directory, $directory_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+      or die "unable to open hook parent directory: $!\n";
+    flock($directory, LOCK_SH) unless $ENV{CODEX_HOOKS_DIRECTORY_LOCK_HELD};
+    chdir $directory or die "unable to enter hook parent directory: $!\n";
+    my $opened_directory = abs_path(".")
+      or die "unable to resolve opened hook parent directory: $!\n";
+    die "hook parent directory changed while opening\n"
+      unless $opened_directory eq $expected_directory;
+    sysopen my $hook, $hook_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+      or die "unable to open hook: $!\n";
+    binmode $hook;
+    flock($hook, LOCK_SH) or die "unable to lock hook: $!\n";
+
+    sub regular_identity {
+      my ($handle, $name) = @_;
+      my @handle_stat = stat($handle);
+      my @path_stat = lstat($name);
+      return undef unless @handle_stat && @path_stat;
+      return undef unless (($handle_stat[2] & S_IFMT) == S_IFREG);
+      return undef unless (($path_stat[2] & S_IFMT) == S_IFREG);
+      my $handle_identity = "$handle_stat[0]:$handle_stat[1]";
+      my $path_identity = "$path_stat[0]:$path_stat[1]";
+      return undef unless $handle_identity eq $path_identity;
+      return $handle_identity;
+    }
+
+    sub read_contents {
+      my ($handle) = @_;
+      seek($handle, 0, 0) or return undef;
+      my $contents = "";
+      while (1) {
+        my $chunk = "";
+        my $count = sysread($handle, $chunk, 65536);
+        return undef unless defined $count;
+        last if $count == 0;
+        $contents .= $chunk;
+      }
+      return $contents;
+    }
+
+    sub hash_contents {
+      my ($contents) = @_;
+      my ($read_handle, $write_handle);
+      my $pid = eval {
+        open2($read_handle, $write_handle, "git", "-C", $repo_root, "hash-object", "--stdin")
+      };
+      return undef unless defined $pid;
+      binmode $read_handle;
+      binmode $write_handle;
+      my $offset = 0;
+      my $length = length($contents);
+      while ($offset < $length) {
+        my $count = syswrite($write_handle, $contents, $length - $offset, $offset);
+        return undef unless defined($count) && $count > 0;
+        $offset += $count;
+      }
+      close $write_handle or return undef;
+      my $hash = "";
+      while (1) {
+        my $chunk = "";
+        my $count = sysread($read_handle, $chunk, 128);
+        return undef unless defined $count;
+        last if $count == 0;
+        $hash .= $chunk;
+      }
+      close $read_handle or return undef;
+      waitpid($pid, 0);
+      return undef unless $? == 0;
+      $hash =~ s/[\r\n]+\z//;
+      return $hash if $hash =~ /\A[0-9a-f]+\z/;
+      return undef;
+    }
+
+    my $identity = regular_identity($hook, $hook_name)
+      or die "hook must be a regular file\n";
+    my $first_contents = read_contents($hook);
+    die "unable to read hook\n" unless defined $first_contents;
+    die "hook changed while reading\n" unless regular_identity($hook, $hook_name);
+    my $second_contents = read_contents($hook);
+    die "unable to read hook\n" unless defined $second_contents;
+    die "hook changed while reading\n" unless $first_contents eq $second_contents;
+    my $hash = hash_contents($second_contents)
+      or die "unable to hash hook\n";
+    die "hook changed while hashing\n" unless regular_identity($hook, $hook_name);
+    my $final_contents = read_contents($hook);
+    die "unable to read hook\n" unless defined $final_contents;
+    die "hook changed while hashing\n" unless $final_contents eq $second_contents;
+    print "$identity\t$hash\n";
+  ' "$repo_root" "$hook_path"
+}
+
+hook_file_matches() {
+  local hook_path="$1"
+  local expected_path="$2"
+
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -e '
+    my ($hook_path, $expected_path) = @ARGV;
+    my $separator = rindex($hook_path, "/");
+    die "unable to determine hook parent directory\n" if $separator < 1;
+    my $directory_path = substr($hook_path, 0, $separator);
+    my $hook_name = substr($hook_path, $separator + 1);
+    my $expected_directory = abs_path($directory_path)
+      or die "unable to resolve hook parent directory: $!\n";
+    sysopen my $directory, $directory_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+      or die "unable to open hook parent directory: $!\n";
+    flock($directory, LOCK_SH) unless $ENV{CODEX_HOOKS_DIRECTORY_LOCK_HELD};
+    chdir $directory or die "unable to enter hook parent directory: $!\n";
+    my $opened_directory = abs_path(".")
+      or die "unable to resolve opened hook parent directory: $!\n";
+    die "hook parent directory changed while opening\n"
+      unless $opened_directory eq $expected_directory;
+    sysopen my $hook, $hook_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+      or die "unable to open hook: $!\n";
+    sysopen my $expected, $expected_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+      or die "unable to open expected hook: $!\n";
+    binmode $hook;
+    binmode $expected;
+    flock($hook, LOCK_SH) or die "unable to lock hook: $!\n";
+
+    sub regular_identity {
+      my ($handle, $name) = @_;
+      my @handle_stat = stat($handle);
+      my @path_stat = lstat($name);
+      return undef unless @handle_stat && @path_stat;
+      return undef unless (($handle_stat[2] & S_IFMT) == S_IFREG);
+      return undef unless (($path_stat[2] & S_IFMT) == S_IFREG);
+      return undef unless "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+      return 1;
+    }
+
+    sub read_contents {
+      my ($handle) = @_;
+      seek($handle, 0, 0) or return undef;
+      my $contents = "";
+      while (1) {
+        my $chunk = "";
+        my $count = sysread($handle, $chunk, 65536);
+        return undef unless defined $count;
+        last if $count == 0;
+        $contents .= $chunk;
+      }
+      return $contents;
+    }
+
+    regular_identity($hook, $hook_name) or die "hook must be a regular file\n";
+    regular_identity($expected, $expected_path) or die "expected hook must be a regular file\n";
+    my $hook_contents = read_contents($hook);
+    my $expected_contents = read_contents($expected);
+    die "unable to read hook\n" unless defined($hook_contents) && defined($expected_contents);
+    regular_identity($hook, $hook_name) or die "hook changed while reading\n";
+    exit($hook_contents eq $expected_contents ? 0 : 1);
+  ' "$hook_path" "$expected_path"
+}
+
+safe_remove_legacy_hook() {
+  local hook_path="$1"
+  local template_path="$2"
+  local expected_identity="$3"
+
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -e '
+    my ($hook_path, $template_path, $expected_identity) = @ARGV;
+    my $separator = rindex($hook_path, "/");
+    die "unable to determine hook parent directory\n" if $separator < 1;
+    my $directory_path = substr($hook_path, 0, $separator);
+    my $hook_name = substr($hook_path, $separator + 1);
+    my $expected_directory = abs_path($directory_path)
+      or die "unable to resolve hook parent directory: $!\n";
+    sysopen my $directory, $directory_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+      or die "unable to open hook parent directory: $!\n";
+    flock($directory, LOCK_EX) unless $ENV{CODEX_HOOKS_DIRECTORY_LOCK_HELD};
+    chdir $directory or die "unable to enter hook parent directory: $!\n";
+    my $opened_directory = abs_path(".")
+      or die "unable to resolve opened hook parent directory: $!\n";
+    die "hook parent directory changed while opening\n"
+      unless $opened_directory eq $expected_directory;
+    sysopen my $hook, $hook_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+      or die "unable to open hook: $!\n";
+    sysopen my $template, $template_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+      or die "unable to open hook template: $!\n";
+    binmode $hook;
+    binmode $template;
+    flock($hook, LOCK_EX) or die "unable to lock hook: $!\n";
+
+    sub regular_identity {
+      my ($handle, $name) = @_;
+      my @handle_stat = stat($handle);
+      my @path_stat = lstat($name);
+      return undef unless @handle_stat && @path_stat;
+      return undef unless (($handle_stat[2] & S_IFMT) == S_IFREG);
+      return undef unless (($path_stat[2] & S_IFMT) == S_IFREG);
+      return undef unless "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+      return "$handle_stat[0]:$handle_stat[1]";
+    }
+
+    sub read_contents {
+      my ($handle) = @_;
+      seek($handle, 0, 0) or return undef;
+      my $contents = "";
+      while (1) {
+        my $chunk = "";
+        my $count = sysread($handle, $chunk, 65536);
+        return undef unless defined $count;
+        last if $count == 0;
+        $contents .= $chunk;
+      }
+      return $contents;
+    }
+
+    my $identity = regular_identity($hook, $hook_name)
+      or die "hook must be a regular file\n";
+    die "hook identity changed\n" unless $identity eq $expected_identity;
+    regular_identity($template, $template_path) or die "hook template must be a regular file\n";
+    my $hook_contents = read_contents($hook);
+    my $template_contents = read_contents($template);
+    die "unable to read hook\n" unless defined($hook_contents) && defined($template_contents);
+    die "hook contents changed\n" unless $hook_contents eq $template_contents;
+    die "hook identity changed\n" unless (regular_identity($hook, $hook_name) || "") eq $expected_identity;
+    my $final_contents = read_contents($hook);
+    die "unable to read hook\n" unless defined $final_contents;
+    die "hook contents changed\n" unless $final_contents eq $template_contents;
+    die "hook identity changed\n" unless (regular_identity($hook, $hook_name) || "") eq $expected_identity;
+    unlink($hook_name) or die "unable to remove hook: $!\n";
+  ' "$hook_path" "$template_path" "$expected_identity"
+}
+
+safe_publish_hook() {
+  local hook_path="$1"
+  local source_path="$2"
+  local expected_state="$3"
+  local expected_identity="$4"
+  local expected_hash="$5"
+
+  perl -MCwd=abs_path -MFcntl=:DEFAULT -MFcntl=:flock -MFcntl=:mode -MIPC::Open2 -e '
+    my ($repo_root, $hook_path, $source_path, $expected_state, $expected_identity, $expected_hash) = @ARGV;
+    my $separator = rindex($hook_path, "/");
+    die "unable to determine hook parent directory\n" if $separator < 1;
+    my $directory_path = substr($hook_path, 0, $separator);
+    my $hook_name = substr($hook_path, $separator + 1);
+    my $expected_directory = abs_path($directory_path)
+      or die "unable to resolve hook parent directory: $!\n";
+    sysopen my $directory, $directory_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+      or die "unable to open hook parent directory: $!\n";
+    flock($directory, LOCK_EX) unless $ENV{CODEX_HOOKS_DIRECTORY_LOCK_HELD};
+    chdir $directory or die "unable to enter hook parent directory: $!\n";
+    my $opened_directory = abs_path(".")
+      or die "unable to resolve opened hook parent directory: $!\n";
+    die "hook parent directory changed while opening\n"
+      unless $opened_directory eq $expected_directory;
+    sysopen my $source, $source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+      or die "unable to open generated hook: $!\n";
+    binmode $source;
+
+    sub regular_identity {
+      my ($handle, $name) = @_;
+      my @handle_stat = stat($handle);
+      my @path_stat = lstat($name);
+      return undef unless @handle_stat && @path_stat;
+      return undef unless (($handle_stat[2] & S_IFMT) == S_IFREG);
+      return undef unless (($path_stat[2] & S_IFMT) == S_IFREG);
+      return undef unless "$handle_stat[0]:$handle_stat[1]" eq "$path_stat[0]:$path_stat[1]";
+      return "$handle_stat[0]:$handle_stat[1]";
+    }
+
+    sub read_contents {
+      my ($handle) = @_;
+      seek($handle, 0, 0) or return undef;
+      my $contents = "";
+      while (1) {
+        my $chunk = "";
+        my $count = sysread($handle, $chunk, 65536);
+        return undef unless defined $count;
+        last if $count == 0;
+        $contents .= $chunk;
+      }
+      return $contents;
+    }
+
+    sub write_contents {
+      my ($handle, $contents) = @_;
+      seek($handle, 0, 0) or return 0;
+      truncate($handle, 0) or return 0;
+      my $offset = 0;
+      my $length = length($contents);
+      while ($offset < $length) {
+        my $count = syswrite($handle, $contents, $length - $offset, $offset);
+        return 0 unless defined($count) && $count > 0;
+        $offset += $count;
+      }
+      return 1;
+    }
+
+    sub restore_existing {
+      my ($handle, $name, $expected_identity, $contents) = @_;
+      return 0 unless (regular_identity($handle, $name) || "") eq $expected_identity;
+      return 0 unless write_contents($handle, $contents);
+      my $restored_contents = read_contents($handle);
+      return 0 unless defined($restored_contents) && $restored_contents eq $contents;
+      return 0 unless (regular_identity($handle, $name) || "") eq $expected_identity;
+      return 1;
+    }
+
+    sub remove_created {
+      my ($handle, $name, $identity) = @_;
+      return 0 unless defined($identity) && $identity ne "";
+      return 0 unless (regular_identity($handle, $name) || "") eq $identity;
+      return unlink($name) ? 1 : 0;
+    }
+
+    sub hash_contents {
+      my ($contents) = @_;
+      my ($read_handle, $write_handle);
+      my $pid = eval {
+        open2($read_handle, $write_handle, "git", "-C", $repo_root, "hash-object", "--stdin")
+      };
+      return undef unless defined $pid;
+      binmode $read_handle;
+      binmode $write_handle;
+      my $offset = 0;
+      my $length = length($contents);
+      while ($offset < $length) {
+        my $count = syswrite($write_handle, $contents, $length - $offset, $offset);
+        return undef unless defined($count) && $count > 0;
+        $offset += $count;
+      }
+      close $write_handle or return undef;
+      my $hash = "";
+      while (1) {
+        my $chunk = "";
+        my $count = sysread($read_handle, $chunk, 128);
+        return undef unless defined $count;
+        last if $count == 0;
+        $hash .= $chunk;
+      }
+      close $read_handle or return undef;
+      waitpid($pid, 0);
+      return undef unless $? == 0;
+      $hash =~ s/[\r\n]+\z//;
+      return $hash if $hash =~ /\A[0-9a-f]+\z/;
+      return undef;
+    }
+
+    regular_identity($source, $source_path) or die "generated hook must be a regular file\n";
+    my $source_contents = read_contents($source);
+    die "unable to read generated hook\n" unless defined $source_contents;
+    regular_identity($source, $source_path) or die "generated hook changed while reading\n";
+
+    my $hook;
+    my $created = 0;
+    my $original_contents = "";
+    if ($expected_state eq "absent") {
+      sysopen $hook, $hook_name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0755
+        or die "hook appeared during installation: $!\n";
+      $created = 1;
+    } else {
+      sysopen $hook, $hook_name, O_RDWR | O_NOFOLLOW | O_NONBLOCK
+        or die "unable to open existing hook: $!\n";
+    }
+    binmode $hook;
+    flock($hook, LOCK_EX) or die "unable to lock hook: $!\n";
+    my $identity = regular_identity($hook, $hook_name)
+      or die "hook must be a regular file\n";
+    if ($expected_state eq "absent") {
+      die "hook appeared during installation\n" unless $created;
+    } else {
+      die "hook identity changed during installation\n" unless $identity eq $expected_identity;
+      $original_contents = read_contents($hook);
+      die "unable to read existing hook\n" unless defined $original_contents;
+      my $original_hash = hash_contents($original_contents)
+        or die "unable to hash existing hook\n";
+      die "hook contents changed during installation\n" unless $original_hash eq $expected_hash;
+      die "hook identity changed during installation\n"
+        unless (regular_identity($hook, $hook_name) || "") eq $expected_identity;
+      my $rechecked_contents = read_contents($hook);
+      die "unable to read existing hook\n" unless defined $rechecked_contents;
+      my $rechecked_hash = hash_contents($rechecked_contents)
+        or die "unable to hash existing hook\n";
+      die "hook contents changed during installation\n" unless $rechecked_hash eq $expected_hash;
+      $original_contents = $rechecked_contents;
+    }
+    die "hook identity changed before installation\n"
+      unless $expected_state eq "absent" || (regular_identity($hook, $hook_name) || "") eq $expected_identity;
+    if (!write_contents($hook, $source_contents)) {
+      if ($expected_state eq "absent") {
+        remove_created($hook, $hook_name, $identity);
+      } else {
+        restore_existing($hook, $hook_name, $expected_identity, $original_contents);
+      }
+      die "unable to write hook\n";
+    }
+    my $written_contents = read_contents($hook);
+    if (!defined($written_contents) || $written_contents ne $source_contents) {
+      if ($expected_state eq "absent") {
+        remove_created($hook, $hook_name, $identity);
+      } else {
+        restore_existing($hook, $hook_name, $expected_identity, $original_contents);
+      }
+      die "unable to verify hook\n";
+    }
+    if (!regular_identity($hook, $hook_name)) {
+      die "hook identity changed after installation\n";
+    }
+    close $hook or die "unable to close hook: $!\n";
+  ' "$repo_root" "$hook_path" "$source_path" "$expected_state" "$expected_identity" "$expected_hash"
+}
+
 cleanup_legacy_prepare_commit_msg() {
+  local hook_path template_dir template_path hook_snapshot_value hook_identity
+
   hook_path="$hooks_dir/prepare-commit-msg"
   [ -e "$hook_path" ] || [ -L "$hook_path" ] || return 0
 
@@ -223,76 +651,25 @@ cleanup_legacy_prepare_commit_msg() {
   fi
 
   template_path="$template_dir/.git/hooks/prepare-commit-msg"
-  hook_identity=''
-  if hook_identity="$(stat -c '%d:%i' "$hook_path" 2>/dev/null)"; then
-    :
-  else
-    hook_identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
-  fi
-  current_hook_identity=''
-  if current_hook_identity="$(stat -c '%d:%i' "$hook_path" 2>/dev/null)"; then
-    :
-  else
-    current_hook_identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
-  fi
+  hook_snapshot_value="$(hook_snapshot "$hook_path" 2>/dev/null || true)"
+  hook_identity="${hook_snapshot_value%%$'\t'*}"
   if [ -f "$template_path" ] \
     && [ -n "$hook_identity" ] \
-    && [ "$current_hook_identity" = "$hook_identity" ] \
-    && cmp -s "$hook_path" "$template_path"; then
-    final_hook_identity=''
-    if final_hook_identity="$(stat -c '%d:%i' "$hook_path" 2>/dev/null)"; then
-      :
-    else
-      final_hook_identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
-    fi
-    if [ "$final_hook_identity" = "$hook_identity" ] && cmp -s "$hook_path" "$template_path"; then
-      rm -f "$hook_path"
+    && [ "$hook_snapshot_value" != "$hook_identity" ] \
+    && hook_file_matches "$hook_path" "$template_path" \
+    && safe_remove_legacy_hook "$hook_path" "$template_path" "$hook_identity"; then
       printf '[worktree-bootstrap] removed obsolete Lefthook prepare-commit-msg wrapper\n'
-    else
-      printf '[worktree-bootstrap] prepare-commit-msg changed during migration; leaving it untouched\n' >&2
-    fi
   else
-    printf '[worktree-bootstrap] prepare-commit-msg is unmanaged; leaving it untouched\n' >&2
+    if [ -n "$hook_identity" ] && [ "$hook_snapshot_value" != "$hook_identity" ]; then
+      printf '[worktree-bootstrap] prepare-commit-msg changed during migration; leaving it untouched\n' >&2
+    else
+      printf '[worktree-bootstrap] prepare-commit-msg is unmanaged; leaving it untouched\n' >&2
+    fi
   fi
   rm -rf "$template_dir"
 }
 
 cleanup_legacy_prepare_commit_msg
-
-hook_identity() {
-  local hook_path="$1"
-  local identity=''
-
-  [ -f "$hook_path" ] || return 1
-  [ ! -L "$hook_path" ] || return 1
-  if identity="$(stat -c '%d:%i' "$hook_path" 2>/dev/null)"; then
-    :
-  else
-    identity="$(stat -f '%d:%i' "$hook_path" 2>/dev/null || true)"
-  fi
-  [ -n "$identity" ] || return 1
-  printf '%s\n' "$identity"
-}
-
-hook_content_hash() {
-  local hook_path="$1"
-
-  [ -f "$hook_path" ] || return 1
-  [ ! -L "$hook_path" ] || return 1
-  git -C "$repo_root" hash-object -- "$hook_path"
-}
-
-hook_matches_snapshot() {
-  local hook_path="$1"
-  local expected_identity="$2"
-  local expected_hash="$3"
-  local current_identity current_hash
-
-  current_identity="$(hook_identity "$hook_path" 2>/dev/null || true)"
-  current_hash="$(hook_content_hash "$hook_path" 2>/dev/null || true)"
-  [ "$current_identity" = "$expected_identity" ] \
-    && [ "$current_hash" = "$expected_hash" ]
-}
 
 is_installable_hook() {
   local hook_name="$1"
@@ -322,7 +699,7 @@ is_marked_standard_pre_commit() {
 
   template_path="$template_dir/.git/hooks/pre-commit"
   printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$template_path"
-  if [ -f "$template_path" ] && cmp -s "$existing_hook_path" "$template_path"; then
+  if [ -f "$template_path" ] && hook_file_matches "$existing_hook_path" "$template_path"; then
     rm -rf "$template_dir"
     return 0
   fi
@@ -356,7 +733,7 @@ is_managed_hook() {
 
   template_path="$template_dir/.git/hooks/$hook_name"
   printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$template_path"
-  if [ -f "$template_path" ] && cmp -s "$hook_path" "$template_path"; then
+  if [ -f "$template_path" ] && hook_file_matches "$hook_path" "$template_path"; then
     rm -rf "$template_dir"
     [ "$hook_name" = 'pre-commit' ] && return 1
     return 0
@@ -366,14 +743,21 @@ is_managed_hook() {
     && cp "$template_path" "$legacy_template_path" \
     && customize_legacy_pre_commit_template "$legacy_template_path" \
     && [ -f "$legacy_template_path" ] \
-    && cmp -s "$hook_path" "$legacy_template_path"; then
+    && hook_file_matches "$hook_path" "$legacy_template_path"; then
     rm -rf "$template_dir"
     return 0
   fi
   if [ "$hook_name" = 'pre-commit' ] \
     && customize_pre_commit_template "$template_path" \
     && [ -f "$template_path" ] \
-    && cmp -s "$hook_path" "$template_path"; then
+    && hook_file_matches "$hook_path" "$template_path"; then
+    rm -rf "$template_dir"
+    return 0
+  fi
+  if [ "$hook_name" = 'post-checkout' ] \
+    && customize_post_checkout_template "$template_path" \
+    && [ -f "$template_path" ] \
+    && hook_file_matches "$hook_path" "$template_path"; then
     rm -rf "$template_dir"
     return 0
   fi
@@ -391,49 +775,85 @@ for hook_name in pre-commit commit-msg post-checkout; do
 done
 
 if [ "${#install_hooks[@]}" -gt 0 ]; then
+  expected_hook_states=()
+  expected_hook_identities=()
+  expected_hook_hashes=()
   for hook_name in "${install_hooks[@]}"; do
     hook_path="$hooks_dir/$hook_name"
     if ! is_installable_hook "$hook_name" "$hook_path"; then
       printf '[worktree-bootstrap] %s changed during migration; leaving hooks untouched\n' "$hook_name" >&2
       exit 1
     fi
+    hook_snapshot_value="$(hook_snapshot "$hook_path" 2>/dev/null || true)"
+    hook_snapshot_identity="${hook_snapshot_value%%$'\t'*}"
+    if [ -n "$hook_snapshot_value" ] && [ "$hook_snapshot_value" != "$hook_snapshot_identity" ]; then
+      expected_hook_states+=('present')
+      expected_hook_identities+=("$hook_snapshot_identity")
+      expected_hook_hashes+=("${hook_snapshot_value#*$'\t'}")
+    elif [ ! -e "$hook_path" ] && [ ! -L "$hook_path" ]; then
+      expected_hook_states+=('absent')
+      expected_hook_identities+=('')
+      expected_hook_hashes+=('')
+    else
+      printf '[worktree-bootstrap] %s changed during migration; leaving hooks untouched\n' "$hook_name" >&2
+      exit 1
+    fi
   done
-  (
-    cd "$repo_root"
-    "$lefthook_path" install "${install_hooks[@]}"
+  install_template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-lefthook.XXXXXX")"
+  if ! git -C "$install_template_dir" init -q \
+    || ! cp "$repo_root/lefthook.yml" "$install_template_dir/lefthook.yml" \
+    || ! (
+    cd "$install_template_dir" &&
+    "$lefthook_path" install "${install_hooks[@]}" >/dev/null 2>&1
+  ); then
+    rm -rf "$install_template_dir"
+    printf '[worktree-bootstrap] could not generate hooks in a private directory\n' >&2
+    exit 1
+  fi
+
+  for hook_name in "${install_hooks[@]}"; do
+    source_hook_path="$install_template_dir/.git/hooks/$hook_name"
+    if [ "$hook_name" = 'pre-commit' ] \
+      && ! customize_pre_commit_template "$source_hook_path"; then
+      rm -rf "$install_template_dir"
+      printf '[worktree-bootstrap] could not generate pre-commit safety check\n' >&2
+      exit 1
+    fi
+    if [ "$hook_name" = 'post-checkout' ] \
+      && ! customize_post_checkout_template "$source_hook_path"; then
+      rm -rf "$install_template_dir"
+      printf '[worktree-bootstrap] could not generate post-checkout wrapper\n' >&2
+      exit 1
+    fi
+    if ! [ -f "$source_hook_path" ] \
+      || ! printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$source_hook_path"; then
+      rm -rf "$install_template_dir"
+      printf '[worktree-bootstrap] could not finalize generated %s hook\n' "$hook_name" >&2
+      exit 1
+    fi
+  done
+
+  hook_index=0
+  if (
     for hook_name in "${install_hooks[@]}"; do
       hook_path="$hooks_dir/$hook_name"
-      installed_identity="$(hook_identity "$hook_path" 2>/dev/null || true)"
-      installed_hash="$(hook_content_hash "$hook_path" 2>/dev/null || true)"
-      if [ -z "$installed_identity" ] || [ -z "$installed_hash" ]; then
-        printf '[worktree-bootstrap] %s was not installed as a regular hook\n' "$hook_name" >&2
+      source_hook_path="$install_template_dir/.git/hooks/$hook_name"
+      if ! safe_publish_hook \
+        "$hook_path" \
+        "$source_hook_path" \
+        "${expected_hook_states[$hook_index]}" \
+        "${expected_hook_identities[$hook_index]}" \
+        "${expected_hook_hashes[$hook_index]}"; then
+        printf '[worktree-bootstrap] %s changed during safe hook installation; leaving remaining hooks untouched\n' "$hook_name" >&2
         exit 1
       fi
-      if ! hook_matches_snapshot "$hook_path" "$installed_identity" "$installed_hash"; then
-        printf '[worktree-bootstrap] %s changed after Lefthook install; leaving it untouched\n' "$hook_name" >&2
-        exit 1
-      fi
-      if [ "$hook_name" = 'pre-commit' ] \
-        && ! customize_pre_commit_template "$hook_path"; then
-        printf '[worktree-bootstrap] could not install pre-commit safety check\n' >&2
-        exit 1
-      fi
-      marker_identity="$(hook_identity "$hook_path" 2>/dev/null || true)"
-      marker_hash="$(hook_content_hash "$hook_path" 2>/dev/null || true)"
-      if [ -z "$marker_identity" ] || [ -z "$marker_hash" ]; then
-        printf '[worktree-bootstrap] %s changed before marker installation; leaving it untouched\n' "$hook_name" >&2
-        exit 1
-      fi
-      if ! hook_matches_snapshot "$hook_path" "$marker_identity" "$marker_hash"; then
-        printf '[worktree-bootstrap] %s changed before marker installation; leaving it untouched\n' "$hook_name" >&2
-        exit 1
-      fi
-      if [ "$hook_name" != 'pre-commit' ] \
-        && { [ "$marker_identity" != "$installed_identity" ] || [ "$marker_hash" != "$installed_hash" ]; }; then
-        printf '[worktree-bootstrap] %s changed before marker installation; leaving it untouched\n' "$hook_name" >&2
-        exit 1
-      fi
-      printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$hook_path"
+      hook_index=$((hook_index + 1))
     done
-  )
+  ); then
+    install_status=0
+  else
+    install_status=$?
+  fi
+  rm -rf "$install_template_dir"
+  exit "$install_status"
 fi

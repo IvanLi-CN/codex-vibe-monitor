@@ -671,20 +671,40 @@ sub restore_index {
   sysopen my $restore_lock, $lock_name,
     O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0666 or return 0;
   binmode $restore_lock;
+  my $fail = sub {
+    my @fd_stat = stat($restore_lock);
+    my @path_stat = lstat($lock_name);
+    if (@fd_stat && @path_stat
+      && (($fd_stat[2] & S_IFMT) == S_IFREG)
+      && (($path_stat[2] & S_IFMT) == S_IFREG)
+      && "$fd_stat[0]:$fd_stat[1]" eq "$path_stat[0]:$path_stat[1]") {
+      unlink($lock_name);
+    }
+    close $restore_lock;
+    return 0;
+  };
   sysopen my $snapshot, $snapshot_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
-    or return 0;
+    or return $fail->();
   binmode $snapshot;
   my $contents = read_all($snapshot);
-  close $snapshot or return 0;
-  return 0 unless defined $contents;
-  truncate($restore_lock, 0) or return 0;
-  write_all($restore_lock, $contents) or return 0;
+  close $snapshot or return $fail->();
+  return $fail->() unless defined $contents;
+  truncate($restore_lock, 0) or return $fail->();
+  write_all($restore_lock, $contents) or return $fail->();
+  seek($restore_lock, 0, 0) or return $fail->();
+  my $restored_contents = do { local $/; <$restore_lock> };
+  return $fail->() unless defined($restored_contents) && $restored_contents eq $contents;
+  my @restore_fd_stat = stat($restore_lock) or return $fail->();
+  return $fail->() unless (($restore_fd_stat[2] & S_IFMT) == S_IFREG);
+  my $restore_identity = "$restore_fd_stat[0]:$restore_fd_stat[1]";
+  my @restore_path_stat = lstat($lock_name) or return $fail->();
+  return $fail->() unless (($restore_path_stat[2] & S_IFMT) == S_IFREG);
+  return $fail->() unless "$restore_path_stat[0]:$restore_path_stat[1]" eq $restore_identity;
+  my @before_rename = lstat($index_name) or return $fail->();
+  return $fail->() unless "$before_rename[0]:$before_rename[1]" eq $installed_identity;
+  my $renamed = rename($lock_name, $index_name) ? 1 : 0;
   close $restore_lock or return 0;
-  my @restore_stat = lstat($lock_name) or return 0;
-  my $restore_identity = "$restore_stat[0]:$restore_stat[1]";
-  my @before_rename = lstat($index_name) or return 0;
-  return 0 unless "$before_rename[0]:$before_rename[1]" eq $installed_identity;
-  return rename($lock_name, $index_name) ? 1 : 0;
+  return $renamed;
 }
 
 my @targets;
