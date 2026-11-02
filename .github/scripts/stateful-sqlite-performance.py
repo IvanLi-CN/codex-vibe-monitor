@@ -12,11 +12,11 @@ from pathlib import Path
 
 
 TARGETS = [
-    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::"
+    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::"
     "startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure",
-    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::"
+    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::"
     "summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure",
-    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::"
+    "tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::"
     "system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline",
     "tests::stateful_sqlite::parallel_work_stats_and_timeseries::"
     "restart_schema_refreshes_existing_objects_across_primed_pool_connections",
