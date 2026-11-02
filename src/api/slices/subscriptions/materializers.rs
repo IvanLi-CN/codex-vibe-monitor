@@ -1752,7 +1752,7 @@ impl DashboardTopicMaterializer {
             }
             Self::Timeseries { base, runtime } => {
                 let mut base = base.lock().expect("timeseries materializer state lock");
-                base.apply_terminal_slice(terminal);
+                base.apply_terminal_slice(terminal)?;
                 base.serialize(&runtime.snapshot())
             }
             Self::ParallelWork { base } => serde_json::to_vec(

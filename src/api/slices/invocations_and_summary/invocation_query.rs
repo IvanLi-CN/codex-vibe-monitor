@@ -76,8 +76,9 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
             " AS downstream_error_message, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamRequestId') END AS upstream_request_id, ",
         )
+        .push("NULLIF(")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(" AS failure_class, CASE WHEN ")
+        .push(", 'none') AS failure_class, CASE WHEN ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(
             " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \

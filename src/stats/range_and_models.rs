@@ -364,6 +364,145 @@ pub(crate) struct BucketAggregate {
 }
 
 impl BucketAggregate {
+    fn try_record_scalar_sample(
+        sample_count: &mut i64,
+        sample_sum: &mut f64,
+        samples: &mut Vec<f64>,
+        value: f64,
+    ) -> bool {
+        let Some(next_count) = sample_count.checked_add(1) else {
+            return false;
+        };
+        let next_sum = *sample_sum + value;
+        if !next_sum.is_finite() {
+            return false;
+        }
+        *sample_count = next_count;
+        *sample_sum = next_sum;
+        samples.push(value);
+        true
+    }
+
+    fn try_record_histogram_sample(
+        sample_count: &mut i64,
+        sample_sum: &mut f64,
+        samples: &mut Vec<f64>,
+        histogram: &mut ApproxHistogramCounts,
+        value: f64,
+    ) -> bool {
+        let Some(next_count) = sample_count.checked_add(1) else {
+            return false;
+        };
+        let next_sum = *sample_sum + value;
+        if !next_sum.is_finite() {
+            return false;
+        }
+        let index = APPROX_HISTOGRAM_BUCKETS_MS
+            .iter()
+            .position(|upper| value <= *upper)
+            .unwrap_or(APPROX_HISTOGRAM_BUCKETS_MS.len());
+        if !histogram.is_empty() && histogram.get(index).is_some_and(|count| *count == i64::MAX) {
+            return false;
+        }
+        *sample_count = next_count;
+        *sample_sum = next_sum;
+        samples.push(value);
+        if histogram.is_empty() {
+            *histogram = empty_approx_histogram();
+        }
+        if let Some(slot) = histogram.get_mut(index) {
+            *slot += 1;
+        }
+        true
+    }
+
+    fn checked_first_response_byte_total_ms(
+        t_req_read_ms: Option<f64>,
+        t_req_parse_ms: Option<f64>,
+        t_upstream_connect_ms: Option<f64>,
+        t_upstream_ttfb_ms: Option<f64>,
+    ) -> Option<f64> {
+        let values = [
+            normalize_non_negative_timing_value(t_req_read_ms)?,
+            normalize_non_negative_timing_value(t_req_parse_ms)?,
+            normalize_non_negative_timing_value(t_upstream_connect_ms)?,
+            normalize_non_negative_timing_value(t_upstream_ttfb_ms)?.max(0.0),
+        ];
+        if values[3] <= 0.0 {
+            return None;
+        }
+        values.into_iter().try_fold(0.0, |sum, value| {
+            let next = sum + value;
+            next.is_finite().then_some(next)
+        })
+    }
+
+    pub(crate) fn try_record_total_latency_sample(&mut self, total_ms: Option<f64>) -> bool {
+        let Some(value) = Self::validated_total_latency_value(total_ms) else {
+            return true;
+        };
+        Self::try_record_scalar_sample(
+            &mut self.total_latency_sample_count,
+            &mut self.total_latency_sum_ms,
+            &mut self.total_latency_values,
+            value,
+        )
+    }
+
+    pub(crate) fn try_record_ttfb_sample(
+        &mut self,
+        status: Option<&str>,
+        ttfb_ms: Option<f64>,
+    ) -> bool {
+        let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
+            return true;
+        };
+        Self::try_record_histogram_sample(
+            &mut self.first_byte_sample_count,
+            &mut self.first_byte_ttfb_sum_ms,
+            &mut self.first_byte_ttfb_values,
+            &mut self.first_byte_histogram,
+            value,
+        )
+    }
+
+    pub(crate) fn try_record_first_response_byte_total_sample(
+        &mut self,
+        t_req_read_ms: Option<f64>,
+        t_req_parse_ms: Option<f64>,
+        t_upstream_connect_ms: Option<f64>,
+        t_upstream_ttfb_ms: Option<f64>,
+    ) -> bool {
+        let Some(value) = Self::checked_first_response_byte_total_ms(
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+        ) else {
+            return true;
+        };
+        Self::try_record_histogram_sample(
+            &mut self.first_response_byte_total_sample_count,
+            &mut self.first_response_byte_total_sum_ms,
+            &mut self.first_response_byte_total_values,
+            &mut self.first_response_byte_total_histogram,
+            value,
+        )
+    }
+
+    pub(crate) fn try_record_first_token_sample(&mut self, first_token_ms: Option<f64>) -> bool {
+        let Some(value) = first_token_ms.filter(|value| value.is_finite() && *value >= 0.0) else {
+            return true;
+        };
+        Self::try_record_histogram_sample(
+            &mut self.first_token_sample_count,
+            &mut self.first_token_sum_ms,
+            &mut self.first_token_values,
+            &mut self.first_token_histogram,
+            value,
+        )
+    }
+
     fn validated_total_latency_value(value: Option<f64>) -> Option<f64> {
         let value = value?;
         if !value.is_finite() || value < 0.0 {

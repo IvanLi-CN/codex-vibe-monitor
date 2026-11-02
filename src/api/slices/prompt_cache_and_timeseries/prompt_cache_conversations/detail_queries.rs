@@ -691,7 +691,7 @@ where
     }
 
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-    let success_like_sql = "(LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
+    let success_like_sql = "(LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', 'warning_success') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
     let mut query = QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT ");
     query
         .push(KEY_EXPR)

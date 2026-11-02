@@ -3,6 +3,8 @@ use percent_encoding::percent_decode_str;
 
 mod schema;
 pub(crate) use schema::*;
+mod read;
+pub(crate) use read::*;
 
 const ANALYTICS_UNAVAILABLE_CODE: &str = "analytics_backend_unavailable";
 const POSTGRES_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -403,7 +405,8 @@ impl PgAnalyticsRuntime {
                    coverage_generation, coverage_revision, coverage_watermark,
                    consumer_checkpoint, source_acknowledged_through, service_eligible,
                    fact_date_semantics_version,
-                   last_error_code, last_error_detail, updated_at::text AS updated_at
+                   last_error_code, last_error_detail,
+                   to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
             FROM cvm_analytics.analytics_replica_state
             WHERE id = 1
             "#,
@@ -421,6 +424,7 @@ impl PgAnalyticsRuntime {
                 "analytics replica state is missing",
             )));
         };
+        validate_analytics_replica_freshness(&replica_state)?;
         if !replica_service_eligible(&replica_state) || !replica_baseline_ready(&replica_state) {
             return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
                 AnalyticsBackend::Postgres,
@@ -485,7 +489,7 @@ fn sanitize_postgres_error(error: &anyhow::Error, database_url: Option<&str>) ->
     reason
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AnalyticsFact {
     pub(crate) fact_version: i16,
@@ -613,6 +617,9 @@ pub(crate) async fn query_account_window_usage(
                 "failed to query PostgreSQL analytics account usage facts: {error}"
             ))
         })?;
+    for row in &rows {
+        validate_account_window_usage_row(row)?;
+    }
     transaction.commit().await.map_err(|error| {
         AnalyticsReadError::Internal(anyhow!(
             "failed to commit PostgreSQL analytics account usage read transaction: {error}"
@@ -861,6 +868,7 @@ struct SourceInvocationSnapshotRow {
     stats_date: String,
     source: String,
     model: Option<String>,
+    upstream_account_id: Option<i64>,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
     cache_input_tokens: Option<i64>,
@@ -873,6 +881,7 @@ struct SourceInvocationSnapshotRow {
     cost_output: Option<f64>,
     cost_reasoning: Option<f64>,
     status: Option<String>,
+    error_message: Option<String>,
     failure_kind: Option<String>,
     failure_class: Option<String>,
     is_actionable: Option<i64>,
@@ -895,6 +904,7 @@ struct SourceInvocationSnapshotSizeRow {
     source_bytes: i64,
     model_bytes: Option<i64>,
     status_bytes: Option<i64>,
+    error_message_bytes: Option<i64>,
     failure_kind_bytes: Option<i64>,
     failure_class_bytes: Option<i64>,
     payload_bytes: Option<i64>,
@@ -996,18 +1006,58 @@ fn snapshot_terminal(status: Option<&str>) -> bool {
     )
 }
 
-fn snapshot_success_like(status: Option<&str>) -> bool {
-    matches!(
-        status
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("success") | Some("succeeded") | Some("completed") | Some("ok")
-    )
+fn snapshot_success_like(
+    status: Option<&str>,
+    error_message: Option<&str>,
+    failure_class: crate::api::FailureClass,
+) -> bool {
+    crate::api::prompt_invocation_status_is_success_like(status, error_message)
+        && failure_class == crate::api::FailureClass::None
 }
 
 fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFact> {
     let payload = crate::analytics_changes::normalize_analytics_payload(row.payload.as_deref());
     let status = crate::analytics_changes::normalize_analytics_text(row.status.as_deref());
+    let error_message =
+        crate::analytics_changes::normalize_analytics_text(row.error_message.as_deref());
+    let classification_error_message =
+        crate::analytics_changes::normalize_analytics_classification_error_message(
+            payload.as_ref(),
+            row.error_message.as_deref(),
+        );
+    let stored_failure_kind = crate::analytics_changes::normalize_analytics_failure_kind(
+        payload.as_ref(),
+        row.failure_kind.as_deref(),
+    );
+    let stored_failure_class =
+        crate::analytics_changes::normalize_analytics_text(row.failure_class.as_deref());
+    let classification = crate::api::resolve_failure_classification(
+        status.as_deref(),
+        classification_error_message.as_deref(),
+        stored_failure_kind.as_deref(),
+        stored_failure_class.as_deref(),
+        row.is_actionable,
+    );
+    let failure_kind = stored_failure_kind.or(classification.failure_kind.clone());
+    let legacy_success_status = status.as_deref().is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "http_200" | "warning_success"
+        )
+    });
+    let failure_class = match stored_failure_class {
+        Some(_) => Some(classification.failure_class.as_str().to_string()),
+        None => (classification.failure_class != crate::api::FailureClass::None
+            || (legacy_success_status && error_message.as_deref().is_none_or(str::is_empty)))
+        .then(|| classification.failure_class.as_str().to_string()),
+    };
+    let is_actionable = row
+        .is_actionable
+        .filter(|value| (*value != 0) == classification.is_actionable)
+        .or_else(|| {
+            (classification.failure_class != crate::api::FailureClass::None)
+                .then_some(i64::from(classification.is_actionable))
+        });
     Ok(AnalyticsFact {
         fact_version: 1,
         source: crate::analytics_changes::normalize_analytics_required_text(&row.source, "source")?,
@@ -1038,21 +1088,22 @@ fn snapshot_row_to_fact(row: SourceInvocationSnapshotRow) -> Result<AnalyticsFac
         upstream_account_id: crate::analytics_changes::normalize_analytics_payload_i64(
             payload.as_ref(),
             "upstreamAccountId",
-        ),
+        )
+        .or(row.upstream_account_id),
         upstream_account_name: crate::analytics_changes::normalize_analytics_payload_text(
             payload.as_ref(),
             "upstreamAccountName",
         ),
         status: status.clone(),
-        success_like: snapshot_success_like(status.as_deref()),
+        success_like: snapshot_success_like(
+            status.as_deref(),
+            error_message.as_deref(),
+            classification.failure_class,
+        ),
         terminal: snapshot_terminal(status.as_deref()),
-        failure_kind: crate::analytics_changes::normalize_analytics_text(
-            row.failure_kind.as_deref(),
-        ),
-        failure_class: crate::analytics_changes::normalize_analytics_text(
-            row.failure_class.as_deref(),
-        ),
-        is_actionable: row.is_actionable.map(|value| value != 0),
+        failure_kind,
+        failure_class,
+        is_actionable: is_actionable.map(|value| value != 0),
         input_tokens: row.input_tokens,
         output_tokens: row.output_tokens,
         cache_input_tokens: row.cache_input_tokens,
@@ -1841,6 +1892,7 @@ async fn preflight_source_invocation_snapshot_page(
             length(CAST(source AS BLOB)) AS source_bytes,
             length(CAST(model AS BLOB)) AS model_bytes,
             length(CAST(status AS BLOB)) AS status_bytes,
+            length(CAST(error_message AS BLOB)) AS error_message_bytes,
             length(CAST(failure_kind AS BLOB)) AS failure_kind_bytes,
             length(CAST(failure_class AS BLOB)) AS failure_class_bytes,
             length(CAST(payload AS BLOB)) AS payload_bytes
@@ -1863,6 +1915,7 @@ async fn preflight_source_invocation_snapshot_page(
             ("source", Some(row.source_bytes)),
             ("model", row.model_bytes),
             ("status", row.status_bytes),
+            ("error_message", row.error_message_bytes),
             ("failure_kind", row.failure_kind_bytes),
             ("failure_class", row.failure_class_bytes),
         ] {
@@ -1891,7 +1944,9 @@ async fn load_source_invocation_snapshot_page(
     // one at a time so NUL-bearing text follows the same Rust normalization as incremental facts.
     preflight_source_invocation_snapshot_page(source_connection, after_id).await?;
 
-    let mut rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(
+    let upstream_account_id_sql =
+        crate::api::invocation_upstream_account_id_from_attempt_fallback_sql("codex_invocations");
+    let snapshot_sql = format!(
         r#"
         SELECT
             id,
@@ -1907,6 +1962,7 @@ async fn load_source_invocation_snapshot_page(
             ) AS stats_date,
             source,
             model,
+            {upstream_account_id_sql} AS upstream_account_id,
             input_tokens,
             output_tokens,
             cache_input_tokens,
@@ -1919,6 +1975,7 @@ async fn load_source_invocation_snapshot_page(
             cost_output,
             cost_reasoning,
             status,
+            error_message,
             failure_kind,
             failure_class,
             is_actionable,
@@ -1935,11 +1992,12 @@ async fn load_source_invocation_snapshot_page(
         WHERE id > ?1
         ORDER BY id
         LIMIT ?2
-        "#,
-    )
-    .bind(after_id)
-    .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
-    .fetch(&mut *source_connection);
+        "#
+    );
+    let mut rows = sqlx::query_as::<_, SourceInvocationSnapshotRow>(&snapshot_sql)
+        .bind(after_id)
+        .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
+        .fetch(&mut *source_connection);
 
     let mut facts = Vec::new();
     while let Some(row) = rows
@@ -3325,7 +3383,13 @@ impl AnalyticsReadError {
                 ApiError::unavailable_with_code(ANALYTICS_UNAVAILABLE_CODE, error)
             }
             Self::InvalidQuery(error) => ApiError::bad_request(anyhow!(error)),
-            Self::Internal(error) => ApiError::Internal(error),
+            Self::Internal(_) => ApiError::unavailable_with_code(
+                ANALYTICS_UNAVAILABLE_CODE,
+                AnalyticsUnavailable::new(
+                    AnalyticsBackend::Postgres,
+                    "PostgreSQL analytics read failed",
+                ),
+            ),
         }
     }
 }
@@ -3446,6 +3510,14 @@ mod tests {
         assert!(PG_ANALYTICS_LEGACY_INVALIDATION_SQL.contains("generation = $4"));
         assert!(PG_ANALYTICS_LEGACY_INVALIDATION_SQL.contains("consumer_checkpoint = $5"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("occurred_at_epoch_ms BIGINT NOT NULL"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts_projection_cursor_idx"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts_account_projection_cursor_idx"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains(
+            "ON cvm_analytics.analytics_facts (stats_date, occurred_at_epoch_ms, source, source_row_id)"
+        ));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains(
+            "upstream_account_id, stats_date, occurred_at_epoch_ms, source, source_row_id"
+        ));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("payload"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("requester_ip"));
         assert!(!PG_ANALYTICS_SCHEMA_SQL.contains("prompt_cache"));
@@ -3803,6 +3875,7 @@ mod tests {
             stats_date: "2026-10-31".to_string(),
             source: " source ".to_string(),
             model: Some(format!("  {long_model}\0  ")),
+            upstream_account_id: None,
             status: Some(" completed \0".to_string()),
             failure_kind: Some(" failure ".to_string()),
             failure_class: Some(" class ".to_string()),
@@ -3823,7 +3896,91 @@ mod tests {
         assert_eq!(fact.upstream_account_name.as_deref(), Some("account"));
         assert_eq!(fact.status.as_deref(), Some("completed"));
         assert_eq!(fact.failure_kind.as_deref(), Some("failure"));
-        assert_eq!(fact.failure_class.as_deref(), Some("class"));
+        assert_eq!(fact.failure_class.as_deref(), Some("service_failure"));
+    }
+
+    #[test]
+    fn snapshot_fact_prefers_payload_failure_kind_for_projection_parity() {
+        let payload_failure = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 43,
+            invoke_id: "invoke-43".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            status: Some("completed".to_string()),
+            failure_kind: Some("none".to_string()),
+            payload: Some(r#"{"failureKind":"upstream_stream_error"}"#.to_string()),
+            ..Default::default()
+        })
+        .expect("payload failure kind should classify before projection");
+        assert_eq!(
+            payload_failure.failure_kind.as_deref(),
+            Some("upstream_stream_error")
+        );
+        assert_eq!(
+            payload_failure.failure_class.as_deref(),
+            Some("service_failure")
+        );
+        assert!(!payload_failure.success_like);
+
+        let payload_none = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 44,
+            invoke_id: "invoke-44".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            status: Some("completed".to_string()),
+            failure_kind: Some("upstream_stream_error".to_string()),
+            payload: Some(r#"{"failureKind":"none"}"#.to_string()),
+            ..Default::default()
+        })
+        .expect("explicit payload none should retain success classification");
+        assert_eq!(payload_none.failure_kind, None);
+        assert_eq!(payload_none.failure_class, None);
+        assert!(payload_none.success_like);
+
+        let downstream_error = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 45,
+            invoke_id: "invoke-45".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            status: Some("completed".to_string()),
+            failure_kind: Some("none".to_string()),
+            payload: Some(
+                r#"{"downstreamErrorMessage":"downstream closed while streaming upstream response"}"#
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+        .expect("downstream payload error should classify as an abort");
+        assert_eq!(
+            downstream_error.failure_class.as_deref(),
+            Some("client_abort")
+        );
+        assert!(!downstream_error.success_like);
+    }
+
+    #[test]
+    fn snapshot_fact_resolves_legacy_error_message_before_projection() {
+        let fact = snapshot_row_to_fact(SourceInvocationSnapshotRow {
+            id: 44,
+            invoke_id: "invoke-44".to_string(),
+            occurred_at: "2026-10-31T00:00:00Z".to_string(),
+            stats_date: "2026-10-31".to_string(),
+            source: "proxy".to_string(),
+            status: Some("http_200".to_string()),
+            error_message: Some("failed to contact upstream".to_string()),
+            failure_class: Some("none".to_string()),
+            is_actionable: Some(0),
+            ..Default::default()
+        })
+        .expect("legacy error message should classify before fact persistence");
+
+        assert!(!fact.success_like);
+        assert_eq!(fact.failure_class.as_deref(), Some("service_failure"));
+        assert!(fact.failure_kind.is_some());
+        assert_eq!(fact.is_actionable, Some(true));
     }
 
     #[tokio::test]
@@ -3853,6 +4010,7 @@ mod tests {
                 cost_output REAL,
                 cost_reasoning REAL,
                 status TEXT,
+                error_message TEXT,
                 failure_kind TEXT,
                 failure_class TEXT,
                 is_actionable INTEGER,
@@ -3871,6 +4029,20 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create snapshot normalization table");
+        sqlx::query(
+            r#"
+            CREATE TABLE pool_upstream_request_attempts (
+                id INTEGER PRIMARY KEY,
+                invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                attempt_index INTEGER NOT NULL,
+                upstream_account_id INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create snapshot account fallback table");
         sqlx::query(
             "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model, payload) VALUES (1, ?1, ?2, ?3, CAST(X'6162006364' AS TEXT), ?4)",
         )
@@ -3920,7 +4092,33 @@ mod tests {
         );
 
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (5, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
+            r#"
+            INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, payload)
+            VALUES (5, 'invoke-attempt-account', '2026-10-31T00:00:00Z', 'proxy', ?1)
+            "#,
+        )
+        .bind(r#"{"upstreamAccountId":"invalid","upstreamAccountName":"attempt-account"}"#)
+        .execute(connection.as_mut())
+        .await
+        .expect("insert attempt-account snapshot row");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts
+                (id, invoke_id, occurred_at, attempt_index, upstream_account_id)
+            VALUES (1, 'invoke-attempt-account', '2026-10-31T00:00:00.000Z', 1, 42)
+            "#,
+        )
+        .execute(connection.as_mut())
+        .await
+        .expect("insert attempt-account fallback row");
+        let fallback_facts = load_source_invocation_snapshot_page(connection.as_mut(), 4)
+            .await
+            .expect("load attempt-account fallback row");
+        assert_eq!(fallback_facts.len(), 1);
+        assert_eq!(fallback_facts[0].upstream_account_id, Some(42));
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model) VALUES (6, 'invoke-oversized', '2026-10-31T00:00:00Z', 'proxy', ?1)",
         )
         .bind("x".repeat((ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES + 1) as usize))
         .execute(connection.as_mut())
@@ -3996,7 +4194,7 @@ mod tests {
             apply_fixture_schema(&mut owner, "apply PostgreSQL fixture schema").await?;
             for statement in [
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_reader",
-                "GRANT SELECT (source_row_id, occurred_at_epoch_ms, upstream_account_id, input_tokens, output_tokens, cache_input_tokens, total_tokens, cost) ON TABLE cvm_analytics.analytics_facts TO cvm_analytics_reader",
+                "GRANT SELECT (fact_version, source, source_row_id, invoke_id, occurred_at, occurred_at_epoch_ms, stats_date, model, request_model, response_model, reasoning_effort, upstream_account_id, upstream_account_name, status, success_like, terminal, failure_kind, failure_class, is_actionable, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, first_token_ms, t_resp_parse_ms) ON TABLE cvm_analytics.analytics_facts TO cvm_analytics_reader",
                 "GRANT SELECT (source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id) ON TABLE cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_reader",
                 "GRANT SELECT (id, replica_id, status, generation, baseline_generation, baseline_change_id, coverage_generation, coverage_revision, coverage_watermark, consumer_checkpoint, source_acknowledged_through, service_eligible, fact_date_semantics_version, last_error_code, last_error_detail, updated_at) ON TABLE cvm_analytics.analytics_replica_state TO cvm_analytics_reader",
                 "GRANT SELECT (id, status) ON TABLE cvm_analytics.analytics_state TO cvm_analytics_reader",
