@@ -86,6 +86,7 @@ async fn enrich_window_actual_usage_archive_fallback_keeps_partial_minute_accoun
     covered_summary.id = covered_account_id;
     covered_summary.primary_window = Some(RateWindowSnapshot {
         used_percent: 1.0,
+        available_percent: None,
         used_text: "1% used".to_string(),
         limit_text: "1h rolling window".to_string(),
         resets_at: Some(covered_reset_at.to_rfc3339()),
@@ -101,6 +102,7 @@ async fn enrich_window_actual_usage_archive_fallback_keeps_partial_minute_accoun
     partial_summary.id = partial_account_id;
     partial_summary.primary_window = Some(RateWindowSnapshot {
         used_percent: 1.0,
+        available_percent: None,
         used_text: "1% used".to_string(),
         limit_text: "1m rolling window".to_string(),
         resets_at: Some(partial_reset_at.to_rfc3339()),
