@@ -427,7 +427,7 @@ pub(crate) fn build_account_sticky_key_recent_invocations_query<'args>(
         .push(" AS sticky_key, ROW_NUMBER() OVER (PARTITION BY ")
         .push(crate::api::INVOCATION_STICKY_KEY_SQL)
         .push(" ORDER BY occurred_at DESC, id DESC) AS row_number FROM codex_invocations WHERE ")
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_INDEX_SQL)
         .push(" = ")
         .push_bind(account_id);
 

@@ -292,6 +292,84 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
     compact_support_status: Option<&str>,
     compact_support_reason: Option<&str>,
 ) -> Result<i64> {
+    let mut tx = pool.begin().await?;
+    let attempt_id = insert_pool_upstream_request_attempt_with_scope_tx(
+        tx.as_mut(),
+        trace,
+        group_name_snapshot,
+        proxy_binding_key_snapshot,
+        routing_source,
+        routing_selection_audit_json,
+        upstream_account_id,
+        upstream_route_key,
+        attempt_index,
+        distinct_account_index,
+        same_account_retry_index,
+        started_at,
+        finished_at,
+        status,
+        phase,
+        http_status,
+        downstream_http_status,
+        failure_kind,
+        error_message,
+        downstream_error_message,
+        connect_latency_ms,
+        first_byte_latency_ms,
+        stream_latency_ms,
+        upstream_request_id,
+        upstream_request_compression_algorithm,
+        upstream_request_compression_mode,
+        upstream_request_logical_body_bytes,
+        upstream_request_transmitted_body_bytes,
+        upstream_request_header_bytes_approx,
+        upstream_response_body_bytes,
+        upstream_response_header_bytes_approx,
+        compact_support_status,
+        compact_support_reason,
+    )
+    .await?;
+    crate::schema::analytics_changes::append_attempt_upsert_for_row_tx(tx.as_mut(), attempt_id)
+        .await?;
+    tx.commit().await?;
+    Ok(attempt_id)
+}
+
+pub(crate) async fn insert_pool_upstream_request_attempt_with_scope_tx(
+    tx: &mut SqliteConnection,
+    trace: &PoolUpstreamAttemptTraceContext,
+    group_name_snapshot: Option<&str>,
+    proxy_binding_key_snapshot: Option<&str>,
+    routing_source: Option<&str>,
+    routing_selection_audit_json: Option<&str>,
+    upstream_account_id: Option<i64>,
+    upstream_route_key: Option<&str>,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    started_at: Option<&str>,
+    finished_at: Option<&str>,
+    status: &str,
+    phase: Option<&str>,
+    http_status: Option<StatusCode>,
+    downstream_http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    error_message: Option<&str>,
+    downstream_error_message: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+    upstream_request_id: Option<&str>,
+    upstream_request_compression_algorithm: Option<&str>,
+    upstream_request_compression_mode: Option<&str>,
+    upstream_request_logical_body_bytes: Option<i64>,
+    upstream_request_transmitted_body_bytes: Option<i64>,
+    upstream_request_header_bytes_approx: Option<i64>,
+    upstream_response_body_bytes: Option<i64>,
+    upstream_response_header_bytes_approx: Option<i64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> Result<i64> {
     for _ in 0..POOL_UPSTREAM_REQUEST_ATTEMPT_PUBLIC_ID_RETRY_LIMIT {
         let attempt_public_id = generate_pool_upstream_request_attempt_public_id();
         let result = sqlx::query(
@@ -387,7 +465,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
         .bind(upstream_response_header_bytes_approx)
         .bind(compact_support_status)
         .bind(compact_support_reason)
-        .execute(pool)
+        .execute(&mut *tx)
         .await;
         match result {
             Ok(result) => return Ok(result.last_insert_rowid()),
@@ -1041,6 +1119,7 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
+    let mut tx = pool.begin().await?;
     let attempt_id = match pending.attempt_id {
         Some(attempt_id) => Some(attempt_id),
         None => sqlx::query_scalar::<_, Option<i64>>(
@@ -1057,7 +1136,7 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
         .bind(&pending.invoke_id)
         .bind(&pending.occurred_at)
         .bind(pending.attempt_index)
-        .fetch_optional(pool)
+        .fetch_optional(tx.as_mut())
         .await?
         .flatten(),
     };
@@ -1090,7 +1169,7 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
         "#,
     )
     .bind(attempt_id)
-    .fetch_optional(pool)
+    .fetch_optional(tx.as_mut())
     .await?
     .ok_or_else(|| anyhow!("pool attempt row disappeared during response capture"))?;
     let expected_truncated = i64::from(pending.response_raw_truncated);
@@ -1104,9 +1183,10 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
             pending.response_content_encoding.clone(),
         )
     {
+        tx.commit().await?;
         return Ok(());
     }
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE pool_upstream_request_attempts
         SET
@@ -1130,8 +1210,13 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
     })
     .bind(pending.response_raw_truncated_reason.as_deref())
     .bind(pending.response_content_encoding.as_deref())
-    .execute(pool)
+    .execute(tx.as_mut())
     .await?;
+    if result.rows_affected() > 0 {
+        crate::schema::analytics_changes::append_attempt_upsert_for_row_tx(tx.as_mut(), attempt_id)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -1177,7 +1262,8 @@ pub(crate) async fn persist_pool_upstream_request_attempt_metadata_before_recove
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
-    sqlx::query(
+    let mut tx = pool.begin().await?;
+    let result = sqlx::query(
         r#"
         UPDATE pool_upstream_request_attempts
         SET
@@ -1214,8 +1300,13 @@ pub(crate) async fn persist_pool_upstream_request_attempt_metadata_before_recove
     .bind(pending.upstream_response_body_bytes)
     .bind(pending.upstream_response_header_bytes_approx)
     .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
-    .execute(pool)
+    .execute(tx.as_mut())
     .await?;
+    if result.rows_affected() > 0 {
+        crate::schema::analytics_changes::append_attempt_upsert_for_row_tx(tx.as_mut(), attempt_id)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

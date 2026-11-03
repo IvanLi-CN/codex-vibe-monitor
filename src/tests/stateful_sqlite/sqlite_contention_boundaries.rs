@@ -43,4 +43,20 @@ async fn pool_attempt_backfill_skips_rows_with_existing_public_ids() {
     .await
     .expect("load existing public id");
     assert_eq!(existing_id, "already-assigned");
+    let missing_row_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM pool_upstream_request_attempts WHERE invoke_id='missing'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled attempt id");
+    let (event_kind, entity_key, fact_json): (String, String, String) = sqlx::query_as(
+        "SELECT event_kind, entity_key, fact_json FROM analytics_change_events WHERE source_row_id = ?1",
+    )
+    .bind(missing_row_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled analytics event");
+    assert_eq!(event_kind, "upsert");
+    assert_eq!(entity_key, format!("attempt:{missing_row_id}"));
+    assert!(!fact_json.contains("error_message"));
 }

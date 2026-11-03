@@ -153,6 +153,7 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         upstream_base_url_host: pending.upstream_base_url_host.clone(),
         request_model: pending.request_model.clone(),
     };
+    let mut tx = pool.begin().await?;
     if let Some(attempt_id) = pending.attempt_id {
         let result = sqlx::query(
             r#"
@@ -230,16 +231,22 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         .bind(upstream_request_model)
         .bind(model_mapping_pattern)
         .bind(request_summary_json)
-        .execute(pool)
+        .execute(tx.as_mut())
         .await?;
 
         if result.rows_affected() > 0 {
+            crate::schema::analytics_changes::append_attempt_upsert_for_row_tx(
+                tx.as_mut(),
+                attempt_id,
+            )
+            .await?;
+            tx.commit().await?;
             return Ok(());
         }
     }
 
-    let inserted_attempt_id = insert_pool_upstream_request_attempt_with_scope(
-        pool,
+    let inserted_attempt_id = insert_pool_upstream_request_attempt_with_scope_tx(
+        tx.as_mut(),
         &trace,
         pending.group_name_snapshot.as_deref(),
         pending.proxy_binding_key_snapshot.as_deref(),
@@ -306,8 +313,14 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
     .bind(upstream_request_model)
     .bind(model_mapping_pattern)
     .bind(request_summary_json)
-    .execute(pool)
+    .execute(tx.as_mut())
     .await?;
+    crate::schema::analytics_changes::append_attempt_upsert_for_row_tx(
+        tx.as_mut(),
+        inserted_attempt_id,
+    )
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 

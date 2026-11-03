@@ -1057,6 +1057,19 @@ pub(crate) async fn flush_pending_batch_inner(
                         )
                     })?;
             }
+            // Publish the invocation fact after its terminal attempts so the
+            // attempt-only account fallback sees the complete committed snapshot.
+            crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                terminal_tx.as_mut(),
+                invocation_id,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "flush analytics invocation change {}",
+                    terminal.record.invoke_id
+                )
+            })?;
             let payload_metadata =
                 persisted
                     .as_ref()

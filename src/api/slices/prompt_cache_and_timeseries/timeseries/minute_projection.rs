@@ -619,7 +619,7 @@ pub(crate) async fn store_timeseries_minute_projection_v2_for_test(
         if minute < minute_start || minute >= minute_end {
             continue;
         }
-        add_exact_record_to_timeseries_aggregate(by_minute.entry(minute).or_default(), record);
+        add_exact_record_to_timeseries_aggregate(by_minute.entry(minute).or_default(), record)?;
         max_row_ids
             .entry(minute)
             .and_modify(|max_row_id: &mut i64| *max_row_id = (*max_row_id).max(record.id))
@@ -873,7 +873,7 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
             add_exact_record_to_timeseries_aggregate(
                 aggregates.entry(minute).or_default(),
                 &record,
-            );
+            )?;
             max_row_ids
                 .entry(minute)
                 .and_modify(|max_row_id| *max_row_id = (*max_row_id).max(record.id))
@@ -1095,7 +1095,7 @@ pub(crate) async fn rebuild_timeseries_minute_projection_v2_key(
             continue;
         }
         max_row_id = max_row_id.max(record.id);
-        add_exact_record_to_timeseries_aggregate(&mut aggregate, &record);
+        add_exact_record_to_timeseries_aggregate(&mut aggregate, &record)?;
     }
     Ok((aggregate, max_row_id, source_row_count))
 }
@@ -1250,19 +1250,22 @@ pub(crate) async fn invalidate_timeseries_minute_projection_coverage(
     observation: &mut Option<crate::TaskExecutionObservation>,
 ) -> Result<TimeseriesMinuteProjectionCoverageInvalidationOutcome, ApiError> {
     let mut stats = TimeseriesMinuteProjectionCoverageInvalidationStats::default();
+    let mut last_row_id = 0_i64;
     loop {
         if timeseries_minute_projection_is_cancelled(cancellation) {
             return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled);
         }
         let row_ids = sqlx::query_scalar::<_, i64>(
-            "SELECT rowid FROM timeseries_minute_projection_v2 WHERE coverage_state <> 'warming' ORDER BY rowid LIMIT ?1",
+            "SELECT rowid FROM timeseries_minute_projection_v2 WHERE rowid > ?1 AND coverage_state <> 'warming' ORDER BY rowid LIMIT ?2",
         )
+        .bind(last_row_id)
         .bind(TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT)
         .fetch_all(&state.pool)
         .await?;
         if row_ids.is_empty() {
             return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats));
         }
+        last_row_id = row_ids.last().copied().unwrap_or(last_row_id);
 
         let admission = match try_acquire_timeseries_minute_projection_write(
             coordinator,
@@ -1537,7 +1540,7 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator_and_canc
                         let mut aggregate = aggregate;
                         let mut max_row_id = existing_max_row_id;
                         for (row_id, delta) in deltas {
-                            add_timeseries_terminal_delta_to_aggregate(&mut aggregate, delta);
+                            add_timeseries_terminal_delta_to_aggregate(&mut aggregate, delta)?;
                             max_row_id = max_row_id.max(*row_id);
                         }
                         (aggregate, max_row_id)

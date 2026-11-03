@@ -1,6 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use chrono::Timelike;
+use futures_util::TryStreamExt;
 use serde::{Serialize, Serializer};
 use sqlx::FromRow;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -245,7 +246,7 @@ pub(crate) fn parallel_work_counts_from_key_sets(
         .collect()
 }
 
-fn first_complete_minute_epoch(value: DateTime<Utc>) -> i64 {
+pub(crate) fn first_complete_minute_epoch(value: DateTime<Utc>) -> i64 {
     let epoch = value.timestamp();
     if epoch.rem_euclid(60) == 0 {
         epoch
@@ -254,7 +255,7 @@ fn first_complete_minute_epoch(value: DateTime<Utc>) -> i64 {
     }
 }
 
-fn end_of_complete_minutes_epoch(value: DateTime<Utc>) -> i64 {
+pub(crate) fn end_of_complete_minutes_epoch(value: DateTime<Utc>) -> i64 {
     value.timestamp().div_euclid(60) * 60
 }
 
@@ -579,12 +580,11 @@ where
     }
     query.push(" ORDER BY occurred_at ASC, id ASC, prompt_cache_key ASC");
 
-    let rows = query
-        .build_query_as::<ParallelWorkExactInvocationRow>()
-        .fetch_all(pool)
-        .await?;
     let mut bucket_keys: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
-    for row in rows {
+    let mut rows = query
+        .build_query_as::<ParallelWorkExactInvocationRow>()
+        .fetch(pool);
+    while let Some(row) = rows.try_next().await? {
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
         };
@@ -803,10 +803,12 @@ pub(crate) fn classify_invocation_failure_with_kind(
     let err_lower = err.to_ascii_lowercase();
     let explicit_failure_kind = explicit_failure_kind
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"));
 
     if (status_norm == "success"
+        || status_norm == "succeeded"
         || status_norm == "completed"
+        || status_norm == "ok"
         || status_norm == INVOCATION_STATUS_WARNING_SUCCESS)
         && err.is_empty()
         && explicit_failure_kind.is_none()
@@ -863,6 +865,9 @@ pub(crate) fn classify_invocation_failure_with_kind(
         // Upstream rate limiting is retryable and should be surfaced as service-impacting.
         FailureClass::ServiceFailure
     } else if failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+        || failure_kind_lower == "invalid_api_key"
+        || failure_kind_lower == "api_key_not_found"
+        || failure_kind_lower == "api_key_missing"
         || err_lower.contains("invalid api key format")
         || err_lower.contains("api key format is invalid")
         || err_lower.contains("incorrect api key provided")
@@ -938,7 +943,7 @@ pub(crate) fn resolve_failure_classification(
     };
     let resolved_kind = failure_kind
         .map(str::trim)
-        .filter(|v| !v.is_empty())
+        .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("none"))
         .map(ToOwned::to_owned)
         .or(derived.failure_kind);
     let expected_actionable = resolved_class == FailureClass::ServiceFailure;

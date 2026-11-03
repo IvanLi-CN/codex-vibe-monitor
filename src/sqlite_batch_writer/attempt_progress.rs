@@ -507,7 +507,7 @@ pub(crate) async fn persist(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     progress: &BatchedAttemptProgress,
 ) -> Result<()> {
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE pool_upstream_request_attempts
         SET
@@ -643,6 +643,13 @@ pub(crate) async fn persist(
     .bind(progress.response_content_encoding.as_deref())
     .execute(tx.as_mut())
     .await?;
+    if result.rows_affected() > 0 {
+        crate::schema::analytics_changes::append_attempt_upsert_for_row_tx(
+            tx.as_mut(),
+            progress.attempt_id,
+        )
+        .await?;
+    }
     Ok(())
 }
 

@@ -5251,6 +5251,7 @@ async fn await_summary_projection_build(
     deadline: Option<Duration>,
     build: impl std::future::Future<Output = Result<SummaryProjection>>,
 ) -> Result<SummaryProjection> {
+    let build = Box::pin(build);
     #[cfg(test)]
     if matches!(mode, SummaryProjectionBuildMode::Rolling)
         && let Some((interleave, setup_deadline, stage_reached)) =

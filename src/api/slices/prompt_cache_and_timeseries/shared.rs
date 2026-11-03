@@ -97,7 +97,9 @@ pub(crate) fn prompt_invocation_status_is_success_like(
     let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
 
     normalized_status.eq_ignore_ascii_case("success")
+        || normalized_status.eq_ignore_ascii_case("succeeded")
         || normalized_status.eq_ignore_ascii_case("completed")
+        || normalized_status.eq_ignore_ascii_case("ok")
         || normalized_status.eq_ignore_ascii_case(INVOCATION_STATUS_WARNING_SUCCESS)
         || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
 }
@@ -439,8 +441,9 @@ where
             " AS failure_kind, \
             ",
         )
+        .push("NULLIF(")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(" AS failure_class, CASE WHEN ")
+        .push(", 'none') AS failure_class, CASE WHEN ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(
             " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
@@ -479,7 +482,11 @@ where
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(
+                crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(
+                    "codex_invocations",
+                ),
+            )
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -591,8 +598,9 @@ where
             " AS failure_kind, \
             ",
         )
+        .push("NULLIF(")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(" AS failure_class, CASE WHEN ")
+        .push(", 'none') AS failure_class, CASE WHEN ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(
             " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
@@ -629,7 +637,11 @@ where
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(
+                crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(
+                    "codex_invocations",
+                ),
+            )
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -1461,6 +1473,17 @@ mod in_flight_query_tests {
         assert!(!is_valid_perf_stage_sample("total", f64::NAN));
     }
 
+    #[test]
+    fn success_like_statuses_include_normalized_terminal_aliases() {
+        for status in ["success", "succeeded", "completed", "ok"] {
+            assert!(prompt_invocation_status_is_success_like(Some(status), None));
+        }
+        assert!(prompt_invocation_status_is_success_like(
+            Some(INVOCATION_STATUS_WARNING_SUCCESS),
+            None
+        ));
+    }
+
     #[tokio::test]
     async fn in_flight_query_ignores_projection_cursor_and_keeps_account_scope() {
         let pool = SqlitePoolOptions::new()
@@ -1475,7 +1498,7 @@ mod in_flight_query_tests {
         .await
         .expect("create invocations");
         sqlx::query(
-            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, stream_latency_ms REAL, first_byte_latency_ms REAL)",
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, stream_latency_ms REAL, first_byte_latency_ms REAL, upstream_account_id INTEGER)",
         )
         .execute(&pool)
         .await
@@ -1533,7 +1556,7 @@ mod in_flight_query_tests {
         .await
         .expect("create invocations");
         sqlx::query(
-            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, stream_latency_ms REAL, first_byte_latency_ms REAL)",
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, stream_latency_ms REAL, first_byte_latency_ms REAL, upstream_account_id INTEGER)",
         )
         .execute(&pool)
         .await

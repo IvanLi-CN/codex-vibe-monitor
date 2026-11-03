@@ -222,7 +222,6 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
             if !updates.is_empty() {
                 let mut tx = pool.begin().await?;
                 let mut updated_ids = Vec::new();
-                let mut updated_prompt_cache_keys = HashSet::new();
                 for (id, prompt_cache_key) in updates {
                     let affected = sqlx::query(
                         r#"
@@ -254,8 +253,17 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                     .rows_affected();
                     summary.updated += affected;
                     if affected > 0 {
+                        crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                            tx.as_mut(),
+                            id,
+                        )
+                        .await?;
+                        crate::ensure_prompt_cache_conversation_row_on_connection(
+                            tx.as_mut(),
+                            &prompt_cache_key,
+                        )
+                        .await?;
                         updated_ids.push(id);
-                        updated_prompt_cache_keys.insert(prompt_cache_key);
                     }
                 }
                 if !updated_ids.is_empty() {
@@ -263,16 +271,6 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                         .await?;
                 }
                 tx.commit().await?;
-                committed_cursor_id = window_end_id;
-                committed_scanned = summary.scanned;
-                committed_updated = summary.updated;
-                if !updated_prompt_cache_keys.is_empty() {
-                    // The trigger keeps the aggregate refresh durable; historical aggregation belongs
-                    // to the pressure-gated materialization task, not this metadata backfill pass.
-                    for prompt_cache_key in &updated_prompt_cache_keys {
-                        crate::ensure_prompt_cache_conversation_row(pool, prompt_cache_key).await?;
-                    }
-                }
             }
             committed_cursor_id = window_end_id;
             committed_scanned = summary.scanned;
@@ -686,6 +684,21 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                     })
                 })?
                 .rows_affected();
+                if affected > 0 {
+                    crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                        transaction.as_mut(),
+                        candidate_id,
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow::Error::new(crate::BackfillPartialFailure {
+                            source: error,
+                            next_cursor_id: committed_cursor_id,
+                            scanned: committed_scanned,
+                            updated: committed_updated,
+                        })
+                    })?;
+                }
                 summary.updated += affected;
             }
             transaction.commit().await.map_err(|error| {

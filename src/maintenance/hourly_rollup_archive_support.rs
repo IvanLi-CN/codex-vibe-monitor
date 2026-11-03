@@ -304,7 +304,9 @@ pub(crate) fn invocation_status_is_success_like(
     let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
 
     normalized_status.eq_ignore_ascii_case("success")
+        || normalized_status.eq_ignore_ascii_case("succeeded")
         || normalized_status.eq_ignore_ascii_case("completed")
+        || normalized_status.eq_ignore_ascii_case("ok")
         || normalized_status.eq_ignore_ascii_case(INVOCATION_STATUS_WARNING_SUCCESS)
         || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
 }
@@ -314,7 +316,7 @@ pub(crate) fn invocation_status_is_success_like_sql(
     error_message_column: &str,
 ) -> String {
     format!(
-        "(LOWER(TRIM(COALESCE({status_column}, ''))) IN ('success', 'completed', '{warning_success}') OR (LOWER(TRIM(COALESCE({status_column}, ''))) = 'http_200' AND TRIM(COALESCE({error_message_column}, '')) = ''))",
+        "(LOWER(TRIM(COALESCE({status_column}, ''))) IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') OR (LOWER(TRIM(COALESCE({status_column}, ''))) = 'http_200' AND TRIM(COALESCE({error_message_column}, '')) = ''))",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     )
 }
@@ -1173,6 +1175,16 @@ fn sha256_hex_file_with_progress_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn success_aliases_match_the_shared_statistics_contract() {
+        for status in ["success", "succeeded", "completed", "ok", "warning_success"] {
+            assert!(invocation_status_is_success_like(Some(status), None));
+        }
+        let sql = invocation_status_is_success_like_sql("status", "error_message");
+        assert!(sql.contains("'succeeded'"));
+        assert!(sql.contains("'ok'"));
+    }
 
     #[test]
     fn archive_file_operation_lease_fences_all_paths() {

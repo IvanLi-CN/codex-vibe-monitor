@@ -169,6 +169,9 @@ pub(crate) async fn recover_pool_upstream_request_attempts_with_scope_tx(
         }
     };
 
+    for row in &recovered {
+        crate::schema::analytics_changes::append_attempt_upsert_for_row_tx(tx, row.id).await?;
+    }
     Ok(recovered)
 }
 
@@ -551,6 +554,10 @@ pub(crate) async fn recover_proxy_invocations_with_scope_tx(
             recovered
         }
     };
+
+    for row in &rows {
+        crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(tx, row.id).await?;
+    }
 
     if !rows.is_empty() {
         let updated_ids: Vec<i64> = rows.iter().map(|row| row.id).collect();
