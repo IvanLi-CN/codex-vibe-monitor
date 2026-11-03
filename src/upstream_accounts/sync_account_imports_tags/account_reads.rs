@@ -118,6 +118,8 @@ pub(crate) struct LatestUpstreamAccountSampleByAccountRow {
     limit_name: Option<String>,
     account_plan_type: Option<String>,
     account_plan_type_observed_at: Option<String>,
+    allowed: Option<i64>,
+    limit_reached: Option<i64>,
     primary_used_percent: Option<f64>,
     primary_window_minutes: Option<i64>,
     primary_resets_at: Option<String>,
@@ -169,6 +171,8 @@ pub(crate) async fn load_latest_usage_sample_map(
             sample.limit_name,
             NULLIF(TRIM(account.plan_type), '') AS account_plan_type,
             account.plan_type_observed_at AS account_plan_type_observed_at,
+            sample.allowed,
+            sample.limit_reached,
             sample.primary_used_percent,
             sample.primary_window_minutes,
             sample.primary_resets_at,
@@ -308,6 +312,8 @@ pub(crate) async fn load_latest_usage_sample_map(
                     limit_id: row.limit_id,
                     limit_name: row.limit_name,
                     plan_type: effective_plan_type,
+                    allowed: row.allowed,
+                    limit_reached: row.limit_reached,
                     primary_used_percent: row.primary_used_percent,
                     primary_window_minutes: row.primary_window_minutes,
                     primary_resets_at: row.primary_resets_at,
@@ -577,7 +583,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
     let history_rows = sqlx::query_as::<_, UpstreamAccountSampleRow>(
         r#"
         SELECT
-            id, captured_at, limit_id, limit_name, plan_type,
+            id, captured_at, limit_id, limit_name, plan_type, allowed, limit_reached,
             primary_used_percent, primary_window_minutes, primary_resets_at,
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance,

@@ -974,6 +974,10 @@ pub(crate) struct UpstreamAccountSampleRow {
     pub(crate) limit_id: Option<String>,
     pub(crate) limit_name: Option<String>,
     pub(crate) plan_type: Option<String>,
+    #[sqlx(default)]
+    pub(crate) allowed: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) limit_reached: Option<i64>,
     pub(crate) primary_used_percent: Option<f64>,
     pub(crate) primary_window_minutes: Option<i64>,
     pub(crate) primary_resets_at: Option<String>,
