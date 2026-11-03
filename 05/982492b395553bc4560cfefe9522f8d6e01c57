@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.18.0",
+  "base_stable_version": "4.17.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-03T17:31:05Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.18.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ee4aaf729fc57053877eb261e7c6d60ce1ba8d64",
+  "pr_number": 1279,
+  "pr_title": "feat(analytics): automate PostgreSQL migration and online bootstrap",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.18.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.18.0",
+  "target_sha": "05982492b395553bc4560cfefe9522f8d6e01c57",
+  "type_label": "type:minor"
+}
