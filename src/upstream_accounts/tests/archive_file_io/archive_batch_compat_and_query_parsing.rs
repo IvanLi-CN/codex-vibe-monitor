@@ -3430,6 +3430,7 @@ pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> Ap
         database_path: PathBuf::from(":memory:"),
         analytics_backend: AnalyticsBackend::Sqlite,
         postgres_database_url: None,
+        postgres_migration_url: None,
         postgres_analytics_maintenance_url: None,
         postgres_max_connections: DEFAULT_POSTGRES_MAX_CONNECTIONS as u32,
         observability: ObservabilityConfig::default(),

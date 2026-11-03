@@ -4,13 +4,21 @@
 
 ## Current Status
 
-- Implementation: I1 配置与运行时入口、I2 fact/query interface、I3 schema/pool/transaction verification foundation 已实现。
+- Implementation: I1 配置与运行时入口、I2 fact/query interface、I3 schema/pool/transaction verification foundation、managed migration ledger、online bootstrap lifecycle 已实现。
 - Lifecycle: active
 - Catalog note: PostgreSQL 为显式 opt-in；SQLite 默认路径保持现状。
 
+## Managed Migration and Cutover Proposal
+
+- Status: implementation-verified; [ADR 0053](../../adr/0053-pg18-analytics-managed-migration.md) supersedes the ADR 0051 provisioning boundary for this runtime path.
+- The release unit keeps SQLite as the business-fact authority and runs PostgreSQL migration from `POSTGRES_MIGRATION_URL`, followed by maintenance-role online snapshot and journal catch-up. The migration credential is not retained by the long-lived pool.
+- The runtime order is: SQLite `ensure_schema`; PostgreSQL 18.x ordered ledger migration; application and maintenance pool verification; fenced online bootstrap; bounded journal catch-up; separate analytics readiness publication. Core readiness remains independent.
+- A failed migration, bootstrap, source proof, or readiness probe leaves PostgreSQL unavailable and keeps SQLite facts usable. Rollback changes configuration to SQLite; it does not reverse-copy business facts or delete the PostgreSQL target.
+- The associated migration and version-impact records are [managed-migration-state-record.json](./assets/managed-migration-state-record.json) and [managed-migration-version-impact.json](./assets/managed-migration-version-impact.json); both record the implemented contract and bounded validation still required for current-head delivery.
+
 ## Implementation Coverage
 
-- `REQ-PG18-001`: `src/main.rs`、`src/config.rs`、`src/pg_analytics/mod.rs` 提供 `ANALYTICS_BACKEND`、`POSTGRES_DATABASE_URL`、`POSTGRES_ANALYTICS_MAINTENANCE_URL` 和 `POSTGRES_MAX_CONNECTIONS`；按 SQLx 生效用户名（含 query 覆盖）拒绝相同维护/应用角色，并为当前读路径通过 reader role 授予 facts/keys/replica-state/projection-status 的精确列级 SELECT（含谓词与排序列），不授予 default privileges 或 rollup 访问，再按 facts/keys/state/applied-changes/sequence 拆分维护授权；测试构造器显式使用 SQLite disabled runtime。
+- `REQ-PG18-001`: `src/main.rs`、`src/config.rs`、`src/pg_analytics/mod.rs` 提供三组 DSN、`ANALYTICS_BACKEND` 和 `POSTGRES_MAX_CONNECTIONS`；按 SQLx 生效用户名（含 query 覆盖）拒绝相同 migration/application/maintenance 角色；URL 脱敏，PostgreSQL 18.x 版本门禁和缺失凭据 fail-closed；测试构造器显式使用 SQLite disabled runtime。
 - `REQ-PG18-002`: `PostgresDatabaseUrl` 自定义 `Debug`/`Serialize`；`AnalyticsFact` 与 `src/pg_analytics/schema.rs` 只保留规范化 analytics 字段。
 - `REQ-PG18-003`: `PgAnalyticsPool` 校验七个预置关系、fact-date 兼容列并执行 rollback 的 read-only transaction；`PgAnalyticsRuntime` 保存 ready/unavailable 状态，未实现 SQLite fallback。
 - `REQ-PG18-004`: `AnalyticsRange`、`AnalyticsDimension`、metrics、projection state、overview/series DTO 和 `AnalyticsReadStore` 定义未来读取边界。
@@ -35,7 +43,7 @@
 ## Rollout Facts
 
 - With no new environment variables, `AppConfig::database_url()` remains the existing SQLite URL and the runtime creates no PostgreSQL pool.
-- PostgreSQL requires the operator to provision the SQL in `PG_ANALYTICS_SCHEMA_SQL` before selecting the backend; application startup only verifies it.
+- PostgreSQL startup migration executes the reviewed `PG_ANALYTICS_SCHEMA_SQL` and records its checksum in the ordered ledger; the application still does not create/delete the target database.
 - A selected but unavailable PostgreSQL backend is represented as unavailable. This foundation does not turn that state into an implicit SQLite analytics query.
 - No business write migration, historical backfill, production deployment, or UI route switch is included.
 
@@ -49,8 +57,10 @@
 ## Related Changes
 
 - The compatibility contract is captured by [SPEC.md](./SPEC.md) and [ADR 0051](../../adr/0051-pg18-analytics-offload.md).
+- The managed migration and cutover proposal is captured by [ADR 0053](../../adr/0053-pg18-analytics-managed-migration.md).
 - The durable-state migration record is captured in [persistent-state-migration-record.json](./assets/persistent-state-migration-record.json).
 - The separate compatibility impact record is captured in [version-impact-record.json](./assets/version-impact-record.json).
+- The proposed managed-migration records are [managed-migration-state-record.json](./assets/managed-migration-state-record.json) and [managed-migration-version-impact.json](./assets/managed-migration-version-impact.json).
 
 ## References
 

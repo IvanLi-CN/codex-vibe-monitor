@@ -6,7 +6,7 @@
 
 - Context: 长期统计需要一个可以独立预置、校验和逐步承接查询的 PostgreSQL analytics 边界，同时不能改变现有 SQLite 状态读取、TerminalJournal、Summary freshness 或 retention 语义。
 - In scope: 后端选择配置、连接串脱敏、有界连接池、schema/只读事务校验、规范化 analytics fact、rollup 和 query interface，以及 unavailable 语义。
-- Out of scope: 业务写入迁移、自动历史数据复制/回填、SQLite schema 修改、自动 schema 部署、生产部署、前端切换和压力/吞吐性能结论。显式、有界的 PostgreSQL replica bootstrap 重建属于兼容性合同的一部分。
+- Out of scope: 业务写入迁移、自动历史数据复制/回填、SQLite schema 修改、生产部署、前端切换和压力/吞吐性能结论。服务启动负责 PostgreSQL analytics schema migration 与 online replica bootstrap；archive/gzip 历史回放仍不属于自动 bootstrap。
 
 ## Terms and Interfaces
 
@@ -23,6 +23,8 @@
 - `ANALYTICS_BACKEND` MUST accept only `sqlite` or `postgres` and MUST default to `sqlite`.
 - `POSTGRES_MAX_CONNECTIONS` MUST default to `5` and MUST reject zero or values outside the supported integer range.
 - Selecting `postgres` MUST require `POSTGRES_DATABASE_URL`; invalid values MUST fail closed without exposing the URL.
+- Selecting `postgres` MUST require a distinct `POSTGRES_MIGRATION_URL`; startup owns PostgreSQL 18.x schema migration through an ordered, checksum-verified ledger and an advisory lock.
+- `POSTGRES_MIGRATION_URL`, `POSTGRES_DATABASE_URL`, and `POSTGRES_ANALYTICS_MAINTENANCE_URL` MUST resolve to distinct effective login roles; migration credentials MUST be used only by the startup migration task.
 - PostgreSQL replica control commands MUST use a separate `POSTGRES_ANALYTICS_MAINTENANCE_URL`; they MUST fail closed when it is absent, when it is identical to the runtime URL, or when both URLs name the same PostgreSQL login role. They MUST NOT use the runtime application URL for target writes.
 - The current PostgreSQL analytics read paths MUST use a reader role with explicit column-level `SELECT` grants for the fact, parallel-work key, replica-state, and projection-status columns they query, including predicate and ordering columns; they MUST receive no default privileges or rollup-table access.
 - The maintenance role MUST receive only the reviewed bounded grants: fact and parallel-work tables permit insert/update/delete plus column-level select on `source` and `source_row_id` for `MERGE` match keys and tombstone predicates, without fact-content or metric reads; replica and projection state permit select/update without insert/delete; applied changes permit insert/delete plus column-level select on `change_id` for its idempotency key; and the facts sequence permits usage only. Neither application nor maintenance role may execute schema DDL.
@@ -35,10 +37,13 @@
 
 ### REQ-PG18-003
 
-- The system MUST create a PostgreSQL pool only when `ANALYTICS_BACKEND=postgres` is explicitly selected, using the configured bounded maximum connection count.
-- Startup verification MUST check all required analytics relations and execute a disposable read-only transaction.
-- Application startup MUST NOT auto-create or mutate the PostgreSQL schema and MUST NOT migrate business writes into PostgreSQL.
+- The system MUST create PostgreSQL pools only when `ANALYTICS_BACKEND=postgres` is explicitly selected, using the configured bounded maximum connection count.
+- Startup migration MUST accept PostgreSQL 18.x only, preserve the target database boundary, and fail closed on unknown schema shape, checksum mismatch, newer-than-reader ledger state, or insufficient privileges.
+- Startup verification MUST check all required analytics relations and execute a disposable read-only transaction after migration.
+- Application startup MUST NOT migrate business writes into PostgreSQL or create/delete the target database.
 - A PostgreSQL connection, relation, or transaction failure MUST expose `AnalyticsUnavailable`; it MUST NOT silently fall back to a heavy SQLite analytics query.
+- SQLite `ensure_schema` and core readiness MUST complete independently; `/health/analytics` MUST return 503 until migration, online snapshot plus journal catch-up, source coverage, and target projection verification publish readiness atomically.
+- Online bootstrap MUST use a bounded SQLite repeatable read snapshot without pausing SQLite writers, reject generation/retention/archive proof gaps, and keep the target fenced until source and target checkpoints converge.
 
 ### REQ-PG18-004
 
