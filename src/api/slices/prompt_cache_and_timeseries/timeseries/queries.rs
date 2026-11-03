@@ -1,6 +1,6 @@
 use super::aggregation::{
     add_exact_record_to_timeseries_aggregate, add_exact_records_to_timeseries_aggregates,
-    add_optional_token_components, add_pending_timeseries_deltas,
+    add_invocation_rollup_rows_to_timeseries_aggregates, add_pending_timeseries_deltas,
     add_rollup_rows_to_timeseries_aggregates, add_terminal_timeseries_records,
     build_timeseries_response, collect_in_flight_aggregate_records, fill_timeseries_buckets,
     fold_minute_projection_aggregates, overlay_runtime_timeseries_in_flight,
@@ -42,13 +42,15 @@ pub(crate) async fn fetch_timeseries_query(
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let bucket_selection = resolve_timeseries_bucket_selection(
         &params,
         &range_window,
         state.config.invocation_max_days,
     )?;
+    // The public cursor is the source-wide SQLite invocation watermark. The PostgreSQL fact
+    // replica may legitimately lag it or omit an in-flight invocation that has no fact yet.
+    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     if let Some(upstream_account_id) = params.upstream_account_id {
         return fetch_timeseries_for_account(
             state,
@@ -168,7 +170,7 @@ pub(crate) async fn fetch_timeseries_query(
             add_exact_record_to_timeseries_aggregate(
                 aggregates.entry(bucket_epoch).or_default(),
                 &record,
-            );
+            )?;
         }
         let memory_overlay_count = add_pending_timeseries_deltas(
             state.as_ref(),
@@ -346,67 +348,10 @@ pub(crate) async fn fetch_timeseries_query(
             .map(|dt| dt.with_timezone(&Utc).timestamp())
             .unwrap_or_else(|| naive.and_utc().timestamp());
         let bucket_epoch = align_reporting_bucket_epoch(epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += 1;
-        let classification = resolve_failure_classification(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-            record.failure_kind.as_deref(),
-            record.failure_class.as_deref(),
-            record.is_actionable,
-        );
-        let is_success_like = prompt_shared::prompt_invocation_status_is_success_like(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-        ) && classification.failure_class == FailureClass::None;
-        if is_success_like {
-            entry.success_count += 1;
-        } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-            entry.in_flight_count += 1;
-            entry
-                .in_flight_phase_counts
-                .increment_phase_name(record.live_phase.as_deref());
-        } else if prompt_shared::prompt_invocation_status_counts_toward_terminal_totals(
-            record.status.as_deref(),
-        ) && classification.failure_class != FailureClass::None
-        {
-            entry.failure_count += 1;
-        }
-        let latency_status = if is_success_like {
-            Some("success")
-        } else {
-            record.status.as_deref()
-        };
-        if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-            entry.record_total_latency_sample(record.t_total_ms);
-        }
-        entry.record_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
-        entry.record_first_response_byte_total_sample(
-            record.t_req_read_ms,
-            record.t_req_parse_ms,
-            record.t_upstream_connect_ms,
-            record.t_upstream_ttfb_ms,
-        );
-        entry.record_first_token_sample(record.first_token_ms);
-        add_optional_token_components(
-            entry,
-            record.total_tokens,
-            record.input_tokens,
-            record.output_tokens,
-            record.cache_input_tokens,
-            record.reasoning_tokens,
-        );
-        let cost = record.cost.unwrap_or(0.0);
-        entry.total_cost += cost;
-        if invocation_counts_toward_non_success_usage(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-            record.failure_kind.as_deref(),
-            record.failure_class.as_deref(),
-            record.is_actionable,
-        ) {
-            entry.non_success_cost += cost;
-        }
+        add_exact_record_to_timeseries_aggregate(
+            aggregates.entry(bucket_epoch).or_default(),
+            &record,
+        )?;
     }
 
     // Fill every bucket that intersects the requested range using reporting-timezone
@@ -463,6 +408,85 @@ pub(crate) async fn fetch_timeseries_query(
     };
 
     Ok(Json(response))
+}
+
+async fn fetch_timeseries_from_postgres(
+    state: Arc<AppState>,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    range_window: RangeWindow,
+    bucket_selection: TimeseriesBucketSelection,
+    upstream_account_id: Option<i64>,
+    snapshot_id: i64,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let fact_scope = match (source_scope, upstream_account_id) {
+        (InvocationSourceScope::All, None) => AnalyticsFactScope::All,
+        (InvocationSourceScope::ProxyOnly, None) => AnalyticsFactScope::ProxyOnly,
+        (InvocationSourceScope::All, Some(account_id)) => AnalyticsFactScope::Account(account_id),
+        (InvocationSourceScope::ProxyOnly, Some(account_id)) => {
+            AnalyticsFactScope::AccountProxyOnly(account_id)
+        }
+    };
+    let read_query =
+        AnalyticsFactReadQuery::for_range(fact_scope, range_window.start, range_window.end)
+            .map_err(AnalyticsReadError::into_api_error)?
+            .with_source_snapshot_id(snapshot_id)
+            .map_err(AnalyticsReadError::into_api_error)?;
+    let snapshot = query_bounded_facts(&state.pg_analytics, read_query)
+        .await
+        .map_err(AnalyticsReadError::into_api_error)?;
+    let fact_count = snapshot.facts.len();
+    let mut records = Vec::with_capacity(snapshot.facts.len());
+    for fact in snapshot.facts {
+        validate_fact_for_projection(&fact).map_err(AnalyticsReadError::into_api_error)?;
+        records.push(analytics_fact_to_invocation_record(fact));
+    }
+    let db_runtime_records = collect_in_flight_aggregate_records(&records);
+    let mut aggregates = BTreeMap::new();
+    let (fill_start_epoch, fill_end_epoch) = fill_timeseries_buckets(
+        &mut aggregates,
+        range_window.start,
+        range_window.end,
+        bucket_selection.bucket_seconds,
+        reporting_tz,
+    )?;
+    add_exact_records_to_timeseries_aggregates(
+        &mut aggregates,
+        records,
+        bucket_selection.bucket_seconds,
+        reporting_tz,
+    )?;
+    overlay_runtime_timeseries_in_flight(
+        state.as_ref(),
+        &mut aggregates,
+        source_scope,
+        upstream_account_id,
+        range_window.start,
+        range_window.end,
+        bucket_selection.bucket_seconds,
+        reporting_tz,
+        &db_runtime_records,
+    )?;
+    debug!(
+        route = "timeseries_http_or_topic",
+        builder = "postgres_bounded_fact_pages",
+        response_source = "postgres_analytics_facts",
+        snapshot_id,
+        fact_count,
+        upstream_account_id,
+        "built timeseries from one fenced PostgreSQL fact snapshot"
+    );
+    build_timeseries_response(
+        range_window.start,
+        range_window.display_end,
+        bucket_selection.bucket_seconds,
+        snapshot_id,
+        bucket_selection,
+        aggregates,
+        fill_start_epoch,
+        fill_end_epoch,
+        reporting_tz,
+    )
 }
 
 pub(crate) async fn fetch_timeseries_for_account(
@@ -586,7 +610,7 @@ pub(crate) async fn fetch_timeseries_for_account(
             add_exact_record_to_timeseries_aggregate(
                 aggregates.entry(bucket_epoch).or_default(),
                 &record,
-            );
+            )?;
         }
         let memory_overlay_count = add_pending_timeseries_deltas(
             state.as_ref(),
@@ -940,66 +964,12 @@ pub(crate) async fn fetch_timeseries_for_account(
                 upstream_account_id,
             )
             .await?;
-        for row in archived_rows {
-            let bucket_epoch =
-                align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-            if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                entry.total_count += row.total_count;
-                entry.success_count += row.success_count;
-                entry.failure_count += row.failure_count;
-                entry.in_flight_count += row.in_flight_count;
-                entry.total_tokens += row.total_tokens;
-                entry.input_tokens += row.input_tokens;
-                entry.output_tokens += row.output_tokens;
-                entry.cache_input_tokens += row.cache_input_tokens;
-                entry.reasoning_tokens += row.reasoning_tokens;
-                if row.total_tokens > 0 {
-                    entry.token_components_observed = true;
-                }
-                entry.total_cost += row.total_cost;
-                entry.non_success_cost += row.non_success_cost;
-                entry.total_latency_sample_count += row.total_latency_sample_count;
-                entry.total_latency_sum_ms += row.total_latency_sum_ms;
-                entry.first_byte_sample_count += row.first_byte_sample_count;
-                entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
-                entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
-                    decode_approx_histogram(&row.first_byte_histogram)
-                } else {
-                    let mut merged = entry.first_byte_histogram.clone();
-                    merge_approx_histogram_into(
-                        &mut merged,
-                        &decode_approx_histogram(&row.first_byte_histogram),
-                    )?;
-                    merged
-                };
-                entry.first_response_byte_total_sample_count +=
-                    row.first_response_byte_total_sample_count;
-                entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
-                entry.first_response_byte_total_histogram =
-                    if entry.first_response_byte_total_histogram.is_empty() {
-                        decode_approx_histogram(&row.first_response_byte_total_histogram)
-                    } else {
-                        let mut merged = entry.first_response_byte_total_histogram.clone();
-                        merge_approx_histogram_into(
-                            &mut merged,
-                            &decode_approx_histogram(&row.first_response_byte_total_histogram),
-                        )?;
-                        merged
-                    };
-                entry.first_token_sample_count += row.first_token_sample_count;
-                entry.first_token_sum_ms += row.first_token_sum_ms;
-                entry.first_token_histogram = if entry.first_token_histogram.is_empty() {
-                    decode_approx_histogram(&row.first_token_histogram)
-                } else {
-                    let mut merged = entry.first_token_histogram.clone();
-                    merge_approx_histogram_into(
-                        &mut merged,
-                        &decode_approx_histogram(&row.first_token_histogram),
-                    )?;
-                    merged
-                };
-            }
-        }
+        add_rollup_rows_to_timeseries_aggregates(
+            &mut aggregates,
+            archived_rows,
+            bucket_seconds,
+            reporting_tz,
+        )?;
     }
     overlay_runtime_timeseries_in_flight(
         state.as_ref(),
@@ -1120,63 +1090,15 @@ pub(crate) async fn build_timeseries_hourly_rollup_baseline(
         Vec::new()
     };
 
-    for row in hourly_rows.into_iter().chain(archived_hourly_rows) {
-        let bucket_epoch =
-            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += row.total_count;
-        entry.success_count += row.success_count;
-        entry.failure_count += row.failure_count;
-        entry.total_tokens += row.total_tokens;
-        entry.input_tokens += row.input_tokens;
-        entry.output_tokens += row.output_tokens;
-        entry.cache_input_tokens += row.cache_input_tokens;
-        entry.reasoning_tokens += row.reasoning_tokens;
-        if row.total_tokens > 0 {
-            entry.token_components_observed = true;
-        }
-        entry.total_cost += row.total_cost;
-        entry.non_success_cost += row.non_success_cost;
-        entry.total_latency_sample_count += row.total_latency_sample_count;
-        entry.total_latency_sum_ms += row.total_latency_sum_ms;
-        entry.first_byte_sample_count += row.first_byte_sample_count;
-        entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
-        entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
-            decode_approx_histogram(&row.first_byte_histogram)
-        } else {
-            let mut merged = entry.first_byte_histogram.clone();
-            merge_approx_histogram_into(
-                &mut merged,
-                &decode_approx_histogram(&row.first_byte_histogram),
-            )?;
-            merged
-        };
-        entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
-        entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
-        entry.first_response_byte_total_histogram =
-            if entry.first_response_byte_total_histogram.is_empty() {
-                decode_approx_histogram(&row.first_response_byte_total_histogram)
-            } else {
-                let mut merged = entry.first_response_byte_total_histogram.clone();
-                merge_approx_histogram_into(
-                    &mut merged,
-                    &decode_approx_histogram(&row.first_response_byte_total_histogram),
-                )?;
-                merged
-            };
-        entry.first_token_sample_count += row.first_token_sample_count;
-        entry.first_token_sum_ms += row.first_token_sum_ms;
-        entry.first_token_histogram = if entry.first_token_histogram.is_empty() {
-            decode_approx_histogram(&row.first_token_histogram)
-        } else {
-            let mut merged = entry.first_token_histogram.clone();
-            merge_approx_histogram_into(
-                &mut merged,
-                &decode_approx_histogram(&row.first_token_histogram),
-            )?;
-            merged
-        };
-    }
+    add_invocation_rollup_rows_to_timeseries_aggregates(
+        &mut aggregates,
+        hourly_rows
+            .into_iter()
+            .chain(archived_hourly_rows)
+            .collect(),
+        bucket_seconds,
+        reporting_tz,
+    )?;
     let db_runtime_records = if include_runtime {
         collect_in_flight_aggregate_records(&exact_records)
     } else {
@@ -1194,7 +1116,7 @@ pub(crate) async fn build_timeseries_hourly_rollup_baseline(
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
         if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            add_exact_record_to_timeseries_aggregate(entry, &record);
+            add_exact_record_to_timeseries_aggregate(entry, &record)?;
         }
     }
 

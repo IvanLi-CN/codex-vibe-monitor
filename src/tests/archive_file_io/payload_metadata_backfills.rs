@@ -27,6 +27,26 @@ async fn backfill_proxy_prompt_cache_keys_updates_payload_and_is_idempotent() {
     )
     .await;
 
+    let invocation_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM codex_invocations WHERE invoke_id = 'proxy-pck-backfill-1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("query invocation before metadata backfill");
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin initial analytics event transaction");
+    crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+        tx.as_mut(),
+        invocation_id,
+    )
+    .await
+    .expect("publish initial invocation analytics event");
+    tx.commit()
+        .await
+        .expect("commit initial analytics event transaction");
+
     let summary_first = backfill_proxy_prompt_cache_keys(&pool, None)
         .await
         .expect("first prompt cache key backfill should succeed");
@@ -59,6 +79,45 @@ async fn backfill_proxy_prompt_cache_keys_updates_payload_and_is_idempotent() {
         payload_json.get("codexSessionId").is_none(),
         "legacy codexSessionId key should be removed during backfill"
     );
+
+    let change_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM analytics_change_events WHERE entity_key = 'invocation:proxy:' || (SELECT id FROM codex_invocations WHERE invoke_id = ?1) AND event_kind = 'upsert'",
+    )
+    .bind("proxy-pck-backfill-1")
+    .fetch_one(&pool)
+    .await
+    .expect("query prompt-cache analytics change event");
+    assert_eq!(
+        change_count, 2,
+        "metadata backfill must publish a distinct event after an earlier invocation event"
+    );
+
+    let latest_fact_json: String = sqlx::query_scalar(
+        "SELECT fact_json FROM analytics_change_events WHERE entity_key = 'invocation:proxy:' || (SELECT id FROM codex_invocations WHERE invoke_id = ?1) AND event_kind = 'upsert' ORDER BY change_id DESC LIMIT 1",
+    )
+    .bind("proxy-pck-backfill-1")
+    .fetch_one(&pool)
+    .await
+    .expect("query latest prompt-cache analytics fact");
+    let latest_fact: Value =
+        serde_json::from_str(&latest_fact_json).expect("decode latest analytics fact");
+    assert_eq!(
+        latest_fact["promptCacheKeyDigest"],
+        format!("sha256:{:x}", Sha256::digest(b"pck-backfill-1"))
+    );
+    assert_ne!(
+        latest_fact["promptCacheKeyDigest"],
+        Value::String("pck-backfill-1".to_string()),
+        "analytics journal must not persist the raw prompt-cache key"
+    );
+
+    let conversation_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'pck-backfill-1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count backfilled prompt-cache conversation row");
+    assert_eq!(conversation_count, 1);
 
     let summary_second = backfill_proxy_prompt_cache_keys(&pool, None)
         .await
@@ -425,6 +484,14 @@ async fn backfill_proxy_reasoning_efforts_updates_payload_and_is_idempotent() {
             .expect("query reasoning backfilled payload");
     let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
     assert_eq!(payload_json["reasoningEffort"], "high");
+    let change_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM analytics_change_events WHERE entity_key = 'invocation:proxy:' || (SELECT id FROM codex_invocations WHERE invoke_id = ?1) AND event_kind = 'upsert'",
+    )
+    .bind("proxy-reasoning-backfill-1")
+    .fetch_one(&pool)
+    .await
+    .expect("query reasoning analytics change event");
+    assert_eq!(change_count, 1);
 
     let summary_second = backfill_proxy_reasoning_efforts(&pool, None)
         .await

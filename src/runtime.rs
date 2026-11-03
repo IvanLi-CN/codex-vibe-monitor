@@ -1035,6 +1035,9 @@ pub(crate) async fn run() -> Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::from_sources(&cli)?;
+    if let Some(command) = selected_analytics_replica_command(&cli) {
+        return run_analytics_replica_cli(&config, command).await;
+    }
     if let Some(CliCommand::Maintenance(MaintenanceCliArgs {
         command: MaintenanceCommand::PreparePerformanceIndexes(options),
     })) = &cli.command
@@ -1050,6 +1053,14 @@ pub(crate) async fn run() -> Result<()> {
     else {
         bail!("service runtime is already active");
     };
+    let pg_analytics = Arc::new(PgAnalyticsRuntime::initialize(&config).await);
+    if let Some(unavailable) = pg_analytics.unavailable_reason() {
+        warn!(
+            backend = %unavailable.backend,
+            reason = %unavailable.reason,
+            "analytics backend is unavailable; preserving unavailable semantics"
+        );
+    }
     runtime_lock.publish_role("service:ownership-v1:initializing")?;
     let spawn_background_hourly_rollup_bootstrap =
         should_spawn_background_startup_hourly_rollup_bootstrap(&cli);
@@ -1249,6 +1260,7 @@ pub(crate) async fn run() -> Result<()> {
         let state = Arc::new(AppState {
             system_storage: Arc::new(SystemStorageRuntime::new(&config)),
             config: config.clone(),
+            pg_analytics: pg_analytics.clone(),
             pool: pool.clone(),
             process_started_at_utc,
             observability,

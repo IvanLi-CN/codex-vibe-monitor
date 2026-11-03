@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Version PostgreSQL analytics replica and SQLite source-journal fact-date semantics, mark existing state and events as legacy, and require a separately authorized bounded rebuild before service eligibility.",
+    "release_unit_description": "PG18 analytics fact-date compatibility and replica bootstrap safety follow-up.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "SQLite analytics source-journal event semantics, PostgreSQL analytics_replica_state semantic-version marker, normalized analytics facts, parallel-work membership, applied-change journal, and replica checkpoints.",
+    "storage_implementation": "PostgreSQL cvm_analytics schema populated from the existing SQLite analytics source journal.",
+    "source_compatibility_range": {
+      "from_program_versions": "Supported 0.2.x schemas with no fact_date_semantics_version column or with legacy version 1 state.",
+      "to_program_version": "Candidate release implementing REQ-PG18-006.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "source-ddl-001",
+        "description": "The application ensures an additive fact_date_semantics_version column on the SQLite source journal with default 1. Existing events and writers that omit the column remain explicitly legacy; current writers publish version 2. Journal event version 1 and fact identity are unchanged.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "ddl-001",
+        "description": "The schema owner applies the reviewed additive fact_date_semantics_version column with default 1 for an existing replica table; fresh tables declare the current default 2. Application startup and maintenance commands never execute this DDL.",
+        "order": 2,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "The dedicated maintenance role serializes explicit bootstrap, clears facts, applied changes, parallel-work keys, and checkpoints in one bounded target transaction sequence, rebuilds current-semantic facts, and publishes version 2 only after the baseline and source acknowledgement commit.",
+        "order": 3,
+        "depends_on": [
+          "source-ddl-001",
+          "ddl-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "No automatic historical fact backfill or query/rollup transformation runs. Existing facts are replaced only by an explicitly invoked bounded bootstrap after the schema-owner step; fact identity and journal event version 1 remain unchanged.",
+        "order": 4,
+        "depends_on": [
+          "source-ddl-001",
+          "ddl-001",
+          "dml-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "source-ddl-001",
+      "ddl-001",
+      "dml-001",
+      "backfill-001"
+    ],
+    "progress_signals": [
+      "The source journal exposes fact-date semantics version 1 for retained legacy events and version 2 for current writes.",
+      "pg_catalog confirms the compatibility column before maintenance bootstrap begins.",
+      "Replica status exposes bootstrapping, caught_up, invalidated, blocked, and service_eligible state with the semantic version and checkpoints.",
+      "The explicit bootstrap lock and bounded batch limits remain observable in maintenance output and failure details."
+    ],
+    "pause_points": [
+      "After source-journal migration, schema-owner DDL, and before maintenance grants or bootstrap.",
+      "After target cleanup/checkpoint reset and before each bounded snapshot batch.",
+      "After the bounded rebuild and before source acknowledgement publishes eligibility."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "Earlier programs may ignore the additive source-journal and replica-state columns, but their invocation events are marked legacy and a current v2 consumer invalidates before applying them; the current v2 bootstrap keeps the shared legacy-visible service_eligible flag false so earlier readers fail closed. No rollback removes either column or marks corrected facts service eligible under legacy semantics.",
+    "faulty_release_recovery": "A newer compatible program re-enters the explicit owner-schema step if required, then reruns the serialized maintenance bootstrap forward. A failed bootstrap leaves the target unavailable or blocked and never silently enables reads; backup restore remains separate disaster recovery.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": []
+    },
+    "minor": {
+      "required_test_evidence": [
+        "Deterministic unit contracts cover Shanghai date boundaries, source-journal legacy/current markers, pre-DML rejection of legacy invocation events, version eligibility, CAS invalidation, target cleanup, advisory-lock SQL, and unchanged fact/journal identities.",
+        "The explicitly ignored PostgreSQL fixture test verifies owner/app/maintenance role separation, pg_catalog visibility, advisory-lock contention, and bounded target reset against a disposable database.",
+        "A stopped or failed bootstrap remains unavailable and can be repaired forward by a later explicit bootstrap without automatic historical backfill."
+      ]
+    },
+    "major": {
+      "required_test_evidence": []
+    }
+  }
+}

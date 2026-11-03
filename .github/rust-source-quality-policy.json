@@ -99,7 +99,7 @@
     {
       "path": "src/tests/lightweight/lightweight_test_support.rs",
       "role": "test_helper",
-      "line_budget": 458,
+      "line_budget": 461,
       "next_module_workstream": "Split lightweight test support by configuration, filesystem fixtures, and retention database builders."
     },
     {
@@ -195,7 +195,7 @@
     {
       "path": "src/tests/stateful_sqlite/oauth_timeout_and_stream_lifecycle.rs",
       "role": "test_helper",
-      "line_budget": 941,
+      "line_budget": 942,
       "next_module_workstream": "Maintain the completed OAuth timeout, handshake, first-chunk, header, and stream-lifecycle fixtures below the test-helper target."
     },
     {
@@ -459,7 +459,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/account_capabilities_attempts_and_import_matching.rs",
       "role": "test_helper",
-      "line_budget": 1542,
+      "line_budget": 1543,
       "next_module_workstream": "Maintain request capability routing, account attempt filters, import matching, and their OAuth/account fixtures."
     },
     {

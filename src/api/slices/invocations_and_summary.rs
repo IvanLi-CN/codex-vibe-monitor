@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 use std::{fs, io};
 use tracing::{debug, info};
 
+mod invocation_projection_sql;
 mod invocation_query;
 #[path = "invocation_timeline.rs"]
 mod invocation_timeline;
@@ -172,6 +173,11 @@ pub(crate) use invocation_query::{
     resolve_invocation_snapshot_id, resolve_invocation_snapshot_id_on_connection,
 };
 
+pub(crate) use invocation_projection_sql::{
+    INVOCATION_FAILURE_KIND_SQL, INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL, INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL,
+    invocation_resolved_failure_class_sql_for,
+};
 pub(crate) use invocation_query::build_invocation_filters;
 pub(crate) use invocation_timeline::*;
 pub(crate) use invocation_timing::{
@@ -189,7 +195,6 @@ pub(crate) const INVOCATION_COMPACTION_REQUEST_KIND_SQL: &str = "CASE WHEN json_
 pub(crate) const INVOCATION_COMPACTION_RESPONSE_KIND_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionResponseKind') AS TEXT) END";
 pub(crate) const INVOCATION_IMAGE_INTENT_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.imageIntent') AS TEXT) END";
-pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind)";
 pub(crate) const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
 pub(crate) const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
@@ -201,14 +206,15 @@ pub(crate) const INVOCATION_REQUEST_MODEL_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requestModel') AS TEXT) END";
 pub(crate) const INVOCATION_RESPONSE_MODEL_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseModel') AS TEXT) END";
-pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.upstreamAccountId') = 'integer' THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) WHEN json_valid(payload) AND json_type(payload, '$.upstreamAccountId') = 'text' AND TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT)) <> '' AND (TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT)) NOT GLOB '*[^0-9]*' OR (SUBSTR(TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT)), 1, 1) IN ('-', '+') AND LENGTH(TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT))) > 1 AND SUBSTR(TRIM(CAST(json_extract(payload, '$.upstreamAccountId') AS TEXT)), 2) NOT GLOB '*[^0-9]*')) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_INDEX_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL: &str = "COALESCE((SELECT NULLIF(TRIM(sample.plan_type), '') FROM pool_upstream_account_limit_samples sample WHERE sample.account_id = CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AND sample.plan_type IS NOT NULL AND TRIM(sample.plan_type) <> '' ORDER BY sample.captured_at DESC, sample.id DESC LIMIT 1), (SELECT NULLIF(TRIM(account.plan_type), '') FROM pool_upstream_accounts account WHERE account.id = CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END))";
 pub(crate) const INVOCATION_REASONING_EFFORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text' THEN json_extract(payload, '$.reasoningEffort') END";
 pub(crate) const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
 pub(crate) const INVOCATION_REQUEST_COMPRESSION_ALGORITHM_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requestCompressionAlgorithm') AS TEXT) END";
 pub(crate) const INVOCATION_DOWNSTREAM_STATUS_CODE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamStatusCode') AS INTEGER) END";
-pub(crate) const INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
+pub(crate) const INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.downstreamErrorMessage') = 'text' THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
 pub(crate) const INVOCATION_TRANSPORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.transport') = 'text' THEN json_extract(payload, '$.transport') END";
 pub(crate) const INVOCATION_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'     THEN json_extract(payload, '$.serviceTier')   WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'     THEN json_extract(payload, '$.service_tier') END";
 pub(crate) const INVOCATION_BILLING_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'     THEN json_extract(payload, '$.billingServiceTier')   WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'     THEN json_extract(payload, '$.billing_service_tier') END";
@@ -423,92 +429,6 @@ fn load_invocation_anchor_runtime_records(
         )));
     }
     Ok(Some(snapshot.runtime_records.clone()))
-}
-
-// Legacy records can carry `failure_class=none` or NULL while still representing failures.
-// Keep classification consistent with `resolve_failure_classification` without requiring a
-// backfill pass to complete before the summary + filters become accurate.
-pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
-    "CASE ",
-    "  WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort') ",
-    "    THEN LOWER(TRIM(COALESCE(failure_class, ''))) ",
-    "  ELSE ",
-    "    CASE ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'warning_success' ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed' ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%' ",
-    "        OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%' ",
-    "        THEN 'client_abort' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429' ",
-    "        OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'upstream_http_429' ",
-    "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing') ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%' ",
-    "        OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429') ",
-    "        OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') ",
-    "        THEN 'client_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response stream reported failure%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%' ",
-    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' ",
-    "        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' ",
-    "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') ",
-    "        THEN 'none' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
-    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
-    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
-    "        THEN 'none' ",
-    "      ELSE 'service_failure' ",
-    "    END ",
-    "END"
-);
-
-fn invocation_resolved_failure_class_sql_for(invocation_ref: &str) -> String {
-    // The shared expression is unqualified for its many single-table callers. This query joins
-    // attempt rows, so every invocation column must be bound to the invocation alias.
-    let mut sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL.to_string();
-    for column in [
-        "failure_class",
-        "failure_kind",
-        "error_message",
-        "payload",
-        "status",
-    ] {
-        sql = sql.replace(column, &format!("{invocation_ref}.{column}"));
-    }
-    sql
 }
 
 fn has_positive_timing(values: &[Option<f64>]) -> bool {
@@ -1528,9 +1448,9 @@ pub(crate) fn runtime_overlay_total_delta(
     runtime_records: &[ApiInvocation],
     db_runtime_keys: &HashSet<(String, String)>,
     db_terminal_keys: &HashSet<(String, String)>,
-) -> (RuntimeSummaryOverlayDelta, usize, usize) {
+) -> Result<(RuntimeSummaryOverlayDelta, usize, usize), ApiError> {
     if runtime_records.is_empty() {
-        return (RuntimeSummaryOverlayDelta::default(), 0, 0);
+        return Ok((RuntimeSummaryOverlayDelta::default(), 0, 0));
     }
     let runtime_by_key = runtime_records
         .iter()
@@ -1549,8 +1469,10 @@ pub(crate) fn runtime_overlay_total_delta(
             })
         })
         .count();
+    let stale_db_runtime_count = i64::try_from(stale_db_runtime_count)
+        .map_err(|_| summary_live_numeric_overflow("stale runtime count"))?;
     let mut delta = RuntimeSummaryOverlayDelta {
-        total_count: -(stale_db_runtime_count as i64),
+        total_count: -stale_db_runtime_count,
         ..RuntimeSummaryOverlayDelta::default()
     };
     let mut runtime_new_count = 0_usize;
@@ -1562,15 +1484,17 @@ pub(crate) fn runtime_overlay_total_delta(
         }
         let has_db_runtime_row = db_runtime_keys.contains(key);
         if !has_db_runtime_row {
-            delta.total_count += 1;
-            runtime_new_count += 1;
+            checked_summary_live_add_i64(&mut delta.total_count, 1, "runtime total count")?;
+            runtime_new_count = runtime_new_count
+                .checked_add(1)
+                .ok_or_else(|| summary_live_numeric_overflow("runtime new count"))?;
         }
         if runtime_record_is_in_flight(record) {
             continue;
         }
-        delta.add_terminal_record(record);
+        delta.add_terminal_record(record)?;
     }
-    (delta, runtime_new_count, stale_db_runtime_count)
+    Ok((delta, runtime_new_count, stale_db_runtime_count as usize))
 }
 
 #[derive(Debug, Default)]
@@ -1591,29 +1515,74 @@ pub(crate) struct RuntimeSummaryOverlayDelta {
 }
 
 impl RuntimeSummaryOverlayDelta {
-    fn add_terminal_record(&mut self, record: &ApiInvocation) {
-        self.total_tokens += record.total_tokens.unwrap_or_default();
-        self.total_cost += record.cost.unwrap_or_default();
-        self.cache_write_tokens +=
-            resolve_invocation_cache_write_tokens(record).unwrap_or_default();
-        self.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
-        self.output_tokens += record.output_tokens.unwrap_or_default();
+    fn add_terminal_record(&mut self, record: &ApiInvocation) -> Result<(), ApiError> {
+        for (field, value) in [
+            ("runtime total tokens", record.total_tokens),
+            ("runtime input tokens", record.input_tokens),
+            ("runtime cache input tokens", record.cache_input_tokens),
+            ("runtime output tokens", record.output_tokens),
+            (
+                "runtime cache write tokens",
+                resolve_invocation_cache_write_tokens(record),
+            ),
+        ] {
+            if value.is_some_and(|value| value < 0) {
+                return Err(summary_live_numeric_overflow(field));
+            }
+        }
+        let cost = record.cost.unwrap_or_default();
+        if !cost.is_finite() || cost < 0.0 {
+            return Err(summary_live_numeric_overflow("runtime total cost"));
+        }
+        checked_summary_live_add_i64(
+            &mut self.total_tokens,
+            record.total_tokens.unwrap_or_default(),
+            "runtime total tokens",
+        )?;
+        checked_summary_live_add(&mut self.total_cost, cost, "runtime total cost")?;
+        checked_summary_live_add_i64(
+            &mut self.cache_write_tokens,
+            resolve_invocation_cache_write_tokens(record).unwrap_or_default(),
+            "runtime cache write tokens",
+        )?;
+        checked_summary_live_add_i64(
+            &mut self.cache_input_tokens,
+            record.cache_input_tokens.unwrap_or_default(),
+            "runtime cache input tokens",
+        )?;
+        checked_summary_live_add_i64(
+            &mut self.output_tokens,
+            record.output_tokens.unwrap_or_default(),
+            "runtime output tokens",
+        )?;
         let failure_class = normalized_runtime_text(record.failure_class.as_deref());
         if failure_class == "none" && runtime_record_is_success_for_summary(record) {
-            self.success_count += 1;
+            checked_summary_live_add_i64(&mut self.success_count, 1, "runtime success count")?;
         }
         match failure_class.as_str() {
             "service_failure" => {
-                self.failure_count += 1;
-                self.service_failure_count += 1;
+                checked_summary_live_add_i64(&mut self.failure_count, 1, "runtime failure count")?;
+                checked_summary_live_add_i64(
+                    &mut self.service_failure_count,
+                    1,
+                    "runtime service failure count",
+                )?;
             }
             "client_failure" => {
-                self.failure_count += 1;
-                self.client_failure_count += 1;
+                checked_summary_live_add_i64(&mut self.failure_count, 1, "runtime failure count")?;
+                checked_summary_live_add_i64(
+                    &mut self.client_failure_count,
+                    1,
+                    "runtime client failure count",
+                )?;
             }
             "client_abort" => {
-                self.failure_count += 1;
-                self.client_abort_count += 1;
+                checked_summary_live_add_i64(&mut self.failure_count, 1, "runtime failure count")?;
+                checked_summary_live_add_i64(
+                    &mut self.client_abort_count,
+                    1,
+                    "runtime client abort count",
+                )?;
             }
             _ => {}
         }
@@ -1634,13 +1603,16 @@ impl RuntimeSummaryOverlayDelta {
                 None => Some(total_ms),
             };
         }
+        Ok(())
     }
 }
 
 pub(crate) fn runtime_record_is_success_for_summary(record: &ApiInvocation) -> bool {
     let status = normalized_runtime_text(record.status.as_deref());
     status == "success"
+        || status == "succeeded"
         || status == "completed"
+        || status == "ok"
         || status == INVOCATION_STATUS_WARNING_SUCCESS
         || (status == "http_200"
             && normalized_runtime_text(record.error_message.as_deref()).is_empty())
@@ -2964,18 +2936,20 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
     let totals_sql = format!(
         "SELECT \
          COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'completed', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens, \
-         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens, \
+         COALESCE(SUM({valid_cache_write_tokens_sql}), 0) AS cache_write_tokens, \
+         COALESCE(SUM({valid_cache_input_tokens_sql}), 0) AS cache_input_tokens, \
          COALESCE(SUM(output_tokens), 0) AS output_tokens, \
          MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
          FROM codex_invocations WHERE 1 = 1",
         status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
         resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
+        valid_cache_write_tokens_sql = INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL,
+        valid_cache_input_tokens_sql = INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL,
     );
     let mut totals_query = QueryBuilder::new(totals_sql);
     apply_invocation_records_filters(
@@ -3033,7 +3007,7 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
             &runtime_records,
             &db_runtime_keys,
             &db_terminal_keys,
-        );
+        )?;
         if runtime_new_count > 0 || stale_db_runtime_count > 0 {
             debug!(
                 endpoint = "invocation_summary",
@@ -3046,16 +3020,15 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
     } else {
         RuntimeSummaryOverlayDelta::default()
     };
-    let total_count = (totals.total_count + runtime_overlay_delta.total_count).max(0);
-    let success_count = (totals.success_count + runtime_overlay_delta.success_count).max(0);
-    let failure_count = (totals.failure_count + runtime_overlay_delta.failure_count).max(0);
-    let total_tokens = (totals.total_tokens + runtime_overlay_delta.total_tokens).max(0);
-    let total_cost = totals.total_cost + runtime_overlay_delta.total_cost;
-    let cache_write_tokens =
-        (totals.cache_write_tokens + runtime_overlay_delta.cache_write_tokens).max(0);
-    let cache_input_tokens =
-        (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
-    let output_tokens = (totals.output_tokens + runtime_overlay_delta.output_tokens).max(0);
+    let merged = merge_invocation_summary_totals(&totals, &exception, &runtime_overlay_delta)?;
+    let total_count = merged.total_count;
+    let success_count = merged.success_count;
+    let failure_count = merged.failure_count;
+    let total_tokens = merged.total_tokens;
+    let total_cost = merged.total_cost;
+    let cache_write_tokens = merged.cache_write_tokens;
+    let cache_input_tokens = merged.cache_input_tokens;
+    let output_tokens = merged.output_tokens;
     let max_tokens_per_request = match (
         totals.max_total_tokens,
         runtime_overlay_delta.max_total_tokens,
@@ -3076,21 +3049,7 @@ pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
     } else {
         total_tokens as f64 / total_count as f64
     };
-    let exception_summary = InvocationExceptionSummary {
-        failure_count: (exception.failure_count + runtime_overlay_delta.failure_count).max(0),
-        service_failure_count: (exception.service_failure_count
-            + runtime_overlay_delta.service_failure_count)
-            .max(0),
-        client_failure_count: (exception.client_failure_count
-            + runtime_overlay_delta.client_failure_count)
-            .max(0),
-        client_abort_count: (exception.client_abort_count
-            + runtime_overlay_delta.client_abort_count)
-            .max(0),
-        actionable_failure_count: (exception.actionable_failure_count
-            + runtime_overlay_delta.service_failure_count)
-            .max(0),
-    };
+    let exception_summary = merged.exception;
 
     let response = InvocationSummaryResponse {
         snapshot_id,
@@ -3130,18 +3089,20 @@ async fn build_invocation_summary_on_connection(
     let totals_sql = format!(
         "SELECT \
          COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'completed', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens, \
-         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens, \
+         COALESCE(SUM({valid_cache_write_tokens_sql}), 0) AS cache_write_tokens, \
+         COALESCE(SUM({valid_cache_input_tokens_sql}), 0) AS cache_input_tokens, \
          COALESCE(SUM(output_tokens), 0) AS output_tokens, \
          MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
          FROM codex_invocations WHERE 1 = 1",
         status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
         resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
+        valid_cache_write_tokens_sql = INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL,
+        valid_cache_input_tokens_sql = INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL,
     );
     let mut totals_query = QueryBuilder::new(totals_sql);
     apply_invocation_records_filters(
@@ -3196,21 +3157,20 @@ async fn build_invocation_summary_on_connection(
             runtime_records,
             &db_runtime_keys,
             &db_terminal_keys,
-        )
+        )?
         .0
     } else {
         RuntimeSummaryOverlayDelta::default()
     };
-    let total_count = (totals.total_count + runtime_overlay_delta.total_count).max(0);
-    let success_count = (totals.success_count + runtime_overlay_delta.success_count).max(0);
-    let failure_count = (totals.failure_count + runtime_overlay_delta.failure_count).max(0);
-    let total_tokens = (totals.total_tokens + runtime_overlay_delta.total_tokens).max(0);
-    let total_cost = totals.total_cost + runtime_overlay_delta.total_cost;
-    let cache_write_tokens =
-        (totals.cache_write_tokens + runtime_overlay_delta.cache_write_tokens).max(0);
-    let cache_input_tokens =
-        (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
-    let output_tokens = (totals.output_tokens + runtime_overlay_delta.output_tokens).max(0);
+    let merged = merge_invocation_summary_totals(&totals, &exception, &runtime_overlay_delta)?;
+    let total_count = merged.total_count;
+    let success_count = merged.success_count;
+    let failure_count = merged.failure_count;
+    let total_tokens = merged.total_tokens;
+    let total_cost = merged.total_cost;
+    let cache_write_tokens = merged.cache_write_tokens;
+    let cache_input_tokens = merged.cache_input_tokens;
+    let output_tokens = merged.output_tokens;
     let max_tokens_per_request = match (
         totals.max_total_tokens,
         runtime_overlay_delta.max_total_tokens,
@@ -3231,21 +3191,7 @@ async fn build_invocation_summary_on_connection(
     } else {
         total_tokens as f64 / total_count as f64
     };
-    let exception = InvocationExceptionSummary {
-        failure_count: (exception.failure_count + runtime_overlay_delta.failure_count).max(0),
-        service_failure_count: (exception.service_failure_count
-            + runtime_overlay_delta.service_failure_count)
-            .max(0),
-        client_failure_count: (exception.client_failure_count
-            + runtime_overlay_delta.client_failure_count)
-            .max(0),
-        client_abort_count: (exception.client_abort_count
-            + runtime_overlay_delta.client_abort_count)
-            .max(0),
-        actionable_failure_count: (exception.actionable_failure_count
-            + runtime_overlay_delta.service_failure_count)
-            .max(0),
-    };
+    let exception = merged.exception;
     Ok(InvocationSummaryResponse {
         snapshot_id,
         new_records_count,
@@ -5796,7 +5742,7 @@ fn runtime_record_is_success_for_summary_row(row: &UpstreamAccountInvocationPrev
     let status = normalized_runtime_text(Some(row.status.as_str()));
     matches!(
         status.as_str(),
-        "success" | "completed" | INVOCATION_STATUS_WARNING_SUCCESS
+        "success" | "succeeded" | "completed" | "ok" | INVOCATION_STATUS_WARNING_SUCCESS
     ) || (status == "http_200" && normalized_runtime_text(row.error_message.as_deref()).is_empty())
 }
 
@@ -16713,6 +16659,23 @@ pub(crate) struct SummaryLiveAugmentation {
     non_success_tokens: Option<i64>,
 }
 
+#[cfg(test)]
+impl SummaryLiveAugmentation {
+    pub(crate) fn test_fixture() -> Self {
+        Self {
+            in_progress_conversation_count: Some(2),
+            in_progress_retry_conversation_count: Some(1),
+            in_progress_avg_wait_ms: Some(12.5),
+            in_progress_phase_counts: Some(InvocationPhaseCountsResponse {
+                queued: 1,
+                requesting: 1,
+                responding: 0,
+            }),
+            non_success_tokens: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SummaryLiveAugmentationPolicy {
     include_in_progress: bool,
@@ -16933,7 +16896,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
         upstream_account_id: None,
         ..filter.clone()
     };
-    let mut db_ttfb_sum = avg_wait_ms.unwrap_or_default() * avg_wait_sample_count as f64;
+    let mut db_ttfb_sum = summary_live_sum_from_average(avg_wait_ms, avg_wait_sample_count)?;
     for row in &db_runtime_rows {
         let key = (row.invoke_id.clone(), row.occurred_at.clone());
         let Some(runtime_record) = runtime_by_key.get(&key) else {
@@ -16956,10 +16919,16 @@ pub(crate) async fn load_in_progress_summary_snapshot(
             }
             if runtime_record_ttfb_differs(runtime_record.t_upstream_ttfb_ms, row.upstream_ttfb_ms)
             {
-                db_ttfb_sum = (db_ttfb_sum
-                    - normalized_wait_ms(row.upstream_ttfb_ms).unwrap_or_default())
-                .max(0.0)
-                    + normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).unwrap_or_default();
+                checked_summary_live_subtract(
+                    &mut db_ttfb_sum,
+                    normalized_wait_ms(row.upstream_ttfb_ms).unwrap_or_default(),
+                    "runtime replacement wait sum",
+                )?;
+                checked_summary_live_add(
+                    &mut db_ttfb_sum,
+                    normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).unwrap_or_default(),
+                    "runtime replacement wait sum",
+                )?;
                 avg_wait_sample_count =
                     avg_wait_sample_count.saturating_sub(i64::from(
                         normalized_wait_ms(row.upstream_ttfb_ms).is_some(),
@@ -16976,7 +16945,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
             .upstream_ttfb_ms
             .filter(|value| value.is_finite() && *value >= 0.0)
         {
-            db_ttfb_sum -= ttfb_ms;
+            checked_summary_live_subtract(&mut db_ttfb_sum, ttfb_ms, "runtime wait sum")?;
             avg_wait_sample_count = avg_wait_sample_count.saturating_sub(1);
         }
     }
@@ -17016,7 +16985,9 @@ pub(crate) async fn load_in_progress_summary_snapshot(
                 counts
             },
         );
-    let (ttfb_sum, ttfb_count) = runtime_records
+    let mut ttfb_sum = 0.0;
+    let mut ttfb_count = 0_i64;
+    for value in runtime_records
         .iter()
         .filter(|record| {
             !db_runtime_keys.contains_key(&(record.invoke_id.clone(), record.occurred_at.clone()))
@@ -17026,10 +16997,24 @@ pub(crate) async fn load_in_progress_summary_snapshot(
                 .t_upstream_ttfb_ms
                 .filter(|value| value.is_finite() && *value >= 0.0)
         })
-        .fold((0.0, 0_i64), |(sum, count), value| (sum + value, count + 1));
+    {
+        checked_summary_live_add(&mut ttfb_sum, value, "runtime wait sum")?;
+        ttfb_count = ttfb_count
+            .checked_add(1)
+            .ok_or_else(|| summary_live_numeric_overflow("runtime wait sample count"))?;
+    }
     let combined_avg_wait_ms = match (avg_wait_sample_count, ttfb_count) {
         (db_sample_count, runtime_count) if db_sample_count > 0 || runtime_count > 0 => {
-            Some((db_ttfb_sum + ttfb_sum) / (db_sample_count + runtime_count) as f64)
+            let sample_count = db_sample_count
+                .checked_add(runtime_count)
+                .ok_or_else(|| summary_live_numeric_overflow("combined wait sample count"))?;
+            let mut total_sum = db_ttfb_sum;
+            checked_summary_live_add(&mut total_sum, ttfb_sum, "combined wait sum")?;
+            let average = total_sum / sample_count as f64;
+            if !average.is_finite() || average < 0.0 {
+                return Err(summary_live_numeric_overflow("combined wait average"));
+            }
+            Some(average)
         }
         _ => None,
     };
@@ -17077,7 +17062,11 @@ pub(crate) async fn load_live_invocation_ids_in_range(
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(
+                crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(
+                    "codex_invocations",
+                ),
+            )
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -17165,7 +17154,9 @@ async fn query_non_success_tokens_exact_tail(
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(invocation_upstream_account_id_with_attempt_fallback_sql(
+                "codex_invocations",
+            ))
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -17229,7 +17220,9 @@ async fn query_non_success_tokens_unreplayed_live_tail(
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(invocation_upstream_account_id_with_attempt_fallback_sql(
+                "codex_invocations",
+            ))
             .push(" = ")
             .push_bind(upstream_account_id);
     }
@@ -17662,6 +17655,17 @@ impl UpstreamAccountInProgressSummary {
 pub(crate) fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite() && *value >= 0.0)
 }
+
+#[path = "invocations_and_summary_numeric.rs"]
+mod summary_numeric;
+use summary_numeric::{
+    checked_summary_live_add, checked_summary_live_add_i64, checked_summary_live_subtract,
+    merge_invocation_summary_totals, summary_live_numeric_overflow, summary_live_sum_from_average,
+};
+
+#[cfg(test)]
+#[path = "invocations_and_summary_numeric_tests.rs"]
+mod summary_live_numeric_tests;
 
 fn runtime_record_ttfb_differs(left: Option<f64>, right: Option<f64>) -> bool {
     normalized_wait_ms(left) != normalized_wait_ms(right)
@@ -18191,18 +18195,34 @@ fn merge_latest_timed_metric(
 pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
     invocation_ref: &str,
 ) -> String {
+    let payload_account_id_sql =
+        INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.replace("payload", &format!("{invocation_ref}.payload"));
     format!(
-        "COALESCE(\
-           CASE WHEN json_valid({invocation_ref}.payload) \
-             THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) \
-           END, \
-           (SELECT attempt.upstream_account_id \
-              FROM pool_upstream_request_attempts attempt \
-             WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
-               AND attempt.upstream_account_id IS NOT NULL \
-             ORDER BY attempt.attempt_index DESC, attempt.id DESC \
-             LIMIT 1)\
-         )"
+        "COALESCE({payload_account_id_sql}, \
+           {attempt_fallback}\
+         )",
+        attempt_fallback = invocation_upstream_account_id_from_attempt_fallback_sql(invocation_ref)
+    )
+}
+
+pub(crate) fn invocation_upstream_account_id_from_attempt_fallback_sql(
+    invocation_ref: &str,
+) -> String {
+    let normalized_epoch_ms = |reference: &str| {
+        format!(
+            "CAST(ROUND((julianday({reference}.occurred_at, CASE WHEN instr({reference}.occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END) - 2440587.5) * 86400000.0) AS INTEGER)"
+        )
+    };
+    let attempt_epoch_ms = normalized_epoch_ms("attempt");
+    let invocation_epoch_ms = normalized_epoch_ms(invocation_ref);
+    format!(
+        "(SELECT attempt.upstream_account_id \
+           FROM pool_upstream_request_attempts attempt \
+          WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+            AND {attempt_epoch_ms} = {invocation_epoch_ms} \
+            AND attempt.upstream_account_id IS NOT NULL \
+          ORDER BY attempt.attempt_index DESC, attempt.id DESC \
+          LIMIT 1)"
     )
 }
 
@@ -19216,7 +19236,7 @@ where
     };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none'",
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') AND ({failure_class_sql}) = 'none'",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let failure_sql = format!(
@@ -19247,6 +19267,7 @@ where
         sqlite_nonnegative_timing_sql(&format!("({final_first_token_sql})"));
     let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
     let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
+    let valid_cache_input_tokens_sql = INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL;
     let filtered_prompt_cache_key_sql = "filtered_invocations.prompt_cache_key";
     let preaggregated_conversation_created_at_sql = if use_attempt_fallback {
         prompt_cache_conversation_created_at_sql(filtered_prompt_cache_key_sql, source_scope)
@@ -19262,6 +19283,7 @@ where
                 occurred_at,
                 status,
                 total_tokens,
+                input_tokens,
                 cost,
                 cache_input_tokens,
                 payload,
@@ -19387,7 +19409,7 @@ where
             COALESCE(SUM(CASE WHEN {failure_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) AS failure_tokens,
             CAST(COALESCE(SUM(CASE WHEN {failure_sql} THEN COALESCE(cost, 0) ELSE 0 END), 0) AS REAL) AS failure_cost,
             CAST(COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(cost, 0) ELSE 0 END), 0) AS REAL) AS non_success_cost,
-            COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_input_tokens,
+            COALESCE(SUM({valid_cache_input_tokens_sql}), 0) AS cache_input_tokens,
             CAST(COALESCE(SUM(COALESCE(cost, 0)), 0) AS REAL) AS total_cost,
             SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
@@ -20032,8 +20054,10 @@ where
         "0"
     };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let valid_cache_write_tokens_sql = INVOCATION_VALID_CACHE_WRITE_TOKENS_SQL;
+    let valid_cache_input_tokens_sql = INVOCATION_VALID_CACHE_INPUT_TOKENS_SQL;
     let success_like_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none'",
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') AND ({failure_class_sql}) = 'none'",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let success_billed_sql = format!("{success_like_sql} AND cost IS NOT NULL");
@@ -20073,8 +20097,8 @@ where
             COUNT(*) AS request_count,
             COALESCE(SUM(CASE WHEN {success_like_sql} THEN 1 ELSE 0 END), 0) AS success_count,
             COALESCE(SUM(CASE WHEN {failure_count_sql} THEN 1 ELSE 0 END), 0) AS failure_count,
-            COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens,
-            COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_read_tokens,
+            COALESCE(SUM({valid_cache_write_tokens_sql}), 0) AS cache_write_tokens,
+            COALESCE(SUM({valid_cache_input_tokens_sql}), 0) AS cache_read_tokens,
             COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
             CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_input_sql} ELSE 0 END), 0) AS REAL) AS cost_input,
             CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_cache_write_sql} ELSE 0 END), 0) AS REAL) AS cost_cache_write,
@@ -20210,7 +20234,7 @@ async fn query_live_model_performance_duration_overrides(
     let occurred_at_epoch_ms_sql = "(CAST(CASE WHEN instr(occurred_at, 'T') > 0 THEN strftime('%s', occurred_at) ELSE strftime('%s', occurred_at || '+08:00') END AS REAL) * 1000.0)";
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_billed_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL",
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'succeeded', 'completed', 'ok', '{warning_success}') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let range_end_epoch_ms = range.end.timestamp_millis() as f64;
@@ -30551,7 +30575,7 @@ mod dashboard_activity_read_model_tests {
         sqlx::query(
             "CREATE TABLE codex_invocations (\
                 id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, \
-                status TEXT, total_tokens INTEGER, cost REAL, cache_input_tokens INTEGER, \
+                status TEXT, input_tokens INTEGER, total_tokens INTEGER, cost REAL, cache_input_tokens INTEGER, \
                 payload TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT, \
                 is_actionable INTEGER, t_req_read_ms REAL, t_req_parse_ms REAL, \
                 t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, first_token_ms REAL, \
