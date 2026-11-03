@@ -703,7 +703,7 @@ async fn count_decoded_request_snapshot_bytes(
 pub(crate) async fn validate_pool_request_snapshot_transcode(
     snapshot: &PoolReplayBodySnapshot,
     downstream_content_encoding: Option<&str>,
-    request_compression_algorithm: RequestCompressionAlgorithm,
+    _request_compression_algorithm: RequestCompressionAlgorithm,
     max_decoded_bytes: usize,
     snapshot_is_decoded: bool,
 ) -> Result<(), PoolRequestBodyPreparationError> {
@@ -717,11 +717,7 @@ pub(crate) async fn validate_pool_request_snapshot_transcode(
     }
     let downstream_encoding =
         resolve_request_body_content_encoding(snapshot, downstream_content_encoding).await?;
-    let target_encoding =
-        request_compression_algorithm_encoding(request_compression_algorithm, downstream_encoding);
-    if !matches!(downstream_encoding, RequestBodyContentEncoding::Identity)
-        && target_encoding != downstream_encoding
-    {
+    if !matches!(downstream_encoding, RequestBodyContentEncoding::Identity) {
         count_decoded_request_snapshot_bytes(snapshot, downstream_encoding, max_decoded_bytes)
             .await?;
     }
@@ -1409,12 +1405,6 @@ pub(crate) async fn prepare_pool_request_body_for_account_with_oauth_context(
     } else {
         false
     };
-    let large_responses_body_wants_stream = large_responses_body.then(|| {
-        value
-            .get("stream")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    });
     let large_responses_body_rewrite = large_responses_body
         .then(|| {
             if reserve_body_mapping {
@@ -1432,6 +1422,13 @@ pub(crate) async fn prepare_pool_request_body_for_account_with_oauth_context(
             }
         })
         .flatten();
+    let large_responses_body_wants_stream = large_responses_body_rewrite.as_ref().map(|rewrite| {
+        rewrite.forced_stream_true
+            || value
+                .get("stream")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    });
     let rewritten = model_mapping_rewritten
         || service_tier_rewritten
         || compact_reserve_rewrite.is_some()
@@ -1612,6 +1609,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_transcode_validation_rejects_oversized_decoded_follow_snapshot() {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder
+            .write_all(&vec![b'x'; 4096])
+            .expect("write gzip payload");
+        let compressed = Bytes::from(encoder.finish().expect("finish gzip payload"));
+        let snapshot = pool_replay_snapshot_from_bytes_with_memory_threshold(902, compressed, 1)
+            .await
+            .expect("persist file snapshot");
+
+        let error = validate_pool_request_snapshot_transcode(
+            &snapshot,
+            Some("gzip"),
+            RequestCompressionAlgorithm::Follow,
+            1024,
+            false,
+        )
+        .await
+        .expect_err("follow should enforce the decoded body limit");
+        assert_eq!(error.status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
     async fn oauth_transcode_validation_rejects_oversized_decoded_snapshot() {
         let snapshot = PoolReplayBodySnapshot::Memory(Bytes::from(vec![
             b'x';
@@ -1727,6 +1747,7 @@ mod tests {
         )
         .await
         .expect("rewrite large reserve request");
+        assert_eq!(prepared.oauth_responses_wants_stream, Some(true));
         let rewritten = prepared
             .snapshot
             .to_bytes()
@@ -1762,7 +1783,7 @@ mod tests {
         assert!(rewrite.removed_max_output_tokens);
         assert!(rewrite.removed_previous_response_id);
         assert!(rewrite.removed_reasoning_summary_none);
-        assert_eq!(prepared.oauth_responses_wants_stream, Some(false));
+        assert_eq!(prepared.oauth_responses_wants_stream, Some(true));
     }
 
     #[tokio::test]
