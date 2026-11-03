@@ -2525,10 +2525,9 @@ fn prepare_responses_request_body(
         map.insert("instructions".to_string(), Value::String(String::new()));
         rewrite.added_instructions = true;
     }
-    if reserve_request && map.get("store").and_then(Value::as_bool) != Some(false) {
-        map.insert("store".to_string(), Value::Bool(false));
-        rewrite.added_store = true;
-    } else if !map.contains_key("store") {
+    if map.get("store").and_then(Value::as_bool) != Some(false)
+        && (reserve_request || !map.contains_key("store"))
+    {
         map.insert("store".to_string(), Value::Bool(false));
         rewrite.added_store = true;
     }
