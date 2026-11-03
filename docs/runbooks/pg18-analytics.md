@@ -6,11 +6,11 @@
 
 SQLite remains the default analytics backend and the existing state source. `ANALYTICS_BACKEND` accepts `sqlite` or `postgres`; the default is `sqlite`. Selecting `postgres` requires `POSTGRES_DATABASE_URL`. `POSTGRES_MAX_CONNECTIONS` defaults to `5` and must be positive. The connection URL is redacted from configuration debug and serialization output and from PostgreSQL failure diagnostics.
 
-The PostgreSQL foundation only connects, verifies seven pre-provisioned relations plus the `fact_date_semantics_version` compatibility column, and runs a disposable read-only transaction. It does not execute schema DDL, migrate business writes, backfill data, or silently fall back to a heavy SQLite analytics query after PostgreSQL is selected. Its schema contract creates `cvm_analytics.analytics_facts`, `analytics_parallel_work_keys`, `analytics_daily_rollups`, `analytics_hourly_rollups`, `analytics_state`, `analytics_replica_state`, and `analytics_replica_applied_changes`; the initial state rows are `preparing` and `unbootstrapped`.
+The service now executes the PostgreSQL 18.x analytics schema migration through `POSTGRES_MIGRATION_URL`, records an ordered checksum ledger under an advisory lock, then uses the distinct application and maintenance URLs for verification and online bootstrap. The target database is still created by the PostgreSQL container; the application does not create/delete it. It does not migrate business writes, replay archive/gzip history, or silently fall back to a heavy SQLite analytics query after PostgreSQL is selected. Until the SQLite snapshot and journal catch-up converge, `/health/analytics` returns 503 while core `/health` may be 200.
 
 After the corrected v2 bootstrap, the shared `service_eligible` flag remains `FALSE` as a rollback fence for older programs that do not inspect the additive semantic-version column. The current program derives effective eligibility from the v2 marker, caught-up state, baseline, and matching checkpoints. Before an owner-applied compatibility repair or maintenance bootstrap can fail, the fence also moves a previously caught-up state to `bootstrapping`, so current readers fail closed during the bounded rebuild. The SQLite source journal separately marks each change with fact-date semantics version `1` for legacy writers and `2` for current writers while preserving journal event version `1`; a v2 consumer invalidates before target DML when it sees a legacy invocation upsert or tombstone and requires the same bounded bootstrap path. Each PostgreSQL response that combines multiple fact/key reads must perform admission and all of its target queries in one `REPEATABLE READ, READ ONLY` transaction so an in-flight reader observes one complete pre-fence snapshot rather than a partially rebuilt target.
 
-Configuration alone never provisions the schema, copies data, or changes production query routing. Applying `ANALYTICS_BACKEND=postgres` through an owner-approved runtime change and restart initializes the optional PostgreSQL runtime, but the current foundation has no concrete analytics reader, shadow comparison, operator status route, or production read switch. Do not treat `/health` or a successful database connection as proof that analytics reads are serving from PostgreSQL. Keep production enablement gated until a later implementation supplies and validates those surfaces.
+Configuration alone does not create the target database or change production query routing. Applying `ANALYTICS_BACKEND=postgres` through an owner-approved runtime change and restart starts migration and online bootstrap; a successful database connection is insufficient because `/health/analytics` must be ready. Keep production enablement gated until the current readiness and read-path evidence is accepted.
 
 Invocation and attempt writes, credentials and routing, task state, TerminalJournal, and production switching are outside this batch. No guarantee or operational command for those paths is introduced here.
 
@@ -92,6 +92,7 @@ The application configuration example is redacted. `<redacted>` is not a usable 
 
 ```dotenv
 ANALYTICS_BACKEND=sqlite
+POSTGRES_MIGRATION_URL=postgresql://cvm_analytics_migration:<redacted>@pg-analytics.internal:5432/cvm_analytics?sslmode=verify-full&sslrootcert=%2Frun%2Fsecrets%2Fpg-ca.crt
 POSTGRES_DATABASE_URL=postgresql://cvm_analytics_app:<redacted>@pg-analytics.internal:5432/cvm_analytics?sslmode=verify-full&sslrootcert=%2Frun%2Fsecrets%2Fpg-ca.crt
 POSTGRES_ANALYTICS_MAINTENANCE_URL=postgresql://cvm_analytics_maintenance:<redacted>@pg-analytics.internal:5432/cvm_analytics?sslmode=verify-full&sslrootcert=%2Frun%2Fsecrets%2Fpg-ca.crt
 POSTGRES_MAX_CONNECTIONS=5
@@ -181,7 +182,7 @@ Run this sequence only under an owner-approved change window. Do not skip ahead 
    -- Do not grant default privileges; future objects require an explicit review.
    ```
 
-3. **Status:** use PostgreSQL client tools for database status, and set `POSTGRES_ANALYTICS_MAINTENANCE_URL` only for the explicitly authorized `analytics-replica` control command. The foundation does not expose a PostgreSQL status endpoint. `pg_isready` proves that a server accepts connections, not that the application selected PostgreSQL or that a read path is serving. `/health` remains service readiness, not an analytics status check.
+3. **Status:** use `/health/analytics` for the bounded application readiness contract. It returns 200 only after migration, online bootstrap, source/target convergence, and projection verification; migration, retry, retention, permission, checksum, or source-proof failures return 503 with a fixed code and no DSN/raw error. `/health` remains core service readiness.
 
    **Owner authorization required to run these read-only checks. Use a protected service/credential file; do not put secrets in command arguments.**
 

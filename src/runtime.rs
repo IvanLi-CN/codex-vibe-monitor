@@ -840,6 +840,9 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     startup_recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
 ) -> JoinHandle<()> {
     state.startup_ready.store(true, Ordering::Release);
+    state
+        .pg_analytics
+        .spawn_bootstrap_lifecycle(state.pool.clone(), state.shutdown.clone());
     let readiness_at = Instant::now();
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
@@ -1053,14 +1056,6 @@ pub(crate) async fn run() -> Result<()> {
     else {
         bail!("service runtime is already active");
     };
-    let pg_analytics = Arc::new(PgAnalyticsRuntime::initialize(&config).await);
-    if let Some(unavailable) = pg_analytics.unavailable_reason() {
-        warn!(
-            backend = %unavailable.backend,
-            reason = %unavailable.reason,
-            "analytics backend is unavailable; preserving unavailable semantics"
-        );
-    }
     runtime_lock.publish_role("service:ownership-v1:initializing")?;
     let spawn_background_hourly_rollup_bootstrap =
         should_spawn_background_startup_hourly_rollup_bootstrap(&cli);
@@ -1092,6 +1087,10 @@ pub(crate) async fn run() -> Result<()> {
 
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
+        let pg_analytics = Arc::new(PgAnalyticsRuntime::initialize(&config).await);
+        if let Some(unavailable) = pg_analytics.unavailable_reason() {
+            warn!(backend = %unavailable.backend, reason = %unavailable.reason, "analytics backend is unavailable; preserving unavailable semantics");
+        }
         initialize_invocation_identity_cleanup_state(&pool).await?;
         let _maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {

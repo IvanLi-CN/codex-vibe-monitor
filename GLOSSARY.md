@@ -208,3 +208,25 @@ _Avoid_: treating every `gpt-*-luna` model name as Reserve-eligible.
 
 **Reserve Fallback Model Policy**:
 The operator-controlled model eligibility mode for Automatic Reserve Fallback. `upstream` uses only the upstream binding, `upstream_plus_custom` adds administrator exact/glob patterns, and `custom` uses only those patterns. The policy does not change the client model or `gpt-reserve` wire model.
+
+## PostgreSQL Analytics Lifecycle Language
+
+**Business Fact Authority**:
+The SQLite store that owns the service's business facts and remains authoritative when the PostgreSQL analytics target is unavailable.
+_Avoid_: PostgreSQL source of truth, analytics database authority.
+
+**Analytics Replica**:
+A derived PostgreSQL projection of normalized analytics facts and bounded projection state. It may serve analytics reads only after its source coverage, semantic version, and checkpoint contract are valid.
+_Avoid_: PostgreSQL primary, business database, backup.
+
+**Service Eligibility**:
+The state in which an analytics replica is proven complete and compatible enough for the current reader to serve it. A reachable database or existing table is not service eligibility.
+_Avoid_: database readiness, TCP readiness, caught up by itself.
+
+**Bootstrap Fence**:
+The fail-closed state entered before an analytics replica is cleared or rebuilt. It prevents readers from treating a partial or mixed snapshot as a successful analytics result.
+_Avoid_: temporary outage, soft switch, best-effort rebuild.
+
+**Analytics Readiness**:
+The deployment-facing condition that PostgreSQL schema, permissions, replica coverage, projection state, and read-transaction checks all pass. It is distinct from core SQLite service readiness.
+_Avoid_: process liveness, PostgreSQL accepts connections.

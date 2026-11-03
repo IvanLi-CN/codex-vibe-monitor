@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "implementation-verified-current-head-delivery-pending",
+  "change": {
+    "description": "Introduce a deployment-owned PostgreSQL schema/role migration ledger, explicit derived-replica bootstrap, separate analytics readiness, and configuration-first rollback for the optional analytics backend.",
+    "release_unit_description": "Managed PostgreSQL analytics migration and cutover design.",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "The existing analytics response contract and SQLite default remain unchanged. The proposal adds durable PostgreSQL migration state and an additive deployment/readiness contract; older releases are not required to read a newly migrated PostgreSQL target and continue on SQLite within the declared rollback window.",
+      "assessed_at": "2026-11-03T00:00:00+08:00",
+      "evidence": [
+        "docs/adr/0053-pg18-analytics-managed-migration.md",
+        "docs/specs/pg18-analytics/SPEC.md"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": true,
+        "description": "The implementation extends ADR 0051 beyond its accepted pre-provisioned-schema boundary; ADR 0053, SPEC, implementation notes, and runbook now record the managed startup and online bootstrap contract."
+      },
+      "reasoning": "The implemented state is additive and forward-repairable; startup migration, ledger recording, separate analytics readiness, and online bootstrap orchestration are present, with current-head delivery gates still pending.",
+      "reassessed_at": "2026-11-03T00:00:00+08:00",
+      "evidence": [
+        "src/runtime.rs",
+        "src/maintenance/cli.rs",
+        "src/pg_analytics/mod.rs",
+        "docs/adr/0051-pg18-analytics-offload.md",
+        "docs/adr/0053-pg18-analytics-managed-migration.md"
+      ]
+    },
+    "verified": {
+      "impact": "minor",
+      "status": "implementation-verified; current-head-ci-and-review-are-separate-delivery-gates",
+      "verified_at": "2026-11-03",
+      "evidence": [
+        "src/config.rs",
+        "src/pg_analytics/mod.rs",
+        "src/runtime.rs",
+        "src/proxy/request_entry.rs",
+        "docs/adr/0053-pg18-analytics-managed-migration.md",
+        "docs/specs/pg18-analytics/SPEC.md",
+        "docs/runbooks/pg18-analytics.md"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "planned additive analytics readiness condition or separate readiness endpoint; exact owner choice remains open",
+      "supported_consumer_range": "Existing analytics response consumers and SQLite deployments remain unchanged. Deployment consumers must adopt the selected analytics readiness condition before admitting PostgreSQL-dependent traffic.",
+      "evidence": [
+        "docs/adr/0053-pg18-analytics-managed-migration.md",
+        "src/proxy/request_entry.rs"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "PostgreSQL migration ledger, role/schema ownership contract, replica lifecycle, applied-change identities, checkpoints, coverage acknowledgements, and eligibility fences.",
+      "source_program_compatibility_range": "Existing ADR 0051 deployments remain on the pre-provisioned contract; a future managed-migration release supports the declared additive rollback window and rejects schema/checksum states newer than its reader.",
+      "evidence": [
+        "docs/specs/pg18-analytics/assets/managed-migration-state-record.json",
+        "docs/adr/0053-pg18-analytics-managed-migration.md"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/pg18-analytics/assets/managed-migration-state-record.json"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "Planned and current classifications are provisional until owner decisions, implementation, focused validation, and current-head delivery gates are complete."
+    ]
+  }
+}

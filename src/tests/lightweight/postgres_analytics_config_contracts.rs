@@ -6,6 +6,7 @@ fn app_config_defaults_to_sqlite_analytics_without_new_environment() {
     let _env = EnvVarGuard::set(&[
         (ENV_ANALYTICS_BACKEND, None),
         (ENV_POSTGRES_DATABASE_URL, None),
+        (ENV_POSTGRES_MIGRATION_URL, None),
         (ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL, None),
         (ENV_POSTGRES_MAX_CONNECTIONS, None),
     ]);
@@ -28,6 +29,10 @@ fn app_config_accepts_postgres_settings_without_leaking_credentials() {
         (
             ENV_POSTGRES_DATABASE_URL,
             Some("postgresql://analytics:secret@example.test/codex"),
+        ),
+        (
+            ENV_POSTGRES_MIGRATION_URL,
+            Some("postgresql://migration:migration-secret@example.test/codex"),
         ),
         (
             ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL,

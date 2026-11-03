@@ -342,6 +342,7 @@ pub(crate) struct AppConfig {
     pub(crate) database_path: PathBuf,
     pub(crate) analytics_backend: AnalyticsBackend,
     pub(crate) postgres_database_url: Option<PostgresDatabaseUrl>,
+    pub(crate) postgres_migration_url: Option<PostgresDatabaseUrl>,
     pub(crate) postgres_analytics_maintenance_url: Option<PostgresDatabaseUrl>,
     pub(crate) postgres_max_connections: u32,
     pub(crate) observability: ObservabilityConfig,
@@ -459,11 +460,20 @@ impl AppConfig {
             .ok()
             .map(|raw| PostgresDatabaseUrl::parse_for(&raw, ENV_POSTGRES_DATABASE_URL))
             .transpose()?;
+        let postgres_migration_url = env::var(ENV_POSTGRES_MIGRATION_URL)
+            .ok()
+            .map(|raw| PostgresDatabaseUrl::parse_for(&raw, ENV_POSTGRES_MIGRATION_URL))
+            .transpose()?;
         let postgres_analytics_maintenance_url = env::var(ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL)
             .ok()
             .map(|raw| PostgresDatabaseUrl::parse_for(&raw, ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL))
             .transpose()?;
         validate_postgres_role_separation(
+            postgres_database_url.as_ref(),
+            postgres_analytics_maintenance_url.as_ref(),
+        )?;
+        validate_postgres_migration_role_separation(
+            postgres_migration_url.as_ref(),
             postgres_database_url.as_ref(),
             postgres_analytics_maintenance_url.as_ref(),
         )?;
@@ -477,6 +487,16 @@ impl AppConfig {
         }
         if analytics_backend == AnalyticsBackend::Postgres && postgres_database_url.is_none() {
             bail!("{ENV_POSTGRES_DATABASE_URL} is required when {ENV_ANALYTICS_BACKEND}=postgres");
+        }
+        if analytics_backend == AnalyticsBackend::Postgres && postgres_migration_url.is_none() {
+            bail!("{ENV_POSTGRES_MIGRATION_URL} is required when {ENV_ANALYTICS_BACKEND}=postgres");
+        }
+        if analytics_backend == AnalyticsBackend::Postgres
+            && postgres_analytics_maintenance_url.is_none()
+        {
+            bail!(
+                "{ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL} is required when {ENV_ANALYTICS_BACKEND}=postgres"
+            );
         }
         let maintenance_database_path = Self::derive_maintenance_database_path(&database_path);
         if Self::normalized_path_identity(&maintenance_database_path)
@@ -819,6 +839,7 @@ impl AppConfig {
             database_path,
             analytics_backend,
             postgres_database_url,
+            postgres_migration_url,
             postgres_analytics_maintenance_url,
             postgres_max_connections,
             observability,
