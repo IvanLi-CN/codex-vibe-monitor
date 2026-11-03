@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 91,
+    "inventory_entries": 94,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -505,10 +505,28 @@
       "next_module_workstream": "Split upstream prompt-cache binding/route-penalty fixtures by resolver, metadata, and lifecycle."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/relogin_duplicates_and_usage_snapshots.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/relogin_and_identity_recovery.rs",
       "role": "test_helper",
-      "line_budget": 4873,
-      "next_module_workstream": "Split upstream relogin/duplicate usage fixtures by mailbox, identity, and snapshot recovery."
+      "line_budget": 892,
+      "next_module_workstream": "Maintain OAuth relogin identity recovery, display-name validation, and relink fixtures below the test-helper target."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/duplicate_detection_and_plan_snapshots.rs",
+      "role": "test_helper",
+      "line_budget": 1813,
+      "next_module_workstream": "Maintain duplicate detection and plan-snapshot precedence fixtures below the test-helper target."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/mailbox_sessions_and_message_parsing.rs",
+      "role": "test_helper",
+      "line_budget": 904,
+      "next_module_workstream": "Maintain mailbox parsing, session lifecycle, cursor, and message-merge fixtures below the test-helper target."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/usage_windows_and_roster_hydration.rs",
+      "role": "test_helper",
+      "line_budget": 1267,
+      "next_module_workstream": "Maintain usage-window hydration, roster serialization, archive fallback, and benchmark fixtures below the test-helper target."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/model_failure_timeline_and_api.rs",
