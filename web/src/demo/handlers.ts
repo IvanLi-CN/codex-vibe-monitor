@@ -10,7 +10,7 @@ import type {
   TaskWorkloadSample,
 } from "../lib/api";
 import { isFiniteNonNegativeMilliseconds } from "../lib/invocationTiming";
-import { demoModel, demoNow } from "./model";
+import { demoModel, demoNow, validateDemoPoolRoutingSettingsPayload } from "./model";
 import {
   DEMO_MODEL_ROUTE_FIXTURES,
   DEMO_ROUTE_COMBINATIONS,
@@ -2123,23 +2123,7 @@ function accountList(kind?: string | null) {
       apiKey: items.filter((item) => item.kind === "api_key_codex").length,
       attention: items.filter((item) => item.healthStatus !== "normal").length,
     },
-    routing: {
-      writesEnabled: true,
-      apiKeyConfigured: true,
-      maskedApiKey: "cvm_pool••••••",
-      maintenance: {
-        primarySyncIntervalSecs: 300,
-        secondarySyncIntervalSecs: 1800,
-        priorityAvailableAccountCap: 100,
-      },
-      timeouts: {
-        responsesFirstByteTimeoutSecs: 30,
-        compactFirstByteTimeoutSecs: 45,
-        imageFirstByteTimeoutSecs: 300,
-        responsesStreamTimeoutSecs: 300,
-        compactStreamTimeoutSecs: 420,
-      },
-    },
+    routing: JSON.parse(JSON.stringify(demoModel.snapshot.settings.poolRouting)),
   };
 }
 
@@ -6322,25 +6306,25 @@ export async function handleDemoRequest(request: Request) {
         },
       ],
     });
-  if (pathname === "/api/pool/routing-settings")
-    return json({
-      writesEnabled: true,
-      apiKeyConfigured: true,
-      maskedApiKey: "cvm_pool••••••",
-      maintenance: {
-        primarySyncIntervalSecs: 300,
-        secondarySyncIntervalSecs: 1800,
-        priorityAvailableAccountCap: 100,
-      },
-      timeouts: {
-        responsesFirstByteTimeoutSecs: 30,
-        compactFirstByteTimeoutSecs: 45,
-        imageFirstByteTimeoutSecs: 300,
-        responsesStreamTimeoutSecs: 300,
-        compactStreamTimeoutSecs: 420,
-      },
-      priorityHandoffAdmissionEnabled: true,
-    });
+  if (pathname === "/api/pool/routing-settings") {
+    if (request.method === "GET" || request.method === "HEAD") {
+      return json(demoModel.snapshot.settings.poolRouting);
+    }
+    if (request.method !== "PUT") {
+      return json({ error: "Method not allowed" }, { status: 405 });
+    }
+    let body: unknown;
+    try {
+      body = await request.clone().json();
+    } catch {
+      return json({ error: "Request body must be valid JSON" }, { status: 400 });
+    }
+    const validationError = validateDemoPoolRoutingSettingsPayload(body);
+    if (validationError) {
+      return json({ error: validationError }, { status: 400 });
+    }
+    return json(demoModel.updatePoolRoutingSettings(body));
+  }
   if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
     return json(
       demoModelRoutingLive({

@@ -36,6 +36,8 @@ pub(crate) use sync_group_sessions::*;
 pub(crate) use sync_mailbox_and_filters::*;
 pub(crate) use sync_oauth_crypto_utils::*;
 pub(crate) use sync_routing_status::*;
+#[cfg(test)]
+pub(crate) use sync_usage_snapshot::persist_unknown_reserve_usage_snapshot_with_lease;
 
 pub(crate) fn normalize_upstream_image_tool_rewrite_mode(
     value: Option<&str>,

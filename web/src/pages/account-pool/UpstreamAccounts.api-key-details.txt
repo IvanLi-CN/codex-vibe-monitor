@@ -132,6 +132,7 @@ describe("UpstreamAccountsPage api key details", () => {
     expect(overviewText).not.toMatch(/User ID/i);
     expect(overviewText).not.toMatch(/org_should_not_render/i);
     expect(overviewText).not.toMatch(/user_should_not_render/i);
+    expect(overviewText).not.toMatch(/Reserve/i);
     expect(overviewText).not.toMatch(/5h window|5 小时窗口/i);
     expect(overviewText).not.toMatch(/7d window|7 天窗口/i);
 

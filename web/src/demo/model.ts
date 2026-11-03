@@ -61,6 +61,44 @@ const RETIRED_PROXY_SETTING_FIELDS = new Set([
   "upstreamWebsocketDefaultEnabled",
 ]);
 
+function createPoolRoutingSettings() {
+  return {
+    writesEnabled: true,
+    apiKeyConfigured: true,
+    maskedApiKey: "cvm_pool••••••",
+    maintenance: {
+      primarySyncIntervalSecs: 300,
+      secondarySyncIntervalSecs: 1800,
+      priorityAvailableAccountCap: 100,
+    },
+    requestCompressionAlgorithm: "identity",
+    oauthRequestCompressionAlgorithm: "zstd",
+    requestCompressionLevelPreset: "balanced",
+    codexImagegenRewriteMode: "keep_original",
+    availableModels: [],
+    availableModelsMode: "denylist",
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 30,
+      compactFirstByteTimeoutSecs: 45,
+      imageFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 420,
+    },
+    cacheHitProtection: {
+      enabled: false,
+      lowHitRateThresholdPercent: 10,
+      overflowMode: "queue",
+      minimumInputTokens: 3840,
+    },
+    priorityHandoffAdmissionEnabled: true,
+    automaticReserveFallbackEnabled: true,
+    reserveFallbackModelPolicy: {
+      mode: "upstream",
+      patterns: [],
+    },
+  };
+}
+
 function safePayload(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(safePayload);
   if (typeof value !== "object" || value === null) return value;
@@ -69,6 +107,57 @@ function safePayload(value: unknown): unknown {
       .filter(([key]) => !SENSITIVE_FIELD.test(key))
       .map(([key, nested]) => [key, safePayload(nested)]),
   );
+}
+
+const DEMO_RESERVE_FALLBACK_MODEL_POLICY_MODES = new Set([
+  "upstream",
+  "upstream_plus_custom",
+  "custom",
+]);
+const DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERNS = 64;
+const DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH = 256;
+
+export function validateDemoPoolRoutingSettingsPayload(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return "Request body must be a JSON object";
+  }
+  const payload = value as Record<string, unknown>;
+  if (
+    "automaticReserveFallbackEnabled" in payload &&
+    typeof payload.automaticReserveFallbackEnabled !== "boolean"
+  ) {
+    return "automaticReserveFallbackEnabled must be a boolean";
+  }
+  const policy = payload.reserveFallbackModelPolicy;
+  if (policy === undefined || policy === null) return null;
+  if (typeof policy !== "object" || Array.isArray(policy)) {
+    return "reserveFallbackModelPolicy must be an object";
+  }
+  const policyRecord = policy as Record<string, unknown>;
+  if (typeof policyRecord.mode !== "string") {
+    return "reserveFallbackModelPolicy.mode is required";
+  }
+  if (!DEMO_RESERVE_FALLBACK_MODEL_POLICY_MODES.has(policyRecord.mode.trim().toLowerCase())) {
+    return "reserveFallbackModelPolicy.mode must be upstream, upstream_plus_custom, or custom";
+  }
+  const patterns = policyRecord.patterns;
+  if (patterns === undefined) return null;
+  if (!Array.isArray(patterns)) {
+    return "reserveFallbackModelPolicy.patterns must be an array";
+  }
+  if (patterns.length > DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERNS) {
+    return `reserveFallbackModelPolicy.patterns must contain at most ${DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERNS} entries`;
+  }
+  for (const pattern of patterns) {
+    if (
+      typeof pattern !== "string" ||
+      pattern.trim().length === 0 ||
+      pattern.trim().length > DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH
+    ) {
+      return `reserveFallbackModelPolicy.patterns entries must be 1-${DEMO_MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH} characters`;
+    }
+  }
+  return null;
 }
 
 function createSettings() {
@@ -180,6 +269,7 @@ function createSettings() {
         },
       ],
     },
+    poolRouting: createPoolRoutingSettings(),
     pricing: {
       catalogVersion: "openai-standard-2026-09-23",
       entries: [
@@ -592,6 +682,17 @@ function createAccounts(scene: DemoScene = "operational") {
       const unavailable = attention && id === 102;
       const needsReauth = attention && id === 109;
       const syncing = id === 107;
+      const reserveAvailability =
+        kind !== "oauth_codex"
+          ? null
+          : attention && id === 109
+            ? "unknown"
+            : id === 105
+              ? "unavailable"
+              : id === 101 || id === 103
+                ? "available"
+                : "unknown";
+      const reserveUsedPercent = Math.min(92, 14 + index * 4);
       const status = unavailable
         ? "error"
         : needsReauth
@@ -700,6 +801,31 @@ function createAccounts(scene: DemoScene = "operational") {
                 windowDurationMins: 300,
                 resetsAt: "2026-07-10T12:00:00Z",
               },
+        reserve:
+          kind === "oauth_codex"
+            ? {
+                availability: reserveAvailability,
+                normalModelSlug: "gpt-5.6-luna",
+                meteredFeature: "base_model_inference",
+                bindingSource: "additional_rate_limits",
+                primaryWindow: {
+                  usedPercent: reserveUsedPercent,
+                  availablePercent: 100 - reserveUsedPercent,
+                  usedText: `${reserveUsedPercent}%`,
+                  limitText: "Luna Reserve",
+                  windowDurationMins: 300,
+                  resetsAt: "2026-08-16T16:30:00Z",
+                },
+                secondaryWindow: {
+                  usedPercent: Math.min(96, reserveUsedPercent + 9),
+                  usedText: `${Math.min(96, reserveUsedPercent + 9)}%`,
+                  limitText: "Luna Reserve weekly window",
+                  windowDurationMins: 10080,
+                  resetsAt: "2026-08-23T12:00:00Z",
+                },
+                capturedAt: recentAt(4 + index),
+              }
+            : null,
         credits:
           kind === "api_key_codex"
             ? { hasCredits: true, unlimited: false, balance: `$${(71.5 - index * 4.2).toFixed(2)}` }
@@ -928,6 +1054,69 @@ class DemoModel {
     if (pathname === "/api/settings/forward-proxy") return clone(settings.forwardProxy);
     if (pathname === "/api/settings/pricing") return clone(settings.pricing);
     return clone(settings);
+  }
+
+  updatePoolRoutingSettings(payload: unknown) {
+    const nextPayload = safePayload(payload);
+    const update =
+      typeof nextPayload === "object" && nextPayload !== null
+        ? (nextPayload as Record<string, unknown>)
+        : {};
+    const current =
+      typeof this.#state.settings.poolRouting === "object" &&
+      this.#state.settings.poolRouting !== null
+        ? (this.#state.settings.poolRouting as Record<string, unknown>)
+        : createPoolRoutingSettings();
+    const objectValue = (value: unknown): Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    const currentReservePolicy = objectValue(current.reserveFallbackModelPolicy);
+    const updateReservePolicy = objectValue(update.reserveFallbackModelPolicy);
+    const reserveFallbackModelPolicy = {
+      ...currentReservePolicy,
+      ...updateReservePolicy,
+      mode:
+        typeof updateReservePolicy.mode === "string"
+          ? updateReservePolicy.mode.trim().toLowerCase()
+          : typeof currentReservePolicy.mode === "string"
+            ? currentReservePolicy.mode.trim().toLowerCase()
+            : "upstream",
+      patterns: (Array.isArray(updateReservePolicy.patterns)
+        ? updateReservePolicy.patterns
+        : Array.isArray(currentReservePolicy.patterns)
+          ? currentReservePolicy.patterns
+          : []
+      )
+        .filter((pattern): pattern is string => typeof pattern === "string")
+        .map((pattern) => pattern.trim()),
+    };
+    const poolRouting = {
+      ...current,
+      ...update,
+      maintenance: {
+        ...objectValue(current.maintenance),
+        ...objectValue(update.maintenance),
+      },
+      timeouts: {
+        ...objectValue(current.timeouts),
+        ...objectValue(update.timeouts),
+      },
+      cacheHitProtection: {
+        ...objectValue(current.cacheHitProtection),
+        ...objectValue(update.cacheHitProtection),
+      },
+      reserveFallbackModelPolicy,
+    };
+    this.#state = {
+      ...this.#state,
+      settings: {
+        ...this.#state.settings,
+        poolRouting,
+      },
+    };
+    this.record("模拟保存池路由配置");
+    return clone(poolRouting);
   }
 
   updateModelSyncState(payload: unknown) {

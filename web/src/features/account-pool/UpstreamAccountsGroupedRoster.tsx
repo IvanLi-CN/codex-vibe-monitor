@@ -26,6 +26,8 @@ import {
   renderNoRefreshTokenChip,
   renderTagChips,
   renderTagOverflowChip,
+  reserveSummaryText,
+  reserveValueTone,
   resolveCurrentForwardProxyChipLabel,
   resolveCurrentForwardProxyChipTone,
   resolveRosterActionableStatusChips,
@@ -231,6 +233,7 @@ function GroupMemberRow({
     [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(" · ") || undefined;
   const secondaryWindowTitle =
     [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(" · ") || undefined;
+  const reserveText = reserveSummaryText(item, labels);
   const showPlanChip = shouldShowPlanChip(item.planType);
   const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
 
@@ -385,6 +388,15 @@ function GroupMemberRow({
               accentClassName="bg-secondary"
               title={secondaryWindowTitle}
             />
+            {reserveText ? (
+              <CompactTimestampLine
+                label={labels.reserve ?? "Reserve"}
+                value={reserveText}
+                title={reserveText}
+                valueClassName={reserveValueTone(item.reserve?.availability)}
+                wrapValue
+              />
+            ) : null}
           </div>
 
           <div className="flex items-center justify-end xl:pr-1">
@@ -426,6 +438,7 @@ function GroupMemberGridCard({
   const secondaryLabel =
     formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ??
     labels.secondaryShort.toUpperCase();
+  const reserveText = reserveSummaryText(item, labels);
   const showPlanChip = shouldShowPlanChip(item.planType);
   const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
   const actionableStatusChips = resolveRosterActionableStatusChips(item, labels);
@@ -572,6 +585,15 @@ function GroupMemberGridCard({
             undefined
           }
         />
+        {reserveText ? (
+          <CompactTimestampLine
+            label={labels.reserve ?? "Reserve"}
+            value={reserveText}
+            title={reserveText}
+            valueClassName={reserveValueTone(item.reserve?.availability)}
+            wrapValue
+          />
+        ) : null}
       </div>
     </div>
   );

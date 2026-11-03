@@ -725,6 +725,65 @@ test.describe("Web Demo runtime", () => {
     expect(createdKeys.items.some((item) => item.name === "Synthetic integration 7")).toBe(true);
   });
 
+  test("round-trips Reserve routing controls through the Web App Demo", async ({ page }) => {
+    const restoreRoutingSettings = async () => {
+      await page.evaluate(async () => {
+        await fetch("/api/pool/routing-settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            automaticReserveFallbackEnabled: true,
+            reserveFallbackModelPolicy: { mode: "upstream", patterns: [] },
+          }),
+        });
+      });
+    };
+
+    try {
+      await page.goto("/#/system/settings?demoScene=operational&demoTheme=light");
+      const reserveSwitch = page.getByRole("switch", {
+        name: "自动使用 Luna Reserve 后备额度",
+        exact: true,
+      });
+      await expect(reserveSwitch).toBeVisible();
+      await expect(reserveSwitch).toBeChecked();
+      await page.getByRole("combobox", { name: "Reserve 模型资格策略", exact: true }).click();
+      await page.getByRole("option", { name: "仅使用自定义规则", exact: true }).click();
+      await page.getByPlaceholder("gpt-*-luna", { exact: true }).fill(" gpt-*-luna ");
+      await reserveSwitch.click();
+      await page.getByRole("button", { name: "保存默认值", exact: true }).click();
+      await expect
+        .poll(async () =>
+          page.evaluate(async () => {
+            const response = await fetch("/api/pool/routing-settings");
+            return (await response.json()) as {
+              automaticReserveFallbackEnabled: boolean;
+              reserveFallbackModelPolicy: { mode: string; patterns: string[] };
+            };
+          }),
+        )
+        .toMatchObject({
+          automaticReserveFallbackEnabled: false,
+          reserveFallbackModelPolicy: { mode: "custom", patterns: ["gpt-*-luna"] },
+        });
+
+      await page.goto("/#/account-pool/pool?demoScene=operational&demoTheme=light");
+      await expect(page.getByRole("heading", { name: "号池", exact: true })).toBeVisible();
+      await expect(page.getByText(/Reserve.*可用.*已用 14%.*可用 86%/)).toBeVisible();
+      await expect(page.getByText(/Reserve.*未知/).first()).toBeVisible();
+
+      await page.goto(
+        "/#/account-pool/pool?upstreamAccountId=101&demoScene=operational&demoTheme=light",
+      );
+      await expect(page.getByRole("heading", { name: "号池", exact: true })).toBeVisible();
+      await expect(page.getByText(/Reserve/).first()).toBeVisible();
+      await expect(page.getByText("绑定模型 gpt-5.6-luna", { exact: true })).toBeVisible();
+      await expect(page.getByText(/^采集 \d{2}\/\d{2}, \d{2}:\d{2}$/)).toBeVisible();
+    } finally {
+      await restoreRoutingSettings();
+    }
+  });
+
   test("keeps maintenance records terminal on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 393, height: 844 });
     const route = {

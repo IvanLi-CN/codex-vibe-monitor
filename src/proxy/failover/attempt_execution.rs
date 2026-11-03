@@ -20,6 +20,10 @@ pub(crate) struct PoolAttemptExecutionContext<'a> {
     pub(crate) codex_imagegen_request: bool,
     pub(crate) request_compression_level_preset: RequestCompressionLevelPreset,
     pub(crate) requested_model: &'a Option<String>,
+    pub(crate) quota_route: &'a mut PoolQuotaRoute,
+    pub(crate) reserve_fallback_attempted: &'a mut bool,
+    pub(crate) reserve_usage_refresh_attempted: &'a mut bool,
+    pub(crate) reserve_fallback_reason: &'a mut Option<String>,
     pub(crate) account: PoolResolvedAccount,
     pub(crate) pre_first_byte_timeout: Duration,
     pub(crate) stream_timeout: Option<Duration>,
@@ -56,9 +60,19 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
     mut context: PoolAttemptExecutionContext<'a>,
     distinct_account_count: usize,
 ) -> Result<Option<PoolUpstreamResponse>, PoolUpstreamError> {
-    for same_account_attempt in 0..context.same_account_attempt_loop_budget {
+    let mut same_account_attempt = 0_u8;
+    let mut reserve_fallback_extension_available = false;
+    loop {
+        let using_reserve_fallback_extension = reserve_fallback_extension_available;
+        reserve_fallback_extension_available = false;
+        if same_account_attempt >= context.same_account_attempt_loop_budget
+            && !using_reserve_fallback_extension
+        {
+            break;
+        }
         if *context.same_account_only_retry_active
             && same_account_attempt >= context.overload_same_account_attempt_budget
+            && !using_reserve_fallback_extension
         {
             return Err(take_same_account_only_terminal_error(
                 context.last_error,
@@ -169,6 +183,35 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
         let mut pending_attempt_record: Option<PendingPoolAttemptRecord>;
         let mut early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard> = None;
         let live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
+        let reserve_model_mapping = if *context.quota_route == PoolQuotaRoute::Reserve {
+            Some(ResolvedModelMapping {
+                source_model: context
+                    .requested_model
+                    .as_deref()
+                    .or_else(|| {
+                        context
+                            .trace_context
+                            .and_then(|trace| trace.request_model.as_deref())
+                    })
+                    .unwrap_or(RESERVE_WIRE_MODEL)
+                    .to_string(),
+                target_model: RESERVE_WIRE_MODEL.to_string(),
+            })
+        } else {
+            None
+        };
+        let effective_model_mapping = reserve_model_mapping
+            .as_ref()
+            .or(context.model_mapping.as_ref());
+        let effective_upstream_request_model = if *context.quota_route == PoolQuotaRoute::Reserve {
+            Some(RESERVE_WIRE_MODEL)
+        } else {
+            context.upstream_request_model
+        };
+        let effective_model_mapping_pattern = reserve_model_mapping
+            .as_ref()
+            .map(|mapping| mapping.source_model.as_str())
+            .or(context.model_mapping_pattern);
         let prepared_request_body = match prepare_pool_request_body_for_account(
             context.proxy_request_id,
             context.body.as_ref(),
@@ -190,7 +233,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 .runtime_snapshot_context
                 .as_ref()
                 .and_then(|context| context.hosted_image_intent),
-            context.model_mapping.as_ref(),
+            effective_model_mapping,
         )
         .await
         {
@@ -201,7 +244,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                     context.trace_context,
                     &context.account,
                     context.requested_model.as_deref(),
-                    context.model_mapping_pattern,
+                    effective_model_mapping_pattern,
                     (*context.attempt_count + 1) as i64,
                     distinct_account_count as i64,
                     same_account_retry_index,
@@ -251,21 +294,25 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 Ok(selection) => selection,
                 Err(message) => {
                     // The drop guard releases silently if cancellation interrupts this fence.
-                    let failure_recorded = context
-                        .reservation_guard
-                        .as_mut()
-                        .expect("pool routing reservation should be active")
-                        .fence_failure(record_runtime_pool_route_transport_failure(
-                            context.state.as_ref(),
-                            context.account.account_id,
-                            context.sticky_key,
-                            &message,
-                            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                            context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                            None,
-                            context.requested_model.as_deref(),
-                        ))
-                        .await;
+                    let failure_recorded = if context.quota_route.updates_shared_route_health() {
+                        context
+                            .reservation_guard
+                            .as_mut()
+                            .expect("pool routing reservation should be active")
+                            .fence_failure(record_runtime_pool_route_transport_failure(
+                                context.state.as_ref(),
+                                context.account.account_id,
+                                context.sticky_key,
+                                &message,
+                                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                                None,
+                                context.requested_model.as_deref(),
+                            ))
+                            .await
+                    } else {
+                        Ok(())
+                    };
                     if let Err(ref route_err) = failure_recorded {
                         warn!(account_id = context.account.account_id, error = %route_err, "failed to record pool forward proxy selection failure");
                     }
@@ -540,13 +587,24 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
                     if let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
                         pending_attempt_record,
-                        context.upstream_request_model,
-                        context.model_mapping_pattern,
+                        effective_upstream_request_model,
+                        effective_model_mapping_pattern,
                     ) {
                         warn!(
                             invoke_id = %pending_attempt_record.invoke_id,
                             error = %err,
                             "failed to prepare pool model mapping attempt metadata"
+                        );
+                    }
+                    if let Err(err) = annotate_pool_upstream_request_attempt_quota_route(
+                        pending_attempt_record,
+                        context.quota_route.as_str(),
+                        context.reserve_fallback_reason.as_deref(),
+                    ) {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to prepare pool quota route attempt metadata"
                         );
                     }
                     if let Err(err) = annotate_pool_upstream_request_attempt_request_compression(
@@ -839,30 +897,32 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                                 sleep(retry_delay),
                             )
                             .await;
+                            same_account_attempt = same_account_attempt.saturating_add(1);
                             continue;
                         }
-                        if let Err(route_err) = context
-                            .reservation_guard
-                            .as_mut()
-                            .expect("pool routing reservation should be active")
-                            .fence_failure(record_runtime_pool_route_transport_failure(
-                                context.state.as_ref(),
-                                context.account.account_id,
-                                context.sticky_key,
-                                &message,
-                                failure_kind,
-                                context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                                pending_attempt_record
-                                    .as_ref()
-                                    .and_then(|pending| pending.attempt_id),
-                                pending_attempt_record.as_ref().and_then(|pending| {
-                                    pending
-                                        .request_model
-                                        .as_deref()
-                                        .or(pending.upstream_request_model.as_deref())
-                                }),
-                            ))
-                            .await
+                        if context.quota_route.updates_shared_route_health()
+                            && let Err(route_err) = context
+                                .reservation_guard
+                                .as_mut()
+                                .expect("pool routing reservation should be active")
+                                .fence_failure(record_runtime_pool_route_transport_failure(
+                                    context.state.as_ref(),
+                                    context.account.account_id,
+                                    context.sticky_key,
+                                    &message,
+                                    failure_kind,
+                                    context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
+                                    pending_attempt_record.as_ref().and_then(|pending| {
+                                        pending
+                                            .request_model
+                                            .as_deref()
+                                            .or(pending.upstream_request_model.as_deref())
+                                    }),
+                                ))
+                                .await
                         {
                             warn!(account_id = context.account.account_id, error = %route_err, "failed to record pool transport failure");
                         }
@@ -1115,25 +1175,27 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                                 sleep(retry_delay),
                             )
                             .await;
+                            same_account_attempt = same_account_attempt.saturating_add(1);
                             continue;
                         }
-                        if let Err(route_err) = context
-                            .reservation_guard
-                            .as_mut()
-                            .expect("pool routing reservation should be active")
-                            .fence_failure(record_runtime_pool_route_transport_failure(
-                                context.state.as_ref(),
-                                context.account.account_id,
-                                context.sticky_key,
-                                &message,
-                                PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                                context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                                pending_attempt_record
-                                    .as_ref()
-                                    .and_then(|pending| pending.attempt_id),
-                                context.requested_model.as_deref(),
-                            ))
-                            .await
+                        if context.quota_route.updates_shared_route_health()
+                            && let Err(route_err) = context
+                                .reservation_guard
+                                .as_mut()
+                                .expect("pool routing reservation should be active")
+                                .fence_failure(record_runtime_pool_route_transport_failure(
+                                    context.state.as_ref(),
+                                    context.account.account_id,
+                                    context.sticky_key,
+                                    &message,
+                                    PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                    context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
+                                    context.requested_model.as_deref(),
+                                ))
+                                .await
                         {
                             warn!(account_id = context.account.account_id, error = %route_err, "failed to record pool handshake timeout");
                         }
@@ -1521,14 +1583,27 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 if let Some(pending_attempt_record) = pending_attempt_record.as_mut()
                     && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
                         pending_attempt_record,
-                        context.upstream_request_model,
-                        context.model_mapping_pattern,
+                        effective_upstream_request_model,
+                        effective_model_mapping_pattern,
                     )
                 {
                     warn!(
                         invoke_id = %pending_attempt_record.invoke_id,
                         error = %err,
                         "failed to prepare pool model mapping attempt metadata"
+                    );
+                }
+                if let Some(pending_attempt_record) = pending_attempt_record.as_mut()
+                    && let Err(err) = annotate_pool_upstream_request_attempt_quota_route(
+                        pending_attempt_record,
+                        context.quota_route.as_str(),
+                        context.reserve_fallback_reason.as_deref(),
+                    )
+                {
+                    warn!(
+                        invoke_id = %pending_attempt_record.invoke_id,
+                        error = %err,
+                        "failed to prepare pool quota route attempt metadata"
                     );
                 }
                 let forwarded_request_compression = if context.method == Method::GET {
@@ -1717,7 +1792,15 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
         })
         .await?
         {
-            PoolAttemptResponseOutcome::Retry => continue,
+            PoolAttemptResponseOutcome::Retry => {
+                same_account_attempt = same_account_attempt.saturating_add(1);
+                continue;
+            }
+            PoolAttemptResponseOutcome::ReserveFallback => {
+                same_account_attempt = same_account_attempt.saturating_add(1);
+                reserve_fallback_extension_available = true;
+                continue;
+            }
             PoolAttemptResponseOutcome::Failover => return Ok(None),
             PoolAttemptResponseOutcome::Response(response) => return Ok(Some(*response)),
         }

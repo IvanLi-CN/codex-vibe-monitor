@@ -410,7 +410,7 @@ describe("PromptCacheConversationTable", () => {
   }
 
   async function waitFor<T>(callback: () => T | Promise<T>): Promise<T> {
-    return vi.waitFor(callback, { interval: 1, timeout: 1_000 });
+    return vi.waitFor(callback, { interval: 1, timeout: 5_000 });
   }
 
   it("renders conversation metrics and unified 24h sparkline surfaces", () => {

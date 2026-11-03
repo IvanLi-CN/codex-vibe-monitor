@@ -3,6 +3,7 @@ use super::*;
 pub(crate) enum PoolAttemptResponseOutcome {
     Retry,
     Failover,
+    ReserveFallback,
     Response(Box<PoolUpstreamResponse>),
 }
 
@@ -29,6 +30,53 @@ pub(crate) struct PoolAttemptResponseContext<'a, 'b> {
     pub(crate) attempted_requested_service_tier: Option<String>,
     pub(crate) attempted_request_body_for_capture: Option<Bytes>,
     pub(crate) attempted_codex_imagegen_rewrite: Option<Value>,
+}
+
+fn should_attempt_automatic_reserve_fallback(
+    failure_kind: &str,
+    quota_route: PoolQuotaRoute,
+    fallback_attempted: bool,
+    oauth: bool,
+    enabled: bool,
+    usage_refresh_succeeded: bool,
+    reserve_available: bool,
+) -> bool {
+    failure_kind == FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        && quota_route == PoolQuotaRoute::Normal
+        && !fallback_attempted
+        && oauth
+        && enabled
+        && usage_refresh_succeeded
+        && reserve_available
+}
+
+async fn refresh_reserve_usage_with_request_budget(
+    state: &AppState,
+    account_id: i64,
+    attempt_pre_first_byte_timeout: Duration,
+    responses_total_timeout: Option<Duration>,
+    total_timeout_started_at: Option<Instant>,
+) -> bool {
+    const MAX_RESERVE_USAGE_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
+    let request_budget = if let Some(total_timeout) = responses_total_timeout {
+        let Some(started_at) = total_timeout_started_at else {
+            return false;
+        };
+        let Some(remaining) = remaining_timeout_budget(total_timeout, started_at.elapsed()) else {
+            return false;
+        };
+        remaining.min(attempt_pre_first_byte_timeout)
+    } else {
+        attempt_pre_first_byte_timeout
+    }
+    .min(MAX_RESERVE_USAGE_REFRESH_TIMEOUT);
+    if request_budget.is_zero() {
+        return false;
+    }
+    let refresh = crate::upstream_accounts::refresh_upstream_account_usage_for_reserve_by_id(
+        state, account_id,
+    );
+    matches!(timeout(request_budget, refresh).await, Ok(Ok(true)))
 }
 
 pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
@@ -415,6 +463,7 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
                     requested_service_tier: attempted_requested_service_tier,
                     request_body_for_capture: attempted_request_body_for_capture,
                     codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                    quota_route: *context.quota_route,
                     reservation_guard: context.reservation_guard.take(),
                 },
             )));
@@ -450,6 +499,23 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             &route_error_message,
             attempted_codex_imagegen_rewrite.as_ref(),
         );
+        let automatic_reserve_fallback_enabled = if failure_kind
+            == FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+            && *context.quota_route == PoolQuotaRoute::Normal
+            && !*context.reserve_fallback_attempted
+            && context.account.auth.is_oauth()
+        {
+            load_pool_routing_settings(&context.state.pool)
+                .await
+                .ok()
+                .is_some_and(|settings| {
+                    settings
+                        .automatic_reserve_fallback_enabled
+                        .is_none_or(|value| value != 0)
+                })
+        } else {
+            false
+        };
         let should_schedule_retry = has_retry_budget
             && !compact_support_is_unsupported
             && !should_timeout_route_failover
@@ -551,7 +617,10 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
                 "failed to broadcast pool http failure snapshot"
             );
         }
-        if has_group_upstream_429_retry_budget && !codex_imagegen_retest_claimed {
+        if has_group_upstream_429_retry_budget
+            && !codex_imagegen_retest_claimed
+            && !automatic_reserve_fallback_enabled
+        {
             let retry_delay = pool_group_upstream_429_retry_delay(context.state.as_ref());
             let retry_delay = apply_retry_delay_budget(retry_delay);
             let group_retry_index = *context.group_upstream_429_retry_count + 1;
@@ -599,6 +668,7 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
         }
         if let Some(retry_delay) = retry_delay
             && !codex_imagegen_retest_claimed
+            && !automatic_reserve_fallback_enabled
         {
             let retry_delay = apply_retry_delay_budget(retry_delay);
             info!(
@@ -617,7 +687,9 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             .await;
             return Ok(PoolAttemptResponseOutcome::Retry);
         }
-        let route_failure_result = if codex_imagegen_upstream_incompatible {
+        let route_failure_result = if !context.quota_route.updates_shared_route_health()
+            || codex_imagegen_upstream_incompatible
+        {
             Ok(())
         } else if oauth_transport_failure_kind.is_some() {
             context
@@ -743,6 +815,79 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             );
             disarm_pool_early_phase_cleanup_guard(early_phase_cleanup_guard);
             return Err(final_error);
+        }
+        let reserve_refresh_started_at = attempt_total_timeout_started_at
+            .or(context.responses_total_timeout_started_at)
+            .or_else(|| context.responses_total_timeout.map(|_| connect_started));
+        let reserve_usage_refresh_succeeded =
+            if automatic_reserve_fallback_enabled && !*context.reserve_usage_refresh_attempted {
+                *context.reserve_usage_refresh_attempted = true;
+                refresh_reserve_usage_with_request_budget(
+                    context.state.as_ref(),
+                    context.account.account_id,
+                    attempt_pre_first_byte_timeout,
+                    context.responses_total_timeout,
+                    reserve_refresh_started_at,
+                )
+                .await
+            } else {
+                false
+            };
+        let effective_reserve_model = context
+            .upstream_request_model
+            .or(context.requested_model.as_deref());
+        let reserve_available =
+            if automatic_reserve_fallback_enabled && reserve_usage_refresh_succeeded {
+                let reserve_check = async {
+                    let reserve_model_policy = load_pool_routing_settings(&context.state.pool)
+                        .await
+                        .ok()
+                        .map(|row| resolve_reserve_fallback_model_policy(&row));
+                    let Some(reserve_model_policy) = reserve_model_policy else {
+                        return false;
+                    };
+                    load_account_routing_candidate(&context.state.pool, context.account.account_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|candidate| {
+                            reserve_candidate_snapshot_is_available(&candidate, Utc::now())
+                                && reserve_candidate_supports_model(
+                                    &candidate,
+                                    effective_reserve_model,
+                                    &reserve_model_policy,
+                                )
+                        })
+                };
+                if let (Some(total_timeout), Some(started_at)) =
+                    (context.responses_total_timeout, reserve_refresh_started_at)
+                {
+                    match remaining_timeout_budget(total_timeout, started_at.elapsed()) {
+                        Some(remaining) => timeout(remaining, reserve_check).await.unwrap_or(false),
+                        None => false,
+                    }
+                } else if context.responses_total_timeout.is_some() {
+                    false
+                } else {
+                    reserve_check.await
+                }
+            } else {
+                false
+            };
+        if should_attempt_automatic_reserve_fallback(
+            failure_kind,
+            *context.quota_route,
+            *context.reserve_fallback_attempted,
+            context.account.auth.is_oauth(),
+            automatic_reserve_fallback_enabled,
+            reserve_usage_refresh_succeeded,
+            reserve_available,
+        ) {
+            *context.reserve_fallback_attempted = true;
+            *context.reserve_fallback_reason = Some("normal_quota_exhausted".to_string());
+            *context.quota_route = PoolQuotaRoute::Reserve;
+            disarm_pool_early_phase_cleanup_guard(early_phase_cleanup_guard);
+            return Ok(PoolAttemptResponseOutcome::ReserveFallback);
         }
         *context.exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
         if should_timeout_route_failover {
@@ -942,28 +1087,29 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
                     .await;
                     return Ok(PoolAttemptResponseOutcome::Retry);
                 }
-                if let Err(route_err) = context
-                    .reservation_guard
-                    .as_mut()
-                    .expect("pool routing reservation should be active")
-                    .fence_failure(record_runtime_pool_route_transport_failure(
-                        context.state.as_ref(),
-                        context.account.account_id,
-                        context.sticky_key,
-                        &message,
-                        PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                        context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                        pending_attempt_record
-                            .as_ref()
-                            .and_then(|pending| pending.attempt_id),
-                        pending_attempt_record.as_ref().and_then(|pending| {
-                            pending
-                                .request_model
-                                .as_deref()
-                                .or(pending.upstream_request_model.as_deref())
-                        }),
-                    ))
-                    .await
+                if context.quota_route.updates_shared_route_health()
+                    && let Err(route_err) = context
+                        .reservation_guard
+                        .as_mut()
+                        .expect("pool routing reservation should be active")
+                        .fence_failure(record_runtime_pool_route_transport_failure(
+                            context.state.as_ref(),
+                            context.account.account_id,
+                            context.sticky_key,
+                            &message,
+                            PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                            context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
+                            pending_attempt_record.as_ref().and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
+                        ))
+                        .await
                 {
                     warn!(account_id = context.account.account_id, error = %route_err, "failed to record pool first chunk failure");
                 }
@@ -1221,29 +1367,30 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
                     return Ok(PoolAttemptResponseOutcome::Retry);
                 }
 
-                if let Err(route_err) = context
-                    .reservation_guard
-                    .as_mut()
-                    .expect("pool routing reservation should be active")
-                    .fence_failure(record_runtime_pool_route_overload_failure(
-                        context.state.as_ref(),
-                        context.account.account_id,
-                        context.sticky_key,
-                        &message,
-                        context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                        pending_attempt_record
-                            .as_ref()
-                            .and_then(|pending| pending.attempt_id),
-                        context.requested_model.as_deref().or_else(|| {
-                            pending_attempt_record.as_ref().and_then(|pending| {
-                                pending
-                                    .request_model
-                                    .as_deref()
-                                    .or(pending.upstream_request_model.as_deref())
-                            })
-                        }),
-                    ))
-                    .await
+                if context.quota_route.updates_shared_route_health()
+                    && let Err(route_err) = context
+                        .reservation_guard
+                        .as_mut()
+                        .expect("pool routing reservation should be active")
+                        .fence_failure(record_runtime_pool_route_overload_failure(
+                            context.state.as_ref(),
+                            context.account.account_id,
+                            context.sticky_key,
+                            &message,
+                            context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
+                            context.requested_model.as_deref().or_else(|| {
+                                pending_attempt_record.as_ref().and_then(|pending| {
+                                    pending
+                                        .request_model
+                                        .as_deref()
+                                        .or(pending.upstream_request_model.as_deref())
+                                })
+                            }),
+                        ))
+                        .await
                 {
                     warn!(account_id = context.account.account_id, error = %route_err, "failed to record retryable response.failed route state");
                 }
@@ -1345,28 +1492,29 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
                         "failed to broadcast first-event gate failure snapshot"
                     );
                 }
-                if let Err(route_err) = context
-                    .reservation_guard
-                    .as_mut()
-                    .expect("pool routing reservation should be active")
-                    .fence_failure(record_runtime_pool_route_transport_failure(
-                        context.state.as_ref(),
-                        context.account.account_id,
-                        context.sticky_key,
-                        &message,
-                        PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                        context.trace_context.map(|trace| trace.invoke_id.as_str()),
-                        pending_attempt_record
-                            .as_ref()
-                            .and_then(|pending| pending.attempt_id),
-                        pending_attempt_record.as_ref().and_then(|pending| {
-                            pending
-                                .request_model
-                                .as_deref()
-                                .or(pending.upstream_request_model.as_deref())
-                        }),
-                    ))
-                    .await
+                if context.quota_route.updates_shared_route_health()
+                    && let Err(route_err) = context
+                        .reservation_guard
+                        .as_mut()
+                        .expect("pool routing reservation should be active")
+                        .fence_failure(record_runtime_pool_route_transport_failure(
+                            context.state.as_ref(),
+                            context.account.account_id,
+                            context.sticky_key,
+                            &message,
+                            PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                            context.trace_context.map(|trace| trace.invoke_id.as_str()),
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
+                            pending_attempt_record.as_ref().and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
+                        ))
+                        .await
                 {
                     warn!(account_id = context.account.account_id, error = %route_err, "failed to record first-event gate transport failure");
                 }
@@ -1503,7 +1651,97 @@ pub(crate) async fn handle_pool_attempt_response<'a, 'b>(
             requested_service_tier: attempted_requested_service_tier,
             request_body_for_capture: attempted_request_body_for_capture,
             codex_imagegen_rewrite: attempted_codex_imagegen_rewrite,
+            quota_route: *context.quota_route,
             reservation_guard: context.reservation_guard.take(),
         },
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_reserve_fallback_requires_explicit_normal_quota_exhaustion() {
+        assert!(should_attempt_automatic_reserve_fallback(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            PoolQuotaRoute::Normal,
+            false,
+            true,
+            true,
+            true,
+            true,
+        ));
+        for (failure_kind, quota_route, fallback_attempted, oauth, enabled) in [
+            (
+                "upstream_http_429_rate_limit",
+                PoolQuotaRoute::Normal,
+                false,
+                true,
+                true,
+            ),
+            (
+                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+                PoolQuotaRoute::Reserve,
+                false,
+                true,
+                true,
+            ),
+            (
+                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+                PoolQuotaRoute::Normal,
+                true,
+                true,
+                true,
+            ),
+            (
+                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+                PoolQuotaRoute::Normal,
+                false,
+                false,
+                true,
+            ),
+            (
+                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+                PoolQuotaRoute::Normal,
+                false,
+                true,
+                false,
+            ),
+        ] {
+            assert!(!should_attempt_automatic_reserve_fallback(
+                failure_kind,
+                quota_route,
+                fallback_attempted,
+                oauth,
+                enabled,
+                true,
+                true,
+            ));
+        }
+        assert!(!should_attempt_automatic_reserve_fallback(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            PoolQuotaRoute::Normal,
+            false,
+            true,
+            true,
+            false,
+            true,
+        ));
+        assert!(!should_attempt_automatic_reserve_fallback(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            PoolQuotaRoute::Normal,
+            false,
+            true,
+            true,
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn reserve_route_does_not_update_shared_route_health() {
+        assert!(PoolQuotaRoute::Normal.updates_shared_route_health());
+        assert!(!PoolQuotaRoute::Reserve.updates_shared_route_health());
+    }
 }

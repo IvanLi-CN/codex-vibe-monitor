@@ -57,6 +57,14 @@ export interface UpstreamAccountsTableProps {
     primaryShort: string;
     secondary: string;
     secondaryShort: string;
+    reserve?: string;
+    reserveAvailable?: string;
+    reserveUnavailable?: string;
+    reserveUnknown?: string;
+    reserveUsed?: string;
+    reserveAvailablePercent?: string;
+    reserveCaptured?: string;
+    reserveBinding?: string;
     nextReset: string;
     nextResetCompact?: string;
     requestsMetric: string;
@@ -142,6 +150,11 @@ function SelectAllCheckbox({
 
 export function windowPercent(value?: number | null) {
   if (!Number.isFinite(value ?? NaN)) return 0;
+  return Math.max(0, Math.min(value ?? 0, 100));
+}
+
+function reserveWindowPercent(value?: number | null) {
+  if (!Number.isFinite(value ?? NaN)) return null;
   return Math.max(0, Math.min(value ?? 0, 100));
 }
 
@@ -771,11 +784,13 @@ export function CompactTimestampLine({
   value,
   title,
   wrapValue = false,
+  valueClassName,
 }: {
   label: string;
   value: string;
   title?: string;
   wrapValue?: boolean;
+  valueClassName?: string;
 }) {
   return (
     <div
@@ -786,11 +801,12 @@ export function CompactTimestampLine({
         {label}
       </span>
       <span
-        className={
+        className={cn(
           wrapValue
             ? "min-w-0 whitespace-normal break-words text-[12px] leading-4 text-base-content/72"
-            : "truncate whitespace-nowrap text-[12px] leading-4 text-base-content/72 font-mono tabular-nums"
-        }
+            : "truncate whitespace-nowrap text-[12px] leading-4 text-base-content/72 font-mono tabular-nums",
+          valueClassName,
+        )}
       >
         {value}
       </span>
@@ -806,6 +822,47 @@ export function formatWindowShortLabel(windowDurationMins?: number | null) {
   if (minutes % (60 * 24) === 0) return `${minutes / (60 * 24)}D`;
   if (minutes % 60 === 0) return `${minutes / 60}H`;
   return `${minutes}M`;
+}
+
+export function reserveSummaryText(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps["labels"],
+) {
+  if (!labels.reserve || !item.reserve) return null;
+  const statusLabel =
+    item.reserve.availability === "available"
+      ? (labels.reserveAvailable ?? item.reserve.availability)
+      : item.reserve.availability === "unavailable"
+        ? (labels.reserveUnavailable ?? item.reserve.availability)
+        : (labels.reserveUnknown ?? item.reserve.availability);
+  const usedPercent = reserveWindowPercent(item.reserve.primaryWindow?.usedPercent);
+  const availablePercent = reserveWindowPercent(item.reserve.primaryWindow?.availablePercent);
+  const percent = item.reserve.primaryWindow
+    ? [
+        labels.reserveUsed,
+        usedPercent == null ? labels.unknown : `${Math.round(usedPercent)}%`,
+        availablePercent == null ? null : labels.reserveAvailablePercent,
+        availablePercent == null ? null : `${Math.round(availablePercent)}%`,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : labels.unknown;
+  const reset = item.reserve.primaryWindow?.resetsAt
+    ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.reserve.primaryWindow.resetsAt)}`
+    : null;
+  const captured = item.reserve.capturedAt
+    ? `${labels.reserveCaptured ?? "Captured"} ${formatDateTime(item.reserve.capturedAt)}`
+    : null;
+  const binding = item.reserve.normalModelSlug
+    ? `${labels.reserveBinding ?? "Bound"} ${item.reserve.normalModelSlug}`
+    : null;
+  return [statusLabel, percent, binding, reset, captured].filter(Boolean).join(" · ");
+}
+
+export function reserveValueTone(availability?: string | null) {
+  if (availability === "available") return "text-success";
+  if (availability === "unavailable") return "text-warning";
+  return "text-base-content/60";
 }
 
 function normalizeLabelResult(value: unknown) {
@@ -1088,6 +1145,7 @@ export function UpstreamAccountsTable({
           const statusChips = resolveRosterSummaryStatusChips(item, labels);
           const showPlanChip = shouldShowPlanChip(item.planType);
           const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
+          const reserveText = reserveSummaryText(item, labels);
 
           return (
             <article
@@ -1246,6 +1304,14 @@ export function UpstreamAccountsTable({
                           hideLabelWhenMissing={item.localLimits?.secondaryLimit === null}
                           accentClassName="bg-secondary"
                         />
+                        {reserveText ? (
+                          <CompactTimestampLine
+                            label={labels.reserve ?? "Reserve"}
+                            value={reserveText}
+                            valueClassName={reserveValueTone(item.reserve?.availability)}
+                            wrapValue
+                          />
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -1327,6 +1393,7 @@ export function UpstreamAccountsTable({
                 undefined;
               const showPlanChip = shouldShowPlanChip(item.planType);
               const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
+              const reserveText = reserveSummaryText(item, labels);
               return (
                 // biome-ignore lint/a11y/useSemanticElements: the table row owns nested checkbox interaction, so wrapping it in a native button is not valid.
                 <tr
@@ -1479,6 +1546,14 @@ export function UpstreamAccountsTable({
                         accentClassName="bg-secondary"
                         title={secondaryWindowTitle}
                       />
+                      {reserveText ? (
+                        <CompactTimestampLine
+                          label={labels.reserve ?? "Reserve"}
+                          value={reserveText}
+                          valueClassName={reserveValueTone(item.reserve?.availability)}
+                          wrapValue
+                        />
+                      ) : null}
                     </div>
                   </td>
                   <td className="pl-1 pr-3 py-3 text-right align-middle">

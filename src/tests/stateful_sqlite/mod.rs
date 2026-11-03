@@ -159,6 +159,7 @@ mod proxy_routing_observer;
 mod record_budget;
 mod representative_scale_acceptance;
 mod request_preparation_and_handshake_failures;
+mod reserve_routing;
 mod retention_admission_deadline;
 mod retention_batch_admission;
 mod retention_maintenance_ownership;

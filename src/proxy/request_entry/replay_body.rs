@@ -1351,4 +1351,43 @@ mod tests {
         .expect_err("oversized decoded body should be rejected before streaming");
         assert_eq!(error.status, StatusCode::PAYLOAD_TOO_LARGE);
     }
+
+    #[tokio::test]
+    async fn reserve_request_rewrite_preserves_client_model_and_sends_reserve_wire_model() {
+        let snapshot = pool_replay_snapshot_from_bytes(
+            902,
+            Bytes::from_static(br#"{"model":"gpt-5.4-luna","input":[]}"#),
+        )
+        .await
+        .expect("create replay snapshot");
+        let mapping = ResolvedModelMapping {
+            source_model: "gpt-5.4-luna".to_string(),
+            target_model: RESERVE_WIRE_MODEL.to_string(),
+        };
+
+        let prepared = prepare_pool_request_body_for_account(
+            902,
+            Some(&snapshot),
+            &Uri::from_static("/v1/responses"),
+            &Method::POST,
+            None,
+            TagFastModeRewriteMode::KeepOriginal,
+            crate::ImageToolRewriteMode::KeepOriginal,
+            crate::CodexImagegenRewriteMode::KeepOriginal,
+            None,
+            None,
+            None,
+            Some(&mapping),
+        )
+        .await
+        .expect("rewrite reserve request");
+        let body = prepared
+            .snapshot
+            .to_bytes()
+            .await
+            .expect("read rewritten request");
+        let body: Value = serde_json::from_slice(&body).expect("decode rewritten request");
+        assert_eq!(body["model"], RESERVE_WIRE_MODEL);
+        assert_eq!(mapping.source_model, "gpt-5.4-luna");
+    }
 }

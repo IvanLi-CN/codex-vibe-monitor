@@ -1818,6 +1818,7 @@ async fn persist_usage_snapshot_uses_explicit_effective_plan_type() {
         primary: None,
         secondary: None,
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     persist_usage_snapshot(&pool, account_id, Some("pro"), &snapshot, 30)
@@ -1862,6 +1863,7 @@ async fn persist_usage_snapshot_preserves_missing_window_from_latest_sample() {
             unlimited: false,
             balance: Some("0".to_string()),
         }),
+        reserve: None,
         ..Default::default()
     };
     persist_usage_snapshot(&pool, account_id, Some("team"), &first_snapshot, 30)
@@ -1891,6 +1893,59 @@ async fn persist_usage_snapshot_preserves_missing_window_from_latest_sample() {
     assert_eq!(latest.credits_has_credits, Some(0));
     assert_eq!(latest.credits_unlimited, Some(0));
     assert_eq!(latest.credits_balance.as_deref(), Some("0"));
+}
+
+#[tokio::test]
+async fn failed_usage_refresh_persists_unknown_reserve_without_erasing_normal_usage() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Reserve Failure OAuth").await;
+    let snapshot = NormalizedUsageSnapshot {
+        plan_type: Some("team".to_string()),
+        limit_id: "codex".to_string(),
+        limit_name: Some("Codex".to_string()),
+        primary: Some(NormalizedUsageWindow {
+            used_percent: 32.0,
+            window_duration_mins: 300,
+            resets_at: Some("2026-03-17T14:00:00Z".to_string()),
+        }),
+        secondary: None,
+        credits: None,
+        reserve: Some(NormalizedReserveQuotaSnapshot {
+            availability: RESERVE_AVAILABILITY_AVAILABLE.to_string(),
+            allowed: Some(true),
+            limit_reached: Some(false),
+            normal_model_slug: Some("gpt-5.4-luna".to_string()),
+            metered_feature: Some(RESERVE_METERED_FEATURE_BASE_MODEL_INFERENCE.to_string()),
+            binding_source: Some(RESERVE_BINDING_SOURCE_USAGE.to_string()),
+            primary: Some(NormalizedUsageWindow {
+                used_percent: 10.0,
+                window_duration_mins: 300,
+                resets_at: Some("2026-03-17T14:00:00Z".to_string()),
+            }),
+            secondary: None,
+            primary_available_percent: Some(90.0),
+            secondary_available_percent: None,
+        }),
+        ..Default::default()
+    };
+    persist_usage_snapshot(&pool, account_id, Some("team"), &snapshot, 30)
+        .await
+        .expect("persist initial reserve snapshot");
+    persist_unknown_reserve_usage_snapshot_with_lease(&pool, account_id, Some("team"), 30, None)
+        .await
+        .expect("persist unknown reserve snapshot");
+    let latest = load_latest_usage_sample(&pool, account_id)
+        .await
+        .expect("load latest usage sample")
+        .expect("latest usage sample exists");
+    assert_eq!(latest.primary_used_percent, Some(32.0));
+    assert_eq!(
+        latest.reserve_status.as_deref(),
+        Some(RESERVE_AVAILABILITY_UNKNOWN)
+    );
+    assert_eq!(latest.reserve_limit_reached, None);
+    assert_eq!(latest.reserve_primary_used_percent, None);
+    assert_eq!(latest.reserve_primary_available_percent, None);
 }
 
 #[tokio::test]
@@ -2122,6 +2177,7 @@ async fn snapshot_plan_type_fallback_prefers_latest_effective_sample() {
         primary: None,
         secondary: None,
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
@@ -2192,6 +2248,7 @@ async fn snapshot_plan_type_fallback_prefers_refreshed_claims_over_stale_non_emp
         primary: None,
         secondary: None,
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
@@ -3705,6 +3762,7 @@ async fn enrich_window_actual_usage_for_summaries_uses_matching_stale_reset_wind
     summary.id = account_id;
     summary.primary_window = Some(RateWindowSnapshot {
         used_percent: 100.0,
+        available_percent: None,
         used_text: "100% used".to_string(),
         limit_text: "5h window".to_string(),
         resets_at: Some(format_utc_iso(reset_at)),
@@ -3794,6 +3852,7 @@ async fn enrich_window_actual_usage_for_summaries_reads_materialized_archive_usa
     summary.id = account_id;
     summary.primary_window = Some(RateWindowSnapshot {
         used_percent: 12.0,
+        available_percent: None,
         used_text: "12% used".to_string(),
         limit_text: "3d rolling window".to_string(),
         resets_at: None,
@@ -3952,6 +4011,7 @@ async fn list_upstream_accounts_keeps_actual_usage_null_until_batch_hydrate() {
         }),
         secondary: None,
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
@@ -4009,6 +4069,7 @@ async fn get_upstream_account_window_usage_returns_batch_actual_usage() {
             resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
         }),
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
@@ -4196,6 +4257,7 @@ async fn get_upstream_account_window_usage_merges_hourly_rows_when_live_cursor_m
             resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
         }),
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
@@ -4275,6 +4337,7 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
             resets_at: Some(now.to_rfc3339()),
         }),
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)

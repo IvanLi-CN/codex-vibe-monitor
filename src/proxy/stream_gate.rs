@@ -591,6 +591,110 @@ pub(crate) fn response_payload_looks_like_sse(bytes: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
+fn rewrite_reserve_response_model_value(value: &mut Value, client_model: &str) -> bool {
+    match value {
+        Value::Object(object) => {
+            let mut changed = false;
+            for (key, nested) in object.iter_mut() {
+                if key == "model"
+                    && nested
+                        .as_str()
+                        .is_some_and(|model| model.eq_ignore_ascii_case(RESERVE_WIRE_MODEL))
+                {
+                    *nested = Value::String(client_model.to_string());
+                    changed = true;
+                } else if rewrite_reserve_response_model_value(nested, client_model) {
+                    changed = true;
+                }
+            }
+            changed
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .any(|item| rewrite_reserve_response_model_value(item, client_model)),
+        _ => false,
+    }
+}
+
+pub(crate) fn rewrite_reserve_response_model_json(
+    bytes: &[u8],
+    client_model: &str,
+) -> Option<Vec<u8>> {
+    let mut value = serde_json::from_slice::<Value>(bytes).ok()?;
+    if !rewrite_reserve_response_model_value(&mut value, client_model) {
+        return None;
+    }
+    serde_json::to_vec(&value).ok()
+}
+
+pub(crate) struct ReserveResponseModelSseRewriter {
+    client_model: String,
+    line_buffer: Vec<u8>,
+}
+
+impl ReserveResponseModelSseRewriter {
+    pub(crate) fn new(client_model: &str) -> Self {
+        Self {
+            client_model: client_model.to_string(),
+            line_buffer: Vec::new(),
+        }
+    }
+
+    fn rewrite_line(&self, line: &[u8]) -> Vec<u8> {
+        let line_ending_len = if line.ends_with(b"\r\n") {
+            2
+        } else if line.ends_with(b"\n") || line.ends_with(b"\r") {
+            1
+        } else {
+            0
+        };
+        let content = &line[..line.len().saturating_sub(line_ending_len)];
+        let trimmed = content
+            .strip_prefix(b"data:")
+            .map(|payload| payload.trim_ascii());
+        let Some(payload) = trimmed else {
+            return line.to_vec();
+        };
+        let Some(rewritten) = rewrite_reserve_response_model_json(payload, &self.client_model)
+        else {
+            return line.to_vec();
+        };
+        let mut output = b"data: ".to_vec();
+        output.extend_from_slice(&rewritten);
+        output.extend_from_slice(&line[content.len()..]);
+        output
+    }
+
+    pub(crate) fn ingest(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if bytes.is_empty() {
+            return Vec::new();
+        }
+        self.line_buffer.extend_from_slice(bytes);
+        let mut output = Vec::new();
+        let mut line_start = 0;
+        while let Some(relative_end) = self.line_buffer[line_start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let line_end = line_start + relative_end + 1;
+            output.extend_from_slice(&self.rewrite_line(&self.line_buffer[line_start..line_end]));
+            line_start = line_end;
+        }
+        if line_start > 0 {
+            self.line_buffer.drain(..line_start);
+        }
+        output
+    }
+
+    pub(crate) fn finish(&mut self) -> Vec<u8> {
+        if self.line_buffer.is_empty() {
+            return Vec::new();
+        }
+        let line = std::mem::take(&mut self.line_buffer);
+        self.rewrite_line(&line)
+    }
+}
+
 pub(crate) fn response_payload_looks_like_sse_after_decode(
     bytes: &[u8],
     content_encoding: Option<&str>,
@@ -1324,6 +1428,33 @@ fn json_value_contains_nonempty_output_text(value: &Value) -> bool {
                 .is_some_and(json_value_contains_nonempty_output_text)
         }),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod reserve_request_rewrite_tests {
+    use super::*;
+
+    #[test]
+    fn reserve_request_rewrite_preserves_client_model_in_json_response() {
+        let body = br#"{"model":"gpt-reserve","output":[{"model":"gpt-reserve"}]}"#;
+        let rewritten = rewrite_reserve_response_model_json(body, "gpt-5.6-luna")
+            .expect("Reserve response model should be rewritten");
+        let value: Value = serde_json::from_slice(&rewritten).expect("rewritten response JSON");
+
+        assert_eq!(value["model"], "gpt-5.6-luna");
+        assert_eq!(value["output"][0]["model"], "gpt-5.6-luna");
+    }
+
+    #[test]
+    fn reserve_request_rewrite_handles_split_sse_lines_and_preserves_line_endings() {
+        let mut rewriter = ReserveResponseModelSseRewriter::new("gpt-5.6-luna");
+
+        assert!(rewriter.ingest(b"data: {\"model\":\"gpt-").is_empty());
+        let rewritten = rewriter.ingest(b"reserve\"}\r\n\r\n");
+
+        assert_eq!(rewritten, b"data: {\"model\":\"gpt-5.6-luna\"}\r\n\r\n");
+        assert!(rewriter.finish().is_empty());
     }
 }
 

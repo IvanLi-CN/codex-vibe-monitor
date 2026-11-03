@@ -53,6 +53,7 @@ async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_dat
     assert_eq!(row.cache_hit_protection_enabled, Some(0));
     assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
     assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
+    assert_eq!(row.automatic_reserve_fallback_enabled, Some(1));
     let compression = resolve_pool_request_compression_settings_from_row(&row);
     assert_eq!(compression.algorithm, RequestCompressionAlgorithm::Identity);
     assert_eq!(
@@ -234,6 +235,44 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
     .expect("insert legacy model routing row");
     sqlx::query(
         r#"
+            CREATE TABLE pool_upstream_account_limit_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                captured_at TEXT NOT NULL,
+                limit_id TEXT,
+                limit_name TEXT,
+                plan_type TEXT,
+                primary_used_percent REAL,
+                primary_window_minutes INTEGER,
+                primary_resets_at TEXT,
+                secondary_used_percent REAL,
+                secondary_window_minutes INTEGER,
+                secondary_resets_at TEXT,
+                credits_has_credits INTEGER,
+                credits_unlimited INTEGER,
+                credits_balance TEXT
+            )
+            "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy usage sample table");
+    sqlx::query(
+        r#"
+            INSERT INTO pool_upstream_account_limit_samples (
+                id,
+                account_id,
+                captured_at,
+                limit_id,
+                primary_used_percent
+            ) VALUES (7, 7, '2026-11-01T12:00:00Z', 'codex', 42.0)
+            "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy usage sample row");
+    sqlx::query(
+        r#"
             INSERT INTO pool_routing_settings (
                 id,
                 encrypted_api_key,
@@ -278,12 +317,61 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
         "cache_hit_protection_enabled",
         "cache_hit_low_rate_threshold_percent",
         "cache_hit_overflow_mode",
+        "automatic_reserve_fallback_enabled",
     ] {
         assert!(
             columns.contains(column),
             "expected upgraded schema to contain {column}"
         );
     }
+    let settings_column = sqlx::query(
+        "SELECT \"notnull\", dflt_value FROM pragma_table_info('pool_routing_settings') WHERE name = 'automatic_reserve_fallback_enabled'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect automatic fallback setting constraints");
+    assert_eq!(
+        settings_column
+            .try_get::<i64, _>("notnull")
+            .unwrap_or_default(),
+        1
+    );
+    assert_eq!(
+        settings_column
+            .try_get::<Option<String>, _>("dflt_value")
+            .expect("read automatic fallback default")
+            .as_deref(),
+        Some("1")
+    );
+    let routing_column_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('pool_routing_settings') WHERE name IN ('reserve_fallback_model_policy_mode', 'reserve_fallback_model_patterns_json')",
+    )
+        .fetch_one(&pool)
+        .await
+        .expect("count upgraded routing settings columns");
+    assert_eq!(routing_column_count, 2);
+    let usage_column_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('pool_upstream_account_limit_samples') WHERE name IN ('reserve_status', 'reserve_allowed', 'reserve_limit_reached', 'reserve_primary_used_percent', 'reserve_primary_window_minutes', 'reserve_primary_resets_at', 'reserve_primary_available_percent', 'reserve_secondary_used_percent', 'reserve_secondary_window_minutes', 'reserve_secondary_resets_at', 'reserve_secondary_available_percent', 'reserve_captured_at', 'reserve_normal_model_slug', 'reserve_metered_feature', 'reserve_binding_source')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count upgraded usage sample columns");
+    assert_eq!(usage_column_count, 15);
+    let legacy_usage = sqlx::query_as::<_, (i64, String, Option<String>, Option<f64>)>(
+        "SELECT account_id, captured_at, limit_id, primary_used_percent FROM pool_upstream_account_limit_samples WHERE id = 7",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved legacy usage sample");
+    assert_eq!(
+        legacy_usage,
+        (
+            7,
+            "2026-11-01T12:00:00Z".to_string(),
+            Some("codex".to_string()),
+            Some(42.0)
+        )
+    );
     let model_route_columns =
         sqlx::query("PRAGMA table_info('pool_upstream_account_model_routes')")
             .fetch_all(&pool)
@@ -339,6 +427,7 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
     assert_eq!(row.cache_hit_protection_enabled, Some(0));
     assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
     assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
+    assert_eq!(row.automatic_reserve_fallback_enabled, Some(1));
 
     let resolved = resolve_pool_routing_timeouts(&pool, &config)
         .await

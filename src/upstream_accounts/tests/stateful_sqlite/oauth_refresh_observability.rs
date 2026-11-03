@@ -191,6 +191,7 @@ async fn stale_usage_refresh_lease_cannot_persist_snapshot() {
             resets_at: Some("2026-03-18T00:00:00Z".to_string()),
         }),
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     assert!(

@@ -7,6 +7,119 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 pub(crate) const CACHE_HIT_PROTECTION_MIN_INPUT_TOKENS: u64 = 3_840;
+pub(crate) const RESERVE_METERED_FEATURE_BASE_MODEL_INFERENCE: &str = "base_model_inference";
+pub(crate) const RESERVE_FALLBACK_MODEL_POLICY_UPSTREAM: &str = "upstream";
+pub(crate) const RESERVE_FALLBACK_MODEL_POLICY_UPSTREAM_PLUS_CUSTOM: &str = "upstream_plus_custom";
+pub(crate) const RESERVE_FALLBACK_MODEL_POLICY_CUSTOM: &str = "custom";
+pub(crate) const MAX_RESERVE_FALLBACK_MODEL_PATTERNS: usize = 64;
+pub(crate) const MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReserveFallbackModelPolicyMode {
+    Upstream,
+    UpstreamPlusCustom,
+    Custom,
+}
+
+impl ReserveFallbackModelPolicyMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Upstream => RESERVE_FALLBACK_MODEL_POLICY_UPSTREAM,
+            Self::UpstreamPlusCustom => RESERVE_FALLBACK_MODEL_POLICY_UPSTREAM_PLUS_CUSTOM,
+            Self::Custom => RESERVE_FALLBACK_MODEL_POLICY_CUSTOM,
+        }
+    }
+
+    fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some(RESERVE_FALLBACK_MODEL_POLICY_UPSTREAM_PLUS_CUSTOM) => Self::UpstreamPlusCustom,
+            Some(RESERVE_FALLBACK_MODEL_POLICY_CUSTOM) => Self::Custom,
+            _ => Self::Upstream,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReserveFallbackModelPolicy {
+    pub(crate) mode: ReserveFallbackModelPolicyMode,
+    pub(crate) patterns: Vec<String>,
+}
+
+impl ReserveFallbackModelPolicy {
+    pub(crate) fn into_response(self) -> ReserveFallbackModelPolicyResponse {
+        ReserveFallbackModelPolicyResponse {
+            mode: self.mode.as_str().to_string(),
+            patterns: self.patterns,
+        }
+    }
+}
+
+pub(crate) fn resolve_reserve_fallback_model_policy(
+    row: &PoolRoutingSettingsRow,
+) -> ReserveFallbackModelPolicy {
+    let patterns = row
+        .reserve_fallback_model_patterns_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .map(|values| normalize_reserve_model_patterns(values).unwrap_or_default())
+        .unwrap_or_default();
+    ReserveFallbackModelPolicy {
+        mode: ReserveFallbackModelPolicyMode::parse(
+            row.reserve_fallback_model_policy_mode.as_deref(),
+        ),
+        patterns,
+    }
+}
+
+pub(crate) fn normalize_reserve_model_patterns(
+    patterns: Vec<String>,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    if patterns.len() > MAX_RESERVE_FALLBACK_MODEL_PATTERNS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "reserveFallbackModelPolicy.patterns must contain at most {MAX_RESERVE_FALLBACK_MODEL_PATTERNS} entries"
+            ),
+        ));
+    }
+    patterns
+        .into_iter()
+        .map(|pattern| {
+            let pattern = pattern.trim().to_string();
+            if pattern.is_empty() || pattern.len() > MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "reserveFallbackModelPolicy.patterns entries must be 1-{MAX_RESERVE_FALLBACK_MODEL_PATTERN_LENGTH} characters"
+                    ),
+                ));
+            }
+            Ok(pattern)
+        })
+        .collect()
+}
+
+pub(crate) fn normalize_reserve_model_policy(
+    update: &UpdateReserveFallbackModelPolicyRequest,
+) -> Result<ReserveFallbackModelPolicy, (StatusCode, String)> {
+    let mode = ReserveFallbackModelPolicyMode::parse(Some(update.mode.as_str()));
+    if !matches!(
+        update.mode.trim().to_ascii_lowercase().as_str(),
+        RESERVE_FALLBACK_MODEL_POLICY_UPSTREAM
+            | RESERVE_FALLBACK_MODEL_POLICY_UPSTREAM_PLUS_CUSTOM
+            | RESERVE_FALLBACK_MODEL_POLICY_CUSTOM
+    ) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "reserveFallbackModelPolicy.mode must be upstream, upstream_plus_custom, or custom"
+                .to_string(),
+        ));
+    }
+    Ok(ReserveFallbackModelPolicy {
+        mode,
+        patterns: normalize_reserve_model_patterns(update.patterns.clone())?,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CacheHitOverflowMode {
@@ -689,6 +802,9 @@ pub(crate) async fn load_pool_routing_settings(
             ,cache_hit_low_rate_threshold_percent
             ,cache_hit_overflow_mode
             ,priority_handoff_admission_enabled
+            ,automatic_reserve_fallback_enabled
+            ,reserve_fallback_model_policy_mode
+            ,reserve_fallback_model_patterns_json
         FROM pool_routing_settings
         WHERE id = ?1
         LIMIT 1
@@ -767,6 +883,10 @@ pub(crate) fn build_pool_routing_settings_response(
         timeouts: pool_routing_timeouts_response(timeouts),
         cache_hit_protection: resolve_cache_hit_protection_settings(row).into_response(),
         priority_handoff_admission_enabled: priority_handoff_admission_enabled(),
+        automatic_reserve_fallback_enabled: row
+            .automatic_reserve_fallback_enabled
+            .is_none_or(|value| value != 0),
+        reserve_fallback_model_policy: resolve_reserve_fallback_model_policy(row).into_response(),
     }
 }
 
@@ -1051,6 +1171,8 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) maintenance_settings: Option<PoolRoutingMaintenanceSettings>,
     pub(crate) cache_hit_protection: Option<CacheHitProtectionSettings>,
     pub(crate) priority_handoff_admission_enabled: Option<bool>,
+    pub(crate) automatic_reserve_fallback_enabled: Option<bool>,
+    pub(crate) reserve_fallback_model_policy: Option<&'a ReserveFallbackModelPolicy>,
 }
 
 pub(crate) async fn save_pool_routing_settings(
@@ -1166,6 +1288,13 @@ pub(crate) async fn save_pool_routing_settings(
                 .priority_handoff_admission_enabled
                 .is_none_or(|value| value != 0)
         });
+    let automatic_reserve_fallback_enabled_value = update
+        .automatic_reserve_fallback_enabled
+        .unwrap_or_else(|| {
+            current
+                .automatic_reserve_fallback_enabled
+                .is_none_or(|value| value != 0)
+        });
     let now_iso = format_utc_iso(Utc::now());
 
     let mut tx = pool.begin().await.map_err(internal_error_tuple)?;
@@ -1193,7 +1322,8 @@ pub(crate) async fn save_pool_routing_settings(
             upstream_handshake_timeout_secs = ?19,
             request_read_timeout_secs = ?20,
             priority_handoff_admission_enabled = ?21,
-            updated_at = ?22
+            automatic_reserve_fallback_enabled = ?22,
+            updated_at = ?23
         WHERE id = ?1
         "#,
     )
@@ -1218,6 +1348,11 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(upstream_handshake_timeout_secs)
     .bind(request_read_timeout_secs)
     .bind(if priority_handoff_admission_enabled_value { 1_i64 } else { 0_i64 })
+    .bind(if automatic_reserve_fallback_enabled_value {
+        1_i64
+    } else {
+        0_i64
+    })
     .bind(now_iso)
     .execute(&mut *tx)
     .await
@@ -1272,6 +1407,19 @@ pub(crate) async fn save_pool_routing_settings(
         .bind(if cache_hit_protection.enabled { 1_i64 } else { 0_i64 })
         .bind(i64::from(cache_hit_protection.low_hit_rate_threshold_percent))
         .bind(cache_hit_protection.overflow_mode.as_str())
+        .bind(format_utc_iso(Utc::now()))
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error_tuple)?;
+    }
+
+    if let Some(policy) = update.reserve_fallback_model_policy {
+        sqlx::query(
+            "UPDATE pool_routing_settings SET reserve_fallback_model_policy_mode = ?2, reserve_fallback_model_patterns_json = ?3, updated_at = ?4 WHERE id = ?1",
+        )
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .bind(policy.mode.as_str())
+        .bind(serde_json::to_string(&policy.patterns).unwrap_or_else(|_| "[]".to_string()))
         .bind(format_utc_iso(Utc::now()))
         .execute(&mut *tx)
         .await

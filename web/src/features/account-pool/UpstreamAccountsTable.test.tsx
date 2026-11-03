@@ -11,6 +11,8 @@ import type {
 import {
   enableChipTone,
   healthChipTone,
+  reserveSummaryText,
+  reserveValueTone,
   resolveRosterActionableStatusChips,
   resolveRosterSummaryStatusChips,
   resolveRoutingBlockCountdown,
@@ -160,6 +162,13 @@ const labels = {
   policyForbidNewConversation: "No new",
   policyConcurrency: (count: number) => `Conc ${count}`,
   policyRetry: (count: number) => `Retry ${count}`,
+  reserve: "Reserve",
+  reserveAvailable: "Reserve available",
+  reserveUnavailable: "Reserve unavailable",
+  reserveUnknown: "Reserve unknown",
+  reserveUsed: "Used",
+  reserveAvailablePercent: "Available",
+  reserveCaptured: "Captured",
 };
 
 function renderTable(items: UpstreamAccountSummary[]) {
@@ -213,6 +222,63 @@ function renderInteractiveTable(items: UpstreamAccountSummary[], onSelect = vi.f
 }
 
 describe("UpstreamAccountsTable", () => {
+  it("renders Reserve status tones and only reports an explicit available percentage", () => {
+    const item = {
+      id: 101,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "Reserve account",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      reserve: {
+        availability: "available",
+        primaryWindow: {
+          usedPercent: 12,
+          availablePercent: null,
+          usedText: "12%",
+          limitText: "5h",
+          windowDurationMins: 300,
+        },
+      },
+      tags: [],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
+    } satisfies UpstreamAccountSummary;
+
+    expect(reserveSummaryText(item, labels)).toContain("Used 12%");
+    expect(reserveSummaryText(item, labels)).not.toContain("Available");
+    expect(reserveValueTone("available")).toBe("text-success");
+    expect(reserveValueTone("unavailable")).toBe("text-warning");
+    expect(reserveValueTone("unknown")).toBe("text-base-content/60");
+  });
+
+  it("keeps missing Reserve usage percentages unknown", () => {
+    const item = {
+      id: 102,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "Incomplete Reserve account",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      reserve: {
+        availability: "available",
+        primaryWindow: {
+          usedPercent: null,
+          availablePercent: null,
+          usedText: "unknown",
+          limitText: "5h",
+          windowDurationMins: 300,
+        },
+      },
+      tags: [],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
+    } as unknown as UpstreamAccountSummary;
+
+    expect(reserveSummaryText(item, labels)).toContain("Used Unknown");
+    expect(reserveSummaryText(item, labels)).not.toContain("Used 0%");
+  });
+
   it("keeps ordinary account metadata neutral while preserving semantic status tones", () => {
     expect(enableChipTone("enabled")).toBe("success");
     expect(enableChipTone("disabled")).toBe("neutral");

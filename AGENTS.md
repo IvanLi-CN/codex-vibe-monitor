@@ -50,6 +50,11 @@ Backend test placement follows the resource contract: database-only behavior bel
 - React/TypeScript uses functional components, hooks, explicit return types, PascalCase components, and camelCase hooks/utilities. Keep Tailwind utilities in JSX and shared styles in `index.css`.
 - UI or rendered-surface changes require the applicable `$ui-visual-evidence` workflow before claiming verification or entering PR delivery. Do not create visual evidence for non-UI work.
 
+## 行为反例
+
+- 视觉证据必须来自主人指定的实际目标程序、运行时和页面路由，并记录对应的浏览器视口；主人要求 Web App Demo 时，必须使用 `VITE_APP_RUNTIME=demo` 的正式 Demo 页面。
+- 反例：主人要求 Web App Demo 浏览器视口截图，却使用无关的 Storybook 或组件预览截图交付为证据。此类截图不得继续引用，必须废弃并从目标 Demo 重新捕获；截图的 `target_program`、运行时、路由和视口必须与任务要求一致。
+
 ## Git, PR, and Release
 
 - Work from a `th/` topic branch. Protect `main`: use a PR, do not push directly, and do not force-push or rewrite history without explicit authorization.

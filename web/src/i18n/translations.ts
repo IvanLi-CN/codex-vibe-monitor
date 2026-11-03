@@ -388,6 +388,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.primaryWindowShortLabel": "Primary",
     "accountPool.upstreamAccounts.secondaryWindowLabel": "Secondary quota window",
     "accountPool.upstreamAccounts.secondaryWindowShortLabel": "Secondary",
+    "accountPool.upstreamAccounts.reserve.label": "Reserve",
+    "accountPool.upstreamAccounts.reserve.available": "available",
+    "accountPool.upstreamAccounts.reserve.unavailable": "unavailable",
+    "accountPool.upstreamAccounts.reserve.unknown": "unknown",
+    "accountPool.upstreamAccounts.reserve.used": "used",
+    "accountPool.upstreamAccounts.reserve.availablePercent": "available",
+    "accountPool.upstreamAccounts.reserve.detailDescription":
+      "Structured Luna Reserve quota reported by the OAuth usage endpoint.",
+    "accountPool.upstreamAccounts.reserve.reset": "Reset",
+    "accountPool.upstreamAccounts.reserve.window": "min window",
+    "accountPool.upstreamAccounts.reserve.capturedAt": "Captured",
+    "accountPool.upstreamAccounts.reserve.binding": "Bound model",
+    "accountPool.upstreamAccounts.reserve.meteredFeature": "Metered feature",
     "accountPool.upstreamAccounts.primaryWindowDescription":
       "The primary quota window reported by the upstream.",
     "accountPool.upstreamAccounts.secondaryWindowDescription":
@@ -2291,6 +2304,17 @@ const baseTranslations = {
     "settings.routing.priorityHandoff.title": "Priority handoff admission",
     "settings.routing.priorityHandoff.description":
       "Limit automatic HTTP/API key priority migrations to one real request at a time while a target recovers.",
+    "settings.routing.reserveFallback.title": "Automatic Luna Reserve fallback",
+    "settings.routing.reserveFallback.description":
+      "Allow OAuth requests to use the official Luna Reserve quota only after the normal quota is explicitly exhausted.",
+    "settings.routing.reserveFallback.policyMode": "Reserve model eligibility",
+    "settings.routing.reserveFallback.policyUpstream": "Upstream binding only",
+    "settings.routing.reserveFallback.policyUpstreamPlusCustom": "Upstream plus custom",
+    "settings.routing.reserveFallback.policyCustom": "Custom patterns only",
+    "settings.routing.reserveFallback.policyPatterns": "Custom model patterns",
+    "settings.routing.reserveFallback.policyPatternsPlaceholder": "gpt-*-luna",
+    "settings.routing.reserveFallback.policyDescription":
+      "The default uses the upstream normalModelSlug and base_model_inference binding. Custom patterns only grant eligibility to try Reserve; the account snapshot must still report Reserve as available.",
     "settings.routing.cacheHit.threshold": "Low hit threshold (%)",
     "settings.routing.cacheHit.overflow": "When the route is limited",
     "settings.routing.cacheHit.queue": "Queue requests",
@@ -4116,8 +4140,23 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.primaryWindowShortLabel": "主要",
     "accountPool.upstreamAccounts.secondaryWindowLabel": "次要额度窗口",
     "accountPool.upstreamAccounts.secondaryWindowShortLabel": "次要",
-    "accountPool.upstreamAccounts.primaryWindowDescription": "上游返回的主要额度窗口。",
-    "accountPool.upstreamAccounts.secondaryWindowDescription": "上游返回的次要额度窗口。",
+    "accountPool.upstreamAccounts.reserve.label": "Reserve",
+    "accountPool.upstreamAccounts.reserve.available": "可用",
+    "accountPool.upstreamAccounts.reserve.unavailable": "不可用",
+    "accountPool.upstreamAccounts.reserve.unknown": "未知",
+    "accountPool.upstreamAccounts.reserve.used": "已用",
+    "accountPool.upstreamAccounts.reserve.availablePercent": "可用",
+    "accountPool.upstreamAccounts.reserve.detailDescription":
+      "来自 OAuth usage 响应的结构化 Luna Reserve 配额状态。",
+    "accountPool.upstreamAccounts.reserve.reset": "重置",
+    "accountPool.upstreamAccounts.reserve.window": "分钟窗口",
+    "accountPool.upstreamAccounts.reserve.capturedAt": "采集",
+    "accountPool.upstreamAccounts.reserve.binding": "绑定模型",
+    "accountPool.upstreamAccounts.reserve.meteredFeature": "计量特性",
+    "accountPool.upstreamAccounts.primaryWindowDescription":
+      "主额度窗口，对齐 Codex 的 5 小时使用语义。",
+    "accountPool.upstreamAccounts.secondaryWindowDescription":
+      "副额度窗口，对齐 Codex 的 7 天使用语义。",
     "accountPool.upstreamAccounts.limitLegendTitle": "额度说明",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth 账号展示上游归一化后的真实快照；API Key 账号在路由计量接入前，展示本地占位限额。",
@@ -5909,6 +5948,17 @@ const baseTranslations = {
     "settings.routing.priorityHandoff.title": "优先级迁移准入控制",
     "settings.routing.priorityHandoff.description":
       "上游恢复期间，自动 HTTP/API Key 优先级迁移只允许逐个真实请求验证；来源请求不会排队。",
+    "settings.routing.reserveFallback.title": "自动使用 Luna Reserve 后备额度",
+    "settings.routing.reserveFallback.description":
+      "仅在普通额度明确耗尽后，允许 OAuth 请求使用官方 Luna Reserve 配额；关闭后仍会同步并展示 Reserve 状态。",
+    "settings.routing.reserveFallback.policyMode": "Reserve 模型资格策略",
+    "settings.routing.reserveFallback.policyUpstream": "仅使用上游绑定",
+    "settings.routing.reserveFallback.policyUpstreamPlusCustom": "上游绑定或自定义规则",
+    "settings.routing.reserveFallback.policyCustom": "仅使用自定义规则",
+    "settings.routing.reserveFallback.policyPatterns": "自定义模型规则",
+    "settings.routing.reserveFallback.policyPatternsPlaceholder": "gpt-*-luna",
+    "settings.routing.reserveFallback.policyDescription":
+      "默认要求上游返回 normalModelSlug 且 meteredFeature 为 base_model_inference。自定义规则只授予尝试 Reserve 的资格，账号快照仍必须明确报告 Reserve 可用。",
     "settings.routing.cacheHit.threshold": "低命中阈值（%）",
     "settings.routing.cacheHit.overflow": "路由受限时",
     "settings.routing.cacheHit.queue": "请求排队",

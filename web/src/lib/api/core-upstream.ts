@@ -34,6 +34,7 @@ export interface RateWindowActualUsage {
 
 export interface RateWindowSnapshot {
   usedPercent: number;
+  availablePercent?: number | null;
   usedText: string;
   limitText: string;
   resetsAt?: string | null;
@@ -45,6 +46,18 @@ export interface CreditsSnapshot {
   hasCredits: boolean;
   unlimited: boolean;
   balance?: string | null;
+}
+
+export interface ReserveQuotaSnapshot {
+  availability: "available" | "unavailable" | "unknown" | string;
+  allowed?: boolean | null;
+  limitReached?: boolean | null;
+  normalModelSlug?: string | null;
+  meteredFeature?: string | null;
+  bindingSource?: string | null;
+  primaryWindow?: RateWindowSnapshot | null;
+  secondaryWindow?: RateWindowSnapshot | null;
+  capturedAt?: string | null;
 }
 
 export interface LocalLimitSnapshot {
@@ -327,6 +340,7 @@ export interface UpstreamAccountSummary {
   primaryWindow?: RateWindowSnapshot | null;
   secondaryWindow?: RateWindowSnapshot | null;
   credits?: CreditsSnapshot | null;
+  reserve?: ReserveQuotaSnapshot | null;
   localLimits?: LocalLimitSnapshot | null;
   compactSupport?: CompactSupportState | null;
   duplicateInfo?: UpstreamAccountDuplicateInfo | null;
@@ -541,6 +555,13 @@ export interface UpdatePoolRoutingSettingsPayload {
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
   cacheHitProtection?: Partial<CacheHitProtectionSettings>;
   priorityHandoffAdmissionEnabled?: boolean;
+  automaticReserveFallbackEnabled?: boolean;
+  reserveFallbackModelPolicy?: ReserveFallbackModelPolicy;
+}
+
+export interface ReserveFallbackModelPolicy {
+  mode: "upstream" | "upstream_plus_custom" | "custom";
+  patterns: string[];
 }
 
 export interface PoolRoutingSettings {
@@ -557,6 +578,8 @@ export interface PoolRoutingSettings {
   timeouts?: PoolRoutingTimeoutSettings;
   cacheHitProtection?: CacheHitProtectionSettings;
   priorityHandoffAdmissionEnabled?: boolean;
+  automaticReserveFallbackEnabled?: boolean;
+  reserveFallbackModelPolicy?: ReserveFallbackModelPolicy;
 }
 
 export type CacheHitOverflowMode = "queue" | "reroute";
@@ -1116,6 +1139,7 @@ function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
   if (usedPercent == null || !usedText || !limitText || windowDurationMins == null) return null;
   return {
     usedPercent,
+    availablePercent: normalizeFiniteNumber(payload.availablePercent),
     usedText,
     limitText,
     resetsAt: typeof payload.resetsAt === "string" ? payload.resetsAt : null,
@@ -1132,6 +1156,27 @@ function normalizeCreditsSnapshot(raw: unknown): CreditsSnapshot | null {
     hasCredits: payload.hasCredits,
     unlimited: payload.unlimited,
     balance: typeof payload.balance === "string" ? payload.balance : null,
+  };
+}
+
+function normalizeReserveQuotaSnapshot(raw: unknown): ReserveQuotaSnapshot | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const availability =
+    payload.availability === "available" ||
+    payload.availability === "unavailable" ||
+    payload.availability === "unknown"
+      ? payload.availability
+      : "unknown";
+  return {
+    availability,
+    allowed: typeof payload.allowed === "boolean" ? payload.allowed : null,
+    limitReached: typeof payload.limitReached === "boolean" ? payload.limitReached : null,
+    normalModelSlug: typeof payload.normalModelSlug === "string" ? payload.normalModelSlug : null,
+    meteredFeature: typeof payload.meteredFeature === "string" ? payload.meteredFeature : null,
+    bindingSource: typeof payload.bindingSource === "string" ? payload.bindingSource : null,
+    primaryWindow: normalizeRateWindowSnapshot(payload.primaryWindow),
+    secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
+    capturedAt: typeof payload.capturedAt === "string" ? payload.capturedAt : null,
   };
 }
 
@@ -1539,6 +1584,7 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     primaryWindow: normalizeRateWindowSnapshot(payload.primaryWindow),
     secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
     credits: normalizeCreditsSnapshot(payload.credits),
+    reserve: kind === "oauth_codex" ? normalizeReserveQuotaSnapshot(payload.reserve) : null,
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
     compactSupport: normalizeCompactSupportState(payload.compactSupport),
     duplicateInfo: normalizeUpstreamAccountDuplicateInfo(payload.duplicateInfo),

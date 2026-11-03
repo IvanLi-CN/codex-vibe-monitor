@@ -57,6 +57,7 @@ import { UpstreamAccountGroupCombobox } from "../../features/account-pool/Upstre
 import { resolveRoutingBlockCountdown } from "../../features/account-pool/UpstreamAccountsTable";
 import {
   formatUsageWindowDuration,
+  ReserveQuotaCard,
   UpstreamAccountUsageCard,
 } from "../../features/account-pool/UpstreamAccountUsageCard";
 import { useRoutingBlockClock } from "../../features/account-pool/useRoutingBlockClock";
@@ -3618,6 +3619,30 @@ function SharedUpstreamAccountDetailDrawerInner({
                         <p className="text-sm text-base-content/60">
                           {t("accountPool.upstreamAccounts.usage.noWindows")}
                         </p>
+                      ) : null}
+                      {selectedDetail.kind === "oauth_codex" ? (
+                        <ReserveQuotaCard
+                          title={t("accountPool.upstreamAccounts.reserve.label")}
+                          description={t("accountPool.upstreamAccounts.reserve.detailDescription")}
+                          snapshot={selectedDetail.reserve}
+                          labels={{
+                            available: t("accountPool.upstreamAccounts.reserve.available"),
+                            unavailable: t("accountPool.upstreamAccounts.reserve.unavailable"),
+                            unknown: t("accountPool.upstreamAccounts.reserve.unknown"),
+                            used: t("accountPool.upstreamAccounts.reserve.used"),
+                            availablePercent: t(
+                              "accountPool.upstreamAccounts.reserve.availablePercent",
+                            ),
+                            reset: t("accountPool.upstreamAccounts.reserve.reset"),
+                            window: t("accountPool.upstreamAccounts.reserve.window"),
+                            capturedAt: t("accountPool.upstreamAccounts.reserve.capturedAt"),
+                            unknownValue: t("accountPool.upstreamAccounts.latestAction.unknown"),
+                            binding: t("accountPool.upstreamAccounts.reserve.binding"),
+                            meteredFeature: t(
+                              "accountPool.upstreamAccounts.reserve.meteredFeature",
+                            ),
+                          }}
+                        />
                       ) : null}
                     </div>
                   ) : null}
