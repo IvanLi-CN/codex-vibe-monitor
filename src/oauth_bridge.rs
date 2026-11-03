@@ -2388,8 +2388,12 @@ fn backfill_oauth_request_debug_body_counters(
     logical_counter: Option<&ObservedByteCounter>,
     transmitted_counter: Option<&ObservedByteCounter>,
 ) {
-    debug.request_body_logical_bytes = logical_counter.map(ObservedByteCounter::load);
-    debug.request_body_transmitted_bytes = transmitted_counter.map(ObservedByteCounter::load);
+    if let Some(logical_counter) = logical_counter {
+        debug.request_body_logical_bytes = Some(logical_counter.load());
+    }
+    if let Some(transmitted_counter) = transmitted_counter {
+        debug.request_body_transmitted_bytes = Some(transmitted_counter.load());
+    }
 }
 
 pub(crate) fn backfill_oauth_request_debug_body_prefix(

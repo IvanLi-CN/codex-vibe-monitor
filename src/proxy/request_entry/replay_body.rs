@@ -1121,21 +1121,10 @@ pub(crate) async fn prepare_pool_request_body_for_account_with_oauth_context(
     }) && codex_imagegen_protocol.is_none()
         && image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
     let model_mapping_required = model_mapping.is_some();
-    let oauth_large_response_rewrite_required = oauth_account_id.is_some()
-        && capture_target == Some(ProxyCaptureTarget::Responses)
-        && body.is_some_and(|snapshot| {
-            pool_request_snapshot_body_bytes(snapshot) > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
-                || content_encoding.is_some_and(|value| {
-                    parse_content_encodings(Some(value))
-                        .iter()
-                        .any(|encoding| encoding != "identity")
-                })
-        });
     let rewrite_required = model_mapping_required
         || fast_mode_rewrite_required
         || image_tool_rewrite_required
-        || codex_imagegen_rewrite_required
-        || oauth_large_response_rewrite_required;
+        || codex_imagegen_rewrite_required;
 
     let Some(snapshot) = body.cloned() else {
         if model_mapping_required {
