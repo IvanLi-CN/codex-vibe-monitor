@@ -4493,6 +4493,24 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
   if (typeof payload.priorityHandoffAdmissionEnabled === "boolean") {
     normalized.priorityHandoffAdmissionEnabled = payload.priorityHandoffAdmissionEnabled;
   }
+  normalized.automaticReserveFallbackEnabled = payload.automaticReserveFallbackEnabled !== false;
+  const reserveFallbackModelPolicyRaw =
+    payload.reserveFallbackModelPolicy && typeof payload.reserveFallbackModelPolicy === "object"
+      ? (payload.reserveFallbackModelPolicy as Record<string, unknown>)
+      : null;
+  const reserveFallbackModelPolicyMode =
+    reserveFallbackModelPolicyRaw?.mode === "upstream_plus_custom" ||
+    reserveFallbackModelPolicyRaw?.mode === "custom"
+      ? reserveFallbackModelPolicyRaw.mode
+      : "upstream";
+  normalized.reserveFallbackModelPolicy = {
+    mode: reserveFallbackModelPolicyMode,
+    patterns: Array.isArray(reserveFallbackModelPolicyRaw?.patterns)
+      ? reserveFallbackModelPolicyRaw.patterns.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
+  };
   if (Array.isArray(payload.availableModels)) {
     normalized.availableModels = payload.availableModels.filter(
       (value): value is string => typeof value === "string",

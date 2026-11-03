@@ -2496,6 +2496,7 @@ pub(crate) fn is_loopback_authority_host(host: &str) -> bool {
 pub(crate) fn build_preset_models_payload(enabled_model_ids: &[String]) -> Value {
     let data = enabled_model_ids
         .iter()
+        .filter(|id| !id.eq_ignore_ascii_case(RESERVE_WIRE_MODEL))
         .map(|id| {
             json!({
                 "id": id,
@@ -2527,6 +2528,7 @@ pub(crate) fn merge_models_payload_with_upstream(
     let mut seen_ids: HashSet<String> = enabled_model_ids.iter().cloned().collect();
     for item in upstream_items {
         if let Some(id) = item.get("id").and_then(|v| v.as_str())
+            && !id.eq_ignore_ascii_case(RESERVE_WIRE_MODEL)
             && !id.eq_ignore_ascii_case("gpt-6-terra")
             && !id.starts_with("gpt-6-terra-")
             && seen_ids.insert(id.to_string())

@@ -93,6 +93,18 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint_inner
         .as_ref()
         .and_then(|ctx| ctx.request_info.model.as_deref())
         .map(str::to_string);
+    let mut quota_route = if requested_model
+        .as_deref()
+        .is_some_and(|model| model.eq_ignore_ascii_case(RESERVE_WIRE_MODEL))
+    {
+        PoolQuotaRoute::Reserve
+    } else {
+        PoolQuotaRoute::Normal
+    };
+    let mut reserve_fallback_attempted = quota_route == PoolQuotaRoute::Reserve;
+    let mut reserve_usage_refresh_attempted = false;
+    let mut reserve_fallback_reason =
+        (quota_route == PoolQuotaRoute::Reserve).then(|| "explicit_reserve_request".to_string());
     let image_intent = runtime_snapshot_context
         .as_ref()
         .and_then(|ctx| ctx.request_info.image_intent.as_deref())
@@ -294,6 +306,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint_inner
                     image_intent,
                     codex_imagegen_request,
                     reservation_key.clone(),
+                    quota_route,
                 )
                 .await;
             no_available_wait_deadline = updated_wait_deadline;
@@ -888,35 +901,50 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint_inner
         } else {
             account.effective_upstream_429_max_retries()
         };
-        let model_mapping = load_model_mapping_for_account(
-            state.as_ref(),
-            account.account_id,
-            requested_model.as_deref().or_else(|| {
-                trace_context
-                    .as_ref()
-                    .and_then(|trace| trace.request_model.as_deref())
-            }),
-        )
-        .await
-        .map_err(|err| PoolUpstreamError {
-            codex_imagegen_rewrite: None,
-            account: Some(account.clone()),
-            status: StatusCode::BAD_GATEWAY,
-            message: format!("failed to resolve account model mapping: {err}"),
-            canonical_error_message: None,
-            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-            blocked_binding: None,
-            connect_latency_ms: 0.0,
-            upstream_error_code: None,
-            upstream_error_message: None,
-            downstream_error_message: None,
-            upstream_request_id: None,
-            proxy_binding_key_snapshot: None,
-            oauth_responses_debug: None,
-            attempt_summary: PoolAttemptSummary::default(),
-            requested_service_tier: None,
-            request_body_for_capture: None,
-        })?;
+        let model_mapping = if quota_route == PoolQuotaRoute::Reserve {
+            Some(ResolvedModelMapping {
+                source_model: requested_model
+                    .as_deref()
+                    .or_else(|| {
+                        trace_context
+                            .as_ref()
+                            .and_then(|trace| trace.request_model.as_deref())
+                    })
+                    .unwrap_or(RESERVE_WIRE_MODEL)
+                    .to_string(),
+                target_model: RESERVE_WIRE_MODEL.to_string(),
+            })
+        } else {
+            load_model_mapping_for_account(
+                state.as_ref(),
+                account.account_id,
+                requested_model.as_deref().or_else(|| {
+                    trace_context
+                        .as_ref()
+                        .and_then(|trace| trace.request_model.as_deref())
+                }),
+            )
+            .await
+            .map_err(|err| PoolUpstreamError {
+                codex_imagegen_rewrite: None,
+                account: Some(account.clone()),
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("failed to resolve account model mapping: {err}"),
+                canonical_error_message: None,
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                blocked_binding: None,
+                connect_latency_ms: 0.0,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                downstream_error_message: None,
+                upstream_request_id: None,
+                proxy_binding_key_snapshot: None,
+                oauth_responses_debug: None,
+                attempt_summary: PoolAttemptSummary::default(),
+                requested_service_tier: None,
+                request_body_for_capture: None,
+            })?
+        };
         let upstream_request_model = model_mapping
             .as_ref()
             .map(|mapping| mapping.target_model.as_str())
@@ -969,6 +997,10 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint_inner
                 codex_imagegen_request,
                 request_compression_level_preset,
                 requested_model: &requested_model,
+                quota_route: &mut quota_route,
+                reserve_fallback_attempted: &mut reserve_fallback_attempted,
+                reserve_usage_refresh_attempted: &mut reserve_usage_refresh_attempted,
+                reserve_fallback_reason: &mut reserve_fallback_reason,
                 account,
                 pre_first_byte_timeout,
                 stream_timeout,

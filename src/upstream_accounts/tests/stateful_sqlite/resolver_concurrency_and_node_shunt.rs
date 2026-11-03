@@ -2276,6 +2276,21 @@ fn classify_pool_account_http_failure_treats_usage_limit_reached_as_quota_exhaus
     );
 }
 
+#[test]
+fn classify_pool_account_http_failure_keeps_generic_billing_429_as_rate_limit() {
+    let classification = classify_pool_account_http_failure(
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        StatusCode::TOO_MANY_REQUESTS,
+        "pool upstream responded with 429: billing service is temporarily unavailable",
+    );
+
+    assert_eq!(
+        classification.failure_kind,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+    );
+    assert_eq!(classification.reason_code, "upstream_http_429_rate_limit");
+}
+
 #[tokio::test]
 async fn quota_exhausted_oauth_summary_and_detail_export_as_rate_limited() {
     let pool = test_pool().await;

@@ -30,6 +30,7 @@ import {
   type ProxySettings,
   type RequestCompressionAlgorithm,
   type RequestCompressionLevelPreset,
+  type ReserveFallbackModelPolicy,
   refreshForwardProxySubscriptions,
   type UpdatePoolRoutingSettingsPayload,
   validateForwardProxyCandidate,
@@ -69,6 +70,9 @@ type RoutingDraft = {
   cacheHitRateThresholdPercent: string;
   cacheHitOverflowMode: import("../lib/api").CacheHitOverflowMode;
   priorityHandoffAdmissionEnabled: boolean;
+  automaticReserveFallbackEnabled: boolean;
+  reserveFallbackModelPolicyMode: "upstream" | "upstream_plus_custom" | "custom";
+  reserveFallbackModelPatterns: string;
 };
 
 type ForwardProxyValidationState =
@@ -281,6 +285,15 @@ function stablePricingKey(value: PricingSettings | null): string {
 
 function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
   const timeouts = routing.timeouts ?? DEFAULT_ROUTING_TIMEOUTS;
+  const reserveFallbackModelPolicy = routing.reserveFallbackModelPolicy ?? {
+    mode: "upstream",
+    patterns: [],
+  };
+  const reserveFallbackModelPolicyMode: RoutingDraft["reserveFallbackModelPolicyMode"] =
+    reserveFallbackModelPolicy.mode === "upstream_plus_custom" ||
+    reserveFallbackModelPolicy.mode === "custom"
+      ? reserveFallbackModelPolicy.mode
+      : "upstream";
   return {
     requestCompressionAlgorithm: routing.requestCompressionAlgorithm ?? "identity",
     oauthRequestCompressionAlgorithm: routing.oauthRequestCompressionAlgorithm ?? "zstd",
@@ -299,6 +312,9 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
     ),
     cacheHitOverflowMode: routing.cacheHitProtection?.overflowMode ?? "queue",
     priorityHandoffAdmissionEnabled: routing.priorityHandoffAdmissionEnabled ?? true,
+    automaticReserveFallbackEnabled: routing.automaticReserveFallbackEnabled ?? true,
+    reserveFallbackModelPolicyMode,
+    reserveFallbackModelPatterns: reserveFallbackModelPolicy.patterns.join("\n"),
   };
 }
 
@@ -832,6 +848,14 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
         overflowMode: routingDraft.cacheHitOverflowMode,
       },
       priorityHandoffAdmissionEnabled: routingDraft.priorityHandoffAdmissionEnabled,
+      automaticReserveFallbackEnabled: routingDraft.automaticReserveFallbackEnabled,
+      reserveFallbackModelPolicy: {
+        mode: routingDraft.reserveFallbackModelPolicyMode,
+        patterns: routingDraft.reserveFallbackModelPatterns
+          .split(/\r?\n|,/)
+          .map((pattern) => pattern.trim())
+          .filter(Boolean),
+      } satisfies ReserveFallbackModelPolicy,
     };
 
     try {
@@ -2078,6 +2102,10 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 onPriorityHandoffAdmissionChange={(enabled) =>
                   updateRoutingDraft({ priorityHandoffAdmissionEnabled: enabled })
                 }
+                onAutomaticReserveFallbackChange={(enabled) =>
+                  updateRoutingDraft({ automaticReserveFallbackEnabled: enabled })
+                }
+                onReserveFallbackModelPolicyChange={(patch) => updateRoutingDraft(patch)}
                 onSave={() => void saveRoutingDefaults()}
               />
             ) : (

@@ -433,6 +433,7 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) request_body_for_capture: Option<Bytes>,
     pub(crate) codex_imagegen_rewrite: Option<Value>,
+    pub(crate) quota_route: PoolQuotaRoute,
     pub(crate) reservation_guard: Option<PoolRoutingReservationDropGuard>,
 }
 
@@ -807,14 +808,10 @@ pub(crate) fn upstream_error_indicates_quota_exhausted(message: &str) -> bool {
         "the usage limit has been reached",
         "usage limit has been reached",
         "usage limit reached",
-        "billing",
-        "payment required",
-        "subscription required",
         "weekly cap",
         "weekly limit",
         "plan limit",
         "plan quota",
-        "check your plan",
     ]
     .iter()
     .any(|needle| normalized.contains(needle))

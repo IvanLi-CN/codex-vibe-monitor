@@ -2441,6 +2441,7 @@ async fn failover_route_selection_task_preserves_the_external_deadline() {
         crate::ImageIntent::Unknown,
         false,
         "deadline-selection-task".to_string(),
+        PoolQuotaRoute::Normal,
     )
     .await;
     let elapsed = started.elapsed();

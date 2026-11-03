@@ -34,6 +34,7 @@ const meta = {
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "queue",
       priorityHandoffAdmissionEnabled: true,
+      automaticReserveFallbackEnabled: true,
     },
     busy: false,
     writesEnabled: true,
@@ -48,6 +49,7 @@ const meta = {
     onTimeoutChange: () => undefined,
     onCacheHitProtectionChange: () => undefined,
     onPriorityHandoffAdmissionChange: () => undefined,
+    onAutomaticReserveFallbackChange: () => undefined,
     onSave: () => undefined,
   },
   decorators: [
@@ -73,6 +75,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const ModelPolicy: Story = {
+  args: {},
   render: () => {
     const [availableModelsMode, setAvailableModelsMode] =
       useState<AvailableModelsMode>("allowlist");
@@ -96,6 +99,7 @@ export const ModelPolicy: Story = {
           cacheHitRateThresholdPercent: "10",
           cacheHitOverflowMode: "queue",
           priorityHandoffAdmissionEnabled: true,
+          automaticReserveFallbackEnabled: true,
         }}
         busy={false}
         writesEnabled
@@ -110,6 +114,7 @@ export const ModelPolicy: Story = {
         onTimeoutChange={() => undefined}
         onCacheHitProtectionChange={() => undefined}
         onPriorityHandoffAdmissionChange={() => undefined}
+        onAutomaticReserveFallbackChange={() => undefined}
         onSave={() => undefined}
       />
     );
@@ -118,6 +123,7 @@ export const ModelPolicy: Story = {
 
 export const PriorityHandoffAdmissionDisabled: Story = {
   args: {
+    onAutomaticReserveFallbackChange: () => undefined,
     draft: {
       requestCompressionAlgorithm: "zstd",
       oauthRequestCompressionAlgorithm: "zstd",
@@ -134,6 +140,7 @@ export const PriorityHandoffAdmissionDisabled: Story = {
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "queue",
       priorityHandoffAdmissionEnabled: false,
+      automaticReserveFallbackEnabled: true,
     },
   },
   tags: ["test"],
@@ -161,6 +168,7 @@ export const PriorityHandoffAdmissionMobile: Story = {
 
 export const CacheHitProtection: Story = {
   args: {
+    onAutomaticReserveFallbackChange: () => undefined,
     draft: {
       requestCompressionAlgorithm: "zstd",
       oauthRequestCompressionAlgorithm: "zstd",
@@ -177,6 +185,7 @@ export const CacheHitProtection: Story = {
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "reroute",
       priorityHandoffAdmissionEnabled: true,
+      automaticReserveFallbackEnabled: true,
     },
   },
   tags: ["test"],

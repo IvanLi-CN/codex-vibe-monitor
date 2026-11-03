@@ -57,6 +57,7 @@ pub(crate) async fn forward_proxy_upstream(
         final_requested_service_tier: _,
         final_codex_imagegen_rewrite,
         upstream_response,
+        quota_route,
         transport_bytes_live_counted,
         reservation_guard,
         image_tool_rewrite,
@@ -79,6 +80,14 @@ pub(crate) async fn forward_proxy_upstream(
         .get(header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let reserve_response_model_rewrite_enabled = quota_route == PoolQuotaRoute::Reserve
+        && request_info
+            .model
+            .as_deref()
+            .is_some_and(|model| !model.eq_ignore_ascii_case(RESERVE_WIRE_MODEL))
+        && upstream_content_encoding
+            .as_deref()
+            .is_none_or(|encoding| encoding.eq_ignore_ascii_case("identity"));
     let response_content_encoding =
         summarize_response_content_encoding(upstream_content_encoding.as_deref());
     let selected_proxy_display_name =
@@ -132,7 +141,9 @@ pub(crate) async fn forward_proxy_upstream(
     }
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
-        if should_forward_proxy_header(name, &upstream_connection_scoped) {
+        if should_forward_proxy_header(name, &upstream_connection_scoped)
+            && !(reserve_response_model_rewrite_enabled && name == header::CONTENT_LENGTH)
+        {
             if name == header::LOCATION {
                 if let Some(rewritten) = rewritten_location.as_deref() {
                     response_builder = response_builder.header(name, rewritten);
@@ -188,7 +199,11 @@ pub(crate) async fn forward_proxy_upstream(
     let first_byte_timeout_for_task = first_byte_timeout;
     let request_endpoint_for_task = original_uri.path().to_string();
     let stream_timeout_for_task = stream_timeout;
+    let pool_quota_route_for_task = quota_route;
     let response_is_event_stream_for_task = response_is_event_stream;
+    let reserve_response_model_for_task = reserve_response_model_rewrite_enabled
+        .then(|| request_info_for_task.model.clone())
+        .flatten();
     let proxy_request_started_at_for_task = proxy_request_started_at;
     let proxy_request_permit_for_task = proxy_request_permit;
     let (tx, rx) = mpsc::channel::<Result<DownstreamResponseChunk, io::Error>>(16);
@@ -237,6 +252,16 @@ pub(crate) async fn forward_proxy_upstream(
             StreamResponsePayloadChunkParser::for_target(capture_target);
         let mut stream_response_decoder =
             IncrementalResponsePayloadDecoder::new(upstream_content_encoding_for_task.as_deref());
+        let mut reserve_response_model_sse_rewriter = response_is_event_stream_for_task
+            .then(|| {
+                reserve_response_model_for_task
+                    .as_deref()
+                    .map(ReserveResponseModelSseRewriter::new)
+            })
+            .flatten();
+        let mut reserve_response_model_nonstream_buffer = (!response_is_event_stream_for_task)
+            .then(|| reserve_response_model_for_task.as_ref().map(|_| Vec::new()))
+            .flatten();
         let mut first_token_ms: Option<f64> = None;
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
@@ -288,8 +313,19 @@ pub(crate) async fn forward_proxy_upstream(
             if let Some(buffer) = nonstream_parse_buffer.as_mut() {
                 buffer.append(&chunk);
             }
-            forwarded_chunks = forwarded_chunks.saturating_add(1);
-            forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+            let forwarded_chunk =
+                if let Some(rewriter) = reserve_response_model_sse_rewriter.as_mut() {
+                    Bytes::from(rewriter.ingest(&decoded_chunk))
+                } else if let Some(buffer) = reserve_response_model_nonstream_buffer.as_mut() {
+                    buffer.extend_from_slice(&chunk);
+                    Bytes::new()
+                } else {
+                    chunk.clone()
+                };
+            if !forwarded_chunk.is_empty() {
+                forwarded_chunks = forwarded_chunks.saturating_add(1);
+                forwarded_bytes = forwarded_bytes.saturating_add(forwarded_chunk.len());
+            }
             if !transport_bytes_live_counted_for_task {
                 state_for_task
                     .dashboard_network_speed_cache
@@ -315,11 +351,11 @@ pub(crate) async fn forward_proxy_upstream(
             }
             stream_started_at = Some(Instant::now());
             last_upstream_chunk_received_at = Some(chunk_received_at);
-            if downstream_body_available {
+            if downstream_body_available && !forwarded_chunk.is_empty() {
                 if crate::observability::diagnostics::send(
                     &tx,
                     Ok(DownstreamResponseChunk {
-                        bytes: chunk,
+                        bytes: forwarded_chunk,
                         successful_terminal: successful_terminal_in_chunk,
                     }),
                 )
@@ -663,8 +699,20 @@ pub(crate) async fn forward_proxy_upstream(
                     if let Some(buffer) = nonstream_parse_buffer.as_mut() {
                         buffer.append(&chunk);
                     }
-                    forwarded_chunks = forwarded_chunks.saturating_add(1);
-                    forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+                    let forwarded_chunk = if let Some(rewriter) =
+                        reserve_response_model_sse_rewriter.as_mut()
+                    {
+                        Bytes::from(rewriter.ingest(&decoded_chunk))
+                    } else if let Some(buffer) = reserve_response_model_nonstream_buffer.as_mut() {
+                        buffer.extend_from_slice(&chunk);
+                        Bytes::new()
+                    } else {
+                        chunk.clone()
+                    };
+                    if !forwarded_chunk.is_empty() {
+                        forwarded_chunks = forwarded_chunks.saturating_add(1);
+                        forwarded_bytes = forwarded_bytes.saturating_add(forwarded_chunk.len());
+                    }
                     if !transport_bytes_live_counted_for_task {
                         state_for_task
                             .dashboard_network_speed_cache
@@ -707,11 +755,11 @@ pub(crate) async fn forward_proxy_upstream(
                         last_upstream_chunk_gap_ms = gap_before_send_ms;
                         let _ = proxy_request_permit_for_task.take();
                     }
-                    if downstream_body_available {
+                    if downstream_body_available && !forwarded_chunk.is_empty() {
                         if crate::observability::diagnostics::send(
                             &tx,
                             Ok(DownstreamResponseChunk {
-                                bytes: chunk,
+                                bytes: forwarded_chunk,
                                 successful_terminal: successful_terminal_in_chunk,
                             }),
                         )
@@ -798,6 +846,36 @@ pub(crate) async fn forward_proxy_upstream(
         }
         stream_response_parser.flush_pending_line();
         stream_response_decoder.finish();
+        let final_forwarded_chunk =
+            if let Some(rewriter) = reserve_response_model_sse_rewriter.as_mut() {
+                Bytes::from(rewriter.finish())
+            } else if let Some(buffer) = reserve_response_model_nonstream_buffer.take() {
+                let rewritten = reserve_response_model_for_task
+                    .as_deref()
+                    .and_then(|model| rewrite_reserve_response_model_json(&buffer, model));
+                Bytes::from(rewritten.unwrap_or(buffer))
+            } else {
+                Bytes::new()
+            };
+        if !final_forwarded_chunk.is_empty() {
+            forwarded_chunks = forwarded_chunks.saturating_add(1);
+            forwarded_bytes = forwarded_bytes.saturating_add(final_forwarded_chunk.len());
+            if downstream_body_available
+                && crate::observability::diagnostics::send(
+                    &tx,
+                    Ok(DownstreamResponseChunk {
+                        bytes: final_forwarded_chunk,
+                        successful_terminal: false,
+                    }),
+                )
+                .await
+                .is_err()
+            {
+                downstream_body_available = false;
+                downstream_closed = true;
+                downstream_write_error_kind = Some("receiver_dropped");
+            }
+        }
         drop(tx);
         drop(proxy_request_permit_for_task.take());
         let downstream_terminal_grace_deadline =
@@ -973,6 +1051,11 @@ pub(crate) async fn forward_proxy_upstream(
         if response_info.model.is_none() {
             response_info.model = request_info_for_task.model.clone();
         }
+        if pool_quota_route_for_task == PoolQuotaRoute::Reserve
+            && let Some(client_model) = request_info_for_task.model.as_deref()
+        {
+            response_info.model = Some(client_model.to_string());
+        }
         if response_info.usage_missing_reason.is_none() && stream_error.is_some() {
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
         }
@@ -1094,7 +1177,26 @@ pub(crate) async fn forward_proxy_upstream(
                     .as_deref()
                     .map(crate::ImageIntent::from_str)
                     .unwrap_or(crate::ImageIntent::Unknown);
-                let route_result = if pool_route_success {
+                let route_result = if pure_downstream_closed {
+                    release_pool_routing_reservation(
+                        state_for_task.as_ref(),
+                        &reservation_key_for_task,
+                    );
+                    Ok(())
+                } else if !pool_quota_route_for_task.updates_shared_route_health() {
+                    if pool_route_success {
+                        consume_pool_routing_reservation(
+                            state_for_task.as_ref(),
+                            &reservation_key_for_task,
+                        );
+                    } else {
+                        release_pool_routing_reservation(
+                            state_for_task.as_ref(),
+                            &reservation_key_for_task,
+                        );
+                    }
+                    Ok(())
+                } else if pool_route_success {
                     persist_pool_route_success_then_release(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
@@ -1133,12 +1235,6 @@ pub(crate) async fn forward_proxy_upstream(
                         ),
                     )
                     .await
-                } else if pure_downstream_closed {
-                    release_pool_routing_reservation(
-                        state_for_task.as_ref(),
-                        &reservation_key_for_task,
-                    );
-                    Ok(())
                 } else if had_stream_error {
                     let route_message = error_message
                         .as_deref()

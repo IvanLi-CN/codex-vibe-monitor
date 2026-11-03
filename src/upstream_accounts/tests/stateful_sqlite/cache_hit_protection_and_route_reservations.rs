@@ -303,7 +303,6 @@ async fn disabling_cache_hit_protection_clears_only_cache_owned_route_state() {
     .execute(&state.pool)
     .await
     .expect("seed non-cache cooldown");
-
     let Json(updated) = update_pool_routing_settings(
         State(state.clone()),
         HeaderMap::new(),
@@ -323,6 +322,8 @@ async fn disabling_cache_hit_protection_clears_only_cache_owned_route_state() {
                 overflow_mode: None,
             }),
             priority_handoff_admission_enabled: None,
+            automatic_reserve_fallback_enabled: None,
+            reserve_fallback_model_policy: None,
         }),
     )
     .await

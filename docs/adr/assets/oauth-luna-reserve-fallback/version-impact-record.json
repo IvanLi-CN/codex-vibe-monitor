@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "implementation-in-progress-validation-pending",
+  "policy": "semver",
+  "impact": "minor",
+  "reason": "Adds an additive SQLite representation, API response fields, a settings toggle, a persisted Reserve model eligibility policy, and opt-in routing behavior while preserving existing normal-quota behavior and compatibility with older databases.",
+  "public_surfaces": [
+    "Pool routing settings API and persisted Reserve model policy",
+    "OAuth account summary and detail API",
+    "Account-pool settings and usage views"
+  ],
+  "compatibility": {
+    "old_database_readable": true,
+    "old_snapshot_readable": true,
+    "existing_normal_routes_preserved": true,
+    "breaking_request_contract": false
+  },
+  "release_note": "OAuth Codex accounts now expose Luna Reserve status and can automatically fail over to Reserve Quota after classified normal-quota exhaustion; the automatic fallback switch defaults to enabled for OAuth routing, with a persisted upstream-bound model eligibility policy and bounded custom patterns."
+}

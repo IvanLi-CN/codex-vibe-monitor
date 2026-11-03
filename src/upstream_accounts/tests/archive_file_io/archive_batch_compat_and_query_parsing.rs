@@ -80,6 +80,7 @@ pub(crate) fn test_summary_with_statuses(
         primary_window: None,
         secondary_window: None,
         credits: None,
+        reserve: None,
         local_limits: None,
         compact_support: CompactSupportState {
             status: "unknown".to_string(),
@@ -3165,6 +3166,7 @@ fn imported_snapshot_is_exhausted_when_any_limit_is_full_or_credits_are_empty() 
         }),
         secondary: None,
         credits: None,
+        reserve: None,
         ..Default::default()
     };
     assert!(imported_snapshot_is_exhausted(&primary_exhausted));
@@ -3188,6 +3190,7 @@ fn imported_snapshot_is_exhausted_when_any_limit_is_full_or_credits_are_empty() 
             unlimited: false,
             balance: Some("0".to_string()),
         }),
+        reserve: None,
         ..Default::default()
     };
     assert!(imported_snapshot_is_exhausted(&credits_exhausted));

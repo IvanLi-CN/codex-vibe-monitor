@@ -1,10 +1,13 @@
 use super::sync::sync_usage_snapshot::UsageSnapshotVersion;
 use super::*;
-#[path = "core_runtime_types/oauth_token_lifecycle.rs"]
-mod oauth_token_lifecycle;
+#[path = "core_runtime_types/reserve.rs"]
+mod reserve;
 #[path = "core_runtime_types/runtime_state.rs"]
 mod runtime_state;
 use futures_util::FutureExt;
+pub(crate) use reserve::*;
+#[path = "core_runtime_types/oauth_token_lifecycle.rs"]
+mod oauth_token_lifecycle;
 pub(crate) use oauth_token_lifecycle::*;
 use std::{any::Any, collections::BTreeMap, panic::AssertUnwindSafe};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
@@ -1948,6 +1951,7 @@ pub(crate) struct UpstreamAccountSummary {
     pub(crate) primary_window: Option<RateWindowSnapshot>,
     pub(crate) secondary_window: Option<RateWindowSnapshot>,
     pub(crate) credits: Option<CreditsSnapshot>,
+    pub(crate) reserve: Option<ReserveQuotaSnapshot>,
     pub(crate) local_limits: Option<LocalLimitSnapshot>,
     pub(crate) compact_support: CompactSupportState,
     pub(crate) duplicate_info: Option<DuplicateInfo>,
@@ -2198,6 +2202,15 @@ pub(crate) struct PoolRoutingSettingsResponse {
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResponse,
     pub(crate) cache_hit_protection: CacheHitProtectionSettingsResponse,
     pub(crate) priority_handoff_admission_enabled: bool,
+    pub(crate) automatic_reserve_fallback_enabled: bool,
+    pub(crate) reserve_fallback_model_policy: ReserveFallbackModelPolicyResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReserveFallbackModelPolicyResponse {
+    pub(crate) mode: String,
+    pub(crate) patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2242,6 +2255,18 @@ pub(crate) struct UpdatePoolRoutingSettingsRequest {
     pub(crate) cache_hit_protection: Option<UpdateCacheHitProtectionSettingsRequest>,
     #[serde(default)]
     pub(crate) priority_handoff_admission_enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) automatic_reserve_fallback_enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) reserve_fallback_model_policy: Option<UpdateReserveFallbackModelPolicyRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateReserveFallbackModelPolicyRequest {
+    pub(crate) mode: String,
+    #[serde(default)]
+    pub(crate) patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2453,6 +2478,7 @@ pub(crate) struct UpstreamAccountHistoryPoint {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RateWindowSnapshot {
     pub(crate) used_percent: f64,
+    pub(crate) available_percent: Option<f64>,
     pub(crate) used_text: String,
     pub(crate) limit_text: String,
     pub(crate) resets_at: Option<String>,
@@ -3392,16 +3418,10 @@ pub(crate) struct NormalizedUsageSnapshot {
     pub(crate) primary: Option<NormalizedUsageWindow>,
     pub(crate) secondary: Option<NormalizedUsageWindow>,
     pub(crate) credits: Option<CreditsSnapshot>,
+    pub(crate) reserve: Option<NormalizedReserveQuotaSnapshot>,
     pub(crate) observed_window_candidates: u8,
     pub(crate) parsed_window_count: u8,
     pub(crate) window_parse_failure_count: u8,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NormalizedUsageWindow {
-    pub(crate) used_percent: f64,
-    pub(crate) window_duration_mins: i64,
-    pub(crate) resets_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
