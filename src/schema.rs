@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "analytics_changes.rs"]
+pub(crate) mod analytics_changes;
 mod archive_retention;
 mod compatibility;
 mod invocation_live;
@@ -57,6 +59,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     invocation_live::ensure_invocation_live_schema(pool).await?;
     archive_retention::ensure_archive_retention_schema(pool).await?;
+    analytics_changes::ensure_analytics_changes_schema(pool).await?;
     let rollup_backfill_state = rollups_statistics::ensure_rollup_statistics_schema(pool).await?;
     archive_retention::ensure_hourly_archive_schema(pool).await?;
     summary_coverage::ensure_summary_coverage_schema(pool).await?;

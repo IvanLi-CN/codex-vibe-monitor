@@ -516,6 +516,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-proto",
  "opentelemetry_sdk",
+ "percent-encoding",
  "pin-project-lite",
  "prost",
  "rand 0.8.8",

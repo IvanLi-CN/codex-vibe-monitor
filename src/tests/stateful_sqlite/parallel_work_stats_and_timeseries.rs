@@ -16,6 +16,8 @@ mod parallel_work_dashboard_subscriptions_and_live_slices;
 mod parallel_work_dashboard_summary_and_cache;
 #[path = "parallel_work_stats_and_timeseries/parallel_work_exact_archive_admission.rs"]
 mod parallel_work_exact_archive_admission;
+#[path = "parallel_work_stats_and_timeseries/parallel_work_exact_key_streaming.rs"]
+mod parallel_work_exact_key_streaming;
 #[path = "parallel_work_stats_and_timeseries/parallel_work_failure_archive_fallback.rs"]
 mod parallel_work_failure_archive_fallback;
 #[path = "parallel_work_stats_and_timeseries/parallel_work_failure_classification_and_runtime_overlays.rs"]
@@ -26,6 +28,8 @@ mod parallel_work_fixture_support_and_archive_seeding;
 mod parallel_work_historical_stats_and_timeseries;
 #[path = "parallel_work_stats_and_timeseries/parallel_work_minute_projection_and_startup_recovery.rs"]
 mod parallel_work_minute_projection_and_startup_recovery;
+#[path = "parallel_work_stats_and_timeseries/parallel_work_minute_projection_bounded_recovery.rs"]
+mod parallel_work_minute_projection_bounded_recovery;
 #[path = "parallel_work_stats_and_timeseries/parallel_work_retention_and_minute_rollups.rs"]
 mod parallel_work_retention_and_minute_rollups;
 #[path = "parallel_work_stats_and_timeseries/parallel_work_rollup_repair_and_projection_fences.rs"]

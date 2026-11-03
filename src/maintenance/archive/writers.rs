@@ -456,7 +456,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 let mut conn = open_archive_sqlite_connection(&work_path).await?;
                 ensure_pool_upstream_request_attempts_archive_schema_direct(&mut conn).await?;
                 let outcome = backfill_pool_upstream_request_attempt_public_ids_on_connection(
-                    &mut conn, 0, None, None,
+                    &mut conn, 0, None, None, false,
                 )
                 .await?;
                 conn.close().await?;
@@ -617,6 +617,22 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                     let _ = fs::remove_file(&backup_path);
                 }
                 return Err(error.into());
+            }
+            if let Err(error) =
+                crate::schema::analytics_changes::append_archive_coverage_for_file_tx(
+                    tx.as_mut(),
+                    &batch.file_path,
+                )
+                .await
+            {
+                tx.rollback().await?;
+                let _ = fs::remove_file(&archive_path);
+                if had_existing_file {
+                    let _ = fs::rename(&backup_path, &archive_path);
+                } else {
+                    let _ = fs::remove_file(&backup_path);
+                }
+                return Err(error);
             }
             if let Err(error) = tx.commit().await {
                 return Err(anyhow::anyhow!(
@@ -1782,7 +1798,10 @@ pub(crate) async fn upsert_archive_batch_manifest(
     let archive_batch_id =
         upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_COMPLETED, false)
             .await?;
-    append_archive_batch_summary_descriptor(tx, batch, archive_batch_id).await
+    append_archive_batch_summary_descriptor(tx, batch, archive_batch_id).await?;
+    crate::schema::analytics_changes::append_archive_coverage_for_file_tx(tx, &batch.file_path)
+        .await?;
+    Ok(())
 }
 
 pub(crate) async fn stage_invocation_archive_batch_manifest(
@@ -1844,6 +1863,7 @@ pub(crate) async fn finalize_invocation_archive_batch_publication_tx(
     if result.rows_affected() != 1 {
         bail!("staged invocation archive was not available for publication: {file_path}");
     }
+    crate::schema::analytics_changes::append_archive_coverage_for_file_tx(tx, file_path).await?;
     Ok(())
 }
 

@@ -944,6 +944,10 @@ pub(crate) async fn retention_recovery_update_detail_rows_tx(
     }
     query.push(")");
     query.build().execute(&mut *tx).await?;
+    for id in ids {
+        crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(&mut *tx, *id)
+            .await?;
+    }
     // The source mutation and durable invalidation trigger commit together. The materialization
     // owner refreshes these keys outside the retention publication transaction.
     if let Some(latest) = candidates

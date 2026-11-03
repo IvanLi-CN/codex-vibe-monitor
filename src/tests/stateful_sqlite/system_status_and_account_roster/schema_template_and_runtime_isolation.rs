@@ -933,6 +933,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
     Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
+        pg_analytics: Arc::new(PgAnalyticsRuntime::disabled()),
         sqlite_batch_writer,
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations,

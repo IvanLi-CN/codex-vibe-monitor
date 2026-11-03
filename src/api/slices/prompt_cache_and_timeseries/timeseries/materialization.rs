@@ -1,7 +1,8 @@
 use super::aggregation::{
     add_terminal_timeseries_records, add_timeseries_terminal_delta_to_aggregate,
-    build_materialized_timeseries_response, fill_timeseries_buckets,
-    fold_minute_projection_aggregates, overlay_runtime_timeseries_snapshot,
+    build_materialized_timeseries_response, collect_in_flight_aggregate_records,
+    fill_timeseries_buckets, fold_minute_projection_aggregates,
+    overlay_runtime_timeseries_snapshot,
 };
 use super::minute_projection::{
     TimeseriesMinuteProjectionV2Load, TimeseriesMinuteProjectionWarmOutcome,
@@ -15,7 +16,7 @@ use super::queries::{
     timeseries_topic_uses_hourly_rollup_baseline,
 };
 use super::*;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct TimeseriesTopicMaterializedBase {
     pub(crate) range_start: DateTime<Utc>,
     pub(crate) range_end: DateTime<Utc>,
@@ -27,6 +28,7 @@ pub(crate) struct TimeseriesTopicMaterializedBase {
     pub(crate) snapshot_id: i64,
     pub(crate) terminal_sequence: u64,
     pub(crate) aggregates: BTreeMap<i64, BucketAggregate>,
+    pub(crate) db_runtime_records: HashMap<(String, String), InvocationAggregateRecord>,
 }
 
 impl TimeseriesTopicMaterializedBase {
@@ -66,7 +68,7 @@ impl TimeseriesTopicMaterializedBase {
         base.apply_terminal_slice(Some(&DashboardTerminalProjectionSlice {
             revision: 0,
             deltas: pending_terminal_deltas,
-        }));
+        }))?;
         // All durable terminal records in the baseline and every pending record replayed above
         // are covered by this watermark. Future terminal slices may therefore safely reconcile
         // an older persisted row exactly once.
@@ -274,6 +276,28 @@ impl TimeseriesTopicMaterializedBase {
             (snapshot_id, aggregates)
         };
 
+        let in_flight_records = match params.upstream_account_id {
+            Some(account_id) => {
+                query_in_flight_invocation_aggregate_records_from_live_range_for_account(
+                    &state.pool,
+                    ExactUtcRange { start, end },
+                    source_scope,
+                    Some(snapshot_id),
+                    account_id,
+                )
+                .await?
+            }
+            None => {
+                query_in_flight_invocation_aggregate_records_from_live_range(
+                    &state.pool,
+                    ExactUtcRange { start, end },
+                    source_scope,
+                    Some(snapshot_id),
+                )
+                .await?
+            }
+        };
+        let db_runtime_records = collect_in_flight_aggregate_records(&in_flight_records);
         fill_timeseries_buckets(&mut aggregates, start, end, bucket_seconds, reporting_tz)?;
 
         Ok(Self {
@@ -287,6 +311,7 @@ impl TimeseriesTopicMaterializedBase {
             snapshot_id,
             terminal_sequence: 0,
             aggregates,
+            db_runtime_records,
         })
     }
 
@@ -310,17 +335,20 @@ impl TimeseriesTopicMaterializedBase {
     pub(crate) fn apply_terminal_slice(
         &mut self,
         terminal: Option<&DashboardTerminalProjectionSlice>,
-    ) {
+    ) -> Result<(), ApiError> {
         let Some(terminal) = terminal else {
-            return;
+            return Ok(());
         };
+        let mut candidate = self.clone();
         for delta in &terminal.deltas {
-            self.apply_terminal_delta(
+            candidate.apply_terminal_delta_inner(
                 delta.terminal_sequence,
                 delta.persisted_row_id,
                 &delta.timeseries,
-            );
+            )?;
         }
+        *self = candidate;
+        Ok(())
     }
 
     pub(crate) fn apply_terminal_delta(
@@ -328,13 +356,25 @@ impl TimeseriesTopicMaterializedBase {
         terminal_sequence: u64,
         persisted_row_id: Option<i64>,
         delta: &TimeseriesTerminalDelta,
-    ) {
+    ) -> Result<(), ApiError> {
+        let mut candidate = self.clone();
+        candidate.apply_terminal_delta_inner(terminal_sequence, persisted_row_id, delta)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn apply_terminal_delta_inner(
+        &mut self,
+        terminal_sequence: u64,
+        persisted_row_id: Option<i64>,
+        delta: &TimeseriesTerminalDelta,
+    ) -> Result<(), ApiError> {
         if terminal_sequence <= self.terminal_sequence {
-            return;
+            return Ok(());
         }
-        self.terminal_sequence = terminal_sequence;
         if self.source_scope == InvocationSourceScope::ProxyOnly && delta.source != SOURCE_PROXY {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         }
         if let Some(row_id) = persisted_row_id {
             self.snapshot_id = self.snapshot_id.max(row_id);
@@ -343,25 +383,31 @@ impl TimeseriesTopicMaterializedBase {
             .upstream_account_id
             .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
         {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         }
         let Some(occurred) = parse_to_utc_datetime(&delta.occurred_at) else {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         };
         if occurred < self.range_start || occurred >= Utc::now().max(self.range_end) {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         }
         let Ok(bucket_epoch) = align_reporting_bucket_epoch(
             occurred.timestamp(),
             self.bucket_selection.bucket_seconds,
             self.reporting_tz,
         ) else {
-            return;
+            self.terminal_sequence = terminal_sequence;
+            return Ok(());
         };
         add_timeseries_terminal_delta_to_aggregate(
             self.aggregates.entry(bucket_epoch).or_default(),
             delta,
-        );
+        )?;
+        self.terminal_sequence = terminal_sequence;
+        Ok(())
     }
 
     pub(crate) fn serialize(&self, runtime_records: &[ApiInvocation]) -> Result<Vec<u8>, ApiError> {
@@ -376,6 +422,7 @@ impl TimeseriesTopicMaterializedBase {
             end,
             self.bucket_selection.bucket_seconds,
             self.reporting_tz,
+            Some(&self.db_runtime_records),
         )?;
         let Json(response) = build_materialized_timeseries_response(
             self.range_start,

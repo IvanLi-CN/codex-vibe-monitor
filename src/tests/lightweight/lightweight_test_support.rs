@@ -1,5 +1,4 @@
 use super::*;
-
 pub(crate) fn test_runtime_path(name: &str) -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -11,6 +10,10 @@ pub(crate) fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
+        analytics_backend: AnalyticsBackend::Sqlite,
+        postgres_database_url: None,
+        postgres_analytics_maintenance_url: None,
+        postgres_max_connections: DEFAULT_POSTGRES_MAX_CONNECTIONS as u32,
         observability: ObservabilityConfig::default(),
         poll_interval: Duration::from_secs(10),
         request_timeout: Duration::from_secs(30),

@@ -1087,6 +1087,13 @@ pub(crate) async fn prune_old_invocation_details(
                             let delete_phase = batch_observation.phase(RetentionPhase::Delete);
                             query.build().execute(tx.as_mut()).await?;
                             drop(delete_phase);
+                            for id in &ids {
+                                crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+                                    tx.as_mut(),
+                                    *id,
+                                )
+                                .await?;
+                            }
                             // UPDATE triggers persist the affected keys. Statistics are refreshed by the
                             // materialization owner after this retention transaction commits.
                             if let Some(latest) = group

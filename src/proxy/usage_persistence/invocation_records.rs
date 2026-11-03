@@ -445,7 +445,12 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     .execute(&mut *tx)
     .await?;
 
-    Ok(result.rows_affected() > 0)
+    if result.rows_affected() > 0 {
+        crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(tx, id).await?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) -> ApiInvocation {
@@ -1496,6 +1501,13 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
             .ok_or_else(|| {
                 anyhow!("persisted proxy runtime invocation row disappeared after upsert")
             })?;
+    if core_write_path == "insert_missing" {
+        crate::schema::analytics_changes::append_invocation_upsert_for_row_tx(
+            &mut *tx,
+            persisted_identity.id,
+        )
+        .await?;
+    }
     if write_derived_inline {
         upsert_invocation_hourly_rollups_tx(
             &mut *tx,

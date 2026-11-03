@@ -2591,6 +2591,20 @@ pub(crate) async fn ensure_prompt_cache_conversation_row(
     Ok(true)
 }
 
+pub(crate) async fn ensure_prompt_cache_conversation_row_on_connection(
+    connection: &mut SqliteConnection,
+    prompt_cache_key: &str,
+) -> Result<bool> {
+    if load_prompt_cache_conversation_row_on_connection(connection, prompt_cache_key)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    create_prompt_cache_conversation_row_on_connection(connection, prompt_cache_key).await?;
+    Ok(true)
+}
+
 async fn load_prompt_cache_conversation_row_on_connection(
     connection: &mut SqliteConnection,
     prompt_cache_key: &str,

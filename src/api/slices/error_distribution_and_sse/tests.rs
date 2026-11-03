@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn success_status_aliases_are_not_classified_as_failures() {
+    for status in ["success", "succeeded", "completed", "ok"] {
+        let classification = classify_invocation_failure(Some(status), None);
+        assert_eq!(classification.failure_class, FailureClass::None);
+        assert!(!classification.is_actionable);
+    }
+    assert_eq!(
+        classify_invocation_failure_with_kind(Some("succeeded"), None, Some("none")).failure_class,
+        FailureClass::None
+    );
+}
+
+#[test]
+fn client_failure_prefixes_classify_as_client_failures() {
+    for failure_kind in ["invalid_api_key", "api_key_not_found", "api_key_missing"] {
+        let message = format!("[{failure_kind}]");
+        let classification = classify_invocation_failure(Some("completed"), Some(message.as_str()));
+        assert_eq!(classification.failure_kind.as_deref(), Some(failure_kind));
+        assert_eq!(classification.failure_class, FailureClass::ClientFailure);
+    }
+}
+
+#[test]
 fn failure_kind_prefix_is_removed_only_when_it_matches_exactly() {
     let input = "[upstream_response_failed] upstream stream error";
 
