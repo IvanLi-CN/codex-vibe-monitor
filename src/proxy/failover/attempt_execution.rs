@@ -244,6 +244,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 .auth
                 .is_oauth()
                 .then_some(&context.state.oauth_installation_seed),
+            Some(context.state.config.openai_proxy_max_request_body_bytes),
         )
         .await
         {
@@ -1475,10 +1476,14 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                             } else if context.original_uri.path() == "/v1/responses" {
                                 snapshot
                                     .extract_request_stream_flag(
-                                        context
-                                            .headers
-                                            .get(header::CONTENT_ENCODING)
-                                            .and_then(|value| value.to_str().ok()),
+                                        if prepared_request_body.snapshot_is_decoded {
+                                            None
+                                        } else {
+                                            context
+                                                .headers
+                                                .get(header::CONTENT_ENCODING)
+                                                .and_then(|value| value.to_str().ok())
+                                        },
                                     )
                                     .await
                             } else {

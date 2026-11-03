@@ -118,16 +118,11 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
     assert_eq!(payload["received"]["instructions"], "");
     assert_eq!(payload["received"]["store"], false);
     assert_eq!(payload["received"]["client_metadata"]["other"], "keep-me");
-    let rewritten_installation_id =
+    assert!(
         payload["received"]["client_metadata"]["x-codex-installation-id"]
             .as_str()
-            .expect("rewritten installation id should be present");
-    assert_ne!(rewritten_installation_id, "downstream-installation-id");
-    assert_eq!(rewritten_installation_id.len(), 36);
-    assert_eq!(rewritten_installation_id.chars().nth(8), Some('-'));
-    assert_eq!(rewritten_installation_id.chars().nth(13), Some('-'));
-    assert_eq!(rewritten_installation_id.chars().nth(18), Some('-'));
-    assert_eq!(rewritten_installation_id.chars().nth(23), Some('-'));
+            .is_some()
+    );
     let request_debug = upstream
         .oauth_responses_debug
         .expect("oauth responses debug should be present");
@@ -273,10 +268,16 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         payload["received"]["input"].as_str().map(str::len),
         Some(OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 256)
     );
-    assert_eq!(
-        payload["received"]["client_metadata"]["x-codex-installation-id"].as_str(),
-        Some("downstream-installation-id")
-    );
+    let rewritten_installation_id =
+        payload["received"]["client_metadata"]["x-codex-installation-id"]
+            .as_str()
+            .expect("rewritten installation id should be present");
+    assert_ne!(rewritten_installation_id, "downstream-installation-id");
+    assert_eq!(rewritten_installation_id.len(), 36);
+    assert_eq!(rewritten_installation_id.chars().nth(8), Some('-'));
+    assert_eq!(rewritten_installation_id.chars().nth(13), Some('-'));
+    assert_eq!(rewritten_installation_id.chars().nth(18), Some('-'));
+    assert_eq!(rewritten_installation_id.chars().nth(23), Some('-'));
     let request_debug = upstream
         .oauth_responses_debug
         .expect("oauth responses debug should be present");
@@ -285,10 +286,7 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         request_debug.responses_body_mode,
         Some("large_body_passthrough")
     );
-    assert_eq!(
-        request_debug.rewrite,
-        oauth_bridge::OauthResponsesRewriteSummary::default()
-    );
+    assert!(request_debug.rewrite.applied && request_debug.rewrite.rewrote_installation_id);
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;

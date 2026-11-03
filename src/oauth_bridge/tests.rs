@@ -478,6 +478,21 @@ fn prepare_responses_request_body_preserves_previous_response_id() {
 }
 
 #[test]
+fn prepare_responses_request_body_preserves_explicit_store_true_for_normal_requests() {
+    let prepared = prepare_responses_request_body(
+        br#"{"model":"gpt-5.4","stream":false,"store":true,"input":"hello"}"#,
+        None,
+        None,
+        false,
+    )
+    .expect("rewrite normal responses request");
+
+    let payload: Value = serde_json::from_slice(&prepared.body).expect("decode rewritten body");
+    assert_eq!(payload["store"], true);
+    assert!(!prepared.rewrite.added_store);
+}
+
+#[test]
 fn prepare_responses_request_body_removes_reserve_unsupported_fields() {
     let prepared = prepare_responses_request_body(
         br#"{"model":"gpt-reserve","stream":false,"store":true,"max_output_tokens":256,"previous_response_id":"resp_prev_001","reasoning":{"summary":"none","effort":"medium"}}"#,

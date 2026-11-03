@@ -462,7 +462,23 @@ async fn transcode_oauth_stream(
         } else {
             PoolRequestBodyCompressionMode::Passthrough
         };
-        return Ok((body, target_encoding, mode, None, None));
+        let transmitted_counter = ObservedByteCounter::default();
+        let stream = body.into_data_stream().map({
+            let transmitted_counter = transmitted_counter.clone();
+            move |chunk| {
+                if let Ok(bytes) = &chunk {
+                    transmitted_counter.add(bytes.len());
+                }
+                chunk
+            }
+        });
+        return Ok((
+            Body::from_stream(stream),
+            target_encoding,
+            mode,
+            None,
+            Some(transmitted_counter),
+        ));
     }
     let input = body
         .into_data_stream()
@@ -844,7 +860,8 @@ async fn counted_oauth_responses(
     };
     let (mut outbound_headers, forwarded_headers) =
         collect_forwardable_headers(headers, OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES, crypto_key);
-    let mut request_body_counters: Option<(ObservedByteCounter, ObservedByteCounter)> = None;
+    let mut request_body_logical_counter: Option<ObservedByteCounter> = None;
+    let mut request_body_transmitted_counter: Option<ObservedByteCounter> = None;
     let (
         request_body,
         request_content_length,
@@ -1020,7 +1037,8 @@ async fn counted_oauth_responses(
                 Some("large_body_passthrough"),
                 crypto_key,
             );
-            request_body_counters = logical_counter.zip(transmitted_counter);
+            request_body_logical_counter = logical_counter;
+            request_body_transmitted_counter = transmitted_counter;
             (
                 body,
                 None,
@@ -1066,7 +1084,8 @@ async fn counted_oauth_responses(
                 Some("large_body_passthrough"),
                 crypto_key,
             );
-            request_body_counters = logical_counter.zip(transmitted_counter);
+            request_body_logical_counter = logical_counter;
+            request_body_transmitted_counter = transmitted_counter;
             (
                 body,
                 None,
@@ -1126,13 +1145,18 @@ async fn counted_oauth_responses(
         Err(mut response) => {
             backfill_oauth_request_debug_body_counters(
                 &mut request_debug,
-                request_body_counters.as_ref(),
+                request_body_logical_counter.as_ref(),
+                request_body_transmitted_counter.as_ref(),
             );
             response.request_debug = Some(request_debug);
             return response;
         }
     };
-    backfill_oauth_request_debug_body_counters(&mut request_debug, request_body_counters.as_ref());
+    backfill_oauth_request_debug_body_counters(
+        &mut request_debug,
+        request_body_logical_counter.as_ref(),
+        request_body_transmitted_counter.as_ref(),
+    );
     if !upstream.status().is_success() {
         let status = upstream.status();
         let request_started = Instant::now();
@@ -1257,6 +1281,8 @@ async fn counted_oauth_passthrough(
     };
     let (mut outbound_headers, forwarded_headers) =
         collect_forwardable_headers(headers, OAUTH_BODY_REWRITTEN_HEADER_NAMES, crypto_key);
+    let mut request_body_logical_counter: Option<ObservedByteCounter> = None;
+    let mut request_body_transmitted_counter: Option<ObservedByteCounter> = None;
     let (
         request_body,
         request_content_length,
@@ -1264,6 +1290,7 @@ async fn counted_oauth_passthrough(
         request_compression_mode,
         debug_body_prefix,
         request_logical_body_bytes,
+        request_rewrite,
     ) = match body {
         CountedOauthUpstreamRequestBody::Empty => (
             Body::empty(),
@@ -1272,6 +1299,7 @@ async fn counted_oauth_passthrough(
             PoolRequestBodyCompressionMode::Identity,
             Some(Bytes::new()),
             Some(0),
+            OauthResponsesRewriteSummary::default(),
         ),
         CountedOauthUpstreamRequestBody::Bytes(bytes) => {
             let debug_body_prefix =
@@ -1304,6 +1332,7 @@ async fn counted_oauth_passthrough(
                 mode,
                 debug_body_prefix,
                 Some(logical_body_bytes),
+                OauthResponsesRewriteSummary::default(),
             )
         }
         CountedOauthUpstreamRequestBody::DecodedBytes {
@@ -1341,65 +1370,82 @@ async fn counted_oauth_passthrough(
                 mode,
                 debug_body_prefix,
                 Some(logical_body_bytes),
+                OauthResponsesRewriteSummary::default(),
             )
         }
         CountedOauthUpstreamRequestBody::Stream {
             body,
             debug_body_prefix,
+            rewrite,
             ..
         } => {
-            let (body, encoding, mode, _, _) = match transcode_oauth_stream(
+            let (body, encoding, mode, logical_counter, transmitted_counter) =
+                match transcode_oauth_stream(
+                    body,
+                    headers,
+                    debug_body_prefix.as_deref(),
+                    request_compression_algorithm,
+                    request_compression_level_preset,
+                    None,
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err((status, message)) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(status, &message, "invalid_request_error"),
+                            request_debug: None,
+                        };
+                    }
+                };
+            request_body_logical_counter = logical_counter;
+            request_body_transmitted_counter = transmitted_counter;
+            (
                 body,
-                headers,
-                debug_body_prefix.as_deref(),
-                request_compression_algorithm,
-                request_compression_level_preset,
                 None,
+                encoding,
+                mode,
+                debug_body_prefix,
+                None,
+                rewrite.unwrap_or_default(),
             )
-            .await
-            {
-                Ok(value) => value,
-                Err((status, message)) => {
-                    return OauthUpstreamResponse {
-                        response: error_response(status, &message, "invalid_request_error"),
-                        request_debug: None,
-                    };
-                }
-            };
-            (body, None, encoding, mode, debug_body_prefix, None)
         }
         CountedOauthUpstreamRequestBody::DecodedStream {
             body,
             debug_body_prefix,
             source_encoding,
+            rewrite,
             ..
         } => {
-            let (body, encoding, mode, _, _) = match transcode_oauth_stream(
-                body,
-                headers,
-                debug_body_prefix.as_deref(),
-                request_compression_algorithm,
-                request_compression_level_preset,
-                Some(source_encoding),
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err((status, message)) => {
-                    return OauthUpstreamResponse {
-                        response: error_response(status, &message, "invalid_request_error"),
-                        request_debug: None,
-                    };
-                }
-            };
-            (body, None, encoding, mode, debug_body_prefix, None)
+            let (body, encoding, mode, logical_counter, transmitted_counter) =
+                match transcode_oauth_stream(
+                    body,
+                    headers,
+                    debug_body_prefix.as_deref(),
+                    request_compression_algorithm,
+                    request_compression_level_preset,
+                    Some(source_encoding),
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err((status, message)) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(status, &message, "invalid_request_error"),
+                            request_debug: None,
+                        };
+                    }
+                };
+            request_body_logical_counter = logical_counter;
+            request_body_transmitted_counter = transmitted_counter;
+            (body, None, encoding, mode, debug_body_prefix, None, rewrite)
         }
     };
     let mut request_debug = build_oauth_request_debug(
         original_uri.path(),
         &forwarded_headers,
         debug_body_prefix.as_deref(),
-        OauthResponsesRewriteSummary::default(),
+        request_rewrite,
         None,
         None,
         crypto_key,
@@ -1442,10 +1488,20 @@ async fn counted_oauth_passthrough(
     {
         Ok(response) => response,
         Err(mut response) => {
+            backfill_oauth_request_debug_body_counters(
+                &mut request_debug,
+                request_body_logical_counter.as_ref(),
+                request_body_transmitted_counter.as_ref(),
+            );
             response.request_debug = Some(request_debug);
             return response;
         }
     };
+    backfill_oauth_request_debug_body_counters(
+        &mut request_debug,
+        request_body_logical_counter.as_ref(),
+        request_body_transmitted_counter.as_ref(),
+    );
     OauthUpstreamResponse {
         response: normalize_counted_stream_response(upstream),
         request_debug: Some(request_debug),
@@ -2329,12 +2385,11 @@ fn build_oauth_request_debug_with_prefix(
 
 fn backfill_oauth_request_debug_body_counters(
     debug: &mut OauthRequestDebugInfo,
-    counters: Option<&(ObservedByteCounter, ObservedByteCounter)>,
+    logical_counter: Option<&ObservedByteCounter>,
+    transmitted_counter: Option<&ObservedByteCounter>,
 ) {
-    if let Some((logical, transmitted)) = counters {
-        debug.request_body_logical_bytes = Some(logical.load());
-        debug.request_body_transmitted_bytes = Some(transmitted.load());
-    }
+    debug.request_body_logical_bytes = logical_counter.map(ObservedByteCounter::load);
+    debug.request_body_transmitted_bytes = transmitted_counter.map(ObservedByteCounter::load);
 }
 
 pub(crate) fn backfill_oauth_request_debug_body_prefix(
@@ -2466,7 +2521,10 @@ fn prepare_responses_request_body(
         map.insert("instructions".to_string(), Value::String(String::new()));
         rewrite.added_instructions = true;
     }
-    if map.get("store").and_then(Value::as_bool) != Some(false) {
+    if reserve_request && map.get("store").and_then(Value::as_bool) != Some(false) {
+        map.insert("store".to_string(), Value::Bool(false));
+        rewrite.added_store = true;
+    } else if !map.contains_key("store") {
         map.insert("store".to_string(), Value::Bool(false));
         rewrite.added_store = true;
     }
