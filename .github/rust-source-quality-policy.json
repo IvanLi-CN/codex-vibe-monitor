@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 94,
+    "inventory_entries": 97,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -499,10 +499,28 @@
       "next_module_workstream": "Maintain sticky-key previews, composite-index/no-sort contracts, and the 300,000-row benchmark fixture."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties/resolver_sticky_and_route_penalties.rs",
       "role": "test_helper",
-      "line_budget": 4525,
-      "next_module_workstream": "Split upstream prompt-cache binding/route-penalty fixtures by resolver, metadata, and lifecycle."
+      "line_budget": 1559,
+      "next_module_workstream": "Maintain resolver sticky reuse, prompt-cache binding, route-penalty, escape, and concurrency fixtures below the test-helper target."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties/resolver_group_proxy_errors_and_node_shunts.rs",
+      "role": "test_helper",
+      "line_budget": 892,
+      "next_module_workstream": "Maintain group-proxy error precedence, cut-out, tag-policy, and node-shunt resolver fixtures below the test-helper target."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties/oauth_login_session_metadata.rs",
+      "role": "test_helper",
+      "line_budget": 680,
+      "next_module_workstream": "Maintain OAuth login-session metadata persistence, pending fields, callback metadata, and legacy shunt fixtures below the test-helper target."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties/oauth_login_session_repair_and_tag_cleanup.rs",
+      "role": "test_helper",
+      "line_budget": 1398,
+      "next_module_workstream": "Maintain completed callback race repair, stale-session rejection, relogin rejection, and tag cleanup fixtures below the test-helper target."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/relogin_and_identity_recovery.rs",
@@ -1341,10 +1359,10 @@
       "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
     },
     {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
+      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties/resolver_sticky_and_route_penalties.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the seeded upstream-attempt argument bundle in the resolver sticky-and-penalties module."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/cache_hit_protection_and_route_reservations.rs",
