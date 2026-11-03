@@ -190,11 +190,24 @@ pub(crate) enum OauthUpstreamRequestBody {
 pub(crate) enum CountedOauthUpstreamRequestBody {
     Empty,
     Bytes(Bytes),
+    DecodedBytes {
+        bytes: Bytes,
+        source_encoding: RequestBodyContentEncoding,
+    },
     Stream {
         body: Body,
         debug_body_prefix: Option<Bytes>,
         request_is_stream: Option<bool>,
         snapshot_kind: Option<&'static str>,
+        rewrite: Option<OauthResponsesRewriteSummary>,
+    },
+    DecodedStream {
+        body: Body,
+        debug_body_prefix: Option<Bytes>,
+        request_is_stream: Option<bool>,
+        snapshot_kind: Option<&'static str>,
+        source_encoding: RequestBodyContentEncoding,
+        rewrite: OauthResponsesRewriteSummary,
     },
 }
 
@@ -354,6 +367,7 @@ async fn prepare_oauth_bytes(
     request_compression_level_preset: RequestCompressionLevelPreset,
     rewrite_responses: bool,
     reserve_request: bool,
+    source_encoding_override: Option<RequestBodyContentEncoding>,
     account_id: Option<i64>,
     installation_seed: Option<&[u8; 32]>,
 ) -> Result<
@@ -367,8 +381,16 @@ async fn prepare_oauth_bytes(
     ),
     (StatusCode, String),
 > {
-    let source_encoding = oauth_source_request_encoding(Some(bytes.as_ref()), headers)?;
-    let decoded = decode_oauth_bytes(bytes, source_encoding).await?;
+    let input_was_decoded = source_encoding_override.is_some();
+    let source_encoding = source_encoding_override.unwrap_or(oauth_source_request_encoding(
+        Some(bytes.as_ref()),
+        headers,
+    )?);
+    let decoded = if input_was_decoded {
+        bytes
+    } else {
+        decode_oauth_bytes(bytes, source_encoding).await?
+    };
     let (decoded, rewrite, wants_stream) = if rewrite_responses {
         let prepared = prepare_responses_request_body(
             &decoded,
@@ -387,7 +409,7 @@ async fn prepare_oauth_bytes(
     };
     let target_encoding =
         request_compression_algorithm_encoding(request_compression_algorithm, source_encoding);
-    let mode = if target_encoding == source_encoding && !rewrite.applied {
+    let mode = if !input_was_decoded && target_encoding == source_encoding && !rewrite.applied {
         if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
             PoolRequestBodyCompressionMode::Identity
         } else {
@@ -417,6 +439,7 @@ async fn transcode_oauth_stream(
     body_prefix: Option<&[u8]>,
     request_compression_algorithm: RequestCompressionAlgorithm,
     request_compression_level_preset: RequestCompressionLevelPreset,
+    source_encoding_override: Option<RequestBodyContentEncoding>,
 ) -> Result<
     (
         Body,
@@ -425,10 +448,12 @@ async fn transcode_oauth_stream(
     ),
     (StatusCode, String),
 > {
-    let source_encoding = oauth_source_request_encoding(body_prefix, headers)?;
+    let input_was_decoded = source_encoding_override.is_some();
+    let source_encoding =
+        source_encoding_override.unwrap_or(oauth_source_request_encoding(body_prefix, headers)?);
     let target_encoding =
         request_compression_algorithm_encoding(request_compression_algorithm, source_encoding);
-    if target_encoding == source_encoding {
+    if !input_was_decoded && target_encoding == source_encoding {
         let mode = if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
             PoolRequestBodyCompressionMode::Identity
         } else {
@@ -440,13 +465,14 @@ async fn transcode_oauth_stream(
         .into_data_stream()
         .map(|chunk| chunk.map_err(|err| io::Error::other(err.to_string())));
     let reader: BoxedPoolRequestReader = Box::pin(StreamReader::new(input));
-    let decoded = if matches!(source_encoding, RequestBodyContentEncoding::Identity) {
-        reader
-    } else {
-        decode_pool_request_reader(reader, source_encoding)
-            .await
-            .map_err(|err| (err.status, err.message))?
-    };
+    let decoded =
+        if input_was_decoded || matches!(source_encoding, RequestBodyContentEncoding::Identity) {
+            reader
+        } else {
+            decode_pool_request_reader(reader, source_encoding)
+                .await
+                .map_err(|err| (err.status, err.message))?
+        };
     let encoded = encode_pool_request_reader(
         decoded,
         target_encoding,
@@ -815,6 +841,7 @@ async fn counted_oauth_responses(
                     request_compression_level_preset,
                     true,
                     reserve_request,
+                    None,
                     account_id,
                     installation_seed,
                 )
@@ -857,6 +884,53 @@ async fn counted_oauth_responses(
                     request_compression_level_preset,
                     true,
                     reserve_request,
+                    None,
+                    account_id,
+                    installation_seed,
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err((status, message)) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(status, &message, "invalid_request_error"),
+                            request_debug: None,
+                        };
+                    }
+                };
+            let mut request_debug = build_oauth_request_debug(
+                "/v1/responses",
+                &forwarded_headers,
+                Some(encoded.as_ref()),
+                rewrite,
+                Some("memory"),
+                Some("small_body_rewrite"),
+                crypto_key,
+            );
+            request_debug.request_body_logical_bytes = Some(logical_body_bytes);
+            request_debug.request_body_transmitted_bytes = Some(encoded.len());
+            (
+                Body::from(encoded.clone()),
+                Some(encoded.len()),
+                encoding,
+                mode,
+                request_debug,
+                wants_stream.unwrap_or(false),
+            )
+        }
+        CountedOauthUpstreamRequestBody::DecodedBytes {
+            bytes,
+            source_encoding,
+        } => {
+            let (encoded, encoding, mode, rewrite, wants_stream, logical_body_bytes) =
+                match prepare_oauth_bytes(
+                    bytes,
+                    headers,
+                    request_compression_algorithm,
+                    request_compression_level_preset,
+                    true,
+                    reserve_request,
+                    Some(source_encoding),
                     account_id,
                     installation_seed,
                 )
@@ -895,6 +969,7 @@ async fn counted_oauth_responses(
             debug_body_prefix,
             request_is_stream,
             snapshot_kind,
+            rewrite,
         } => {
             let (body, encoding, mode) = match transcode_oauth_stream(
                 body,
@@ -902,6 +977,7 @@ async fn counted_oauth_responses(
                 debug_body_prefix.as_deref(),
                 request_compression_algorithm,
                 request_compression_level_preset,
+                None,
             )
             .await
             {
@@ -917,7 +993,7 @@ async fn counted_oauth_responses(
                 "/v1/responses",
                 &forwarded_headers,
                 debug_body_prefix.as_deref(),
-                OauthResponsesRewriteSummary::default(),
+                rewrite.unwrap_or_default(),
                 snapshot_kind.or(Some("stream")),
                 Some("large_body_passthrough"),
                 crypto_key,
@@ -929,6 +1005,50 @@ async fn counted_oauth_responses(
                 mode,
                 request_debug,
                 request_is_stream.unwrap_or(false),
+            )
+        }
+        CountedOauthUpstreamRequestBody::DecodedStream {
+            body,
+            debug_body_prefix,
+            request_is_stream,
+            snapshot_kind,
+            source_encoding,
+            rewrite,
+        } => {
+            let (body, encoding, mode) = match transcode_oauth_stream(
+                body,
+                headers,
+                debug_body_prefix.as_deref(),
+                request_compression_algorithm,
+                request_compression_level_preset,
+                Some(source_encoding),
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err((status, message)) => {
+                    return OauthUpstreamResponse {
+                        response: error_response(status, &message, "invalid_request_error"),
+                        request_debug: None,
+                    };
+                }
+            };
+            let request_debug = build_oauth_request_debug_with_prefix(
+                "/v1/responses",
+                &forwarded_headers,
+                debug_body_prefix.as_deref(),
+                rewrite,
+                snapshot_kind.or(Some("stream")),
+                Some("large_body_passthrough"),
+                crypto_key,
+            );
+            (
+                body,
+                None,
+                encoding,
+                mode,
+                request_debug,
+                request_is_stream.unwrap_or(true),
             )
         }
     };
@@ -1133,6 +1253,44 @@ async fn counted_oauth_passthrough(
                 request_compression_level_preset,
                 false,
                 false,
+                None,
+                account_id,
+                None,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err((status, message)) => {
+                    return OauthUpstreamResponse {
+                        response: error_response(status, &message, "invalid_request_error"),
+                        request_debug: None,
+                    };
+                }
+            };
+            (
+                Body::from(encoded.clone()),
+                Some(encoded.len()),
+                encoding,
+                mode,
+                debug_body_prefix,
+                Some(logical_body_bytes),
+            )
+        }
+        CountedOauthUpstreamRequestBody::DecodedBytes {
+            bytes,
+            source_encoding,
+            ..
+        } => {
+            let debug_body_prefix =
+                oauth_request_body_prefix_bytes(Some(bytes.as_ref())).map(Bytes::from);
+            let (encoded, encoding, mode, _, _, logical_body_bytes) = match prepare_oauth_bytes(
+                bytes,
+                headers,
+                request_compression_algorithm,
+                request_compression_level_preset,
+                false,
+                false,
+                Some(source_encoding),
                 account_id,
                 None,
             )
@@ -1166,6 +1324,33 @@ async fn counted_oauth_passthrough(
                 debug_body_prefix.as_deref(),
                 request_compression_algorithm,
                 request_compression_level_preset,
+                None,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err((status, message)) => {
+                    return OauthUpstreamResponse {
+                        response: error_response(status, &message, "invalid_request_error"),
+                        request_debug: None,
+                    };
+                }
+            };
+            (body, None, encoding, mode, debug_body_prefix, None)
+        }
+        CountedOauthUpstreamRequestBody::DecodedStream {
+            body,
+            debug_body_prefix,
+            source_encoding,
+            ..
+        } => {
+            let (body, encoding, mode) = match transcode_oauth_stream(
+                body,
+                headers,
+                debug_body_prefix.as_deref(),
+                request_compression_algorithm,
+                request_compression_level_preset,
+                Some(source_encoding),
             )
             .await
             {

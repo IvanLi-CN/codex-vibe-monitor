@@ -855,6 +855,9 @@ async fn build_pool_upstream_request_body_follow_passthrough_preserves_gzip_snap
         requested_image_intent: ImageIntent::Unknown,
         requested_hosted_image_intent: ImageIntent::Unknown,
         codex_imagegen_rewrite: None,
+        oauth_responses_rewrite: None,
+        oauth_responses_source_encoding: None,
+        oauth_responses_wants_stream: None,
         snapshot_is_decoded: false,
     };
 
@@ -886,6 +889,9 @@ async fn build_pool_upstream_request_body_follow_rejects_unsupported_request_enc
         requested_image_intent: ImageIntent::Unknown,
         requested_hosted_image_intent: ImageIntent::Unknown,
         codex_imagegen_rewrite: None,
+        oauth_responses_rewrite: None,
+        oauth_responses_source_encoding: None,
+        oauth_responses_wants_stream: None,
         snapshot_is_decoded: false,
     };
 

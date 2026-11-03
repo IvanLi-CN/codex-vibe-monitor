@@ -29,6 +29,7 @@ async fn oauth_request_compression_decodes_input_rewrites_then_encodes_zstd() {
         false,
         None,
         None,
+        None,
     )
     .await
     .expect("prepare compressed oauth body");
@@ -64,6 +65,7 @@ async fn oauth_request_compression_rejects_oversized_decoded_buffered_body() {
         RequestCompressionLevelPreset::Balanced,
         false,
         false,
+        None,
         None,
         None,
     )
@@ -303,6 +305,102 @@ async fn counted_oauth_passthrough_sets_zstd_encoding_and_content_length() {
     )
     .await;
     assert_eq!(response.response.status(), StatusCode::ACCEPTED);
+
+    handle.abort();
+    reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn counted_oauth_responses_reencodes_decoded_reserve_stream() {
+    async fn responses_upstream(request: axum::extract::Request) -> Response {
+        assert_eq!(
+            request
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
+        let body = to_bytes(request.into_body(), usize::MAX)
+            .await
+            .expect("read compressed Reserve request body");
+        let mut decoded = flate2::read::GzDecoder::new(body.as_ref());
+        let mut decoded_body = Vec::new();
+        std::io::Read::read_to_end(&mut decoded, &mut decoded_body)
+            .expect("decode compressed Reserve request body");
+        let payload: Value =
+            serde_json::from_slice(&decoded_body).expect("decode Reserve request JSON");
+        assert_eq!(payload["model"], crate::RESERVE_WIRE_MODEL);
+        assert_eq!(payload["store"], false);
+        assert_eq!(payload["stream"], true);
+        assert!(payload.get("max_output_tokens").is_none());
+        assert!(payload.get("previous_response_id").is_none());
+        assert!(payload["reasoning"].get("summary").is_none());
+        (StatusCode::OK, Json(json!({"id":"resp_reserve_stream"}))).into_response()
+    }
+
+    let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
+    let app = Router::new().route("/backend-api/codex/responses", post(responses_upstream));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind decoded Reserve upstream");
+    let addr = listener
+        .local_addr()
+        .expect("decoded Reserve upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("decoded Reserve upstream should run");
+    });
+    set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("http://{addr}/backend-api/codex"))
+            .expect("valid decoded Reserve upstream base URL"),
+    )
+    .await;
+
+    let plain_body = Bytes::from_static(
+        br#"{"model":"gpt-reserve","input":"hello","store":false,"stream":true,"reasoning":{"effort":"medium"}}"#,
+    );
+    let response = send_counted_oauth_upstream_request_with_compression(
+        Method::POST,
+        &"/v1/responses".parse().expect("valid responses URI"),
+        &HeaderMap::from_iter([(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        CountedOauthUpstreamRequestBody::DecodedStream {
+            body: Body::from(plain_body.clone()),
+            debug_body_prefix: Some(plain_body.clone()),
+            request_is_stream: Some(false),
+            snapshot_kind: Some("file"),
+            source_encoding: RequestBodyContentEncoding::Gzip,
+            rewrite: OauthResponsesRewriteSummary {
+                applied: true,
+                removed_max_output_tokens: true,
+                removed_previous_response_id: true,
+                removed_reasoning_summary_none: true,
+                ..Default::default()
+            },
+        },
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        Some(7),
+        "oauth-reserve-stream",
+        Some("org_reserve"),
+        None,
+        None,
+        RequestCompressionAlgorithm::Follow,
+        RequestCompressionLevelPreset::Balanced,
+        true,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(response.response.status(), StatusCode::OK);
+    let debug = response.request_debug.expect("Reserve stream diagnostics");
+    assert!(debug.rewrite.removed_max_output_tokens);
+    assert!(debug.rewrite.removed_previous_response_id);
+    assert!(debug.rewrite.removed_reasoning_summary_none);
+    assert_eq!(debug.responses_body_mode, Some("large_body_passthrough"));
 
     handle.abort();
     reset_test_oauth_codex_upstream_base_url().await;

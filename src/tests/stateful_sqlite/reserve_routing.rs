@@ -97,6 +97,8 @@ async fn reserve_fallback_upstream(
             if payload.get("max_output_tokens").is_some()
                 || payload.get("previous_response_id").is_some()
                 || payload["reasoning"]["summary"] == "none"
+                || payload["store"] != false
+                || payload["stream"] != true
             {
                 return (
                     StatusCode::BAD_REQUEST,

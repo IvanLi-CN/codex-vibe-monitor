@@ -317,6 +317,9 @@ pub(crate) struct PreparedPoolRequestBody {
     pub(crate) requested_image_intent: ImageIntent,
     pub(crate) requested_hosted_image_intent: ImageIntent,
     pub(crate) codex_imagegen_rewrite: Option<Value>,
+    pub(crate) oauth_responses_rewrite: Option<crate::oauth_bridge::OauthResponsesRewriteSummary>,
+    pub(crate) oauth_responses_source_encoding: Option<RequestBodyContentEncoding>,
+    pub(crate) oauth_responses_wants_stream: Option<bool>,
     pub(crate) snapshot_is_decoded: bool,
 }
 
@@ -1076,6 +1079,9 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                     codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
                 })
                 .map(codex_imagegen_keep_original_audit),
+            oauth_responses_rewrite: None,
+            oauth_responses_source_encoding: None,
+            oauth_responses_wants_stream: None,
             snapshot_is_decoded: false,
         });
     };
@@ -1163,6 +1169,9 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             requested_image_intent,
             requested_hosted_image_intent,
             codex_imagegen_rewrite,
+            oauth_responses_rewrite: None,
+            oauth_responses_source_encoding: None,
+            oauth_responses_wants_stream: None,
             snapshot_is_decoded: false,
         });
     }
@@ -1197,6 +1206,9 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             requested_image_intent: default_image_intent,
             requested_hosted_image_intent: default_image_intent,
             codex_imagegen_rewrite: None,
+            oauth_responses_rewrite: None,
+            oauth_responses_source_encoding: None,
+            oauth_responses_wants_stream: None,
             snapshot_is_decoded: false,
         });
     };
@@ -1215,6 +1227,9 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 requested_image_intent: default_image_intent,
                 requested_hosted_image_intent: default_image_intent,
                 codex_imagegen_rewrite: None,
+                oauth_responses_rewrite: None,
+                oauth_responses_source_encoding: None,
+                oauth_responses_wants_stream: None,
                 snapshot_is_decoded: false,
             });
         }
@@ -1239,26 +1254,52 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     } else {
         false
     };
-    let reserve_large_body_fields_rewritten = target == ProxyCaptureTarget::Responses
-        && decoded_original_bytes.len() > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
+    let reserve_body_mapping = target == ProxyCaptureTarget::Responses
         && model_mapping.is_some_and(|mapping| {
             mapping
                 .target_model
                 .eq_ignore_ascii_case(RESERVE_WIRE_MODEL)
-        })
-        && value.as_object_mut().is_some_and(|object| {
-            // CPA's Reserve Responses path rejects these fields; large bodies bypass the
-            // OAuth JSON rewrite in oauth_bridge.
+        });
+    let reserve_large_body = reserve_body_mapping
+        && decoded_original_bytes.len() > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES;
+    let reserve_large_body_wants_stream = reserve_large_body.then(|| {
+        value
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    let reserve_large_body_rewrite = if reserve_large_body {
+        value.as_object_mut().and_then(|object| {
+            // Reserve Responses rejects these fields; pre-rewrite them before file-backed
+            // snapshots bypass the OAuth JSON rewrite in oauth_bridge.
             let mut reserve_rewrite = crate::oauth_bridge::OauthResponsesRewriteSummary::default();
+            if !object.contains_key("instructions") {
+                object.insert("instructions".to_string(), Value::String(String::new()));
+                reserve_rewrite.added_instructions = true;
+            }
+            if !object.contains_key("store") {
+                object.insert("store".to_string(), Value::Bool(false));
+                reserve_rewrite.added_store = true;
+            }
+            reserve_rewrite.forced_stream_true =
+                object.get("stream").and_then(Value::as_bool) != Some(true);
+            object.insert("stream".to_string(), Value::Bool(true));
             crate::oauth_bridge::remove_reserve_unsupported_response_fields(
                 object,
                 &mut reserve_rewrite,
             );
             reserve_rewrite.applied = reserve_rewrite.removed_max_output_tokens
+                || reserve_rewrite.added_instructions
+                || reserve_rewrite.added_store
+                || reserve_rewrite.forced_stream_true
                 || reserve_rewrite.removed_previous_response_id
                 || reserve_rewrite.removed_reasoning_summary_none;
-            reserve_rewrite.applied
-        });
+            reserve_rewrite.applied.then_some(reserve_rewrite)
+        })
+    } else {
+        None
+    };
+    let reserve_large_body_fields_rewritten = reserve_large_body_rewrite.is_some();
     let rewritten = model_mapping_rewritten
         || reserve_large_body_fields_rewritten
         || (if target.allows_fast_mode_rewrite() {
@@ -1307,6 +1348,9 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             requested_image_intent: upstream_image_intent,
             requested_hosted_image_intent: upstream_hosted_image_intent,
             codex_imagegen_rewrite,
+            oauth_responses_rewrite: None,
+            oauth_responses_source_encoding: None,
+            oauth_responses_wants_stream: None,
             snapshot_is_decoded: false,
         });
     }
@@ -1331,6 +1375,9 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         requested_image_intent: upstream_image_intent,
         requested_hosted_image_intent: upstream_hosted_image_intent,
         codex_imagegen_rewrite,
+        oauth_responses_rewrite: reserve_large_body_rewrite,
+        oauth_responses_source_encoding: reserve_body_mapping.then_some(downstream_encoding),
+        oauth_responses_wants_stream: reserve_large_body_wants_stream,
         snapshot_is_decoded: true,
     })
 }
@@ -1423,9 +1470,13 @@ mod tests {
         }))
         .expect("serialize large reserve request");
         assert!(body.len() > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES);
-        let snapshot = pool_replay_snapshot_from_bytes(903, Bytes::from(body))
-            .await
-            .expect("create large replay snapshot");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &body).expect("compress large reserve request");
+        let compressed = encoder.finish().expect("finish compressed reserve request");
+        let snapshot =
+            pool_replay_snapshot_from_bytes_with_memory_threshold(903, Bytes::from(compressed), 1)
+                .await
+                .expect("create large replay snapshot");
         assert!(matches!(snapshot, PoolReplayBodySnapshot::File { .. }));
         let mapping = ResolvedModelMapping {
             source_model: "gpt-5.4-luna".to_string(),
@@ -1437,7 +1488,7 @@ mod tests {
             Some(&snapshot),
             &Uri::from_static("/v1/responses"),
             &Method::POST,
-            None,
+            Some("gzip"),
             TagFastModeRewriteMode::KeepOriginal,
             crate::ImageToolRewriteMode::KeepOriginal,
             crate::CodexImagegenRewriteMode::KeepOriginal,
@@ -1455,9 +1506,24 @@ mod tests {
             .expect("read rewritten large request");
         let rewritten: Value = serde_json::from_slice(&rewritten).expect("decode large request");
         assert_eq!(rewritten["model"], RESERVE_WIRE_MODEL);
+        assert_eq!(rewritten["instructions"], "");
+        assert_eq!(rewritten["store"], false);
+        assert_eq!(rewritten["stream"], true);
         assert!(rewritten.get("max_output_tokens").is_none());
         assert!(rewritten.get("previous_response_id").is_none());
         assert!(rewritten["reasoning"].get("summary").is_none());
         assert_eq!(rewritten["reasoning"]["effort"], "medium");
+        assert_eq!(
+            prepared.oauth_responses_source_encoding,
+            Some(RequestBodyContentEncoding::Gzip)
+        );
+        let rewrite = prepared
+            .oauth_responses_rewrite
+            .expect("large Reserve rewrite summary");
+        assert!(rewrite.applied);
+        assert!(rewrite.removed_max_output_tokens);
+        assert!(rewrite.removed_previous_response_id);
+        assert!(rewrite.removed_reasoning_summary_none);
+        assert_eq!(prepared.oauth_responses_wants_stream, Some(false));
     }
 }
