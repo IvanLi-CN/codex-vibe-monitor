@@ -4,9 +4,10 @@
 )]
 
 use crate::proxy::{
-    BoxedPoolRequestReader, PoolRequestBodyCompressionMode, RequestBodyContentEncoding,
-    decode_pool_request_reader, encode_pool_request_reader, request_compression_algorithm_encoding,
-    request_compression_preset_to_async_level, resolve_request_body_content_encoding_from_prefix,
+    BoxedPoolRequestReader, CountingAsyncRead, ObservedByteCounter, PoolRequestBodyCompressionMode,
+    RequestBodyContentEncoding, decode_pool_request_reader, encode_pool_request_reader,
+    request_compression_algorithm_encoding, request_compression_preset_to_async_level,
+    resolve_request_body_content_encoding_from_prefix,
 };
 use crate::{RequestCompressionAlgorithm, RequestCompressionLevelPreset};
 use anyhow::{Context, Result, bail};
@@ -445,6 +446,8 @@ async fn transcode_oauth_stream(
         Body,
         RequestBodyContentEncoding,
         PoolRequestBodyCompressionMode,
+        Option<ObservedByteCounter>,
+        Option<ObservedByteCounter>,
     ),
     (StatusCode, String),
 > {
@@ -459,7 +462,7 @@ async fn transcode_oauth_stream(
         } else {
             PoolRequestBodyCompressionMode::Passthrough
         };
-        return Ok((body, target_encoding, mode));
+        return Ok((body, target_encoding, mode, None, None));
     }
     let input = body
         .into_data_stream()
@@ -473,24 +476,41 @@ async fn transcode_oauth_stream(
                 .await
                 .map_err(|err| (err.status, err.message))?
         };
+    let logical_counter = ObservedByteCounter::default();
+    let decoded = Box::pin(CountingAsyncRead::new(decoded, logical_counter.clone()));
     let encoded = encode_pool_request_reader(
         decoded,
         target_encoding,
         request_compression_preset_to_async_level(request_compression_level_preset),
     );
-    let stream = ReaderStream::new(encoded).map(|chunk| chunk.map_err(axum::Error::new));
+    let transmitted_counter = ObservedByteCounter::default();
+    let stream = ReaderStream::new(encoded).map({
+        let transmitted_counter = transmitted_counter.clone();
+        move |chunk| {
+            if let Ok(bytes) = &chunk {
+                transmitted_counter.add(bytes.len());
+            }
+            chunk.map_err(axum::Error::new)
+        }
+    });
     let mode = if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
         PoolRequestBodyCompressionMode::Identity
     } else {
         PoolRequestBodyCompressionMode::Recompressed
     };
-    Ok((Body::from_stream(stream), target_encoding, mode))
+    Ok((
+        Body::from_stream(stream),
+        target_encoding,
+        mode,
+        Some(logical_counter),
+        Some(transmitted_counter),
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct ClientMetadataInstallationIdRewriteSummary {
-    rewrote_installation_id: bool,
-    removed_installation_id: bool,
+pub(crate) struct ClientMetadataInstallationIdRewriteSummary {
+    pub(crate) rewrote_installation_id: bool,
+    pub(crate) removed_installation_id: bool,
 }
 
 pub(crate) async fn send_oauth_upstream_request(
@@ -824,12 +844,13 @@ async fn counted_oauth_responses(
     };
     let (mut outbound_headers, forwarded_headers) =
         collect_forwardable_headers(headers, OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES, crypto_key);
+    let mut request_body_counters: Option<(ObservedByteCounter, ObservedByteCounter)> = None;
     let (
         request_body,
         request_content_length,
         request_content_encoding,
         request_compression_mode,
-        request_debug,
+        mut request_debug,
         wants_stream,
     ) = match body {
         CountedOauthUpstreamRequestBody::Empty => {
@@ -971,24 +992,25 @@ async fn counted_oauth_responses(
             snapshot_kind,
             rewrite,
         } => {
-            let (body, encoding, mode) = match transcode_oauth_stream(
-                body,
-                headers,
-                debug_body_prefix.as_deref(),
-                request_compression_algorithm,
-                request_compression_level_preset,
-                None,
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err((status, message)) => {
-                    return OauthUpstreamResponse {
-                        response: error_response(status, &message, "invalid_request_error"),
-                        request_debug: None,
-                    };
-                }
-            };
+            let (body, encoding, mode, logical_counter, transmitted_counter) =
+                match transcode_oauth_stream(
+                    body,
+                    headers,
+                    debug_body_prefix.as_deref(),
+                    request_compression_algorithm,
+                    request_compression_level_preset,
+                    None,
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err((status, message)) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(status, &message, "invalid_request_error"),
+                            request_debug: None,
+                        };
+                    }
+                };
             let request_debug = build_oauth_request_debug_with_prefix(
                 "/v1/responses",
                 &forwarded_headers,
@@ -998,6 +1020,7 @@ async fn counted_oauth_responses(
                 Some("large_body_passthrough"),
                 crypto_key,
             );
+            request_body_counters = logical_counter.zip(transmitted_counter);
             (
                 body,
                 None,
@@ -1015,24 +1038,25 @@ async fn counted_oauth_responses(
             source_encoding,
             rewrite,
         } => {
-            let (body, encoding, mode) = match transcode_oauth_stream(
-                body,
-                headers,
-                debug_body_prefix.as_deref(),
-                request_compression_algorithm,
-                request_compression_level_preset,
-                Some(source_encoding),
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err((status, message)) => {
-                    return OauthUpstreamResponse {
-                        response: error_response(status, &message, "invalid_request_error"),
-                        request_debug: None,
-                    };
-                }
-            };
+            let (body, encoding, mode, logical_counter, transmitted_counter) =
+                match transcode_oauth_stream(
+                    body,
+                    headers,
+                    debug_body_prefix.as_deref(),
+                    request_compression_algorithm,
+                    request_compression_level_preset,
+                    Some(source_encoding),
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err((status, message)) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(status, &message, "invalid_request_error"),
+                            request_debug: None,
+                        };
+                    }
+                };
             let request_debug = build_oauth_request_debug_with_prefix(
                 "/v1/responses",
                 &forwarded_headers,
@@ -1042,6 +1066,7 @@ async fn counted_oauth_responses(
                 Some("large_body_passthrough"),
                 crypto_key,
             );
+            request_body_counters = logical_counter.zip(transmitted_counter);
             (
                 body,
                 None,
@@ -1099,10 +1124,15 @@ async fn counted_oauth_responses(
     {
         Ok(response) => response,
         Err(mut response) => {
+            backfill_oauth_request_debug_body_counters(
+                &mut request_debug,
+                request_body_counters.as_ref(),
+            );
             response.request_debug = Some(request_debug);
             return response;
         }
     };
+    backfill_oauth_request_debug_body_counters(&mut request_debug, request_body_counters.as_ref());
     if !upstream.status().is_success() {
         let status = upstream.status();
         let request_started = Instant::now();
@@ -1318,7 +1348,7 @@ async fn counted_oauth_passthrough(
             debug_body_prefix,
             ..
         } => {
-            let (body, encoding, mode) = match transcode_oauth_stream(
+            let (body, encoding, mode, _, _) = match transcode_oauth_stream(
                 body,
                 headers,
                 debug_body_prefix.as_deref(),
@@ -1344,7 +1374,7 @@ async fn counted_oauth_passthrough(
             source_encoding,
             ..
         } => {
-            let (body, encoding, mode) = match transcode_oauth_stream(
+            let (body, encoding, mode, _, _) = match transcode_oauth_stream(
                 body,
                 headers,
                 debug_body_prefix.as_deref(),
@@ -2297,6 +2327,16 @@ fn build_oauth_request_debug_with_prefix(
     }
 }
 
+fn backfill_oauth_request_debug_body_counters(
+    debug: &mut OauthRequestDebugInfo,
+    counters: Option<&(ObservedByteCounter, ObservedByteCounter)>,
+) {
+    if let Some((logical, transmitted)) = counters {
+        debug.request_body_logical_bytes = Some(logical.load());
+        debug.request_body_transmitted_bytes = Some(transmitted.load());
+    }
+}
+
 pub(crate) fn backfill_oauth_request_debug_body_prefix(
     debug: &mut OauthRequestDebugInfo,
     path: &str,
@@ -2426,7 +2466,7 @@ fn prepare_responses_request_body(
         map.insert("instructions".to_string(), Value::String(String::new()));
         rewrite.added_instructions = true;
     }
-    if !map.contains_key("store") {
+    if map.get("store").and_then(Value::as_bool) != Some(false) {
         map.insert("store".to_string(), Value::Bool(false));
         rewrite.added_store = true;
     }
@@ -2473,7 +2513,7 @@ pub(crate) fn remove_reserve_unsupported_response_fields(
     rewrite.removed_reasoning_summary_none |= removed_reasoning_summary_none;
 }
 
-fn rewrite_client_metadata_installation_id(
+pub(crate) fn rewrite_client_metadata_installation_id(
     map: &mut serde_json::Map<String, Value>,
     account_id: Option<i64>,
     installation_seed: Option<&[u8; 32]>,

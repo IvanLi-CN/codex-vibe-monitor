@@ -212,7 +212,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
             .as_ref()
             .map(|mapping| mapping.source_model.as_str())
             .or(context.model_mapping_pattern);
-        let prepared_request_body = match prepare_pool_request_body_for_account(
+        let prepared_request_body = match prepare_pool_request_body_for_account_with_oauth_context(
             context.proxy_request_id,
             context.body.as_ref(),
             context.original_uri,
@@ -234,6 +234,16 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 .as_ref()
                 .and_then(|context| context.hosted_image_intent),
             effective_model_mapping,
+            context
+                .account
+                .auth
+                .is_oauth()
+                .then_some(context.account.account_id),
+            context
+                .account
+                .auth
+                .is_oauth()
+                .then_some(&context.state.oauth_installation_seed),
         )
         .await
         {
@@ -1308,6 +1318,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                         },
                         context.account.oauth_request_compression_algorithm,
                         context.state.config.openai_proxy_max_request_body_bytes,
+                        prepared_request_body.snapshot_is_decoded,
                     )
                     .await
                     .map_err(|err| {
@@ -1651,6 +1662,12 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                     None
                 } else if context.account.auth.is_oauth() {
                     match context.account.oauth_request_compression_algorithm {
+                        RequestCompressionAlgorithm::Follow
+                            if let Some(source_encoding) =
+                                attempted_oauth_responses_source_encoding =>
+                        {
+                            Some((source_encoding.as_str(), "recompressed"))
+                        }
                         RequestCompressionAlgorithm::Follow => {
                             forwarded_request_compression_observation(context.headers)
                         }

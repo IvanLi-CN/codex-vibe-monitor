@@ -3,6 +3,14 @@ use axum::{Json, Router, body::to_bytes, routing::post};
 use serde_json::json;
 use tokio::net::TcpListener;
 
+struct TestOauthUpstreamResetGuard;
+
+impl Drop for TestOauthUpstreamResetGuard {
+    fn drop(&mut self) {
+        reset_test_oauth_codex_upstream_base_url_now();
+    }
+}
+
 #[tokio::test]
 async fn oauth_request_compression_decodes_input_rewrites_then_encodes_zstd() {
     let headers = HeaderMap::from_iter([
@@ -94,6 +102,7 @@ fn extract_completed_response_from_sse_returns_completed_response() {
 #[tokio::test]
 async fn oauth_codex_upstream_base_url_uses_test_override() {
     let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
+    let _reset_guard = TestOauthUpstreamResetGuard;
     let override_url =
         Url::parse("http://127.0.0.1:43123/backend-api/codex").expect("valid override url");
     set_test_oauth_codex_upstream_base_url(override_url.clone()).await;
@@ -339,6 +348,7 @@ async fn counted_oauth_responses_reencodes_decoded_reserve_stream() {
     }
 
     let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
+    let _reset_guard = TestOauthUpstreamResetGuard;
     let app = Router::new().route("/backend-api/codex/responses", post(responses_upstream));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -470,7 +480,7 @@ fn prepare_responses_request_body_preserves_previous_response_id() {
 #[test]
 fn prepare_responses_request_body_removes_reserve_unsupported_fields() {
     let prepared = prepare_responses_request_body(
-        br#"{"model":"gpt-reserve","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001","reasoning":{"summary":"none","effort":"medium"}}"#,
+        br#"{"model":"gpt-reserve","stream":false,"store":true,"max_output_tokens":256,"previous_response_id":"resp_prev_001","reasoning":{"summary":"none","effort":"medium"}}"#,
         None,
         None,
         true,

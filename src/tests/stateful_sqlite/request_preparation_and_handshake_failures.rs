@@ -820,6 +820,10 @@ async fn prepare_pool_request_body_for_account_decodes_gzip_before_rewrite() {
     .expect("prepare gzip-compressed pool request body");
 
     assert!(prepared.snapshot_is_decoded);
+    assert_eq!(
+        prepared.oauth_responses_source_encoding,
+        Some(RequestBodyContentEncoding::Gzip)
+    );
     assert_eq!(prepared.requested_service_tier.as_deref(), Some("priority"));
     let request_body = prepared
         .request_body_for_capture

@@ -463,13 +463,13 @@ pub(crate) struct RequestCompressionObservation {
 }
 
 #[derive(Debug)]
-struct CountingAsyncRead<R> {
+pub(crate) struct CountingAsyncRead<R> {
     inner: R,
     counter: ObservedByteCounter,
 }
 
 impl<R> CountingAsyncRead<R> {
-    fn new(inner: R, counter: ObservedByteCounter) -> Self {
+    pub(crate) fn new(inner: R, counter: ObservedByteCounter) -> Self {
         Self { inner, counter }
     }
 }
@@ -703,7 +703,16 @@ pub(crate) async fn validate_pool_request_snapshot_transcode(
     downstream_content_encoding: Option<&str>,
     request_compression_algorithm: RequestCompressionAlgorithm,
     max_decoded_bytes: usize,
+    snapshot_is_decoded: bool,
 ) -> Result<(), PoolRequestBodyPreparationError> {
+    if snapshot_is_decoded {
+        if pool_request_snapshot_body_bytes(snapshot) > max_decoded_bytes {
+            return Err(PoolRequestBodyPreparationError::payload_too_large(format!(
+                "decoded request body exceeds {max_decoded_bytes} bytes"
+            )));
+        }
+        return Ok(());
+    }
     let downstream_encoding =
         resolve_request_body_content_encoding(snapshot, downstream_content_encoding).await?;
     let target_encoding =
@@ -1032,6 +1041,41 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     projected_hosted_image_intent: Option<ImageIntent>,
     model_mapping: Option<&ResolvedModelMapping>,
 ) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
+    prepare_pool_request_body_for_account_with_oauth_context(
+        proxy_request_id,
+        body,
+        original_uri,
+        method,
+        content_encoding,
+        fast_mode_rewrite_mode,
+        image_tool_rewrite_mode,
+        codex_imagegen_rewrite_mode,
+        codex_imagegen_protocol,
+        projected_request_info,
+        projected_hosted_image_intent,
+        model_mapping,
+        None,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn prepare_pool_request_body_for_account_with_oauth_context(
+    proxy_request_id: u64,
+    body: Option<&PoolReplayBodySnapshot>,
+    original_uri: &Uri,
+    method: &Method,
+    content_encoding: Option<&str>,
+    fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    image_tool_rewrite_mode: crate::ImageToolRewriteMode,
+    codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode,
+    codex_imagegen_protocol: Option<CodexImagegenProtocol>,
+    projected_request_info: Option<&RequestCaptureInfo>,
+    projected_hosted_image_intent: Option<ImageIntent>,
+    model_mapping: Option<&ResolvedModelMapping>,
+    oauth_account_id: Option<i64>,
+    oauth_installation_seed: Option<&[u8; 32]>,
+) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
     let capture_target = capture_target_for_request(original_uri.path(), method);
     let default_image_intent = match capture_target {
         Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
@@ -1260,53 +1304,11 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 .target_model
                 .eq_ignore_ascii_case(RESERVE_WIRE_MODEL)
         });
-    let reserve_large_body = reserve_body_mapping
-        && decoded_original_bytes.len() > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES;
-    let reserve_large_body_wants_stream = reserve_large_body.then(|| {
-        value
-            .get("stream")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    });
-    let reserve_large_body_rewrite = if reserve_large_body {
-        value.as_object_mut().and_then(|object| {
-            // Reserve Responses rejects these fields; pre-rewrite them before file-backed
-            // snapshots bypass the OAuth JSON rewrite in oauth_bridge.
-            let mut reserve_rewrite = crate::oauth_bridge::OauthResponsesRewriteSummary::default();
-            if !object.contains_key("instructions") {
-                object.insert("instructions".to_string(), Value::String(String::new()));
-                reserve_rewrite.added_instructions = true;
-            }
-            if !object.contains_key("store") {
-                object.insert("store".to_string(), Value::Bool(false));
-                reserve_rewrite.added_store = true;
-            }
-            reserve_rewrite.forced_stream_true =
-                object.get("stream").and_then(Value::as_bool) != Some(true);
-            object.insert("stream".to_string(), Value::Bool(true));
-            crate::oauth_bridge::remove_reserve_unsupported_response_fields(
-                object,
-                &mut reserve_rewrite,
-            );
-            reserve_rewrite.applied = reserve_rewrite.removed_max_output_tokens
-                || reserve_rewrite.added_instructions
-                || reserve_rewrite.added_store
-                || reserve_rewrite.forced_stream_true
-                || reserve_rewrite.removed_previous_response_id
-                || reserve_rewrite.removed_reasoning_summary_none;
-            reserve_rewrite.applied.then_some(reserve_rewrite)
-        })
+    let service_tier_rewritten = if target.allows_fast_mode_rewrite() {
+        rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
     } else {
-        None
+        false
     };
-    let reserve_large_body_fields_rewritten = reserve_large_body_rewrite.is_some();
-    let rewritten = model_mapping_rewritten
-        || reserve_large_body_fields_rewritten
-        || (if target.allows_fast_mode_rewrite() {
-            rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
-        } else {
-            false
-        });
     let original_image_intent = infer_image_intent_from_request_body(target, &value);
     let (codex_image_rewritten, codex_imagegen_rewrite) = if let Some(protocol) =
         codex_imagegen_protocol
@@ -1337,6 +1339,44 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     } else {
         false
     };
+    let reserve_large_body = if reserve_body_mapping {
+        let mut candidate = value.clone();
+        rewrite_large_reserve_response_body(
+            &mut candidate,
+            oauth_account_id,
+            oauth_installation_seed,
+        );
+        serde_json::to_vec(&candidate)
+            .map_err(|err| {
+                PoolRequestBodyPreparationError::bad_gateway(format!(
+                    "failed to size rewritten Reserve request body: {err}"
+                ))
+            })?
+            .len()
+            > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
+    } else {
+        false
+    };
+    let reserve_large_body_wants_stream = reserve_large_body.then(|| {
+        value
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    let reserve_large_body_rewrite = reserve_large_body
+        .then(|| {
+            rewrite_large_reserve_response_body(
+                &mut value,
+                oauth_account_id,
+                oauth_installation_seed,
+            )
+        })
+        .flatten();
+    let rewritten = model_mapping_rewritten
+        || service_tier_rewritten
+        || reserve_large_body_rewrite.is_some()
+        || image_rewritten
+        || codex_image_rewritten;
     let requested_service_tier = extract_requested_service_tier_from_request_body(&value);
     let upstream_image_intent = infer_image_intent_from_request_body(target, &value);
     let upstream_hosted_image_intent = infer_hosted_image_intent_from_request_body(target, &value);
@@ -1376,10 +1416,53 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         requested_hosted_image_intent: upstream_hosted_image_intent,
         codex_imagegen_rewrite,
         oauth_responses_rewrite: reserve_large_body_rewrite,
-        oauth_responses_source_encoding: reserve_body_mapping.then_some(downstream_encoding),
+        oauth_responses_source_encoding: matches!(
+            target,
+            ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+        )
+        .then_some(downstream_encoding),
         oauth_responses_wants_stream: reserve_large_body_wants_stream,
         snapshot_is_decoded: true,
     })
+}
+
+fn rewrite_large_reserve_response_body(
+    value: &mut Value,
+    oauth_account_id: Option<i64>,
+    oauth_installation_seed: Option<&[u8; 32]>,
+) -> Option<crate::oauth_bridge::OauthResponsesRewriteSummary> {
+    let object = value.as_object_mut()?;
+    // Reserve Responses rejects these fields; pre-rewrite them before file-backed snapshots
+    // bypass the OAuth JSON rewrite in oauth_bridge.
+    let mut reserve_rewrite = crate::oauth_bridge::OauthResponsesRewriteSummary::default();
+    if !object.contains_key("instructions") {
+        object.insert("instructions".to_string(), Value::String(String::new()));
+        reserve_rewrite.added_instructions = true;
+    }
+    if object.get("store").and_then(Value::as_bool) != Some(false) {
+        object.insert("store".to_string(), Value::Bool(false));
+        reserve_rewrite.added_store = true;
+    }
+    reserve_rewrite.forced_stream_true =
+        object.get("stream").and_then(Value::as_bool) != Some(true);
+    object.insert("stream".to_string(), Value::Bool(true));
+    crate::oauth_bridge::remove_reserve_unsupported_response_fields(object, &mut reserve_rewrite);
+    let installation_id_rewrite = crate::oauth_bridge::rewrite_client_metadata_installation_id(
+        object,
+        oauth_account_id,
+        oauth_installation_seed,
+    );
+    reserve_rewrite.rewrote_installation_id = installation_id_rewrite.rewrote_installation_id;
+    reserve_rewrite.removed_installation_id = installation_id_rewrite.removed_installation_id;
+    reserve_rewrite.applied = reserve_rewrite.removed_max_output_tokens
+        || reserve_rewrite.added_instructions
+        || reserve_rewrite.added_store
+        || reserve_rewrite.forced_stream_true
+        || reserve_rewrite.removed_previous_response_id
+        || reserve_rewrite.removed_reasoning_summary_none
+        || reserve_rewrite.rewrote_installation_id
+        || reserve_rewrite.removed_installation_id;
+    reserve_rewrite.applied.then_some(reserve_rewrite)
 }
 
 pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
@@ -1414,9 +1497,29 @@ mod tests {
             Some("gzip"),
             RequestCompressionAlgorithm::Zstd,
             1024,
+            false,
         )
         .await
         .expect_err("oversized decoded body should be rejected before streaming");
+        assert_eq!(error.status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn oauth_transcode_validation_rejects_oversized_decoded_snapshot() {
+        let snapshot = PoolReplayBodySnapshot::Memory(Bytes::from(vec![
+            b'x';
+            OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
+                + 1
+        ]));
+        let error = validate_pool_request_snapshot_transcode(
+            &snapshot,
+            None,
+            RequestCompressionAlgorithm::Follow,
+            OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES,
+            true,
+        )
+        .await
+        .expect_err("decoded rewritten body should respect the request limit");
         assert_eq!(error.status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
@@ -1464,9 +1567,11 @@ mod tests {
         let body = serde_json::to_vec(&serde_json::json!({
             "model": "gpt-5.4-luna",
             "input": "x".repeat(OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1),
+            "store": true,
             "max_output_tokens": 256,
             "previous_response_id": "resp_prev_001",
-            "reasoning": {"summary": "none", "effort": "medium"}
+            "reasoning": {"summary": "none", "effort": "medium"},
+            "client_metadata": {"x-codex-installation-id": "downstream-installation-id"}
         }))
         .expect("serialize large reserve request");
         assert!(body.len() > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES);
@@ -1483,7 +1588,7 @@ mod tests {
             target_model: RESERVE_WIRE_MODEL.to_string(),
         };
 
-        let prepared = prepare_pool_request_body_for_account(
+        let prepared = prepare_pool_request_body_for_account_with_oauth_context(
             903,
             Some(&snapshot),
             &Uri::from_static("/v1/responses"),
@@ -1496,6 +1601,8 @@ mod tests {
             None,
             None,
             Some(&mapping),
+            Some(903),
+            Some(&[0x44_u8; 32]),
         )
         .await
         .expect("rewrite large reserve request");
@@ -1513,6 +1620,16 @@ mod tests {
         assert!(rewritten.get("previous_response_id").is_none());
         assert!(rewritten["reasoning"].get("summary").is_none());
         assert_eq!(rewritten["reasoning"]["effort"], "medium");
+        assert_ne!(
+            rewritten["client_metadata"]["x-codex-installation-id"],
+            "downstream-installation-id"
+        );
+        assert_eq!(
+            rewritten["client_metadata"]["x-codex-installation-id"]
+                .as_str()
+                .map(str::len),
+            Some(36)
+        );
         assert_eq!(
             prepared.oauth_responses_source_encoding,
             Some(RequestBodyContentEncoding::Gzip)
@@ -1525,5 +1642,58 @@ mod tests {
         assert!(rewrite.removed_previous_response_id);
         assert!(rewrite.removed_reasoning_summary_none);
         assert_eq!(prepared.oauth_responses_wants_stream, Some(false));
+    }
+
+    #[tokio::test]
+    async fn reserve_rewrite_uses_final_body_size_for_large_request_boundary() {
+        let base = serde_json::json!({
+            "model": "gpt-5.4-luna",
+            "stream": false,
+            "input": ""
+        });
+        let base_len = serde_json::to_vec(&base)
+            .expect("serialize boundary base")
+            .len();
+        let input_len = OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES - base_len - 1;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "model": "gpt-5.4-luna",
+            "stream": false,
+            "input": "x".repeat(input_len)
+        }))
+        .expect("serialize boundary request");
+        assert!(body.len() <= OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES);
+        let snapshot = PoolReplayBodySnapshot::Memory(Bytes::from(body));
+        let mapping = ResolvedModelMapping {
+            source_model: "gpt-5.4-luna".to_string(),
+            target_model: RESERVE_WIRE_MODEL.to_string(),
+        };
+
+        let prepared = prepare_pool_request_body_for_account(
+            904,
+            Some(&snapshot),
+            &Uri::from_static("/v1/responses"),
+            &Method::POST,
+            None,
+            TagFastModeRewriteMode::KeepOriginal,
+            crate::ImageToolRewriteMode::KeepOriginal,
+            crate::CodexImagegenRewriteMode::KeepOriginal,
+            None,
+            None,
+            None,
+            Some(&mapping),
+        )
+        .await
+        .expect("rewrite boundary Reserve request");
+        let rewritten = prepared
+            .snapshot
+            .to_bytes()
+            .await
+            .expect("read boundary Reserve request");
+        assert!(rewritten.len() > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES);
+        let rewritten: Value =
+            serde_json::from_slice(&rewritten).expect("decode boundary Reserve request");
+        assert_eq!(rewritten["store"], false);
+        assert_eq!(rewritten["stream"], true);
+        assert!(prepared.oauth_responses_rewrite.is_some());
     }
 }
