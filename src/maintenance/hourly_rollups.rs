@@ -95,6 +95,7 @@ pub(crate) use hourly_rollup_archive_support::*;
 pub(crate) fn build_health_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/health", get(health_check))
+        .route("/health/analytics", get(analytics_health_check))
         .route("/api/version", get(get_versions))
 }
 
@@ -462,7 +463,9 @@ async fn startup_readiness_gate(
     request: Request<Body>,
     next: axum::middleware::Next,
 ) -> Response {
-    if request.uri().path() != "/health" && !state.startup_ready.load(Ordering::Acquire) {
+    if !matches!(request.uri().path(), "/health" | "/health/analytics")
+        && !state.startup_ready.load(Ordering::Acquire)
+    {
         return (StatusCode::SERVICE_UNAVAILABLE, "starting").into_response();
     }
     next.run(request).await

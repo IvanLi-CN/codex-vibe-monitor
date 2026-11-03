@@ -29,6 +29,33 @@ pub(crate) async fn health_check(State(state): State<Arc<AppState>>) -> impl Int
     }
 }
 
+pub(crate) async fn analytics_health_check(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let status = state.pg_analytics.status();
+    let ready = matches!(
+        status.availability,
+        AnalyticsAvailability::Ready | AnalyticsAvailability::Disabled
+    );
+    let body = serde_json::json!({
+        "status": if ready { "ready" } else { "unavailable" },
+        "backend": status.backend.as_str(),
+        "code": if ready {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!("analytics_backend_unavailable")
+        },
+    });
+    (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(body),
+    )
+}
+
 #[cfg(test)]
 pub(crate) async fn proxy_openai_v1(
     State(state): State<Arc<AppState>>,
