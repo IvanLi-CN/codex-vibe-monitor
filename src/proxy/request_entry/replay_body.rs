@@ -1239,7 +1239,28 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     } else {
         false
     };
+    let reserve_large_body_fields_rewritten = target == ProxyCaptureTarget::Responses
+        && decoded_original_bytes.len() > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
+        && model_mapping.is_some_and(|mapping| {
+            mapping
+                .target_model
+                .eq_ignore_ascii_case(RESERVE_WIRE_MODEL)
+        })
+        && value.as_object_mut().is_some_and(|object| {
+            // CPA's Reserve Responses path rejects these fields; large bodies bypass the
+            // OAuth JSON rewrite in oauth_bridge.
+            let mut reserve_rewrite = crate::oauth_bridge::OauthResponsesRewriteSummary::default();
+            crate::oauth_bridge::remove_reserve_unsupported_response_fields(
+                object,
+                &mut reserve_rewrite,
+            );
+            reserve_rewrite.applied = reserve_rewrite.removed_max_output_tokens
+                || reserve_rewrite.removed_previous_response_id
+                || reserve_rewrite.removed_reasoning_summary_none;
+            reserve_rewrite.applied
+        });
     let rewritten = model_mapping_rewritten
+        || reserve_large_body_fields_rewritten
         || (if target.allows_fast_mode_rewrite() {
             rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
         } else {
@@ -1389,5 +1410,54 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).expect("decode rewritten request");
         assert_eq!(body["model"], RESERVE_WIRE_MODEL);
         assert_eq!(mapping.source_model, "gpt-5.4-luna");
+    }
+
+    #[tokio::test]
+    async fn reserve_large_request_rewrite_removes_unsupported_response_fields() {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "model": "gpt-5.4-luna",
+            "input": "x".repeat(OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1),
+            "max_output_tokens": 256,
+            "previous_response_id": "resp_prev_001",
+            "reasoning": {"summary": "none", "effort": "medium"}
+        }))
+        .expect("serialize large reserve request");
+        assert!(body.len() > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES);
+        let snapshot = pool_replay_snapshot_from_bytes(903, Bytes::from(body))
+            .await
+            .expect("create large replay snapshot");
+        assert!(matches!(snapshot, PoolReplayBodySnapshot::File { .. }));
+        let mapping = ResolvedModelMapping {
+            source_model: "gpt-5.4-luna".to_string(),
+            target_model: RESERVE_WIRE_MODEL.to_string(),
+        };
+
+        let prepared = prepare_pool_request_body_for_account(
+            903,
+            Some(&snapshot),
+            &Uri::from_static("/v1/responses"),
+            &Method::POST,
+            None,
+            TagFastModeRewriteMode::KeepOriginal,
+            crate::ImageToolRewriteMode::KeepOriginal,
+            crate::CodexImagegenRewriteMode::KeepOriginal,
+            None,
+            None,
+            None,
+            Some(&mapping),
+        )
+        .await
+        .expect("rewrite large reserve request");
+        let rewritten = prepared
+            .snapshot
+            .to_bytes()
+            .await
+            .expect("read rewritten large request");
+        let rewritten: Value = serde_json::from_slice(&rewritten).expect("decode large request");
+        assert_eq!(rewritten["model"], RESERVE_WIRE_MODEL);
+        assert!(rewritten.get("max_output_tokens").is_none());
+        assert!(rewritten.get("previous_response_id").is_none());
+        assert!(rewritten["reasoning"].get("summary").is_none());
+        assert_eq!(rewritten["reasoning"]["effort"], "medium");
     }
 }

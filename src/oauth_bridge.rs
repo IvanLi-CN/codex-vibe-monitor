@@ -206,6 +206,8 @@ pub(crate) struct OauthResponsesRewriteSummary {
     pub(crate) added_store: bool,
     pub(crate) forced_stream_true: bool,
     pub(crate) removed_max_output_tokens: bool,
+    pub(crate) removed_previous_response_id: bool,
+    pub(crate) removed_reasoning_summary_none: bool,
     pub(crate) rewrote_installation_id: bool,
     pub(crate) removed_installation_id: bool,
 }
@@ -351,6 +353,7 @@ async fn prepare_oauth_bytes(
     request_compression_algorithm: RequestCompressionAlgorithm,
     request_compression_level_preset: RequestCompressionLevelPreset,
     rewrite_responses: bool,
+    reserve_request: bool,
     account_id: Option<i64>,
     installation_seed: Option<&[u8; 32]>,
 ) -> Result<
@@ -367,8 +370,13 @@ async fn prepare_oauth_bytes(
     let source_encoding = oauth_source_request_encoding(Some(bytes.as_ref()), headers)?;
     let decoded = decode_oauth_bytes(bytes, source_encoding).await?;
     let (decoded, rewrite, wants_stream) = if rewrite_responses {
-        let prepared = prepare_responses_request_body(&decoded, account_id, installation_seed)
-            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+        let prepared = prepare_responses_request_body(
+            &decoded,
+            account_id,
+            installation_seed,
+            reserve_request,
+        )
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
         (
             Bytes::from(prepared.body),
             prepared.rewrite,
@@ -571,6 +579,7 @@ pub(crate) async fn send_counted_oauth_upstream_request(
         crypto_key,
         RequestCompressionAlgorithm::Identity,
         RequestCompressionLevelPreset::Balanced,
+        false,
         forward_proxy_url,
         reporter,
     )
@@ -591,6 +600,7 @@ pub(crate) async fn send_counted_oauth_upstream_request_with_compression(
     crypto_key: Option<&[u8; 32]>,
     request_compression_algorithm: RequestCompressionAlgorithm,
     request_compression_level_preset: RequestCompressionLevelPreset,
+    reserve_request: bool,
     forward_proxy_url: Option<&Url>,
     reporter: Option<crate::proxy::UpstreamTrafficReporter>,
 ) -> OauthUpstreamResponse {
@@ -619,6 +629,7 @@ pub(crate) async fn send_counted_oauth_upstream_request_with_compression(
                 crypto_key,
                 request_compression_algorithm,
                 request_compression_level_preset,
+                reserve_request,
                 forward_proxy_url,
                 reporter,
             )
@@ -768,6 +779,7 @@ async fn counted_oauth_responses(
     crypto_key: Option<&[u8; 32]>,
     request_compression_algorithm: RequestCompressionAlgorithm,
     request_compression_level_preset: RequestCompressionLevelPreset,
+    reserve_request: bool,
     forward_proxy_url: Option<&Url>,
     reporter: Option<crate::proxy::UpstreamTrafficReporter>,
 ) -> OauthUpstreamResponse {
@@ -802,6 +814,7 @@ async fn counted_oauth_responses(
                     request_compression_algorithm,
                     request_compression_level_preset,
                     true,
+                    reserve_request,
                     account_id,
                     installation_seed,
                 )
@@ -843,6 +856,7 @@ async fn counted_oauth_responses(
                     request_compression_algorithm,
                     request_compression_level_preset,
                     true,
+                    reserve_request,
                     account_id,
                     installation_seed,
                 )
@@ -1117,6 +1131,7 @@ async fn counted_oauth_passthrough(
                 headers,
                 request_compression_algorithm,
                 request_compression_level_preset,
+                false,
                 false,
                 account_id,
                 None,
@@ -1544,20 +1559,20 @@ async fn oauth_responses(
     );
     let (request, request_debug, wants_stream) = match body {
         OauthUpstreamRequestBody::Empty => {
-            let prepared = match prepare_responses_request_body(&[], account_id, installation_seed)
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    return OauthUpstreamResponse {
-                        response: error_response(
-                            StatusCode::BAD_REQUEST,
-                            &err.to_string(),
-                            "invalid_request_error",
-                        ),
-                        request_debug: None,
-                    };
-                }
-            };
+            let prepared =
+                match prepare_responses_request_body(&[], account_id, installation_seed, false) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(
+                                StatusCode::BAD_REQUEST,
+                                &err.to_string(),
+                                "invalid_request_error",
+                            ),
+                            request_debug: None,
+                        };
+                    }
+                };
             let request_debug = build_oauth_request_debug(
                 "/v1/responses",
                 &forwarded_headers,
@@ -1574,20 +1589,24 @@ async fn oauth_responses(
             )
         }
         OauthUpstreamRequestBody::Bytes(bytes) => {
-            let prepared =
-                match prepare_responses_request_body(&bytes, account_id, installation_seed) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return OauthUpstreamResponse {
-                            response: error_response(
-                                StatusCode::BAD_REQUEST,
-                                &err.to_string(),
-                                "invalid_request_error",
-                            ),
-                            request_debug: None,
-                        };
-                    }
-                };
+            let prepared = match prepare_responses_request_body(
+                &bytes,
+                account_id,
+                installation_seed,
+                false,
+            ) {
+                Ok(value) => value,
+                Err(err) => {
+                    return OauthUpstreamResponse {
+                        response: error_response(
+                            StatusCode::BAD_REQUEST,
+                            &err.to_string(),
+                            "invalid_request_error",
+                        ),
+                        request_debug: None,
+                    };
+                }
+            };
             let request_debug = build_oauth_request_debug(
                 "/v1/responses",
                 &forwarded_headers,
@@ -1647,6 +1666,8 @@ async fn oauth_responses(
         rewrite_added_store = request_debug.rewrite.added_store,
         rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true,
         rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens,
+        rewrite_removed_previous_response_id = request_debug.rewrite.removed_previous_response_id,
+        rewrite_removed_reasoning_summary_none = request_debug.rewrite.removed_reasoning_summary_none,
         rewrite_rewrote_installation_id = request_debug.rewrite.rewrote_installation_id,
         rewrite_removed_installation_id = request_debug.rewrite.removed_installation_id,
         "forwarding oauth responses request"
@@ -1865,6 +1886,8 @@ async fn oauth_passthrough(
         rewrite_added_store = request_debug.rewrite.added_store,
         rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true,
         rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens,
+        rewrite_removed_previous_response_id = request_debug.rewrite.removed_previous_response_id,
+        rewrite_removed_reasoning_summary_none = request_debug.rewrite.removed_reasoning_summary_none,
         rewrite_rewrote_installation_id = request_debug.rewrite.rewrote_installation_id,
         rewrite_removed_installation_id = request_debug.rewrite.removed_installation_id,
         "forwarding oauth passthrough request"
@@ -2205,6 +2228,7 @@ fn prepare_responses_request_body(
     body: &[u8],
     account_id: Option<i64>,
     installation_seed: Option<&[u8; 32]>,
+    reserve_request: bool,
 ) -> Result<PreparedResponsesRequestBody> {
     let mut value: Value =
         serde_json::from_slice(body).context("request body must be valid JSON")?;
@@ -2223,7 +2247,11 @@ fn prepare_responses_request_body(
     }
     rewrite.forced_stream_true = map.get("stream").and_then(Value::as_bool) != Some(true);
     map.insert("stream".to_string(), Value::Bool(true));
-    rewrite.removed_max_output_tokens = map.remove("max_output_tokens").is_some();
+    if reserve_request {
+        remove_reserve_unsupported_response_fields(map, &mut rewrite);
+    } else {
+        rewrite.removed_max_output_tokens = map.remove("max_output_tokens").is_some();
+    }
     let installation_id_rewrite =
         rewrite_client_metadata_installation_id(map, account_id, installation_seed);
     rewrite.rewrote_installation_id = installation_id_rewrite.rewrote_installation_id;
@@ -2232,6 +2260,8 @@ fn prepare_responses_request_body(
         || rewrite.added_store
         || rewrite.forced_stream_true
         || rewrite.removed_max_output_tokens
+        || rewrite.removed_previous_response_id
+        || rewrite.removed_reasoning_summary_none
         || rewrite.rewrote_installation_id
         || rewrite.removed_installation_id;
     Ok(PreparedResponsesRequestBody {
@@ -2239,6 +2269,23 @@ fn prepare_responses_request_body(
         body: serde_json::to_vec(&value)?,
         rewrite,
     })
+}
+
+pub(crate) fn remove_reserve_unsupported_response_fields(
+    map: &mut serde_json::Map<String, Value>,
+    rewrite: &mut OauthResponsesRewriteSummary,
+) {
+    rewrite.removed_max_output_tokens |= map.remove("max_output_tokens").is_some();
+    rewrite.removed_previous_response_id |= map.remove("previous_response_id").is_some();
+    let removed_reasoning_summary_none = map
+        .get_mut("reasoning")
+        .and_then(Value::as_object_mut)
+        .and_then(|reasoning| {
+            (reasoning.get("summary").and_then(Value::as_str) == Some("none"))
+                .then(|| reasoning.remove("summary").is_some())
+        })
+        .unwrap_or(false);
+    rewrite.removed_reasoning_summary_none |= removed_reasoning_summary_none;
 }
 
 fn rewrite_client_metadata_installation_id(

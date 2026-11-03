@@ -1723,6 +1723,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                             context.state.upstream_accounts.crypto_key.as_ref(),
                             context.account.oauth_request_compression_algorithm,
                             context.request_compression_level_preset,
+                            *context.quota_route == PoolQuotaRoute::Reserve,
                             selected_proxy.endpoint_url.as_ref(),
                             live_reporter,
                         )

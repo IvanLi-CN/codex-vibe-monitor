@@ -146,9 +146,9 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
             removed_max_output_tokens: true,
             rewrote_installation_id: true,
             removed_installation_id: false,
+            ..Default::default()
         }
     );
-
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }

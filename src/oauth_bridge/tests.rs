@@ -26,6 +26,7 @@ async fn oauth_request_compression_decodes_input_rewrites_then_encodes_zstd() {
         RequestCompressionAlgorithm::Zstd,
         RequestCompressionLevelPreset::Balanced,
         true,
+        false,
         None,
         None,
     )
@@ -61,6 +62,7 @@ async fn oauth_request_compression_rejects_oversized_decoded_buffered_body() {
         &headers,
         RequestCompressionAlgorithm::Zstd,
         RequestCompressionLevelPreset::Balanced,
+        false,
         false,
         None,
         None,
@@ -295,6 +297,7 @@ async fn counted_oauth_passthrough_sets_zstd_encoding_and_content_length() {
         None,
         RequestCompressionAlgorithm::Zstd,
         RequestCompressionLevelPreset::Balanced,
+        false,
         None,
         None,
     )
@@ -335,9 +338,10 @@ fn attach_account_header_skips_blank_account_ids() {
 #[test]
 fn prepare_responses_request_body_preserves_previous_response_id() {
     let prepared = prepare_responses_request_body(
-            br#"{"model":"gpt-5.4","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001"}"#,
+            br#"{"model":"gpt-5.4","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001","reasoning":{"summary":"none"}}"#,
             None,
             None,
+            false,
         )
         .expect("rewrite responses request");
 
@@ -348,6 +352,7 @@ fn prepare_responses_request_body_preserves_previous_response_id() {
     assert_eq!(payload["store"], false);
     assert_eq!(payload["stream"], true);
     assert!(payload.get("max_output_tokens").is_none());
+    assert_eq!(payload["reasoning"]["summary"], "none");
     assert_eq!(
         prepared.rewrite,
         OauthResponsesRewriteSummary {
@@ -356,6 +361,39 @@ fn prepare_responses_request_body_preserves_previous_response_id() {
             added_store: true,
             forced_stream_true: true,
             removed_max_output_tokens: true,
+            removed_previous_response_id: false,
+            removed_reasoning_summary_none: false,
+            rewrote_installation_id: false,
+            removed_installation_id: false,
+        }
+    );
+}
+
+#[test]
+fn prepare_responses_request_body_removes_reserve_unsupported_fields() {
+    let prepared = prepare_responses_request_body(
+        br#"{"model":"gpt-reserve","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001","reasoning":{"summary":"none","effort":"medium"}}"#,
+        None,
+        None,
+        true,
+    )
+    .expect("rewrite Reserve responses request");
+
+    let payload: Value = serde_json::from_slice(&prepared.body).expect("decode rewritten body");
+    assert!(payload.get("max_output_tokens").is_none());
+    assert!(payload.get("previous_response_id").is_none());
+    assert!(payload["reasoning"].get("summary").is_none());
+    assert_eq!(payload["reasoning"]["effort"], "medium");
+    assert_eq!(
+        prepared.rewrite,
+        OauthResponsesRewriteSummary {
+            applied: true,
+            added_instructions: true,
+            added_store: true,
+            forced_stream_true: true,
+            removed_max_output_tokens: true,
+            removed_previous_response_id: true,
+            removed_reasoning_summary_none: true,
             rewrote_installation_id: false,
             removed_installation_id: false,
         }
@@ -396,6 +434,7 @@ fn prepare_responses_request_body_rewrites_installation_id_when_account_id_prese
             }"#,
         Some(7),
         Some(&seed),
+        false,
     )
     .expect("rewrite responses request");
 
@@ -413,6 +452,8 @@ fn prepare_responses_request_body_rewrites_installation_id_when_account_id_prese
             added_store: true,
             forced_stream_true: true,
             removed_max_output_tokens: true,
+            removed_previous_response_id: false,
+            removed_reasoning_summary_none: false,
             rewrote_installation_id: true,
             removed_installation_id: false,
         }
@@ -435,6 +476,7 @@ fn prepare_responses_request_body_strips_installation_id_without_account_id() {
             }"#,
         None,
         Some(&seed),
+        false,
     )
     .expect("rewrite responses request");
 
@@ -453,6 +495,8 @@ fn prepare_responses_request_body_strips_installation_id_without_account_id() {
             added_store: false,
             forced_stream_true: false,
             removed_max_output_tokens: false,
+            removed_previous_response_id: false,
+            removed_reasoning_summary_none: false,
             rewrote_installation_id: false,
             removed_installation_id: true,
         }
