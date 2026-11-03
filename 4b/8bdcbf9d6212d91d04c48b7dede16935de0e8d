@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.17.0",
+  "base_stable_version": "4.16.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-03T03:46:30Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.17.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "57ee8430beb8c7497ced877991fa246f20d7deb1",
+  "pr_number": 1274,
+  "pr_title": "chore(analytics): integrate PG18 parent with main",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.17.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.17.0",
+  "target_sha": "4b8bdcbf9d6212d91d04c48b7dede16935de0e8d",
+  "type_label": "type:minor"
+}
