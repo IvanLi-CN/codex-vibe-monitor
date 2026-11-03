@@ -569,6 +569,7 @@ pub(crate) async fn request_usage_snapshot_with_user_agent(
 ) -> Result<NormalizedUsageSnapshot> {
     let url = build_usage_endpoint_url(&config.upstream_accounts_usage_base_url)
         .context("failed to build usage endpoint")?;
+    let usage_endpoint = url.path().to_string();
     let mut request = client
         .get(url)
         .bearer_auth(access_token)
@@ -599,7 +600,115 @@ pub(crate) async fn request_usage_snapshot_with_user_agent(
     }
     let value: Value =
         serde_json::from_str(&body).context("failed to decode usage snapshot JSON")?;
-    normalize_usage_snapshot(&value)
+    let snapshot = normalize_usage_snapshot(&value)?;
+    let shape = summarize_reserve_usage_payload(&value);
+    let reserve = snapshot.reserve.as_ref();
+    let reserve_status = reserve
+        .map(|value| value.availability.as_str())
+        .unwrap_or("missing");
+    let normal_quota_exhausted = snapshot
+        .primary
+        .as_ref()
+        .is_some_and(|window| window.used_percent >= 100.0)
+        || snapshot
+            .secondary
+            .as_ref()
+            .is_some_and(|window| window.used_percent >= 100.0);
+    if normal_quota_exhausted && reserve_status != RESERVE_AVAILABILITY_AVAILABLE {
+        warn!(
+            usage_endpoint = %usage_endpoint,
+            additional_rate_limits_field = shape.field,
+            additional_rate_limits_shape = shape.shape,
+            additional_rate_limits_entry_count = shape.entry_count,
+            additional_rate_limits_names = %shape.names,
+            reserve_entry_found = shape.reserve_entry_found,
+            reserve_snapshot = reserve_status,
+            reserve_allowed = ?reserve.and_then(|value| value.allowed),
+            reserve_limit_reached = ?reserve.and_then(|value| value.limit_reached),
+            reserve_banner_type = ?reserve_upsell_banner_type(&value),
+            "oauth usage snapshot has exhausted normal quota but no usable reserve observation"
+        );
+    }
+    Ok(snapshot)
+}
+
+#[derive(Debug)]
+struct ReserveUsagePayloadShape {
+    field: &'static str,
+    shape: &'static str,
+    entry_count: usize,
+    names: String,
+    reserve_entry_found: bool,
+}
+
+fn summarize_reserve_usage_payload(value: &Value) -> ReserveUsagePayloadShape {
+    let Some((field, additional)) = [
+        (
+            "additional_rate_limits",
+            value.get("additional_rate_limits"),
+        ),
+        ("additionalRateLimits", value.get("additionalRateLimits")),
+    ]
+    .into_iter()
+    .find_map(|(field, value)| value.map(|value| (field, value))) else {
+        return ReserveUsagePayloadShape {
+            field: "missing",
+            shape: "missing",
+            entry_count: 0,
+            names: String::new(),
+            reserve_entry_found: false,
+        };
+    };
+
+    let (shape, entries): (&str, Vec<(Option<String>, &Value)>) = match additional {
+        Value::Array(values) => ("array", values.iter().map(|value| (None, value)).collect()),
+        Value::Object(values)
+            if values.contains_key("limit_name")
+                || values.contains_key("limitName")
+                || values.contains_key("rate_limit")
+                || values.contains_key("rateLimit") =>
+        {
+            ("object_entry", vec![(None, additional)])
+        }
+        Value::Object(values) => (
+            "object_map",
+            values
+                .iter()
+                .map(|(key, value)| (Some(key.clone()), value))
+                .collect(),
+        ),
+        _ => ("other", Vec::new()),
+    };
+    let names = entries
+        .iter()
+        .map(|(key_hint, entry)| {
+            entry
+                .get("limit_name")
+                .or_else(|| entry.get("limitName"))
+                .and_then(value_as_string)
+                .or_else(|| key_hint.clone())
+                .unwrap_or_else(|| "<unnamed>".to_string())
+        })
+        .collect::<Vec<_>>();
+    let names_for_log = names.iter().take(8).cloned().collect::<Vec<_>>();
+
+    ReserveUsagePayloadShape {
+        field,
+        shape,
+        entry_count: entries.len(),
+        reserve_entry_found: names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(RESERVE_WIRE_MODEL)),
+        names: names_for_log.join(","),
+    }
+}
+
+fn reserve_upsell_banner_type(value: &Value) -> Option<String> {
+    value
+        .get("rate_limit_upsell")
+        .or_else(|| value.get("rateLimitUpsell"))
+        .and_then(|value| value.get("banner_type").or_else(|| value.get("bannerType")))
+        .and_then(value_as_string)
 }
 
 pub(crate) fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageSnapshot> {
@@ -2063,6 +2172,47 @@ pub(crate) fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
             "The OAuth callback could not be completed. Check server logs for details.",
         ),
     )
+}
+
+#[cfg(test)]
+mod reserve_usage_payload_shape_tests {
+    use super::*;
+
+    #[test]
+    fn missing_additional_limits_are_reported_without_payload_values() {
+        let shape = summarize_reserve_usage_payload(&serde_json::json!({
+            "rate_limit_upsell": {"banner_type": "luna_reserve"}
+        }));
+
+        assert_eq!(shape.field, "missing");
+        assert_eq!(shape.shape, "missing");
+        assert_eq!(shape.entry_count, 0);
+        assert!(shape.names.is_empty());
+        assert!(!shape.reserve_entry_found);
+        assert_eq!(
+            reserve_upsell_banner_type(&serde_json::json!({
+                "rate_limit_upsell": {"banner_type": "luna_reserve"}
+            }))
+            .as_deref(),
+            Some("luna_reserve")
+        );
+    }
+
+    #[test]
+    fn additional_limit_names_identify_the_reserve_candidate() {
+        let shape = summarize_reserve_usage_payload(&serde_json::json!({
+            "additional_rate_limits": [
+                {"limit_name": "codex_other"},
+                {"limit_name": "gpt-reserve"}
+            ]
+        }));
+
+        assert_eq!(shape.field, "additional_rate_limits");
+        assert_eq!(shape.shape, "array");
+        assert_eq!(shape.entry_count, 2);
+        assert_eq!(shape.names, "codex_other,gpt-reserve");
+        assert!(shape.reserve_entry_found);
+    }
 }
 
 #[cfg(test)]
