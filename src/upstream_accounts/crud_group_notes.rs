@@ -2434,7 +2434,84 @@ pub(crate) async fn get_upstream_account_model_routing(
     else {
         return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
     };
-    Ok(Json(detail.model_routing_states))
+    let states = complete_model_routing_state_set(&state.pool, id, &detail)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(states))
+}
+
+/// Return one row for every model that can participate in routing for an account.
+///
+/// A model catalog, an effective allow-list, and observed request models are
+/// independent sources.  The persisted route table only contains models that
+/// have already been observed, so catalog/policy-only models need an explicit
+/// `unknown` state until a real request establishes their availability.
+async fn complete_model_routing_state_set(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    detail: &UpstreamAccountDetail,
+) -> Result<Vec<ModelRoutingState>> {
+    let observed_models = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT request_model FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 AND request_model IS NOT NULL AND trim(request_model) != ''",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+    let models = model_routing_model_union(
+        &detail.model_catalog.models,
+        detail.summary.effective_routing_rule.available_models(),
+        &observed_models,
+    );
+
+    let generated_at = Utc::now().to_rfc3339();
+    let mut states = detail
+        .model_routing_states
+        .iter()
+        .cloned()
+        .map(|state| (state.model.clone(), state))
+        .collect::<BTreeMap<_, _>>();
+    for model in models {
+        states
+            .entry(model.clone())
+            .or_insert_with(|| ModelRoutingState {
+                model,
+                state: "unknown".to_string(),
+                priority: MODEL_ROUTE_PRIORITY_NORMAL.to_string(),
+                failure_count: 0,
+                changed_at: None,
+                last_seen_at: generated_at.clone(),
+                last_failure_at: None,
+                last_failure_kind: None,
+                last_failure_message: None,
+                cooldown_until: None,
+                cache_concurrency_limit: None,
+                cache_recovery_limit: None,
+                cache_low_hit_streak: 0,
+                cache_cooldown_level: 0,
+                cache_last_hit_rate_percent: None,
+                cache_usage_missing_since: None,
+                cache_usage_missing_reason: None,
+                probe_required: false,
+            });
+    }
+    Ok(states.into_values().collect())
+}
+
+pub(crate) fn model_routing_model_union(
+    catalog_models: &[String],
+    policy_models: Option<&[String]>,
+    observed_models: &[String],
+) -> std::collections::BTreeSet<String> {
+    let mut models = catalog_models
+        .iter()
+        .chain(policy_models.into_iter().flatten())
+        .chain(observed_models)
+        .map(|model| model.trim())
+        .filter(|model| !model.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    models.retain(|model| model.chars().count() <= 256);
+    models
 }
 
 pub(crate) async fn reset_upstream_account_model_routing(

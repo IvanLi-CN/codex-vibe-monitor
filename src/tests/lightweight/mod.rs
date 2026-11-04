@@ -12,6 +12,7 @@ mod forward_proxy_xhttp;
 mod invocation_timeline_maintenance;
 mod lightweight_test_support;
 mod model_route_scope;
+mod model_routing_api;
 mod models_dev_http_client;
 mod observability_lifecycles;
 mod performance_index_cli;
