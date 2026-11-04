@@ -1581,9 +1581,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.fields.message": "Message",
     "accountPool.upstreamAccounts.modelRouting.title": "Model routing health",
     "accountPool.upstreamAccounts.modelRouting.description":
-      "API key upstreams learn exact models from real traffic. Cooling models stay isolated from other candidates.",
+      "Models combine the upstream catalog, allowed policy models and real requests. A model failure stays isolated; a successful request restores it immediately.",
     "accountPool.upstreamAccounts.modelRouting.empty":
-      "No models have been observed in the last 7 days.",
+      "No catalog, allowed policy or observed models are available.",
     "accountPool.upstreamAccounts.modelRouting.state": "Route state",
     "accountPool.upstreamAccounts.modelRouting.priority": "Priority",
     "accountPool.upstreamAccounts.modelRouting.changedAt": "Changed",
@@ -1608,9 +1608,21 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
       "Model route unavailable",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "Last failure",
-    "accountPool.upstreamAccounts.modelRouting.reset": "Restore available",
+    "accountPool.upstreamAccounts.modelRouting.reset": "Restore routing",
     "accountPool.upstreamAccounts.modelRouting.resetting": "Restoring…",
     "accountPool.upstreamAccounts.modelRouting.states.available": "Available",
+    "accountPool.upstreamAccounts.modelRouting.states.verifying": "Verifying",
+    "accountPool.upstreamAccounts.modelRouting.states.model_rate_limited": "Model rate limited",
+    "accountPool.upstreamAccounts.modelRouting.states.account_rate_limited": "Account rate limited",
+    "accountPool.upstreamAccounts.modelRouting.states.unknown": "Unknown",
+    "accountPool.upstreamAccounts.modelRouting.filterModel": "Filter models",
+    "accountPool.upstreamAccounts.modelRouting.allStates": "All states",
+    "accountPool.upstreamAccounts.modelRouting.loading": "Loading model states…",
+    "accountPool.upstreamAccounts.modelRouting.noMatches": "No matching models.",
+    "accountPool.upstreamAccounts.modelRouting.quotaHint":
+      "Usage snapshots and Reserve describe account quota only; they do not determine individual model availability.",
+    "accountPool.upstreamAccounts.modelRouting.resetHint":
+      "Clear this model’s current block, cooldown and consecutive failures; keep history. Account limits remain in effect.",
     "accountPool.upstreamAccounts.modelRouting.states.degraded": "Degraded",
     "accountPool.upstreamAccounts.modelRouting.states.cooling_down": "Cooling down",
     "accountPool.upstreamAccounts.modelRouting.priorities.normal": "Normal",
@@ -5304,8 +5316,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.fields.message": "消息",
     "accountPool.upstreamAccounts.modelRouting.title": "模型路由健康",
     "accountPool.upstreamAccounts.modelRouting.description":
-      "API Key 上游仅根据真实流量记忆精确模型；冷却中的模型不会拖累其它模型候选。",
-    "accountPool.upstreamAccounts.modelRouting.empty": "近 7 天还没有真实调用发现的模型。",
+      "模型来自上游目录、策略允许模型与实际调用的并集。模型失败独立隔离，成功请求立即恢复。",
+    "accountPool.upstreamAccounts.modelRouting.empty": "暂无上游目录、策略允许或实际调用模型。",
     "accountPool.upstreamAccounts.modelRouting.state": "路由状态",
     "accountPool.upstreamAccounts.modelRouting.priority": "优先级",
     "accountPool.upstreamAccounts.modelRouting.changedAt": "变更时间",
@@ -5327,9 +5339,21 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
       "模型路由不可用",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "最近失败",
-    "accountPool.upstreamAccounts.modelRouting.reset": "恢复可用",
+    "accountPool.upstreamAccounts.modelRouting.reset": "恢复路由",
     "accountPool.upstreamAccounts.modelRouting.resetting": "恢复中…",
     "accountPool.upstreamAccounts.modelRouting.states.available": "可用",
+    "accountPool.upstreamAccounts.modelRouting.states.verifying": "验证中",
+    "accountPool.upstreamAccounts.modelRouting.states.model_rate_limited": "模型限流",
+    "accountPool.upstreamAccounts.modelRouting.states.account_rate_limited": "账号限流",
+    "accountPool.upstreamAccounts.modelRouting.states.unknown": "未知",
+    "accountPool.upstreamAccounts.modelRouting.filterModel": "筛选模型",
+    "accountPool.upstreamAccounts.modelRouting.allStates": "全部状态",
+    "accountPool.upstreamAccounts.modelRouting.loading": "正在加载模型状态…",
+    "accountPool.upstreamAccounts.modelRouting.noMatches": "没有匹配的模型。",
+    "accountPool.upstreamAccounts.modelRouting.quotaHint":
+      "额度快照与 Reserve 仅提示账号级额度，不代表单个模型的可用性。",
+    "accountPool.upstreamAccounts.modelRouting.resetHint":
+      "清除此模型当前阻断、冷却及连续失败，保留历史；账号级限制仍然生效。",
     "accountPool.upstreamAccounts.modelRouting.states.degraded": "降权",
     "accountPool.upstreamAccounts.modelRouting.states.cooling_down": "冷却中",
     "accountPool.upstreamAccounts.modelRouting.priorities.normal": "正常",

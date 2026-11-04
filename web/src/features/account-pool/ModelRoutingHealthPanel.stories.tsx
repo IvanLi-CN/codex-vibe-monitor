@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ComponentType, type ReactNode, useInsertionEffect } from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import type { ModelRoutingState } from "../../lib/api";
+import type { ModelRoutingState, UpstreamAccountSummary } from "../../lib/api";
 import { ModelRoutingHealthPanel } from "./ModelRoutingHealthPanel";
 
 const now = new Date("2026-07-24T08:00:00.000Z").toISOString();
@@ -52,6 +52,13 @@ const states: ModelRoutingState[] = [
     cacheRecoveryLimit: 4,
     cacheUsageMissingSince: now,
     cacheUsageMissingReason: "missing_cache_input_tokens",
+  },
+  {
+    model: "catalog-only",
+    state: "unknown",
+    priority: "normal",
+    failureCount: 0,
+    lastSeenAt: "unknown",
   },
 ];
 
@@ -119,10 +126,10 @@ const withModelRoutingHistoryFetchMock = (Story: ComponentType) => (
 );
 
 function assertCoolingRowLayout(canvasElement: HTMLElement, mobile: boolean) {
-  const coolingSummary = canvasElement.querySelectorAll("button[aria-expanded]")[2];
-  const coolingStatus = within(canvasElement).getByText("冷却中", { exact: true });
+  const coolingSummary = within(canvasElement).getByTestId("model-routing-summary-o4-mini");
+  const coolingStatus = within(canvasElement).getByText("模型限流", { exact: true });
   const coolingReset = within(canvasElement).getByRole("button", {
-    name: "恢复可用: o4-mini",
+    name: "恢复路由: o4-mini",
   });
   const coolingExpand = within(canvasElement).getAllByLabelText("展开模型路由历史")[2];
   expect(coolingSummary).toBeDefined();
@@ -164,7 +171,7 @@ function assertExpandButtonsAligned(canvasElement: HTMLElement) {
 async function assertMixedStates(canvasElement: HTMLElement, mobile: boolean) {
   const canvas = within(canvasElement);
   await expect(canvas.getByText("gpt-5.5", { exact: true })).toBeVisible();
-  await expect(canvas.queryByText("模型不可用", { exact: true })).not.toBeInTheDocument();
+  await expect(canvas.getByText(/模型不可用/)).toBeVisible();
   await expect(canvas.getAllByLabelText("展开模型路由历史")[0]).toBeVisible();
   await expect(canvas.getByTestId("model-routing-cache-usage-missing-o4-mini")).toBeVisible();
   assertCoolingRowLayout(canvasElement, mobile);
@@ -226,6 +233,8 @@ export const ExpandedHistory: Story = {
   },
 };
 
+export const Loading: Story = { args: { states: [], loading: true } };
+
 export const Empty: Story = {
   args: { states: [] },
 };
@@ -234,7 +243,7 @@ export const ResetCoolingModel: Story = {
   args: { states, writesEnabled: true, onReset: fn() },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    const reset = canvas.getByRole("button", { name: "恢复可用: o4-mini" });
+    const reset = canvas.getByRole("button", { name: "恢复路由: o4-mini" });
     await expect(reset).toBeVisible();
     await userEvent.click(reset);
     await expect(args.onReset).toHaveBeenCalledWith("o4-mini");
@@ -257,5 +266,19 @@ export const ErrorState: Story = {
       "bg-error/15",
       "tone-ink-error",
     );
+  },
+};
+
+export const AccountLimited: Story = {
+  args: { account: { workStatus: "rate_limited" } as UpstreamAccountSummary },
+};
+
+export const FilterUnknownModels: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "路由状态" }));
+    await userEvent.click(within(document.body).getByRole("option", { name: "未知" }));
+    await expect(canvas.getByText("catalog-only", { exact: true })).toBeVisible();
+    await expect(canvas.queryByText("gpt-5.5", { exact: true })).not.toBeInTheDocument();
   },
 };
