@@ -1,0 +1,19 @@
+{
+  "implementation_sha": "33838432766f1d9610f5c134a4e8268fa40b6f2f",
+  "source_type": "storybook_canvas",
+  "target_program": "mock-only",
+  "story_id": "account-pool-modelroutinghealthpanel--mixed-states",
+  "capture_scope": "element",
+  "requested_viewport": "none",
+  "observed_viewport_css": [2320, 1334],
+  "viewport_strategy": "storybook-viewport",
+  "margin_policy": "require_margin",
+  "evidence_surface": "component",
+  "surface_selector": "[data-visual-evidence-surface]",
+  "target_selector": "[data-visual-evidence-target]",
+  "sensitive_exclusion": "N/A",
+  "submission_gate": "approved",
+  "approval_source": "source thread 01a1a08b-dfa8-7a52-854c-ef9ed088b609 confirmed screenshot accuracy in delegated message",
+  "comparison": "current-only; helper comparison_unavailable (raw.trim); owner reviewed current image",
+  "evidence_note": "模型并集、可用/验证中/模型限流/未知、账号额度与 Reserve 提示及恢复路由按钮"
+}
