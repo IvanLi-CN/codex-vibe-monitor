@@ -14,7 +14,11 @@ function Harness({ id }: { id: number }) {
   const result = useAccountModelRouting(details[id]);
   return <output>{JSON.stringify(result)}</output>;
 }
-const details = { 1: { id: 1 }, 2: { id: 2 } } as Record<number, UpstreamAccountDetail>;
+const details = {
+  1: { id: 1, kind: "api_key_codex" },
+  2: { id: 2, kind: "api_key_codex" },
+  3: { id: 3, kind: "oauth_codex" },
+} as Record<number, UpstreamAccountDetail>;
 afterEach(() => {
   act(() => root.unmount());
   root = createRoot(host);
@@ -55,6 +59,12 @@ describe("complete model routing loading", () => {
     expect(host.textContent).toContain("catalog-only");
     expect(host.textContent).not.toContain("stale-model");
     expect(fetchStates.mock.calls[0][1]?.aborted).toBe(true);
+  });
+  it("does not load or create model health rows for OAuth accounts", async () => {
+    await act(async () => root.render(<Harness id={3} />));
+    expect(fetchStates).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('"states":[]');
+    expect(host.textContent).toContain('"loading":false');
   });
   it("surfaces request errors without claiming an empty successful model set", async () => {
     fetchStates.mockRejectedValue(new Error("routing unavailable"));
