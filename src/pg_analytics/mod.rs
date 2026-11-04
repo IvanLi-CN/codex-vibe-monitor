@@ -3167,11 +3167,6 @@ async fn resume_replica(
 
     for _ in 0..ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN {
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-        if source.state.historical_replay_required != 0 {
-            let detail = "SQLite historical invocation coverage requires archive replay before the analytics replica can advance";
-            mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
-            return Err(anyhow!(detail));
-        }
         if source.state.historical_history_unknown != 0 {
             let detail = "SQLite historical coverage predates the analytics source journal; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
             mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
