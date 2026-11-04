@@ -2186,8 +2186,14 @@ async fn record_model_route_failure_inner(
     let streak_age = parse_to_utc_datetime(&streak_started)
         .map(|started| (Utc::now() - started).num_seconds())
         .unwrap_or_default();
-    let cooling =
-        failures >= MODEL_ROUTE_FAILURE_THRESHOLD || streak_age >= MODEL_ROUTE_FAILURE_WINDOW_SECS;
+    // Explicit model errors are definitive for this account×model route. They
+    // must be excluded immediately while account-level failures keep the
+    // normal streak and backoff behavior.
+    let explicit_model_failure =
+        is_explicit_model_failure_for_model(status, error_message, Some(model));
+    let cooling = explicit_model_failure
+        || failures >= MODEL_ROUTE_FAILURE_THRESHOLD
+        || streak_age >= MODEL_ROUTE_FAILURE_WINDOW_SECS;
     let cooldown_until = if cooling {
         Some(
             (Utc::now()

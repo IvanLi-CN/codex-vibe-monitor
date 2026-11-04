@@ -1246,6 +1246,10 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     .await;
     let api_key_temporary_http_failure = account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && classification.disposition != UpstreamAccountFailureDisposition::HardUnavailable
+        // An explicit model error is scoped to the account×model route. Keep it
+        // out of the account-level temporary failure path so the model route is
+        // blocked immediately while other models remain eligible.
+        && !explicit_model_failure
         && (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error());
     if account_kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && let Some(model) = extract_unsupported_model_from_route_error(status, error_message)
