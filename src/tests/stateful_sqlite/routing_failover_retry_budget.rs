@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn run_routing_failover_future_with_large_stack<T, Fut>(future: Fut) -> T
+fn run_routing_failover_future_with_large_stack<T, Fut>(future: Fut) -> T
 where
     T: Send + 'static,
     Fut: std::future::Future<Output = T> + Send + 'static,
