@@ -2193,6 +2193,125 @@ async fn load_source_invocation_snapshot_page(
     Ok(facts)
 }
 
+fn archive_snapshot_column(columns: &HashSet<String>, name: &str) -> String {
+    if columns.contains(name) {
+        name.to_string()
+    } else {
+        format!("NULL AS {name}")
+    }
+}
+
+fn build_archive_invocation_snapshot_query(columns: &HashSet<String>) -> Result<String> {
+    for required in ["id", "invoke_id", "occurred_at", "source"] {
+        anyhow::ensure!(
+            columns.contains(required),
+            "invocation archive is missing required column {required}"
+        );
+    }
+    let optional = |name: &str| archive_snapshot_column(columns, name);
+    Ok(format!(
+        r#"
+        SELECT
+            id,
+            invoke_id,
+            occurred_at,
+            CAST(COALESCE(ROUND((julianday(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+            ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
+            date(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+8 hours' ELSE '+0 hours' END
+            ) AS stats_date,
+            source,
+            {model},
+            {upstream_account_id},
+            {input_tokens},
+            {output_tokens},
+            {cache_input_tokens},
+            {reasoning_tokens},
+            {total_tokens},
+            {cost},
+            {cost_input},
+            {cost_cache_write},
+            {cost_cache_read},
+            {cost_output},
+            {cost_reasoning},
+            {status},
+            {error_message},
+            {failure_kind},
+            {failure_class},
+            {is_actionable},
+            {payload},
+            {t_total_ms},
+            {t_req_read_ms},
+            {t_req_parse_ms},
+            {t_upstream_connect_ms},
+            {t_upstream_ttfb_ms},
+            {t_upstream_stream_ms},
+            {first_token_ms},
+            {t_resp_parse_ms}
+        FROM codex_invocations
+        WHERE id > ?1
+        ORDER BY id
+        LIMIT ?2
+        "#,
+        model = optional("model"),
+        upstream_account_id = optional("upstream_account_id"),
+        input_tokens = optional("input_tokens"),
+        output_tokens = optional("output_tokens"),
+        cache_input_tokens = optional("cache_input_tokens"),
+        reasoning_tokens = optional("reasoning_tokens"),
+        total_tokens = optional("total_tokens"),
+        cost = optional("cost"),
+        cost_input = optional("cost_input"),
+        cost_cache_write = optional("cost_cache_write"),
+        cost_cache_read = optional("cost_cache_read"),
+        cost_output = optional("cost_output"),
+        cost_reasoning = optional("cost_reasoning"),
+        status = optional("status"),
+        error_message = optional("error_message"),
+        failure_kind = optional("failure_kind"),
+        failure_class = optional("failure_class"),
+        is_actionable = optional("is_actionable"),
+        payload = optional("payload"),
+        t_total_ms = optional("t_total_ms"),
+        t_req_read_ms = optional("t_req_read_ms"),
+        t_req_parse_ms = optional("t_req_parse_ms"),
+        t_upstream_connect_ms = optional("t_upstream_connect_ms"),
+        t_upstream_ttfb_ms = optional("t_upstream_ttfb_ms"),
+        t_upstream_stream_ms = optional("t_upstream_stream_ms"),
+        first_token_ms = optional("first_token_ms"),
+        t_resp_parse_ms = optional("t_resp_parse_ms"),
+    ))
+}
+
+async fn snapshot_invocation_archive_into_target(
+    archive_pool: &Pool<Sqlite>,
+    connection: &mut sqlx::postgres::PgConnection,
+) -> Result<()> {
+    let columns = crate::load_sqlite_table_columns(archive_pool, "codex_invocations").await?;
+    let query = build_archive_invocation_snapshot_query(&columns)?;
+    let mut after_id = 0;
+    loop {
+        let facts = sqlx::query_as::<_, SourceInvocationSnapshotRow>(&query)
+            .bind(after_id)
+            .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
+            .fetch_all(archive_pool)
+            .await
+            .context("failed to read a bounded invocation archive snapshot page")?
+            .into_iter()
+            .map(snapshot_row_to_fact)
+            .collect::<Result<Vec<_>>>()?;
+        let Some(next_after_id) = facts.last().map(|fact| fact.source_row_id) else {
+            break;
+        };
+        snapshot_facts_into_target(connection, &facts, &[]).await?;
+        after_id = next_after_id;
+    }
+    Ok(())
+}
+
 async fn upsert_analytics_fact(
     connection: &mut sqlx::postgres::PgConnection,
     fact: &AnalyticsFact,
@@ -2791,6 +2910,36 @@ async fn snapshot_invocations_into_target(
         .await
         .context("failed to start the SQLite analytics baseline snapshot")?;
     let snapshot_source = load_source_context_transaction(&mut source_transaction).await?;
+    let archive_rows =
+        crate::stats::load_completed_invocation_archive_paths(&mut *source_transaction)
+            .await
+            .context(
+                "failed to enumerate completed invocation archives for PostgreSQL bootstrap",
+            )?;
+    if snapshot_source.state.historical_replay_required != 0 && archive_rows.is_empty() {
+        bail!(
+            "SQLite requires historical archive replay but no completed invocation archive is available"
+        );
+    }
+    for archive_row in archive_rows {
+        let archive_path = archive_row.file_path().to_string();
+        let Some((archive_pool, archive_cleanup)) =
+            crate::stats::open_invocation_archive_batch_pool(
+                &archive_row,
+                "postgres-analytics-bootstrap",
+            )
+            .await
+            .with_context(|| format!("failed to open invocation archive {archive_path}"))?
+        else {
+            bail!("invocation archive {archive_path} is unavailable for PostgreSQL bootstrap");
+        };
+        let result = snapshot_invocation_archive_into_target(&archive_pool, connection)
+            .await
+            .with_context(|| format!("failed to replay invocation archive {archive_path}"));
+        archive_pool.close().await;
+        drop(archive_cleanup);
+        result?;
+    }
     let mut after_id = 0;
     loop {
         let facts = load_source_invocation_snapshot_page(&mut source_transaction, after_id).await?;
@@ -2848,34 +2997,6 @@ async fn load_source_context_transaction(
         retained_bytes,
         coverage,
     })
-}
-
-async fn source_has_historical_invocation_archives(source_pool: &Pool<Sqlite>) -> Result<bool> {
-    let archive_table_exists = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_batches')",
-    )
-    .fetch_one(source_pool)
-    .await
-    .context("failed to inspect SQLite invocation archive metadata")?
-        != 0;
-    if !archive_table_exists {
-        return Ok(false);
-    }
-    sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT EXISTS(
-            SELECT 1
-            FROM archive_batches
-            WHERE dataset = 'codex_invocations'
-              AND status = 'completed'
-              AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
-        )
-        "#,
-    )
-    .fetch_one(source_pool)
-    .await
-    .context("failed to inspect completed SQLite invocation archives")
-    .map(|exists| exists != 0)
 }
 
 async fn acknowledge_unverified_legacy_history(source_pool: &Pool<Sqlite>) -> Result<()> {
@@ -2953,14 +3074,6 @@ async fn bootstrap_replica_locked(
     fence_replica_service_eligibility_on_connection(connection).await?;
     verify_replica_schema_on_connection(connection).await?;
     let mut source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-    if source_before.state.historical_replay_required != 0
-        || source_has_historical_invocation_archives(source_pool).await?
-    {
-        let detail = "SQLite historical invocation coverage requires archive replay before PostgreSQL analytics bootstrap can declare complete history";
-        mark_replica_blocked_on_connection(connection, "historical_source_unavailable", detail)
-            .await?;
-        return Err(anyhow!(detail));
-    }
     if source_before.state.historical_history_unknown != 0 {
         if !acknowledge_unverified_history {
             let detail = "SQLite historical coverage predates the analytics source journal and cannot be proven complete; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
@@ -2997,6 +3110,15 @@ async fn bootstrap_replica_locked(
         let detail = error.to_string();
         mark_replica_blocked_on_connection(connection, "source_ack_failed", detail.clone()).await?;
         return Err(anyhow!(detail));
+    }
+    if source_before.state.historical_replay_required != 0 {
+        sqlx::query(
+            "UPDATE analytics_change_state SET historical_replay_required = 0, updated_at = datetime('now') WHERE id = 1 AND generation = ?1",
+        )
+        .bind(snapshot_source.state.generation)
+        .execute(source_pool)
+        .await
+        .context("failed to acknowledge completed SQLite archive replay")?;
     }
     set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, true)
         .await?;
@@ -3610,6 +3732,20 @@ pub(crate) trait AnalyticsReadStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_snapshot_query_accepts_legacy_optional_columns_but_requires_identity() {
+        let columns = ["id", "invoke_id", "occurred_at", "source"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let query = build_archive_invocation_snapshot_query(&columns).expect("query");
+        assert!(query.contains("NULL AS first_token_ms"));
+        assert!(query.contains("FROM codex_invocations"));
+        assert!(
+            build_archive_invocation_snapshot_query(&HashSet::from(["id".to_string()])).is_err()
+        );
+    }
 
     #[test]
     fn postgres_url_debug_and_json_are_redacted() {
