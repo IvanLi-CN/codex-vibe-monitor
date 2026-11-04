@@ -3100,18 +3100,6 @@ async fn bootstrap_replica_locked(
         acknowledge_unverified_legacy_history(source_pool).await?;
     }
     set_replica_baseline(connection, &snapshot_source).await?;
-    if let Err(error) = crate::analytics_changes::acknowledge_analytics_change_generation(
-        source_pool,
-        ANALYTICS_REPLICA_ID,
-        snapshot_source.state.generation,
-        snapshot_source.latest_change_id,
-    )
-    .await
-    {
-        let detail = error.to_string();
-        mark_replica_blocked_on_connection(connection, "source_ack_failed", detail.clone()).await?;
-        return Err(anyhow!(detail));
-    }
     if source_before.state.historical_replay_required != 0 {
         sqlx::query(
             "UPDATE analytics_change_state SET historical_replay_required = 0, updated_at = datetime('now') WHERE id = 1 AND generation = ?1",
@@ -3126,23 +3114,10 @@ async fn bootstrap_replica_locked(
         source_after.state.generation == snapshot_source.state.generation,
         "analytics source generation changed during PostgreSQL bootstrap snapshot"
     );
-    if source_after.latest_change_id == snapshot_source.latest_change_id {
-        crate::analytics_changes::acknowledge_analytics_change_generation(
-            source_pool,
-            ANALYTICS_REPLICA_ID,
-            snapshot_source.state.generation,
-            snapshot_source.latest_change_id,
-        )
-        .await
-        .context("failed to acknowledge the completed analytics change generation")?;
-        set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, true)
-            .await?;
-    } else {
-        // The snapshot is still valid for its captured watermark. Leave the replica running
-        // and let the bounded Journal catch-up apply changes committed while archive replay ran.
-        set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, false)
-            .await?;
-    }
+    // The snapshot is valid for its captured watermark. Leave the replica running and let the
+    // bounded Journal catch-up apply changes committed while archive replay ran.
+    set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, false)
+        .await?;
     Ok(())
 }
 
