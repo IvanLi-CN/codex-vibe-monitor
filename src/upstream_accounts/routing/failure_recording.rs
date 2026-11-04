@@ -1251,14 +1251,17 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         // blocked immediately while other models remain eligible.
         && !explicit_model_failure
         && (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error());
+    let model_route_failure_enabled = !explicit_model_failure
+        || account_status_change_reason_is_enabled(pool, account_id, classification.reason_code)
+            .await?;
     if account_kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && let Some(model) = extract_unsupported_model_from_route_error(status, error_message)
     {
         ensure_account_has_unsupported_model_tag(pool, account_id, &model).await?;
     }
-    if !api_key_temporary_http_failure {
+    if !api_key_temporary_http_failure && model_route_failure_enabled {
         if let Some(attempt_id) = attempt_id {
-            record_model_route_failure_from_attempt_with_start_admitted(
+            record_model_route_failure_from_attempt_with_start_and_reason_admitted(
                 pool,
                 account_id,
                 attempt_id,
@@ -1266,6 +1269,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 Some(error_message),
                 Some(classification.failure_kind),
                 None,
+                Some(classification.reason_code),
             )
             .await?;
         } else if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
