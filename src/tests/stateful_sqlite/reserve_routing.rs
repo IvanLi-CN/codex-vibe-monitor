@@ -94,6 +94,23 @@ async fn reserve_fallback_upstream(
             .expect("lock OAuth request models")
             .push(model.clone());
         if model == RESERVE_WIRE_MODEL {
+            if payload.get("max_output_tokens").is_some()
+                || payload.get("previous_response_id").is_some()
+                || payload["reasoning"]["summary"] == "none"
+                || payload["store"] != false
+                || payload["stream"] != true
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "code": "unsupported_parameter",
+                            "message": "Reserve does not accept max_output_tokens, previous_response_id, or reasoning.summary=none"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
             let event = json!({
                 "type": "response.completed",
                 "response": {
@@ -214,7 +231,9 @@ fn automatic_reserve_fallback_retries_same_oauth_account_with_wire_model() {
                 http_header::AUTHORIZATION,
                 HeaderValue::from_static("Bearer pool-live-key"),
             )]),
-            Body::from(br#"{"model":"gpt-5.4-luna","input":"hello"}"#.to_vec()),
+            Body::from(
+                br#"{"model":"gpt-5.4-luna","input":"hello","max_output_tokens":256,"previous_response_id":"resp_prev_001","reasoning":{"summary":"none","effort":"medium"}}"#.to_vec(),
+            ),
         )
         .await;
 
