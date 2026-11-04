@@ -2022,6 +2022,10 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start_admitted(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Model failure evidence and reason propagation are one state transition."
+)]
 pub(crate) async fn record_model_route_failure_from_attempt_with_start_and_reason_admitted(
     pool: &Pool<Sqlite>,
     account_id: i64,
