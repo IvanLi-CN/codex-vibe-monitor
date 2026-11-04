@@ -126,7 +126,7 @@ const withModelRoutingHistoryFetchMock = (Story: ComponentType) => (
 );
 
 function assertCoolingRowLayout(canvasElement: HTMLElement, mobile: boolean) {
-  const coolingSummary = canvasElement.querySelectorAll("button[aria-expanded]")[2];
+  const coolingSummary = within(canvasElement).getByTestId("model-routing-summary-o4-mini");
   const coolingStatus = within(canvasElement).getByText("模型限流", { exact: true });
   const coolingReset = within(canvasElement).getByRole("button", {
     name: "恢复路由: o4-mini",

@@ -281,7 +281,7 @@ export function ModelRoutingHealthPanel({
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-2 px-4 pb-4">
-        <p className="text-xs text-base-content/65">
+        <p className="text-xs text-base-content/75">
           {t("accountPool.upstreamAccounts.modelRouting.quotaHint")}
         </p>
         <div className="flex flex-wrap gap-2">
@@ -361,6 +361,7 @@ export function ModelRoutingHealthPanel({
                       className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                       onClick={() => setExpandedModel(expanded ? null : route.model)}
                       aria-expanded={expanded}
+                      data-testid={`model-routing-summary-${route.model}`}
                     >
                       <ModelIdentity
                         model={route.model}
