@@ -2451,19 +2451,26 @@ async fn complete_model_routing_state_set(
     account_id: i64,
     detail: &UpstreamAccountDetail,
 ) -> Result<Vec<ModelRoutingState>> {
-    let observed_models = sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT request_model FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 AND request_model IS NOT NULL AND trim(request_model) != ''",
+    let observed_model_rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT request_model, max(occurred_at) FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 AND request_model IS NOT NULL AND trim(request_model) != '' GROUP BY request_model",
     )
     .bind(account_id)
     .fetch_all(pool)
     .await?;
+    let observed_models = observed_model_rows
+        .iter()
+        .map(|(model, _)| model.clone())
+        .collect::<Vec<_>>();
+    let observed_model_timestamps = observed_model_rows
+        .into_iter()
+        .map(|(model, occurred_at)| (model.trim().to_string(), occurred_at))
+        .collect::<BTreeMap<_, _>>();
     let models = model_routing_model_union(
         &detail.model_catalog.models,
         detail.summary.effective_routing_rule.available_models(),
         &observed_models,
     );
 
-    let generated_at = Utc::now().to_rfc3339();
     let mut states = detail
         .model_routing_states
         .iter()
@@ -2471,30 +2478,44 @@ async fn complete_model_routing_state_set(
         .map(|state| (state.model.clone(), state))
         .collect::<BTreeMap<_, _>>();
     for model in models {
+        let last_seen_at = observed_model_timestamps
+            .get(&model)
+            .cloned()
+            .or_else(|| detail.model_catalog.last_successful_at.clone())
+            .or_else(|| detail.model_catalog.last_attempted_at.clone());
         states
             .entry(model.clone())
-            .or_insert_with(|| ModelRoutingState {
-                model,
-                state: "unknown".to_string(),
-                priority: MODEL_ROUTE_PRIORITY_NORMAL.to_string(),
-                failure_count: 0,
-                changed_at: None,
-                last_seen_at: generated_at.clone(),
-                last_failure_at: None,
-                last_failure_kind: None,
-                last_failure_message: None,
-                cooldown_until: None,
-                cache_concurrency_limit: None,
-                cache_recovery_limit: None,
-                cache_low_hit_streak: 0,
-                cache_cooldown_level: 0,
-                cache_last_hit_rate_percent: None,
-                cache_usage_missing_since: None,
-                cache_usage_missing_reason: None,
-                probe_required: false,
-            });
+            .or_insert_with(|| unknown_model_routing_state(model, last_seen_at));
     }
     Ok(states.into_values().collect())
+}
+
+pub(crate) fn unknown_model_routing_state(
+    model: String,
+    last_seen_at: Option<String>,
+) -> ModelRoutingState {
+    ModelRoutingState {
+        model,
+        state: "unknown".to_string(),
+        priority: MODEL_ROUTE_PRIORITY_NORMAL.to_string(),
+        failure_count: 0,
+        changed_at: None,
+        // This field is a required string for backwards compatibility. Keep
+        // an explicit unknown marker so a read cannot masquerade as a call.
+        last_seen_at: last_seen_at.unwrap_or_else(|| "unknown".to_string()),
+        last_failure_at: None,
+        last_failure_kind: None,
+        last_failure_message: None,
+        cooldown_until: None,
+        cache_concurrency_limit: None,
+        cache_recovery_limit: None,
+        cache_low_hit_streak: 0,
+        cache_cooldown_level: 0,
+        cache_last_hit_rate_percent: None,
+        cache_usage_missing_since: None,
+        cache_usage_missing_reason: None,
+        probe_required: false,
+    }
 }
 
 pub(crate) fn model_routing_model_union(
