@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.19.5",
+  "base_stable_version": "4.19.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-04T12:18:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.19.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "935dafa50c600f340bd2fef748131334474653f5",
+  "pr_number": 1293,
+  "pr_title": "fix(analytics): accept replayed coverage Journal events",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.19.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.19.5",
+  "target_sha": "53e48a2c2c6e9121c0700a79cb3042eb93cdb9f0",
+  "type_label": "type:patch"
+}
