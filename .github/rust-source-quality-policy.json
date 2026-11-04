@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 99,
+    "inventory_entries": 102,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -355,10 +355,28 @@
       "next_module_workstream": "Maintain same-origin settings-write validation and proxy redirect path/header normalization fixtures."
     },
     {
-      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget/reservation_and_selection.rs",
       "role": "test_helper",
-      "line_budget": 3693,
-      "next_module_workstream": "Split routing failover/retry fixtures by reservation, retry capture, and failure timing."
+      "line_budget": 372,
+      "next_module_workstream": "Maintain routing reservation and account-selection fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget/retry_and_capture.rs",
+      "role": "test_helper",
+      "line_budget": 1212,
+      "next_module_workstream": "Maintain upstream retry, failover capture, and single-invocation persistence fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget/failure_timing_and_recovery.rs",
+      "role": "test_helper",
+      "line_budget": 898,
+      "next_module_workstream": "Maintain no-candidate timing, recovery, deadline, and selection-task fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget/failure_persistence_and_capacity.rs",
+      "role": "test_helper",
+      "line_budget": 1194,
+      "next_module_workstream": "Maintain failure persistence, wake/fence, orphan recovery, and capacity-audit fixtures below the test-helper target."
     },
     {
       "path": "src/tests/stateful_sqlite/routing_failover_terminal_reasoning.rs",
@@ -1113,16 +1131,16 @@
       "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs; update it when the listed module workstream changes the declaration."
     },
     {
-      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget/failure_timing_and_recovery.rs",
       "kind": "allow",
       "declaration": "#[allow(unreachable_code)]",
-      "reason": "Retain this targeted allow for the intentional guarded branch in src/tests/stateful_sqlite/routing_failover_retry_budget.rs; remove it when the listed test split isolates that control-flow fixture."
+      "reason": "Retain this targeted allow for the intentional guarded branch in the selection-task timing fixture."
     },
     {
-      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget/failure_timing_and_recovery.rs",
       "kind": "allow",
       "declaration": "#[allow(unreachable_code)]",
-      "reason": "Retain this targeted allow for the intentional guarded branch in src/tests/stateful_sqlite/routing_failover_retry_budget.rs; remove it when the listed test split isolates that control-flow fixture."
+      "reason": "Retain this targeted allow for the intentional guarded branch in the selection-task drop fixture."
     },
     {
       "path": "src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs",
