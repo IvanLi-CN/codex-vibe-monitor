@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "implementation-verified-current-head-delivery-pending",
+  "migration": {
+    "description": "Add a one-shot PostgreSQL migration and replica-bootstrap contract for the derived analytics target while retaining SQLite as the business-fact authority.",
+    "release_unit_description": "Managed PostgreSQL analytics schema, role, readiness, cutover, and forward-repair design.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "PostgreSQL role/grant ownership, ordered schema-migration ledger, analytics replica facts, applied-change identities, checkpoints, source coverage acknowledgements, and eligibility fences. SQLite business facts and the source journal remain authoritative.",
+    "storage_implementation": "PostgreSQL cvm_analytics schema plus the existing SQLite analytics source journal; no business-write state moves to PostgreSQL.",
+    "source_compatibility_range": {
+      "from_program_versions": "Existing deployments using the ADR 0051 pre-provisioned PostgreSQL foundation and supported SQLite source-journal states.",
+      "to_program_version": "Current managed-migration release candidate; release identity is selected by repository publication policy.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-role-schema-ledger",
+        "description": "Reconcile the fixed owner, reader, application, and maintenance role contract; establish cvm_analytics ownership and the schema-migration ledger without dropping or cascading over unexpected objects.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "ddl-ordered-schema-steps",
+        "description": "Apply ordered additive schema migrations and grants. Transactional DDL stays in one migration unit; PostgreSQL operations that cannot run in a transaction are isolated ledger steps with explicit retry/repair recognition.",
+        "order": 2,
+        "depends_on": [
+          "ddl-role-schema-ledger"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-compatibility-fence",
+        "description": "Record the migration identity and checksum, fence service eligibility, and move a caught-up replica to bootstrapping before any semantic or replica-shape rebuild.",
+        "order": 3,
+        "depends_on": [
+          "ddl-ordered-schema-steps"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-derived-replica",
+        "description": "Run the explicit bounded SQLite-source snapshot/bootstrap into derived PostgreSQL facts, keys, applied-change identities, checkpoints, and coverage acknowledgements. This is not a business-write migration or an automatic raw-data backfill.",
+        "order": 4,
+        "depends_on": [
+          "ddl-ordered-schema-steps",
+          "dml-compatibility-fence"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "ddl-role-schema-ledger",
+      "ddl-ordered-schema-steps",
+      "dml-compatibility-fence",
+      "backfill-derived-replica",
+      "readiness-verification",
+      "traffic-admission"
+    ],
+    "progress_signals": [
+      "Migration ledger identity, checksum, state, and minimum-reader compatibility.",
+      "Catalog ownership, role attributes, PUBLIC privileges, and exact grant probes.",
+      "Replica lifecycle, semantic version, baseline, source/target checkpoints, coverage revision, and bounded error code.",
+      "Separate core_ready and analytics_ready conditions, including a repeatable-read read-only probe."
+    ],
+    "pause_points": [
+      "After target/role preflight and after each committed schema-ledger unit.",
+      "After the compatibility fence and before target cleanup.",
+      "Between bounded bootstrap batches and before source acknowledgement publishes eligibility.",
+      "Before process start and before traffic admission."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "Rollback changes application selection back to SQLite; it does not reverse-copy business facts, drop PostgreSQL state, or down-migrate an applied ledger entry.",
+    "faulty_release_recovery": "Repair forward with a recognized idempotent migration or a later compatible release. A stopped or failed bootstrap leaves the target fenced and unavailable until the source/target cause is understood and the bounded bootstrap is rerun.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "status": "implementation-present-validation-and-current-head-review-pending",
+    "required_test_evidence": [
+      "Fresh disposable PostgreSQL 18 target proves role ownership, exact grants, ledger creation, schema compatibility, and read-only verification.",
+      "Repeated migration is idempotent and preserves the same ledger/checksum/grant contract without an additive-only target reset.",
+      "Known older schema and legacy fact-date states are fenced, upgraded in order, rebuilt from a stable SQLite source, and admitted only after matching checkpoints and projections.",
+      "Failures after each committed step, after the fence, and during a bounded bootstrap batch remain unavailable and repair forward to the same final state.",
+      "PostgreSQL outage, authentication/schema/permission mismatch, stale checkpoint, source gap, and schema-newer-than-reader all preserve SQLite facts and fail closed without fabricated analytics or implicit SQLite fallback.",
+      "Cutover waits for both core and analytics readiness; rollback restores SQLite selection without reverse-copy or target deletion."
+    ]
+  }
+}

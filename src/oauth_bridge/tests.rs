@@ -3,6 +3,14 @@ use axum::{Json, Router, body::to_bytes, routing::post};
 use serde_json::json;
 use tokio::net::TcpListener;
 
+struct TestOauthUpstreamResetGuard;
+
+impl Drop for TestOauthUpstreamResetGuard {
+    fn drop(&mut self) {
+        reset_test_oauth_codex_upstream_base_url_now();
+    }
+}
+
 #[tokio::test]
 async fn oauth_request_compression_decodes_input_rewrites_then_encodes_zstd() {
     let headers = HeaderMap::from_iter([
@@ -26,6 +34,8 @@ async fn oauth_request_compression_decodes_input_rewrites_then_encodes_zstd() {
         RequestCompressionAlgorithm::Zstd,
         RequestCompressionLevelPreset::Balanced,
         true,
+        false,
+        None,
         None,
         None,
     )
@@ -62,6 +72,8 @@ async fn oauth_request_compression_rejects_oversized_decoded_buffered_body() {
         RequestCompressionAlgorithm::Zstd,
         RequestCompressionLevelPreset::Balanced,
         false,
+        false,
+        None,
         None,
         None,
     )
@@ -90,6 +102,7 @@ fn extract_completed_response_from_sse_returns_completed_response() {
 #[tokio::test]
 async fn oauth_codex_upstream_base_url_uses_test_override() {
     let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
+    let _reset_guard = TestOauthUpstreamResetGuard;
     let override_url =
         Url::parse("http://127.0.0.1:43123/backend-api/codex").expect("valid override url");
     set_test_oauth_codex_upstream_base_url(override_url.clone()).await;
@@ -295,11 +308,109 @@ async fn counted_oauth_passthrough_sets_zstd_encoding_and_content_length() {
         None,
         RequestCompressionAlgorithm::Zstd,
         RequestCompressionLevelPreset::Balanced,
+        false,
         None,
         None,
     )
     .await;
     assert_eq!(response.response.status(), StatusCode::ACCEPTED);
+
+    handle.abort();
+    reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn counted_oauth_responses_reencodes_decoded_reserve_stream() {
+    async fn responses_upstream(request: axum::extract::Request) -> Response {
+        assert_eq!(
+            request
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
+        let body = to_bytes(request.into_body(), usize::MAX)
+            .await
+            .expect("read compressed Reserve request body");
+        let mut decoded = flate2::read::GzDecoder::new(body.as_ref());
+        let mut decoded_body = Vec::new();
+        std::io::Read::read_to_end(&mut decoded, &mut decoded_body)
+            .expect("decode compressed Reserve request body");
+        let payload: Value =
+            serde_json::from_slice(&decoded_body).expect("decode Reserve request JSON");
+        assert_eq!(payload["model"], crate::RESERVE_WIRE_MODEL);
+        assert_eq!(payload["store"], false);
+        assert_eq!(payload["stream"], true);
+        assert!(payload.get("max_output_tokens").is_none());
+        assert!(payload.get("previous_response_id").is_none());
+        assert!(payload["reasoning"].get("summary").is_none());
+        (StatusCode::OK, Json(json!({"id":"resp_reserve_stream"}))).into_response()
+    }
+
+    let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
+    let _reset_guard = TestOauthUpstreamResetGuard;
+    let app = Router::new().route("/backend-api/codex/responses", post(responses_upstream));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind decoded Reserve upstream");
+    let addr = listener
+        .local_addr()
+        .expect("decoded Reserve upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("decoded Reserve upstream should run");
+    });
+    set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("http://{addr}/backend-api/codex"))
+            .expect("valid decoded Reserve upstream base URL"),
+    )
+    .await;
+
+    let plain_body = Bytes::from_static(
+        br#"{"model":"gpt-reserve","input":"hello","store":false,"stream":true,"reasoning":{"effort":"medium"}}"#,
+    );
+    let response = send_counted_oauth_upstream_request_with_compression(
+        Method::POST,
+        &"/v1/responses".parse().expect("valid responses URI"),
+        &HeaderMap::from_iter([(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        CountedOauthUpstreamRequestBody::DecodedStream {
+            body: Body::from(plain_body.clone()),
+            debug_body_prefix: Some(plain_body.clone()),
+            request_is_stream: Some(false),
+            snapshot_kind: Some("file"),
+            source_encoding: RequestBodyContentEncoding::Gzip,
+            rewrite: OauthResponsesRewriteSummary {
+                applied: true,
+                removed_max_output_tokens: true,
+                removed_previous_response_id: true,
+                removed_reasoning_summary_none: true,
+                ..Default::default()
+            },
+        },
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        Some(7),
+        "oauth-reserve-stream",
+        Some("org_reserve"),
+        None,
+        None,
+        RequestCompressionAlgorithm::Follow,
+        RequestCompressionLevelPreset::Balanced,
+        true,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(response.response.status(), StatusCode::OK);
+    let debug = response.request_debug.expect("Reserve stream diagnostics");
+    assert!(debug.rewrite.removed_max_output_tokens);
+    assert!(debug.rewrite.removed_previous_response_id);
+    assert!(debug.rewrite.removed_reasoning_summary_none);
+    assert_eq!(debug.responses_body_mode, Some("large_body_passthrough"));
 
     handle.abort();
     reset_test_oauth_codex_upstream_base_url().await;
@@ -335,9 +446,10 @@ fn attach_account_header_skips_blank_account_ids() {
 #[test]
 fn prepare_responses_request_body_preserves_previous_response_id() {
     let prepared = prepare_responses_request_body(
-            br#"{"model":"gpt-5.4","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001"}"#,
+            br#"{"model":"gpt-5.4","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001","reasoning":{"summary":"none"}}"#,
             None,
             None,
+            false,
         )
         .expect("rewrite responses request");
 
@@ -348,6 +460,7 @@ fn prepare_responses_request_body_preserves_previous_response_id() {
     assert_eq!(payload["store"], false);
     assert_eq!(payload["stream"], true);
     assert!(payload.get("max_output_tokens").is_none());
+    assert_eq!(payload["reasoning"]["summary"], "none");
     assert_eq!(
         prepared.rewrite,
         OauthResponsesRewriteSummary {
@@ -356,6 +469,54 @@ fn prepare_responses_request_body_preserves_previous_response_id() {
             added_store: true,
             forced_stream_true: true,
             removed_max_output_tokens: true,
+            removed_previous_response_id: false,
+            removed_reasoning_summary_none: false,
+            rewrote_installation_id: false,
+            removed_installation_id: false,
+        }
+    );
+}
+
+#[test]
+fn prepare_responses_request_body_preserves_explicit_store_true_for_normal_requests() {
+    let prepared = prepare_responses_request_body(
+        br#"{"model":"gpt-5.4","stream":false,"store":true,"input":"hello"}"#,
+        None,
+        None,
+        false,
+    )
+    .expect("rewrite normal responses request");
+
+    let payload: Value = serde_json::from_slice(&prepared.body).expect("decode rewritten body");
+    assert_eq!(payload["store"], true);
+    assert!(!prepared.rewrite.added_store);
+}
+
+#[test]
+fn prepare_responses_request_body_removes_reserve_unsupported_fields() {
+    let prepared = prepare_responses_request_body(
+        br#"{"model":"gpt-reserve","stream":false,"store":true,"max_output_tokens":256,"previous_response_id":"resp_prev_001","reasoning":{"summary":"none","effort":"medium"}}"#,
+        None,
+        None,
+        true,
+    )
+    .expect("rewrite Reserve responses request");
+
+    let payload: Value = serde_json::from_slice(&prepared.body).expect("decode rewritten body");
+    assert!(payload.get("max_output_tokens").is_none());
+    assert!(payload.get("previous_response_id").is_none());
+    assert!(payload["reasoning"].get("summary").is_none());
+    assert_eq!(payload["reasoning"]["effort"], "medium");
+    assert_eq!(
+        prepared.rewrite,
+        OauthResponsesRewriteSummary {
+            applied: true,
+            added_instructions: true,
+            added_store: true,
+            forced_stream_true: true,
+            removed_max_output_tokens: true,
+            removed_previous_response_id: true,
+            removed_reasoning_summary_none: true,
             rewrote_installation_id: false,
             removed_installation_id: false,
         }
@@ -396,6 +557,7 @@ fn prepare_responses_request_body_rewrites_installation_id_when_account_id_prese
             }"#,
         Some(7),
         Some(&seed),
+        false,
     )
     .expect("rewrite responses request");
 
@@ -413,6 +575,8 @@ fn prepare_responses_request_body_rewrites_installation_id_when_account_id_prese
             added_store: true,
             forced_stream_true: true,
             removed_max_output_tokens: true,
+            removed_previous_response_id: false,
+            removed_reasoning_summary_none: false,
             rewrote_installation_id: true,
             removed_installation_id: false,
         }
@@ -435,6 +599,7 @@ fn prepare_responses_request_body_strips_installation_id_without_account_id() {
             }"#,
         None,
         Some(&seed),
+        false,
     )
     .expect("rewrite responses request");
 
@@ -453,6 +618,8 @@ fn prepare_responses_request_body_strips_installation_id_without_account_id() {
             added_store: false,
             forced_stream_true: false,
             removed_max_output_tokens: false,
+            removed_previous_response_id: false,
+            removed_reasoning_summary_none: false,
             rewrote_installation_id: false,
             removed_installation_id: true,
         }

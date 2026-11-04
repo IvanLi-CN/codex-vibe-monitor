@@ -8,6 +8,7 @@ pub(crate) use read::*;
 
 const ANALYTICS_UNAVAILABLE_CODE: &str = "analytics_backend_unavailable";
 const POSTGRES_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+const POSTGRES_MIGRATION_LOCK_KEY: i64 = 0x0043_564d_5f4d_4947;
 const REDACTED_SECRET: &str = "<redacted>";
 pub(crate) const ANALYTICS_REPLICA_ID: &str = "pg-analytics";
 pub(crate) const ANALYTICS_FACT_DATE_SEMANTICS_VERSION: i64 =
@@ -23,6 +24,8 @@ const PG_ANALYTICS_READ_TRANSACTION_SQL: &str =
 const ANALYTICS_REPLICA_MAX_SOURCE_TEXT_BYTES: i64 = 64 * 1024;
 const ANALYTICS_REPLICA_MAX_SOURCE_PAYLOAD_BYTES: i64 = 4 * 1024 * 1024;
 const ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN: usize = 4096;
+const ANALYTICS_BOOTSTRAP_RETRY_INITIAL: Duration = Duration::from_secs(1);
+const ANALYTICS_BOOTSTRAP_RETRY_MAX: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -132,6 +135,32 @@ pub(crate) fn validate_postgres_role_separation(
     Ok(())
 }
 
+pub(crate) fn validate_postgres_migration_role_separation(
+    migration_url: Option<&PostgresDatabaseUrl>,
+    application_url: Option<&PostgresDatabaseUrl>,
+    maintenance_url: Option<&PostgresDatabaseUrl>,
+) -> Result<()> {
+    let Some(migration_url) = migration_url else {
+        return Ok(());
+    };
+    let migration_role = migration_url.effective_username()?;
+    if migration_role.is_empty() {
+        bail!("{ENV_POSTGRES_MIGRATION_URL} must specify a PostgreSQL login role");
+    }
+    for (name, url) in [
+        (ENV_POSTGRES_DATABASE_URL, application_url),
+        (ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL, maintenance_url),
+    ] {
+        if let Some(url) = url
+            && (migration_url.as_str() == url.as_str()
+                || migration_role == url.effective_username()?)
+        {
+            bail!("{ENV_POSTGRES_MIGRATION_URL} must use a distinct login role from {name}");
+        }
+    }
+    Ok(())
+}
+
 impl fmt::Debug for PostgresDatabaseUrl {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -200,6 +229,18 @@ pub(crate) struct PgAnalyticsPool {
 }
 
 impl PgAnalyticsPool {
+    async fn connect_migration(config: &AppConfig) -> Result<Self> {
+        let database_url = config
+            .postgres_migration_url
+            .as_ref()
+            .context("POSTGRES_MIGRATION_URL is required for PostgreSQL schema migration")?;
+        Self::connect_url(
+            database_url,
+            1,
+            "failed to connect to the PostgreSQL migration backend",
+        )
+        .await
+    }
     async fn connect_raw(config: &AppConfig) -> Result<Self> {
         let database_url = config
             .postgres_database_url
@@ -300,7 +341,9 @@ impl PgAnalyticsPool {
 pub(crate) struct PgAnalyticsRuntime {
     backend: AnalyticsBackend,
     pool: Option<PgAnalyticsPool>,
+    maintenance_pool: Option<PgAnalyticsPool>,
     unavailable: Option<AnalyticsUnavailable>,
+    ready: Arc<AtomicBool>,
 }
 
 impl PgAnalyticsRuntime {
@@ -308,7 +351,9 @@ impl PgAnalyticsRuntime {
         Self {
             backend: AnalyticsBackend::Sqlite,
             pool: None,
+            maintenance_pool: None,
             unavailable: None,
+            ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -317,11 +362,23 @@ impl PgAnalyticsRuntime {
             return Self::disabled();
         }
 
-        match PgAnalyticsPool::connect(config).await {
-            Ok(pool) => Self {
+        let result: Result<(PgAnalyticsPool, PgAnalyticsPool)> = async {
+            migrate_postgres_schema(config).await?;
+            let pool = PgAnalyticsPool::connect(config).await?;
+            let maintenance_pool = PgAnalyticsPool::connect_maintenance(config).await?;
+            Ok((pool, maintenance_pool))
+        }
+        .await;
+        match result {
+            Ok((pool, maintenance_pool)) => Self {
                 backend: config.analytics_backend,
                 pool: Some(pool),
-                unavailable: None,
+                maintenance_pool: Some(maintenance_pool),
+                unavailable: Some(AnalyticsUnavailable::new(
+                    config.analytics_backend,
+                    "analytics replica bootstrap is pending",
+                )),
+                ready: Arc::new(AtomicBool::new(false)),
             },
             Err(error) => {
                 let reason = sanitize_postgres_error(
@@ -334,7 +391,9 @@ impl PgAnalyticsRuntime {
                 Self {
                     backend: config.analytics_backend,
                     pool: None,
+                    maintenance_pool: None,
                     unavailable: Some(AnalyticsUnavailable::new(config.analytics_backend, reason)),
+                    ready: Arc::new(AtomicBool::new(false)),
                 }
             }
         }
@@ -345,13 +404,13 @@ impl PgAnalyticsRuntime {
     }
 
     pub(crate) fn status(&self) -> AnalyticsRuntimeStatus {
-        let (availability, reason) = if let Some(unavailable) = &self.unavailable {
+        let (availability, reason) = if self.ready.load(Ordering::Acquire) {
+            (AnalyticsAvailability::Ready, None)
+        } else if let Some(unavailable) = &self.unavailable {
             (
                 AnalyticsAvailability::Unavailable,
                 Some(unavailable.reason.clone()),
             )
-        } else if self.pool.is_some() {
-            (AnalyticsAvailability::Ready, None)
         } else {
             (AnalyticsAvailability::Disabled, None)
         };
@@ -369,6 +428,16 @@ impl PgAnalyticsRuntime {
     pub(crate) fn require_pool(
         &self,
     ) -> std::result::Result<&PgAnalyticsPool, AnalyticsUnavailable> {
+        if self.ready.load(Ordering::Acquire)
+            && let Some(pool) = &self.pool
+        {
+            return Ok(pool);
+        }
+        if self.backend == AnalyticsBackend::Postgres && self.pool.is_some() {
+            return Err(self.unavailable.clone().unwrap_or_else(|| {
+                AnalyticsUnavailable::new(self.backend, "analytics replica bootstrap is pending")
+            }));
+        }
         if let Some(pool) = &self.pool {
             return Ok(pool);
         }
@@ -378,6 +447,50 @@ impl PgAnalyticsRuntime {
                 "analytics backend is disabled; no PostgreSQL read path is available",
             )
         }))
+    }
+
+    pub(crate) fn spawn_bootstrap_lifecycle(
+        self: &Arc<Self>,
+        source_pool: Pool<Sqlite>,
+        shutdown: CancellationToken,
+    ) {
+        if self.backend != AnalyticsBackend::Postgres {
+            return;
+        }
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            let mut delay = ANALYTICS_BOOTSTRAP_RETRY_INITIAL;
+            loop {
+                if shutdown.is_cancelled() {
+                    return;
+                }
+                match runtime.bootstrap_once(&source_pool).await {
+                    Ok(()) => return,
+                    Err(error) => {
+                        warn!(error = %sanitize_postgres_error(&error, None), "PostgreSQL analytics bootstrap is unavailable; retrying");
+                    }
+                }
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                delay = std::cmp::min(delay.saturating_mul(2), ANALYTICS_BOOTSTRAP_RETRY_MAX);
+            }
+        });
+    }
+
+    async fn bootstrap_once(&self, source_pool: &Pool<Sqlite>) -> Result<()> {
+        let target = self
+            .maintenance_pool
+            .as_ref()
+            .context("PostgreSQL analytics maintenance pool is unavailable")?;
+        let report = bootstrap_replica(source_pool, target.inner(), false).await?;
+        anyhow::ensure!(
+            report.service_eligible,
+            "PostgreSQL analytics replica completed without becoming service eligible"
+        );
+        self.ready.store(true, Ordering::Release);
+        Ok(())
     }
 
     pub(crate) async fn require_read_transaction(
@@ -455,6 +568,77 @@ impl PgAnalyticsRuntime {
         }
         Ok(transaction)
     }
+}
+
+async fn migrate_postgres_schema(config: &AppConfig) -> Result<()> {
+    let migration = PgAnalyticsPool::connect_migration(config).await?;
+    let mut connection = migration.inner().acquire().await?;
+    let version: i32 = sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
+        .fetch_one(&mut *connection)
+        .await?;
+    if !(180000..190000).contains(&version) {
+        bail!("unsupported PostgreSQL major version; expected 18.x");
+    }
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(POSTGRES_MIGRATION_LOCK_KEY)
+        .execute(&mut *connection)
+        .await?;
+    let result = async {
+        sqlx::raw_sql(PG_ANALYTICS_SCHEMA_SQL)
+            .execute(&mut *connection)
+            .await?;
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS cvm_analytics.schema_migrations ( \
+                component TEXT NOT NULL, version BIGINT NOT NULL, checksum TEXT NOT NULL, \
+                state TEXT NOT NULL CHECK (state = 'applied'), \
+                min_reader_version BIGINT NOT NULL DEFAULT 1, \
+                requires_bootstrap BOOLEAN NOT NULL DEFAULT FALSE, \
+                error_code TEXT, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
+                PRIMARY KEY (component, version) \
+            )",
+        )
+        .execute(&mut *connection)
+        .await?;
+        let checksum = format!("{:x}", Sha256::digest(PG_ANALYTICS_SCHEMA_SQL.as_bytes()));
+        let existing_checksum = sqlx::query_scalar::<_, String>(
+            "SELECT checksum FROM cvm_analytics.schema_migrations WHERE component = 'pg-analytics' AND version = 1",
+        )
+        .fetch_optional(&mut *connection)
+        .await?;
+        if let Some(existing_checksum) = existing_checksum
+            && existing_checksum != checksum
+        {
+            bail!("PostgreSQL analytics migration checksum mismatch");
+        }
+        let newer_version = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(version), 0) FROM cvm_analytics.schema_migrations WHERE component = 'pg-analytics'",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        if newer_version > 1 {
+            bail!("PostgreSQL analytics schema is newer than this reader");
+        }
+        sqlx::query(
+            "INSERT INTO cvm_analytics.schema_migrations \
+             (component, version, checksum, state, requires_bootstrap) \
+             VALUES ('pg-analytics', 1, $1, 'applied', TRUE) \
+             ON CONFLICT (component, version) DO UPDATE SET \
+               checksum = EXCLUDED.checksum, state = EXCLUDED.state, \
+               requires_bootstrap = EXCLUDED.requires_bootstrap",
+        )
+        .bind(checksum)
+        .execute(&mut *connection)
+        .await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(POSTGRES_MIGRATION_LOCK_KEY)
+        .execute(&mut *connection)
+        .await;
+    result?;
+    unlock.map_err(anyhow::Error::from)?;
+    Ok(())
 }
 
 fn sanitize_postgres_error(error: &anyhow::Error, database_url: Option<&str>) -> String {
@@ -2009,6 +2193,125 @@ async fn load_source_invocation_snapshot_page(
     Ok(facts)
 }
 
+fn archive_snapshot_column(columns: &HashSet<String>, name: &str) -> String {
+    if columns.contains(name) {
+        name.to_string()
+    } else {
+        format!("NULL AS {name}")
+    }
+}
+
+fn build_archive_invocation_snapshot_query(columns: &HashSet<String>) -> Result<String> {
+    for required in ["id", "invoke_id", "occurred_at", "source"] {
+        anyhow::ensure!(
+            columns.contains(required),
+            "invocation archive is missing required column {required}"
+        );
+    }
+    let optional = |name: &str| archive_snapshot_column(columns, name);
+    Ok(format!(
+        r#"
+        SELECT
+            id,
+            invoke_id,
+            occurred_at,
+            CAST(COALESCE(ROUND((julianday(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+            ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
+            date(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+8 hours' ELSE '+0 hours' END
+            ) AS stats_date,
+            source,
+            {model},
+            {upstream_account_id},
+            {input_tokens},
+            {output_tokens},
+            {cache_input_tokens},
+            {reasoning_tokens},
+            {total_tokens},
+            {cost},
+            {cost_input},
+            {cost_cache_write},
+            {cost_cache_read},
+            {cost_output},
+            {cost_reasoning},
+            {status},
+            {error_message},
+            {failure_kind},
+            {failure_class},
+            {is_actionable},
+            {payload},
+            {t_total_ms},
+            {t_req_read_ms},
+            {t_req_parse_ms},
+            {t_upstream_connect_ms},
+            {t_upstream_ttfb_ms},
+            {t_upstream_stream_ms},
+            {first_token_ms},
+            {t_resp_parse_ms}
+        FROM codex_invocations
+        WHERE id > ?1
+        ORDER BY id
+        LIMIT ?2
+        "#,
+        model = optional("model"),
+        upstream_account_id = optional("upstream_account_id"),
+        input_tokens = optional("input_tokens"),
+        output_tokens = optional("output_tokens"),
+        cache_input_tokens = optional("cache_input_tokens"),
+        reasoning_tokens = optional("reasoning_tokens"),
+        total_tokens = optional("total_tokens"),
+        cost = optional("cost"),
+        cost_input = optional("cost_input"),
+        cost_cache_write = optional("cost_cache_write"),
+        cost_cache_read = optional("cost_cache_read"),
+        cost_output = optional("cost_output"),
+        cost_reasoning = optional("cost_reasoning"),
+        status = optional("status"),
+        error_message = optional("error_message"),
+        failure_kind = optional("failure_kind"),
+        failure_class = optional("failure_class"),
+        is_actionable = optional("is_actionable"),
+        payload = optional("payload"),
+        t_total_ms = optional("t_total_ms"),
+        t_req_read_ms = optional("t_req_read_ms"),
+        t_req_parse_ms = optional("t_req_parse_ms"),
+        t_upstream_connect_ms = optional("t_upstream_connect_ms"),
+        t_upstream_ttfb_ms = optional("t_upstream_ttfb_ms"),
+        t_upstream_stream_ms = optional("t_upstream_stream_ms"),
+        first_token_ms = optional("first_token_ms"),
+        t_resp_parse_ms = optional("t_resp_parse_ms"),
+    ))
+}
+
+async fn snapshot_invocation_archive_into_target(
+    archive_pool: &Pool<Sqlite>,
+    connection: &mut sqlx::postgres::PgConnection,
+) -> Result<()> {
+    let columns = crate::load_sqlite_table_columns(archive_pool, "codex_invocations").await?;
+    let query = build_archive_invocation_snapshot_query(&columns)?;
+    let mut after_id = 0;
+    loop {
+        let facts = sqlx::query_as::<_, SourceInvocationSnapshotRow>(&query)
+            .bind(after_id)
+            .bind(i64::try_from(ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH)?)
+            .fetch_all(archive_pool)
+            .await
+            .context("failed to read a bounded invocation archive snapshot page")?
+            .into_iter()
+            .map(snapshot_row_to_fact)
+            .collect::<Result<Vec<_>>>()?;
+        let Some(next_after_id) = facts.last().map(|fact| fact.source_row_id) else {
+            break;
+        };
+        snapshot_facts_into_target(connection, &facts, &[]).await?;
+        after_id = next_after_id;
+    }
+    Ok(())
+}
+
 async fn upsert_analytics_fact(
     connection: &mut sqlx::postgres::PgConnection,
     fact: &AnalyticsFact,
@@ -2601,11 +2904,43 @@ async fn snapshot_facts_into_target(
 async fn snapshot_invocations_into_target(
     source_pool: &Pool<Sqlite>,
     connection: &mut sqlx::postgres::PgConnection,
-) -> Result<()> {
+) -> Result<(SourceContext, bool)> {
     let mut source_transaction = source_pool
         .begin()
         .await
         .context("failed to start the SQLite analytics baseline snapshot")?;
+    let snapshot_source = load_source_context_transaction(&mut source_transaction).await?;
+    let archive_rows =
+        crate::stats::load_completed_invocation_archive_paths(&mut *source_transaction)
+            .await
+            .context(
+                "failed to enumerate completed invocation archives for PostgreSQL bootstrap",
+            )?;
+    if snapshot_source.state.historical_replay_required != 0 && archive_rows.is_empty() {
+        bail!(
+            "SQLite requires historical archive replay but no completed invocation archive is available"
+        );
+    }
+    let archive_replay_completed = !archive_rows.is_empty();
+    for archive_row in archive_rows {
+        let archive_path = archive_row.file_path().to_string();
+        let Some((archive_pool, archive_cleanup)) =
+            crate::stats::open_invocation_archive_batch_pool(
+                &archive_row,
+                "postgres-analytics-bootstrap",
+            )
+            .await
+            .with_context(|| format!("failed to open invocation archive {archive_path}"))?
+        else {
+            bail!("invocation archive {archive_path} is unavailable for PostgreSQL bootstrap");
+        };
+        let result = snapshot_invocation_archive_into_target(&archive_pool, connection)
+            .await
+            .with_context(|| format!("failed to replay invocation archive {archive_path}"));
+        archive_pool.close().await;
+        drop(archive_cleanup);
+        result?;
+    }
     let mut after_id = 0;
     loop {
         let facts = load_source_invocation_snapshot_page(&mut source_transaction, after_id).await?;
@@ -2626,35 +2961,43 @@ async fn snapshot_invocations_into_target(
         .commit()
         .await
         .context("failed to commit the SQLite analytics baseline snapshot")?;
-    Ok(())
+    Ok((snapshot_source, archive_replay_completed))
 }
 
-async fn source_has_historical_invocation_archives(source_pool: &Pool<Sqlite>) -> Result<bool> {
-    let archive_table_exists = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_batches')",
+async fn load_source_context_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<SourceContext> {
+    let state = sqlx::query_as::<_, SourceChangeState>(
+        "SELECT generation, coverage_revision, retained_from_change_id, capacity, invalidation_pending, historical_replay_required, historical_history_unknown FROM analytics_change_state WHERE id = 1",
     )
-    .fetch_one(source_pool)
+    .fetch_one(&mut **transaction)
     .await
-    .context("failed to inspect SQLite invocation archive metadata")?
-        != 0;
-    if !archive_table_exists {
-        return Ok(false);
-    }
-    sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT EXISTS(
-            SELECT 1
-            FROM archive_batches
-            WHERE dataset = 'codex_invocations'
-              AND status = 'completed'
-              AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
-        )
-        "#,
+    .context("analytics source change state is not initialized")?;
+    let latest_change_id = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(MAX(change_id), 0) FROM analytics_change_events",
     )
-    .fetch_one(source_pool)
+    .fetch_one(&mut **transaction)
     .await
-    .context("failed to inspect completed SQLite invocation archives")
-    .map(|exists| exists != 0)
+    .context("failed to load the latest analytics source change")?;
+    let retained_bytes = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(length(CAST(fact_json AS BLOB))), 0) FROM analytics_change_events",
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .context("failed to measure the retained analytics source journal")?;
+    let coverage = sqlx::query_as::<_, SourceCoverage>(
+        "SELECT generation, covered_through_change_id, coverage_revision FROM analytics_change_coverage WHERE replica_id = ?1",
+    )
+    .bind(ANALYTICS_REPLICA_ID)
+    .fetch_optional(&mut **transaction)
+    .await
+    .context("failed to load analytics source acknowledgement")?;
+    Ok(SourceContext {
+        state,
+        latest_change_id,
+        retained_bytes,
+        coverage,
+    })
 }
 
 async fn acknowledge_unverified_legacy_history(source_pool: &Pool<Sqlite>) -> Result<()> {
@@ -2720,7 +3063,8 @@ async fn bootstrap_replica(
     }
     drop(connection);
     result?;
-    load_status_report(pool, source_pool).await
+    let report = resume_replica(source_pool, pool).await?;
+    Ok(report)
 }
 
 async fn bootstrap_replica_locked(
@@ -2730,72 +3074,50 @@ async fn bootstrap_replica_locked(
 ) -> Result<()> {
     fence_replica_service_eligibility_on_connection(connection).await?;
     verify_replica_schema_on_connection(connection).await?;
-    let mut source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-    if source_before.state.historical_replay_required != 0
-        || source_has_historical_invocation_archives(source_pool).await?
-    {
-        let detail = "SQLite historical invocation coverage requires archive replay before PostgreSQL analytics bootstrap can declare complete history";
-        mark_replica_blocked_on_connection(connection, "historical_source_unavailable", detail)
-            .await?;
-        return Err(anyhow!(detail));
-    }
+    let source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+    clear_replica_target(connection, source_before.state.generation).await?;
+    let (snapshot_source, archive_replay_completed) =
+        match snapshot_invocations_into_target(source_pool, connection).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let detail = error.to_string();
+                let error_code = if detail.contains("oversized analytics replica") {
+                    "oversized_fact"
+                } else {
+                    "snapshot_failed"
+                };
+                mark_replica_blocked_on_connection(connection, error_code, detail.clone()).await?;
+                return Err(anyhow!(detail));
+            }
+        };
     if source_before.state.historical_history_unknown != 0 {
-        if !acknowledge_unverified_history {
-            let detail = "SQLite historical coverage predates the analytics source journal and cannot be proven complete; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
+        if !archive_replay_completed && !acknowledge_unverified_history {
+            let detail = "SQLite historical coverage predates the analytics source journal and no completed invocation archive is available for controlled replay";
             mark_replica_blocked_on_connection(connection, "historical_source_unavailable", detail)
                 .await?;
             return Err(anyhow!(detail));
         }
         acknowledge_unverified_legacy_history(source_pool).await?;
-        source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     }
-    clear_replica_target(connection, source_before.state.generation).await?;
-    if let Err(error) = snapshot_invocations_into_target(source_pool, connection).await {
-        let detail = error.to_string();
-        let error_code = if detail.contains("oversized analytics replica") {
-            "oversized_fact"
-        } else {
-            "snapshot_failed"
-        };
-        mark_replica_blocked_on_connection(connection, error_code, detail.clone()).await?;
-        return Err(anyhow!(detail));
+    set_replica_baseline(connection, &snapshot_source).await?;
+    if source_before.state.historical_replay_required != 0 {
+        sqlx::query(
+            "UPDATE analytics_change_state SET historical_replay_required = 0, updated_at = datetime('now') WHERE id = 1 AND generation = ?1",
+        )
+        .bind(snapshot_source.state.generation)
+        .execute(source_pool)
+        .await
+        .context("failed to acknowledge completed SQLite archive replay")?;
     }
     let source_after = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-    if source_before.state.generation != source_after.state.generation
-        || source_before.latest_change_id != source_after.latest_change_id
-        || source_before.state.coverage_revision != source_after.state.coverage_revision
-    {
-        let detail = format!(
-            "SQLite source changed while analytics replica baseline was being built: before generation={}, latest_change_id={}, coverage_revision={}; after generation={}, latest_change_id={}, coverage_revision={}",
-            source_before.state.generation,
-            source_before.latest_change_id,
-            source_before.state.coverage_revision,
-            source_after.state.generation,
-            source_after.latest_change_id,
-            source_after.state.coverage_revision,
-        );
-        mark_replica_blocked_on_connection(
-            connection,
-            "source_changed_during_snapshot",
-            detail.clone(),
-        )
+    anyhow::ensure!(
+        source_after.state.generation == snapshot_source.state.generation,
+        "analytics source generation changed during PostgreSQL bootstrap snapshot"
+    );
+    // The snapshot is valid for its captured watermark. Leave the replica running and let the
+    // bounded Journal catch-up apply changes committed while archive replay ran.
+    set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, false)
         .await?;
-        return Err(anyhow!(detail));
-    }
-    set_replica_baseline(connection, &source_after).await?;
-    if let Err(error) = crate::analytics_changes::acknowledge_analytics_change_generation(
-        source_pool,
-        ANALYTICS_REPLICA_ID,
-        source_after.state.generation,
-        source_after.latest_change_id,
-    )
-    .await
-    {
-        let detail = error.to_string();
-        mark_replica_blocked_on_connection(connection, "source_ack_failed", detail.clone()).await?;
-        return Err(anyhow!(detail));
-    }
-    set_replica_acknowledged_on_connection(connection, source_after.latest_change_id, true).await?;
     Ok(())
 }
 
@@ -2841,11 +3163,6 @@ async fn resume_replica(
 
     for _ in 0..ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN {
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-        if source.state.historical_replay_required != 0 {
-            let detail = "SQLite historical invocation coverage requires archive replay before the analytics replica can advance";
-            mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
-            return Err(anyhow!(detail));
-        }
         if source.state.historical_history_unknown != 0 {
             let detail = "SQLite historical coverage predates the analytics source journal; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
             mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
@@ -3408,6 +3725,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn archive_snapshot_query_accepts_legacy_optional_columns_but_requires_identity() {
+        let columns = ["id", "invoke_id", "occurred_at", "source"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let query = build_archive_invocation_snapshot_query(&columns).expect("query");
+        assert!(query.contains("NULL AS first_token_ms"));
+        assert!(query.contains("FROM codex_invocations"));
+        assert!(
+            build_archive_invocation_snapshot_query(&HashSet::from(["id".to_string()])).is_err()
+        );
+    }
+
+    #[test]
     fn postgres_url_debug_and_json_are_redacted() {
         let url = PostgresDatabaseUrl::parse(
             "postgresql://analytics:secret@example.test:5432/codex?sslmode=require",
@@ -3418,6 +3749,41 @@ mod tests {
         assert!(!debug.contains("secret"));
         assert!(!json.contains("secret"));
         assert_eq!(json, "\"<redacted>\"");
+    }
+
+    #[test]
+    fn postgres_role_contract_requires_three_distinct_effective_roles() {
+        let migration = PostgresDatabaseUrl::parse_for(
+            "postgres://migration@db.example/analytics",
+            ENV_POSTGRES_MIGRATION_URL,
+        )
+        .unwrap();
+        let application =
+            PostgresDatabaseUrl::parse("postgres://application@db.example/analytics").unwrap();
+        let maintenance = PostgresDatabaseUrl::parse_for(
+            "postgres://maintenance@db.example/analytics",
+            ENV_POSTGRES_ANALYTICS_MAINTENANCE_URL,
+        )
+        .unwrap();
+        validate_postgres_migration_role_separation(
+            Some(&migration),
+            Some(&application),
+            Some(&maintenance),
+        )
+        .unwrap();
+        let duplicate = PostgresDatabaseUrl::parse_for(
+            "postgres://application@other.example/analytics",
+            ENV_POSTGRES_MIGRATION_URL,
+        )
+        .unwrap();
+        assert!(
+            validate_postgres_migration_role_separation(
+                Some(&duplicate),
+                Some(&application),
+                Some(&maintenance),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -3604,7 +3970,9 @@ mod tests {
         let runtime = PgAnalyticsRuntime {
             backend: AnalyticsBackend::Postgres,
             pool: None,
+            maintenance_pool: None,
             unavailable: None,
+            ready: Arc::new(AtomicBool::new(false)),
         };
         let error = query_account_window_usage(
             &runtime,
@@ -4238,7 +4606,9 @@ mod tests {
                 pool: Some(PgAnalyticsPool {
                     pool: app_pool.clone(),
                 }),
+                maintenance_pool: None,
                 unavailable: None,
+                ready: Arc::new(AtomicBool::new(true)),
             };
 
         let app_ddl = sqlx::query("CREATE TABLE cvm_analytics.app_must_not_ddl (id INTEGER)")

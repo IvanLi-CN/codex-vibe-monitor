@@ -12,6 +12,7 @@ pub(crate) fn test_config() -> AppConfig {
         database_path: PathBuf::from(":memory:"),
         analytics_backend: AnalyticsBackend::Sqlite,
         postgres_database_url: None,
+        postgres_migration_url: None,
         postgres_analytics_maintenance_url: None,
         postgres_max_connections: DEFAULT_POSTGRES_MAX_CONNECTIONS as u32,
         observability: ObservabilityConfig::default(),
@@ -295,7 +296,6 @@ pub(crate) fn shanghai_local_now_minus_secs(secs: i64) -> String {
     let now_local = Utc::now().with_timezone(&Shanghai).naive_local();
     format_naive(now_local - ChronoDuration::seconds(secs))
 }
-
 pub(crate) fn utc_naive_from_shanghai_local_days_ago(
     days: i64,
     hour: u32,
@@ -308,7 +308,6 @@ pub(crate) fn utc_naive_from_shanghai_local_days_ago(
         .expect("valid shanghai local time");
     format_naive(local_naive_to_utc(local_naive, Shanghai).naive_utc())
 }
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_retention_invocation(
     pool: &SqlitePool,
