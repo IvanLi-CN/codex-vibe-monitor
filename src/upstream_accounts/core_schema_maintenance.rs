@@ -1693,6 +1693,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             limit_id TEXT,
             limit_name TEXT,
             plan_type TEXT,
+            allowed INTEGER,
+            limit_reached INTEGER,
             primary_used_percent REAL,
             primary_window_minutes INTEGER,
             primary_resets_at TEXT,
@@ -1723,6 +1725,12 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_upstream_account_limit_samples table existence")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_account_limit_samples", "allowed")
+        .await
+        .context("failed to ensure allowed usage sample column")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_account_limit_samples", "limit_reached")
+        .await
+        .context("failed to ensure limit_reached usage sample column")?;
     ensure_nullable_text_column(
         pool,
         "pool_upstream_account_limit_samples",

@@ -3415,6 +3415,8 @@ pub(crate) struct NormalizedUsageSnapshot {
     pub(crate) plan_type: Option<String>,
     pub(crate) limit_id: String,
     pub(crate) limit_name: Option<String>,
+    pub(crate) allowed: Option<bool>,
+    pub(crate) limit_reached: Option<bool>,
     pub(crate) primary: Option<NormalizedUsageWindow>,
     pub(crate) secondary: Option<NormalizedUsageWindow>,
     pub(crate) credits: Option<CreditsSnapshot>,

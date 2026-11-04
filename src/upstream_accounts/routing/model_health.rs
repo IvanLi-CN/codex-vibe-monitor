@@ -2009,6 +2009,30 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start_admitted(
     failure_kind: Option<&str>,
     request_started_at: Option<&str>,
 ) -> Result<bool> {
+    record_model_route_failure_from_attempt_with_start_and_reason_admitted(
+        pool,
+        account_id,
+        attempt_id,
+        status,
+        error_message,
+        failure_kind,
+        ModelRouteFailureContext {
+            request_started_at,
+            reason_code: None,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn record_model_route_failure_from_attempt_with_start_and_reason_admitted(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: i64,
+    status: StatusCode,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    context: ModelRouteFailureContext<'_>,
+) -> Result<bool> {
     record_model_route_failure_from_attempt_inner(
         pool,
         account_id,
@@ -2016,11 +2040,17 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start_admitted(
         status,
         error_message,
         failure_kind,
-        request_started_at,
+        context.request_started_at,
         true,
-        None,
+        context.reason_code,
     )
     .await
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ModelRouteFailureContext<'a> {
+    pub(crate) request_started_at: Option<&'a str>,
+    pub(crate) reason_code: Option<&'a str>,
 }
 
 #[expect(
@@ -2186,18 +2216,24 @@ async fn record_model_route_failure_inner(
     let streak_age = parse_to_utc_datetime(&streak_started)
         .map(|started| (Utc::now() - started).num_seconds())
         .unwrap_or_default();
-    let cooling =
-        failures >= MODEL_ROUTE_FAILURE_THRESHOLD || streak_age >= MODEL_ROUTE_FAILURE_WINDOW_SECS;
+    // Explicit model errors are definitive for this account×model route. They
+    // must be excluded immediately while account-level failures keep the
+    // normal streak and backoff behavior.
+    let immediate_model_failure = status == StatusCode::TOO_MANY_REQUESTS
+        && (is_explicit_model_failure_for_model(status, error_message, Some(model))
+            || route_failure_kind_is_quota_exhausted(failure_kind));
+    let cooling = immediate_model_failure
+        || failures >= MODEL_ROUTE_FAILURE_THRESHOLD
+        || streak_age >= MODEL_ROUTE_FAILURE_WINDOW_SECS;
     let cooldown_until = if cooling {
+        let cooldown_exponent = failures
+            .saturating_sub(MODEL_ROUTE_FAILURE_THRESHOLD)
+            .clamp(0, 5) as u32;
         Some(
             (Utc::now()
                 + chrono::Duration::seconds(
-                    (MODEL_ROUTE_COOLDOWN_BASE_SECS
-                        * (1_i64
-                            << failures
-                                .saturating_sub(MODEL_ROUTE_FAILURE_THRESHOLD)
-                                .min(5)))
-                    .min(MODEL_ROUTE_COOLDOWN_MAX_SECS),
+                    (MODEL_ROUTE_COOLDOWN_BASE_SECS * (1_i64 << cooldown_exponent))
+                        .min(MODEL_ROUTE_COOLDOWN_MAX_SECS),
                 ))
             .to_rfc3339(),
         )
