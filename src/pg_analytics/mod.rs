@@ -2523,18 +2523,6 @@ async fn replace_parallel_work_key(
     Ok(())
 }
 
-fn coverage_event_is_live_mirror(change: &SourceChangeRow) -> bool {
-    serde_json::from_str::<Value>(&change.fact_json)
-        .ok()
-        .and_then(|value| value.get("summarySourceKind").cloned())
-        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-        .is_some_and(|kind| kind == "live_mirror")
-}
-
-fn coverage_event_requires_replay(change: &SourceChangeRow) -> bool {
-    change.source == "codex_invocations" && !coverage_event_is_live_mirror(change)
-}
-
 fn validate_source_change_compatibility(
     change: &SourceChangeRow,
     required_fact_date_semantics_version: i64,
@@ -2596,13 +2584,11 @@ async fn apply_replica_change(
             replace_parallel_work_key(connection, &change.source, source_row_id, None).await?;
         }
         ("upsert", _) => {}
-        ("coverage", _) if !coverage_event_requires_replay(change) => {}
-        ("coverage", entity_kind) => {
-            bail!(
-                "historical analytics archive coverage change {entity_kind} at {} requires archive replay",
-                change.change_id
-            );
-        }
+        // Archive coverage events are recorded in the Journal for source accounting, while the
+        // corresponding facts are loaded from the completed archive during bootstrap. Treat the
+        // event as an idempotent marker here; a newly appended archive sets the source replay
+        // fence and is handled by the next fenced bootstrap attempt.
+        ("coverage", _) => {}
         (event_kind, entity_kind) => {
             bail!(
                 "unsupported analytics source change kind {event_kind}/{entity_kind} at {}",
