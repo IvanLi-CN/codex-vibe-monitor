@@ -2502,16 +2502,14 @@ pub(crate) fn model_routing_model_union(
     policy_models: Option<&[String]>,
     observed_models: &[String],
 ) -> std::collections::BTreeSet<String> {
-    let mut models = catalog_models
+    catalog_models
         .iter()
         .chain(policy_models.into_iter().flatten())
         .chain(observed_models)
         .map(|model| model.trim())
         .filter(|model| !model.is_empty())
         .map(ToOwned::to_owned)
-        .collect::<std::collections::BTreeSet<_>>();
-    models.retain(|model| model.chars().count() <= 256);
-    models
+        .collect()
 }
 
 pub(crate) async fn reset_upstream_account_model_routing(

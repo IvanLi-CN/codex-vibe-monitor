@@ -20,11 +20,10 @@ fn model_routing_api_unions_catalog_policy_and_observed_models() {
 }
 
 #[test]
-fn model_routing_api_handles_missing_policy_and_invalid_model_ids() {
+fn model_routing_api_handles_missing_policy_and_empty_model_ids() {
     let catalog = vec!["catalog-only".to_string()];
     let observed = vec!["observed-only".to_string(), "\t".to_string()];
-    let oversized = "x".repeat(257);
-    let policy = vec![oversized, "policy-only".to_string()];
+    let policy = vec!["policy-only".to_string()];
 
     let models = model_routing_model_union(&catalog, Some(&policy), &observed);
 
