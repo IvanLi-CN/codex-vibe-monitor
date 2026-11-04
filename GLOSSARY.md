@@ -230,3 +230,33 @@ _Avoid_: temporary outage, soft switch, best-effort rebuild.
 **Analytics Readiness**:
 The deployment-facing condition that PostgreSQL schema, permissions, replica coverage, projection state, and read-transaction checks all pass. It is distinct from core SQLite service readiness.
 _Avoid_: process liveness, PostgreSQL accepts connections.
+
+## Analytics Materialization Language
+
+**Analytics Source Journal**:
+The ordered record of business fact changes and corrections promised as input to analytics derivation.
+_Avoid_: Journal without qualification, TerminalJournal.
+
+**TerminalJournal**:
+The durable recovery record for completing invocation termination work.
+_Avoid_: Analytics Source Journal.
+
+**Analytics Derived Fact**:
+A normalized representation of a business fact with stable source identity and the attributes required for statistics.
+_Avoid_: business fact authority, raw request.
+
+**Analytics Read Model**:
+A query-oriented representation of statistics, including its supported coverage and completeness proof.
+_Avoid_: cache hit when claiming statistical completeness.
+
+**Historical Aggregate Seed**:
+A migration input that preserves historical aggregates and their proof; it represents existing aggregate capabilities without recreating missing details.
+_Avoid_: raw fact backup.
+
+**Reconstructible Coverage**:
+The set of metrics, dimensions and time ranges that retained sources can fully recompute.
+_Avoid_: earliest record date as proof of complete history.
+
+**Published Coverage**:
+The statistics coverage fully processed and admitted for queries.
+_Avoid_: ingested coverage when referring to published statistics.

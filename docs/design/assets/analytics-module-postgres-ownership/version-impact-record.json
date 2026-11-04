@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "proposed-design-not-release-ready",
+  "change": {
+    "description": "Future analytics module ownership cutover detailed in docs/design/analytics-module-postgres-ownership.md under ADR 0054.",
+    "release_unit_description": "Candidate runtime implementation remains unassigned; the present work adds design documents only.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "Introduce an optional module-level PG backend and a new durable ownership/publication contract while preserving public API shapes and default SQLite operation. Earlier-Minor binaries need not interpret the newly migrated analytics control state.",
+      "evidence": ["../../analytics-module-postgres-ownership.md"]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "No runtime implementation; proposed scope and compatibility remain subject to owner review."
+      },
+      "reasoning": "The proposed runtime unit has separate API compatibility and persistent-state compatibility gates; backend rollback uses an epoch-aware binary.",
+      "evidence": ["persistent-state-migration-record.json"]
+    },
+    "verified": {
+      "impact": null,
+      "reasoning": "No runtime compatibility tests or release-unit verification have been executed.",
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "planned-compatible",
+      "planned_impact": "minor",
+      "supported_consumer_range": "Existing HTTP/SSE consumers; response shapes, timezones, null/sample semantics and runtime-tail behavior must remain compatible. Any unavailable/status change requires explicit compatibility review.",
+      "evidence": []
+    },
+    "persistent_state": {
+      "applicable": true,
+      "planned_impact": "minor",
+      "state_description": "Versioned source control and envelopes, PG owner/build/publication state, certified historical seeds and rollback coverage.",
+      "source_program_compatibility_range": "Baseline fixtures v4.19.5 and v4.19.6 plus an explicitly enumerated supported earlier-Minor list before acceptance; arbitrary old-binary rollback is not promised.",
+      "evidence": []
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["persistent-state-migration-record.json"],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}
