@@ -60,6 +60,7 @@ import {
   ReserveQuotaCard,
   UpstreamAccountUsageCard,
 } from "../../features/account-pool/UpstreamAccountUsageCard";
+import { useAccountModelRouting } from "../../features/account-pool/useAccountModelRouting";
 import { useRoutingBlockClock } from "../../features/account-pool/useRoutingBlockClock";
 import { DashboardActivityOverview } from "../../features/dashboard/DashboardActivityOverview";
 import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../features/dashboard/dashboardActivityRange";
@@ -2067,7 +2068,8 @@ function SharedUpstreamAccountDetailDrawerInner({
     credentialRefresh?.state !== "needs_reauth" &&
     selectedDetail?.enabled !== false &&
     selectedDetail?.hasRefreshToken !== false;
-  const modelRoutingStates = selectedDetail?.modelRoutingStates ?? [];
+  const modelRouting = useAccountModelRouting(selectedDetail);
+  const modelRoutingStates = modelRouting.states;
   const resetModelRouting = useCallback(
     async (model: string) => {
       if (!writesEnabled || !selectedDetail || modelRoutingResetting) return;
@@ -4989,11 +4991,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </CardContent>
                   </Card>
 
-                  {selectedDetail.kind === "api_key_codex" ? (
+                  {selectedDetail.kind === "api_key_codex" ||
+                  selectedDetail.kind === "oauth_codex" ? (
                     <ModelRoutingHealthPanel
                       accountId={selectedDetail.id}
                       states={modelRoutingStates}
-                      error={modelRoutingError}
+                      error={modelRoutingError ?? modelRouting.error}
+                      loading={modelRouting.loading}
+                      account={selectedDetail}
                       resettingModel={modelRoutingResetting}
                       writesEnabled={writesEnabled}
                       initialExpandedModel={initialExpandedModel}

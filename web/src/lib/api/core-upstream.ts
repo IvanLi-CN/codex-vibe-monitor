@@ -1774,7 +1774,7 @@ function normalizeUpstreamAccountActionEvent(raw: unknown): UpstreamAccountActio
 function normalizeModelRoutingState(raw: unknown): ModelRoutingState | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const model = typeof payload.model === "string" ? payload.model.trim() : "";
-  const state = typeof payload.state === "string" ? payload.state : "available";
+  const state = typeof payload.state === "string" ? payload.state : "unknown";
   const priority = typeof payload.priority === "string" ? payload.priority : "normal";
   const lastSeenAt = typeof payload.lastSeenAt === "string" ? payload.lastSeenAt : "";
   if (!model || !lastSeenAt) return null;
@@ -2615,6 +2615,21 @@ export async function fetchModelRoutingLive(
     { signal: query?.signal },
   );
   return normalizeModelRoutingLiveResponse(response);
+}
+
+/** Complete catalog, policy and observed model union for one account. */
+export async function fetchUpstreamAccountModelRouting(
+  accountId: number,
+  signal?: AbortSignal,
+): Promise<ModelRoutingState[]> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/${accountId}/model-routing`,
+    { signal },
+  );
+  if (!Array.isArray(response)) throw new Error("Request failed: invalid model routing payload");
+  return response
+    .map(normalizeModelRoutingState)
+    .filter((item): item is ModelRoutingState => item != null);
 }
 
 export async function fetchUpstreamAccountModelRoutingEvents(

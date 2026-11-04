@@ -9,12 +9,15 @@ import {
   CardTitle,
 } from "../../components/ui/card";
 import { Chip } from "../../components/ui/chip";
+import { Input } from "../../components/ui/input";
+import { SelectField } from "../../components/ui/select-field";
 import { useTranslation } from "../../i18n";
 import {
   fetchUpstreamAccountModelRoutingEvents,
   type ModelRoutingHistoryResponse,
   type ModelRoutingState,
   type ModelRoutingTimelineRecord,
+  type UpstreamAccountSummary,
 } from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
 import { ModelIdentity } from "../shared/ModelIdentity";
@@ -34,18 +37,44 @@ function formatBeijing(value?: string | null) {
   }).format(date);
 }
 
-function routeTone(state: string): "success" | "warning" | "secondary" {
+export type ModelAvailability =
+  | "available"
+  | "verifying"
+  | "model_rate_limited"
+  | "account_rate_limited"
+  | "unknown";
+
+// Account work status is authoritative; quota snapshots and Reserve never infer model health.
+export function modelAvailability(
+  route: ModelRoutingState,
+  account?: UpstreamAccountSummary,
+): ModelAvailability {
+  if (account?.workStatus === "rate_limited") return "account_rate_limited";
+  if (route.state === "available") return "available";
+  if (
+    route.state === "cooling_down" &&
+    !route.probeRequired &&
+    [
+      "model_quota",
+      "upstream_http_429",
+      "upstream_http_429_quota_exhausted",
+      "model_rate_limit",
+    ].includes(route.lastFailureKind ?? "")
+  )
+    return "model_rate_limited";
+  if (route.state === "degraded" || route.state === "cooling_down" || route.probeRequired)
+    return "verifying";
+  return "unknown";
+}
+
+function routeTone(state: ModelAvailability): "success" | "warning" | "secondary" {
   if (state === "available") return "success";
-  if (state === "cooling_down") return "warning";
+  if (state === "model_rate_limited" || state === "account_rate_limited") return "warning";
   return "secondary";
 }
 
-function routeStateLabel(state: string, t: (key: string) => string) {
-  const key = `accountPool.upstreamAccounts.modelRouting.states.${state}`;
-  const translated = t(key);
-  return translated === key
-    ? t("accountPool.upstreamAccounts.modelRouting.history.unknown")
-    : translated;
+function routeStateLabel(state: ModelAvailability, t: (key: string) => string) {
+  return t(`accountPool.upstreamAccounts.modelRouting.states.${state}`);
 }
 
 function routeProtocolLabel(values: Array<string | null | undefined>, t: (key: string) => string) {
@@ -204,6 +233,8 @@ function cacheUsageMissingReasonLabel(
 export interface ModelRoutingHealthPanelProps {
   accountId?: number;
   states: ModelRoutingState[];
+  account?: UpstreamAccountSummary;
+  loading?: boolean;
   error?: string | null;
   resettingModel?: string | null;
   writesEnabled: boolean;
@@ -214,6 +245,8 @@ export interface ModelRoutingHealthPanelProps {
 export function ModelRoutingHealthPanel({
   accountId,
   states,
+  account,
+  loading = false,
   error,
   resettingModel = null,
   writesEnabled,
@@ -229,6 +262,14 @@ export function ModelRoutingHealthPanel({
     }
   }, [initialExpandedModel, states]);
 
+  const [modelFilter, setModelFilter] = useState("");
+  const [stateFilter, setStateFilter] = useState("all");
+  const visibleStates = states.filter(
+    (route) =>
+      route.model.toLowerCase().includes(modelFilter.trim().toLowerCase()) &&
+      (stateFilter === "all" || modelAvailability(route, account) === stateFilter),
+  );
+
   return (
     <Card data-testid="upstream-account-model-routing-panel">
       <CardHeader className="gap-1 px-4 py-3">
@@ -240,19 +281,57 @@ export function ModelRoutingHealthPanel({
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-2 px-4 pb-4">
+        <p className="text-xs text-base-content/65">
+          {t("accountPool.upstreamAccounts.modelRouting.quotaHint")}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Input
+            className="min-w-0 flex-1"
+            aria-label={t("accountPool.upstreamAccounts.modelRouting.filterModel")}
+            placeholder={t("accountPool.upstreamAccounts.modelRouting.filterModel")}
+            value={modelFilter}
+            onChange={(event) => setModelFilter(event.target.value)}
+          />
+          <SelectField
+            aria-label={t("accountPool.upstreamAccounts.modelRouting.state")}
+            value={stateFilter}
+            onValueChange={setStateFilter}
+            options={[
+              { value: "all", label: t("accountPool.upstreamAccounts.modelRouting.allStates") },
+              ...(
+                [
+                  "available",
+                  "verifying",
+                  "model_rate_limited",
+                  "account_rate_limited",
+                  "unknown",
+                ] as const
+              ).map((state) => ({ value: state, label: routeStateLabel(state, t) })),
+            ]}
+          />
+        </div>
         {error ? (
           <Alert variant="error" data-testid="model-routing-error">
             <AppIcon name="alert-outline" className="h-4 w-4" aria-hidden />
             <span>{error}</span>
           </Alert>
         ) : null}
-        {states.length === 0 ? (
+        {loading ? (
+          <p role="status" className="text-sm text-base-content/70">
+            {t("accountPool.upstreamAccounts.modelRouting.loading")}
+          </p>
+        ) : error && states.length === 0 ? null : visibleStates.length === 0 ? (
           <p className="text-sm text-base-content/70">
-            {t("accountPool.upstreamAccounts.modelRouting.empty")}
+            {t(
+              states.length === 0
+                ? "accountPool.upstreamAccounts.modelRouting.empty"
+                : "accountPool.upstreamAccounts.modelRouting.noMatches",
+            )}
           </p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-base-300/70">
-            {states.map((route) => {
+            {visibleStates.map((route) => {
+              const availability = modelAvailability(route, account);
               const expanded = expandedModel === route.model;
               const cacheUsageMissing = Boolean(route.cacheUsageMissingSince);
               const protection = route.probeRequired
@@ -292,7 +371,9 @@ export function ModelRoutingHealthPanel({
                         {[
                           protection,
                           failureSummary,
-                          formatBeijing(route.changedAt ?? route.lastSeenAt),
+                          route.state === "unknown"
+                            ? null
+                            : formatBeijing(route.changedAt ?? route.lastSeenAt),
                         ]
                           .filter(Boolean)
                           .join(" · ")}
@@ -309,20 +390,22 @@ export function ModelRoutingHealthPanel({
                         </span>
                       ) : null}
                     </button>
-                    <Chip tone={routeTone(route.state)}>{routeStateLabel(route.state, t)}</Chip>
+                    <Chip tone={routeTone(availability)}>{routeStateLabel(availability, t)}</Chip>
                     <div className="flex min-w-0 basis-full flex-wrap items-center justify-end gap-2 md:flex-nowrap">
                       {route.cooldownUntil ? (
                         <span className="hidden text-xs tabular-nums tone-ink-warning md:inline">
                           {formatBeijing(route.cooldownUntil)}
                         </span>
                       ) : null}
-                      {route.state !== "available" || cacheUsageMissing ? (
+                      {(route.state !== "available" && route.state !== "unknown") ||
+                      cacheUsageMissing ? (
                         <Button
                           type="button"
                           size="sm"
                           variant="ghost"
-                          disabled={!writesEnabled || resettingModel === route.model}
+                          disabled={!writesEnabled || resettingModel != null}
                           onClick={() => onReset(route.model)}
+                          title={t("accountPool.upstreamAccounts.modelRouting.resetHint")}
                           data-testid={`model-routing-reset-${route.model}`}
                           aria-label={`${t("accountPool.upstreamAccounts.modelRouting.reset")}: ${route.model}`}
                         >
