@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.19.8",
+  "base_stable_version": "4.19.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-04T18:07:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.19.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8584261f18f0caee6006430e72d9e73e4d61b396",
+  "pr_number": 1295,
+  "pr_title": "refactor(tests): split terminal routing failover fixtures",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.19.8",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.19.8",
+  "target_sha": "b9f6c2382dd223a06fa698ef8b385dcaf6d30759",
+  "type_label": "type:patch"
+}
