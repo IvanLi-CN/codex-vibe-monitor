@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.19.0",
+  "base_stable_version": "4.18.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-04T05:03:35Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.19.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7978fb68e481e116104b99456c5d9ad900ec8c8c",
+  "pr_number": 1284,
+  "pr_title": "fix(analytics): replay archives during postgres bootstrap",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.19.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.19.0",
+  "target_sha": "1cdfa7ddf58f6371d9bdc132679a71bfb4c39d54",
+  "type_label": "type:minor"
+}
