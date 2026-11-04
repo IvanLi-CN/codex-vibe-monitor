@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 102,
+    "inventory_entries": 105,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -379,10 +379,28 @@
       "next_module_workstream": "Maintain failure persistence, wake/fence, orphan recovery, and capacity-audit fixtures below the test-helper target."
     },
     {
-      "path": "src/tests/stateful_sqlite/routing_failover_terminal_reasoning.rs",
+      "path": "src/tests/stateful_sqlite/routing_failover_terminal_reasoning/failure_reasoning_and_selection.rs",
       "role": "test_helper",
-      "line_budget": 3671,
-      "next_module_workstream": "Split routing failover terminal-reasoning fixtures by capture route, overload, and timeout."
+      "line_budget": 610,
+      "next_module_workstream": "Maintain terminal failure reasoning and grouped/ungrouped route-selection fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_terminal_reasoning/upstream_status_and_failover.rs",
+      "role": "test_helper",
+      "line_budget": 608,
+      "next_module_workstream": "Maintain upstream 429/413 status aggregation, retry, handoff, and terminal failover fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_terminal_reasoning/capture_and_persistence.rs",
+      "role": "test_helper",
+      "line_budget": 1605,
+      "next_module_workstream": "Maintain pool capture, invocation persistence, raw logging, follow-up, and terminal payload fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_terminal_reasoning/timeout_route_behavior.rs",
+      "role": "test_helper",
+      "line_budget": 772,
+      "next_module_workstream": "Maintain timeout route switching, sticky-owner, canonical-key, and broken-group fixtures below the test-helper target."
     },
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
