@@ -2904,7 +2904,7 @@ async fn snapshot_facts_into_target(
 async fn snapshot_invocations_into_target(
     source_pool: &Pool<Sqlite>,
     connection: &mut sqlx::postgres::PgConnection,
-) -> Result<SourceContext> {
+) -> Result<(SourceContext, bool)> {
     let mut source_transaction = source_pool
         .begin()
         .await
@@ -2921,6 +2921,7 @@ async fn snapshot_invocations_into_target(
             "SQLite requires historical archive replay but no completed invocation archive is available"
         );
     }
+    let archive_replay_completed = !archive_rows.is_empty();
     for archive_row in archive_rows {
         let archive_path = archive_row.file_path().to_string();
         let Some((archive_pool, archive_cleanup)) =
@@ -2960,7 +2961,7 @@ async fn snapshot_invocations_into_target(
         .commit()
         .await
         .context("failed to commit the SQLite analytics baseline snapshot")?;
-    Ok(snapshot_source)
+    Ok((snapshot_source, archive_replay_completed))
 }
 
 async fn load_source_context_transaction(
@@ -3073,31 +3074,31 @@ async fn bootstrap_replica_locked(
 ) -> Result<()> {
     fence_replica_service_eligibility_on_connection(connection).await?;
     verify_replica_schema_on_connection(connection).await?;
-    let mut source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+    let source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+    clear_replica_target(connection, source_before.state.generation).await?;
+    let (snapshot_source, archive_replay_completed) =
+        match snapshot_invocations_into_target(source_pool, connection).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let detail = error.to_string();
+                let error_code = if detail.contains("oversized analytics replica") {
+                    "oversized_fact"
+                } else {
+                    "snapshot_failed"
+                };
+                mark_replica_blocked_on_connection(connection, error_code, detail.clone()).await?;
+                return Err(anyhow!(detail));
+            }
+        };
     if source_before.state.historical_history_unknown != 0 {
-        if !acknowledge_unverified_history {
-            let detail = "SQLite historical coverage predates the analytics source journal and cannot be proven complete; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
+        if !archive_replay_completed && !acknowledge_unverified_history {
+            let detail = "SQLite historical coverage predates the analytics source journal and no completed invocation archive is available for controlled replay";
             mark_replica_blocked_on_connection(connection, "historical_source_unavailable", detail)
                 .await?;
             return Err(anyhow!(detail));
         }
         acknowledge_unverified_legacy_history(source_pool).await?;
-        source_before = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
     }
-    clear_replica_target(connection, source_before.state.generation).await?;
-    let snapshot_source = match snapshot_invocations_into_target(source_pool, connection).await {
-        Ok(source) => source,
-        Err(error) => {
-            let detail = error.to_string();
-            let error_code = if detail.contains("oversized analytics replica") {
-                "oversized_fact"
-            } else {
-                "snapshot_failed"
-            };
-            mark_replica_blocked_on_connection(connection, error_code, detail.clone()).await?;
-            return Err(anyhow!(detail));
-        }
-    };
     set_replica_baseline(connection, &snapshot_source).await?;
     if let Err(error) = crate::analytics_changes::acknowledge_analytics_change_generation(
         source_pool,
