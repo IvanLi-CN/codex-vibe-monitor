@@ -753,6 +753,16 @@ pub(crate) fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageS
         plan_type: optional_string(value, &["plan_type", "planType"]),
         limit_id: DEFAULT_USAGE_LIMIT_ID.to_string(),
         limit_name: Some(DEFAULT_USAGE_LIMIT_ID.to_string()),
+        allowed: limit
+            .get("allowed")
+            .or_else(|| value.get("allowed"))
+            .and_then(value_as_bool),
+        limit_reached: limit
+            .get("limit_reached")
+            .or_else(|| limit.get("limitReached"))
+            .or_else(|| value.get("limit_reached"))
+            .or_else(|| value.get("limitReached"))
+            .and_then(value_as_bool),
         primary,
         secondary,
         credits,
@@ -2212,6 +2222,115 @@ mod reserve_usage_payload_shape_tests {
         assert_eq!(shape.entry_count, 2);
         assert_eq!(shape.names, "codex_other,gpt-reserve");
         assert!(shape.reserve_entry_found);
+    }
+}
+
+#[cfg(test)]
+mod quota_permission_tests {
+    use super::*;
+
+    #[test]
+    fn normal_quota_permission_is_separate_from_window_usage() {
+        let snapshot = normalize_usage_snapshot(&serde_json::json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "allowed": true,
+                    "limitReached": false,
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300
+                    }
+                }
+            }
+        }))
+        .expect("normalize normal quota snapshot");
+
+        assert_eq!(snapshot.allowed, Some(true));
+        assert_eq!(snapshot.limit_reached, Some(false));
+        assert_eq!(
+            snapshot.primary.as_ref().map(|window| window.used_percent),
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn missing_normal_quota_permission_does_not_infer_from_used_percent() {
+        let snapshot = normalize_usage_snapshot(&serde_json::json!({
+            "primaryWindow": {
+                "usedPercent": 100,
+                "windowDurationMins": 300
+            }
+        }))
+        .expect("normalize normal quota snapshot");
+
+        assert_eq!(snapshot.allowed, None);
+        assert_eq!(snapshot.limit_reached, None);
+        assert_eq!(
+            snapshot.primary.as_ref().map(|window| window.used_percent),
+            Some(100.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_quota_permission_round_trips_separately_from_reserve() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        ensure_upstream_accounts_schema(&pool)
+            .await
+            .expect("ensure upstream accounts schema");
+        sqlx::query(
+            "INSERT INTO pool_upstream_accounts (kind, display_name, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .bind("quota-permission-test")
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("2026-11-03T17:00:00Z")
+        .bind("2026-11-03T17:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert quota permission test account");
+        let snapshot = NormalizedUsageSnapshot {
+            limit_id: DEFAULT_USAGE_LIMIT_ID.to_string(),
+            limit_name: Some(DEFAULT_USAGE_LIMIT_ID.to_string()),
+            allowed: Some(false),
+            limit_reached: Some(true),
+            primary: Some(NormalizedUsageWindow {
+                used_percent: 42.0,
+                window_duration_mins: 300,
+                resets_at: None,
+            }),
+            reserve: Some(NormalizedReserveQuotaSnapshot {
+                availability: RESERVE_AVAILABILITY_UNKNOWN.to_string(),
+                allowed: Some(true),
+                limit_reached: Some(false),
+                normal_model_slug: None,
+                metered_feature: None,
+                binding_source: None,
+                primary: None,
+                secondary: None,
+                primary_available_percent: None,
+                secondary_available_percent: None,
+            }),
+            ..Default::default()
+        };
+
+        assert!(
+            persist_usage_snapshot_with_lease(&pool, 1, Some("team"), &snapshot, 30, None)
+                .await
+                .unwrap_or_else(|error| panic!("persist usage snapshot: {error:#}"))
+        );
+        let sample = super::super::sync_account_imports_tags::load_latest_usage_sample(&pool, 1)
+            .await
+            .expect("load usage snapshot")
+            .expect("persisted usage snapshot");
+        assert_eq!(sample.allowed, Some(0));
+        assert_eq!(sample.limit_reached, Some(1));
+        assert_eq!(sample.primary_used_percent, Some(42.0));
+        assert_eq!(sample.reserve_allowed, Some(1));
+        assert_eq!(sample.reserve_limit_reached, Some(0));
     }
 }
 

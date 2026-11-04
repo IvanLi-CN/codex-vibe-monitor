@@ -92,6 +92,12 @@ pub(crate) async fn persist_unknown_reserve_usage_snapshot_with_lease(
             .and_then(|sample| sample.limit_id.clone())
             .unwrap_or_else(|| DEFAULT_USAGE_LIMIT_ID.to_string()),
         limit_name: latest.as_ref().and_then(|sample| sample.limit_name.clone()),
+        allowed: latest
+            .as_ref()
+            .and_then(|sample| sample.allowed.map(|value| value != 0)),
+        limit_reached: latest
+            .as_ref()
+            .and_then(|sample| sample.limit_reached.map(|value| value != 0)),
         primary: latest.as_ref().and_then(|sample| {
             normalized_window_from_sample(
                 sample.primary_used_percent,
@@ -203,6 +209,16 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
             })
         })
     });
+    let allowed = snapshot.allowed.or_else(|| {
+        latest
+            .as_ref()
+            .and_then(|sample| sample.allowed.map(|value| value != 0))
+    });
+    let limit_reached = snapshot.limit_reached.or_else(|| {
+        latest
+            .as_ref()
+            .and_then(|sample| sample.limit_reached.map(|value| value != 0))
+    });
     let secondary = snapshot.secondary.clone().or_else(|| {
         latest.as_ref().and_then(|sample| {
             Some(NormalizedUsageWindow {
@@ -244,6 +260,7 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
         r#"
         INSERT INTO pool_upstream_account_limit_samples (
             account_id, captured_at, limit_id, limit_name, plan_type,
+            allowed, limit_reached,
             primary_used_percent, primary_window_minutes, primary_resets_at,
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance,
@@ -258,24 +275,24 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
         )
         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26,
-               ?27, ?28, ?29
+               ?27, ?28, ?29, ?30, ?31
         WHERE (
-            ?30 IS NULL OR EXISTS (
+            ?32 IS NULL OR EXISTS (
                 SELECT 1
                 FROM pool_upstream_account_refresh_state
                 WHERE account_id = ?1
-                  AND operation = ?31
-                  AND lease_token = ?30
+                  AND operation = ?33
+                  AND lease_token = ?32
             )
         )
           AND (
-              ?32 = 0
-              OR (?33 = 0 AND NOT EXISTS (
+              ?34 = 0
+              OR (?35 = 0 AND NOT EXISTS (
                   SELECT 1
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
               ))
-              OR (?33 = 1 AND (?34, ?35) = (
+              OR (?35 = 1 AND (?36, ?37) = (
                   SELECT captured_at, id
                   FROM pool_upstream_account_limit_samples
                   WHERE account_id = ?1
@@ -295,6 +312,8 @@ pub(crate) async fn persist_usage_snapshot_with_versions(
             .clone()
             .or_else(|| effective_plan_type.map(str::to_string)),
     )
+    .bind(allowed.map(i64::from))
+    .bind(limit_reached.map(i64::from))
     .bind(primary.as_ref().map(|value| value.used_percent))
     .bind(primary.as_ref().map(|value| value.window_duration_mins))
     .bind(primary.as_ref().and_then(|value| value.resets_at.clone()))
