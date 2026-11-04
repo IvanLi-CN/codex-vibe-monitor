@@ -212,7 +212,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
             .as_ref()
             .map(|mapping| mapping.source_model.as_str())
             .or(context.model_mapping_pattern);
-        let prepared_request_body = match prepare_pool_request_body_for_account(
+        let prepared_request_body = match prepare_pool_request_body_for_account_with_oauth_context(
             context.proxy_request_id,
             context.body.as_ref(),
             context.original_uri,
@@ -234,6 +234,17 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 .as_ref()
                 .and_then(|context| context.hosted_image_intent),
             effective_model_mapping,
+            context
+                .account
+                .auth
+                .is_oauth()
+                .then_some(context.account.account_id),
+            context
+                .account
+                .auth
+                .is_oauth()
+                .then_some(&context.state.oauth_installation_seed),
+            Some(context.state.config.openai_proxy_max_request_body_bytes),
         )
         .await
         {
@@ -281,6 +292,12 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
         let attempted_request_body_for_capture =
             prepared_request_body.request_body_for_capture.clone();
         let attempted_codex_imagegen_rewrite = prepared_request_body.codex_imagegen_rewrite.clone();
+        let attempted_oauth_responses_rewrite =
+            prepared_request_body.oauth_responses_rewrite.clone();
+        let attempted_oauth_responses_source_encoding =
+            prepared_request_body.oauth_responses_source_encoding;
+        let attempted_oauth_responses_wants_stream =
+            prepared_request_body.oauth_responses_wants_stream;
         let (forward_proxy_scope, selected_proxy, _client) = if *context
             .same_account_only_retry_active
         {
@@ -1292,12 +1309,17 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                 ) {
                     validate_pool_request_snapshot_transcode(
                         &prepared_request_body.snapshot,
-                        context
-                            .headers
-                            .get(header::CONTENT_ENCODING)
-                            .and_then(|value| value.to_str().ok()),
+                        if attempted_oauth_responses_source_encoding.is_some() {
+                            None
+                        } else {
+                            context
+                                .headers
+                                .get(header::CONTENT_ENCODING)
+                                .and_then(|value| value.to_str().ok())
+                        },
                         context.account.oauth_request_compression_algorithm,
                         context.state.config.openai_proxy_max_request_body_bytes,
+                        prepared_request_body.snapshot_is_decoded,
                     )
                     .await
                     .map_err(|err| {
@@ -1335,74 +1357,85 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                     | PoolReplayBodySnapshot::Memory(_))
                         if context.original_uri.path() == "/v1/responses" =>
                     {
-                        oauth_bridge::CountedOauthUpstreamRequestBody::Bytes(
-                            snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
-                                codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
-                                account: Some(context.account.clone()),
-                                status: StatusCode::BAD_GATEWAY,
-                                message: format!("failed to replay oauth request body: {err}"),
-                                canonical_error_message: None,
-                                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                blocked_binding: None,
-                                connect_latency_ms: 0.0,
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                downstream_error_message: None,
-                                upstream_request_id: None,
-                                proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
-                                oauth_responses_debug: None,
-                                attempt_summary: pool_attempt_summary(
-                                    *context.attempt_count,
-                                    distinct_account_count,
-                                    Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
-                                ),
-                                requested_service_tier: attempted_requested_service_tier.clone(),
-                                request_body_for_capture: attempted_request_body_for_capture
-                                    .clone(),
-                            })?,
-                        )
+                        let bytes = snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
+                            codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                            account: Some(context.account.clone()),
+                            status: StatusCode::BAD_GATEWAY,
+                            message: format!("failed to replay oauth request body: {err}"),
+                            canonical_error_message: None,
+                            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
+                            connect_latency_ms: 0.0,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: None,
+                            proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
+                            oauth_responses_debug: None,
+                            attempt_summary: pool_attempt_summary(
+                                *context.attempt_count,
+                                distinct_account_count,
+                                Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+                            ),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
+                        })?;
+                        if let Some(source_encoding) = attempted_oauth_responses_source_encoding {
+                            oauth_bridge::CountedOauthUpstreamRequestBody::DecodedBytes {
+                                bytes,
+                                source_encoding,
+                            }
+                        } else {
+                            oauth_bridge::CountedOauthUpstreamRequestBody::Bytes(bytes)
+                        }
                     }
                     snapshot @ PoolReplayBodySnapshot::File { size, .. }
                         if context.original_uri.path() == "/v1/responses"
                             && *size <= OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
-                            && context
+                            && (context
                                 .headers
                                 .get(header::CONTENT_ENCODING)
                                 .and_then(|value| value.to_str().ok())
                                 .map(|value| parse_content_encodings(Some(value)))
                                 .is_none_or(|encodings| {
                                     encodings.iter().all(|encoding| encoding == "identity")
-                                }) =>
+                                })
+                                || attempted_oauth_responses_source_encoding.is_some()) =>
                     {
-                        oauth_bridge::CountedOauthUpstreamRequestBody::Bytes(
-                            snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
-                                codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
-                                account: Some(context.account.clone()),
-                                status: StatusCode::BAD_GATEWAY,
-                                message: format!("failed to replay oauth request body: {err}"),
-                                canonical_error_message: None,
-                                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                blocked_binding: None,
-                                connect_latency_ms: 0.0,
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                downstream_error_message: None,
-                                upstream_request_id: None,
-                                proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
-                                oauth_responses_debug: None,
-                                attempt_summary: pool_attempt_summary(
-                                    *context.attempt_count,
-                                    distinct_account_count,
-                                    Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
-                                ),
-                                requested_service_tier: attempted_requested_service_tier.clone(),
-                                request_body_for_capture: attempted_request_body_for_capture
-                                    .clone(),
-                            })?,
-                        )
+                        let bytes = snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
+                            codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                            account: Some(context.account.clone()),
+                            status: StatusCode::BAD_GATEWAY,
+                            message: format!("failed to replay oauth request body: {err}"),
+                            canonical_error_message: None,
+                            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
+                            connect_latency_ms: 0.0,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: None,
+                            proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
+                            oauth_responses_debug: None,
+                            attempt_summary: pool_attempt_summary(
+                                *context.attempt_count,
+                                distinct_account_count,
+                                Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+                            ),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
+                        })?;
+                        if let Some(source_encoding) = attempted_oauth_responses_source_encoding {
+                            oauth_bridge::CountedOauthUpstreamRequestBody::DecodedBytes {
+                                bytes,
+                                source_encoding,
+                            }
+                        } else {
+                            oauth_bridge::CountedOauthUpstreamRequestBody::Bytes(bytes)
+                        }
                     }
-                    snapshot => oauth_bridge::CountedOauthUpstreamRequestBody::Stream {
-                        debug_body_prefix: Some(
+                    snapshot => {
+                        let debug_body_prefix = Some(
                             snapshot
                                 .to_prefix_bytes(
                                     oauth_bridge::OAUTH_REQUEST_BODY_PREFIX_FINGERPRINT_MAX_BYTES,
@@ -1436,26 +1469,50 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                                     request_body_for_capture: attempted_request_body_for_capture
                                         .clone(),
                                 })?,
-                        ),
-                        request_is_stream: if context.original_uri.path() == "/v1/responses" {
-                            snapshot
-                                .extract_request_stream_flag(
-                                    context
-                                        .headers
-                                        .get(header::CONTENT_ENCODING)
-                                        .and_then(|value| value.to_str().ok()),
-                                )
-                                .await
-                        } else {
-                            None
-                        },
-                        snapshot_kind: if context.original_uri.path() == "/v1/responses" {
+                        );
+                        let request_is_stream =
+                            if let Some(wants_stream) = attempted_oauth_responses_wants_stream {
+                                Some(wants_stream)
+                            } else if context.original_uri.path() == "/v1/responses" {
+                                snapshot
+                                    .extract_request_stream_flag(
+                                        if prepared_request_body.snapshot_is_decoded {
+                                            None
+                                        } else {
+                                            context
+                                                .headers
+                                                .get(header::CONTENT_ENCODING)
+                                                .and_then(|value| value.to_str().ok())
+                                        },
+                                    )
+                                    .await
+                            } else {
+                                None
+                            };
+                        let snapshot_kind = if context.original_uri.path() == "/v1/responses" {
                             Some(pool_request_snapshot_kind(snapshot))
                         } else {
                             None
-                        },
-                        body: snapshot.to_http_body(),
-                    },
+                        };
+                        if let Some(source_encoding) = attempted_oauth_responses_source_encoding {
+                            oauth_bridge::CountedOauthUpstreamRequestBody::DecodedStream {
+                                body: snapshot.to_http_body(),
+                                debug_body_prefix,
+                                request_is_stream,
+                                snapshot_kind,
+                                source_encoding,
+                                rewrite: attempted_oauth_responses_rewrite.unwrap_or_default(),
+                            }
+                        } else {
+                            oauth_bridge::CountedOauthUpstreamRequestBody::Stream {
+                                body: snapshot.to_http_body(),
+                                debug_body_prefix,
+                                request_is_stream,
+                                snapshot_kind,
+                                rewrite: attempted_oauth_responses_rewrite,
+                            }
+                        }
+                    }
                 };
                 let codex_imagegen_retest_claimed = if codex_imagegen_audit_has_canonical_namespace(
                     attempted_codex_imagegen_rewrite.as_ref(),
@@ -1610,6 +1667,12 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                     None
                 } else if context.account.auth.is_oauth() {
                     match context.account.oauth_request_compression_algorithm {
+                        RequestCompressionAlgorithm::Follow
+                            if let Some(source_encoding) =
+                                attempted_oauth_responses_source_encoding =>
+                        {
+                            Some((source_encoding.as_str(), "recompressed"))
+                        }
                         RequestCompressionAlgorithm::Follow => {
                             forwarded_request_compression_observation(context.headers)
                         }
@@ -1723,6 +1786,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                             context.state.upstream_accounts.crypto_key.as_ref(),
                             context.account.oauth_request_compression_algorithm,
                             context.request_compression_level_preset,
+                            *context.quota_route == PoolQuotaRoute::Reserve,
                             selected_proxy.endpoint_url.as_ref(),
                             live_reporter,
                         )

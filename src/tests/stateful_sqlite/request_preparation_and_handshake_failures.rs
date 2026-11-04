@@ -820,6 +820,10 @@ async fn prepare_pool_request_body_for_account_decodes_gzip_before_rewrite() {
     .expect("prepare gzip-compressed pool request body");
 
     assert!(prepared.snapshot_is_decoded);
+    assert_eq!(
+        prepared.oauth_responses_source_encoding,
+        Some(RequestBodyContentEncoding::Gzip)
+    );
     assert_eq!(prepared.requested_service_tier.as_deref(), Some("priority"));
     let request_body = prepared
         .request_body_for_capture
@@ -855,6 +859,9 @@ async fn build_pool_upstream_request_body_follow_passthrough_preserves_gzip_snap
         requested_image_intent: ImageIntent::Unknown,
         requested_hosted_image_intent: ImageIntent::Unknown,
         codex_imagegen_rewrite: None,
+        oauth_responses_rewrite: None,
+        oauth_responses_source_encoding: None,
+        oauth_responses_wants_stream: None,
         snapshot_is_decoded: false,
     };
 
@@ -886,6 +893,9 @@ async fn build_pool_upstream_request_body_follow_rejects_unsupported_request_enc
         requested_image_intent: ImageIntent::Unknown,
         requested_hosted_image_intent: ImageIntent::Unknown,
         codex_imagegen_rewrite: None,
+        oauth_responses_rewrite: None,
+        oauth_responses_source_encoding: None,
+        oauth_responses_wants_stream: None,
         snapshot_is_decoded: false,
     };
 
