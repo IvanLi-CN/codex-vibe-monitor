@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # ADR 0053: Managed PostgreSQL analytics migration and cutover
