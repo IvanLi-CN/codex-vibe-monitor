@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.19.3",
+  "base_stable_version": "4.19.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-04T08:49:06Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.19.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "830fd4a2cf3eeb0ca0b8ba983d90c497f6c4449e",
+  "pr_number": 1289,
+  "pr_title": "fix(analytics): catch up Journal after archive replay",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.19.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.19.3",
+  "target_sha": "db8a9e151c053f2bf8af03c7ebbf6f680cfb4275",
+  "type_label": "type:patch"
+}
