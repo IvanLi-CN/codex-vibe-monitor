@@ -3121,8 +3121,28 @@ async fn bootstrap_replica_locked(
         .await
         .context("failed to acknowledge completed SQLite archive replay")?;
     }
-    set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, true)
-        .await?;
+    let source_after = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+    anyhow::ensure!(
+        source_after.state.generation == snapshot_source.state.generation,
+        "analytics source generation changed during PostgreSQL bootstrap snapshot"
+    );
+    if source_after.latest_change_id == snapshot_source.latest_change_id {
+        crate::analytics_changes::acknowledge_analytics_change_generation(
+            source_pool,
+            ANALYTICS_REPLICA_ID,
+            snapshot_source.state.generation,
+            snapshot_source.latest_change_id,
+        )
+        .await
+        .context("failed to acknowledge the completed analytics change generation")?;
+        set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, true)
+            .await?;
+    } else {
+        // The snapshot is still valid for its captured watermark. Leave the replica running
+        // and let the bounded Journal catch-up apply changes committed while archive replay ran.
+        set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, false)
+            .await?;
+    }
     Ok(())
 }
 
