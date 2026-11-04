@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 97,
+    "inventory_entries": 100,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -445,10 +445,28 @@
       "next_module_workstream": "Split OAuth session callbacks, mailbox transitions, and account mutation helpers."
     },
     {
-      "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
+      "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing/archive_compat_and_query_filters.rs",
       "role": "test_helper",
-      "line_budget": 4516,
-      "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
+      "line_budget": 1290,
+      "next_module_workstream": "Maintain archive compatibility, archive-row seed, query-filter, forward-proxy, and account-filter fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing/imported_oauth_normalization_and_validation.rs",
+      "role": "test_helper",
+      "line_budget": 1053,
+      "next_module_workstream": "Maintain imported OAuth normalization, probing, validation-job, node-shunt, and assignment-error fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing/sync_jobs_and_group_policy.rs",
+      "role": "test_helper",
+      "line_budget": 988,
+      "next_module_workstream": "Maintain group policy, node-shunt mutation, bulk sync lifecycle, snapshot exhaustion, and base-url fixtures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing/usage_snapshot_and_oauth_callbacks.rs",
+      "role": "test_helper",
+      "line_budget": 687,
+      "next_module_workstream": "Maintain usage snapshot, browser retry classification, JWT, manual OAuth callback, and reauth fixtures."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
