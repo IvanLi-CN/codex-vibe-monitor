@@ -588,13 +588,13 @@ async fn migrate_postgres_schema(config: &AppConfig) -> Result<()> {
             .execute(&mut *connection)
             .await?;
         sqlx::raw_sql(
-            "CREATE TABLE IF NOT EXISTS cvm_analytics.schema_migrations (\
-                component TEXT NOT NULL, version BIGINT NOT NULL, checksum TEXT NOT NULL,\
-                state TEXT NOT NULL CHECK (state = 'applied'),\
-                min_reader_version BIGINT NOT NULL DEFAULT 1,\
-                requires_bootstrap BOOLEAN NOT NULL DEFAULT FALSE,\
-                error_code TEXT, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\
-                PRIMARY KEY (component, version)\
+            "CREATE TABLE IF NOT EXISTS cvm_analytics.schema_migrations ( \
+                component TEXT NOT NULL, version BIGINT NOT NULL, checksum TEXT NOT NULL, \
+                state TEXT NOT NULL CHECK (state = 'applied'), \
+                min_reader_version BIGINT NOT NULL DEFAULT 1, \
+                requires_bootstrap BOOLEAN NOT NULL DEFAULT FALSE, \
+                error_code TEXT, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
+                PRIMARY KEY (component, version) \
             )",
         )
         .execute(&mut *connection)
@@ -619,11 +619,11 @@ async fn migrate_postgres_schema(config: &AppConfig) -> Result<()> {
             bail!("PostgreSQL analytics schema is newer than this reader");
         }
         sqlx::query(
-            "INSERT INTO cvm_analytics.schema_migrations\
-             (component, version, checksum, state, requires_bootstrap)\
-             VALUES ('pg-analytics', 1, $1, 'applied', TRUE)\
-             ON CONFLICT (component, version) DO UPDATE SET\
-               checksum = EXCLUDED.checksum, state = EXCLUDED.state,\
+            "INSERT INTO cvm_analytics.schema_migrations \
+             (component, version, checksum, state, requires_bootstrap) \
+             VALUES ('pg-analytics', 1, $1, 'applied', TRUE) \
+             ON CONFLICT (component, version) DO UPDATE SET \
+               checksum = EXCLUDED.checksum, state = EXCLUDED.state, \
                requires_bootstrap = EXCLUDED.requires_bootstrap",
         )
         .bind(checksum)
