@@ -2016,16 +2016,14 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start_admitted(
         status,
         error_message,
         failure_kind,
-        request_started_at,
-        None,
+        ModelRouteFailureContext {
+            request_started_at,
+            reason_code: None,
+        },
     )
     .await
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Model failure evidence and reason propagation are one state transition."
-)]
 pub(crate) async fn record_model_route_failure_from_attempt_with_start_and_reason_admitted(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -2033,8 +2031,7 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start_and_reaso
     status: StatusCode,
     error_message: Option<&str>,
     failure_kind: Option<&str>,
-    request_started_at: Option<&str>,
-    reason_code: Option<&str>,
+    context: ModelRouteFailureContext<'_>,
 ) -> Result<bool> {
     record_model_route_failure_from_attempt_inner(
         pool,
@@ -2043,11 +2040,17 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start_and_reaso
         status,
         error_message,
         failure_kind,
-        request_started_at,
+        context.request_started_at,
         true,
-        reason_code,
+        context.reason_code,
     )
     .await
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ModelRouteFailureContext<'a> {
+    pub(crate) request_started_at: Option<&'a str>,
+    pub(crate) reason_code: Option<&'a str>,
 }
 
 #[expect(

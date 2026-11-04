@@ -1268,8 +1268,10 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 status,
                 Some(error_message),
                 Some(classification.failure_kind),
-                None,
-                Some(classification.reason_code),
+                ModelRouteFailureContext {
+                    request_started_at: None,
+                    reason_code: Some(classification.reason_code),
+                },
             )
             .await?;
         } else if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
