@@ -2478,16 +2478,32 @@ async fn complete_model_routing_state_set(
         .map(|state| (state.model.clone(), state))
         .collect::<BTreeMap<_, _>>();
     for model in models {
-        let last_seen_at = observed_model_timestamps
-            .get(&model)
-            .cloned()
-            .or_else(|| detail.model_catalog.last_successful_at.clone())
-            .or_else(|| detail.model_catalog.last_attempted_at.clone());
+        let last_seen_at = model_routing_unknown_last_seen_at(
+            &model,
+            &detail.model_catalog.models,
+            detail.model_catalog.last_successful_at.as_deref(),
+            &observed_model_timestamps,
+        );
         states
             .entry(model.clone())
             .or_insert_with(|| unknown_model_routing_state(model, last_seen_at));
     }
     Ok(states.into_values().collect())
+}
+
+pub(crate) fn model_routing_unknown_last_seen_at(
+    model: &str,
+    catalog_models: &[String],
+    catalog_last_successful_at: Option<&str>,
+    observed_model_timestamps: &BTreeMap<String, String>,
+) -> Option<String> {
+    observed_model_timestamps.get(model).cloned().or_else(|| {
+        catalog_models
+            .iter()
+            .any(|catalog_model| catalog_model.trim() == model)
+            .then(|| catalog_last_successful_at.map(ToOwned::to_owned))
+            .flatten()
+    })
 }
 
 pub(crate) fn unknown_model_routing_state(

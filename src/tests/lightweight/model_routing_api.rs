@@ -58,3 +58,17 @@ fn unknown_model_routing_state_marks_missing_observation_without_read_time() {
     assert_eq!(state.last_seen_at, "unknown");
     assert_ne!(state.last_seen_at, chrono::Utc::now().to_rfc3339());
 }
+
+#[test]
+fn unknown_projection_keeps_catalog_and_policy_evidence_separate() {
+    let catalog = vec!["A".to_string()];
+    let observed = std::collections::BTreeMap::new();
+
+    let catalog_seen =
+        model_routing_unknown_last_seen_at("A", &catalog, Some("2026-11-04T23:00:00Z"), &observed);
+    let policy_only_seen =
+        model_routing_unknown_last_seen_at("B", &catalog, Some("2026-11-04T23:00:00Z"), &observed);
+
+    assert_eq!(catalog_seen.as_deref(), Some("2026-11-04T23:00:00Z"));
+    assert_eq!(policy_only_seen, None);
+}
