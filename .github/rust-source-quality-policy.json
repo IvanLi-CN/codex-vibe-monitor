@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 100,
+    "inventory_entries": 99,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -353,12 +353,6 @@
       "role": "test_helper",
       "line_budget": 168,
       "next_module_workstream": "Maintain same-origin settings-write validation and proxy redirect path/header normalization fixtures."
-    },
-    {
-      "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
-      "role": "test_helper",
-      "line_budget": 3977,
-      "next_module_workstream": "Split request preparation/handshake fixtures by capture, parser cost, body, and handshake paths."
     },
     {
       "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",

@@ -199,7 +199,9 @@ pub(crate) use proxy_capture_and_invocation_queries::{
     PromptCacheBindingPolicyMigrationRow, PromptCacheBindingTimeoutMigrationRow,
 };
 pub(crate) use proxy_pool_roundtrip_and_retry_servers::*;
-pub(crate) use request_preparation_and_handshake_failures::*;
+pub(crate) use request_preparation_and_handshake_failures::{
+    assert_proxy_capture_hot_path_skips_raw_fallbacks, reset_proxy_capture_hot_path_raw_fallbacks,
+};
 pub(crate) use routing_failover_terminal_reasoning::*;
 pub(crate) use runtime_overlay_and_group_rule_behaviors::*;
 pub(crate) use schema_templates::*;
