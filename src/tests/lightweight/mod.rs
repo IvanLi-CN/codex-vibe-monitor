@@ -11,6 +11,7 @@ mod forward_proxy_subscription_and_weights;
 mod forward_proxy_xhttp;
 mod invocation_timeline_maintenance;
 mod lightweight_test_support;
+mod model_route_scope;
 mod models_dev_http_client;
 mod observability_lifecycles;
 mod performance_index_cli;
