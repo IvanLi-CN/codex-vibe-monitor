@@ -15,11 +15,9 @@ pub(crate) mod decoder;
 #[path = "source/snapshot.rs"]
 pub(crate) mod snapshot;
 
-#[allow(unused_imports)]
 pub(crate) use decoder::{
     LegacyAnalyticsChange, decode_legacy_analytics_change, decode_legacy_event,
 };
-#[allow(unused_imports)]
 pub(crate) use snapshot::{
     SourceRetentionPin, SourceSnapshot, assert_source_snapshot_usable, create_source_snapshot,
     create_source_snapshot_tx, ensure_source_snapshot_schema, load_source_snapshot,
