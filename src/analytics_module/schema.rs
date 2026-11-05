@@ -289,6 +289,13 @@ async fn acquire_module_migration_lock(
     Ok(())
 }
 
+/// Apply module DDL after the legacy `pg-analytics` schema has been provisioned.
+///
+/// The caller must run the old `PG_ANALYTICS_SCHEMA_SQL` contract first; it creates
+/// `cvm_analytics`, and this function intentionally does not create that schema.
+/// The required order is legacy schema, module schema, then module object grants.
+/// This function must run on an owner-authorized migration connection, never on
+/// the application or maintenance runtime credentials.
 pub(crate) async fn apply_analytics_module_schema(
     connection: &mut PgConnection,
 ) -> Result<AnalyticsModuleMigrationResult, AnalyticsModuleMigrationError> {
@@ -423,6 +430,16 @@ pub(crate) async fn apply_analytics_module_schema(
     })
 }
 
+/// Reconcile module schema/table grants after a successful module DDL commit.
+///
+/// Execute this only through the temporary migration/DBA connection while it is
+/// authorized to act as `cvm_analytics_owner` (normally via controlled `SET ROLE`).
+/// The application and maintenance roles must not execute this function. Role
+/// creation, credentials, and `cvm_analytics_reader` membership for
+/// `cvm_analytics_app` belong to owner-managed provisioning, because a migration
+/// login with `NOCREATEROLE` or without role-admin authority cannot grant that
+/// membership. This API therefore applies object grants only and does not widen
+/// database role authority.
 pub(crate) async fn apply_analytics_module_roles(
     connection: &mut PgConnection,
 ) -> Result<AnalyticsModuleRoleApplyResult, AnalyticsModuleMigrationError> {

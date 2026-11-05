@@ -189,6 +189,10 @@ mod tests {
         assert!(ANALYTICS_MODULE_ROLE_GRANTS_SQL.contains("REVOKE ALL ON TABLE"));
         assert!(ANALYTICS_MODULE_ROLE_GRANTS_SQL.contains("TO cvm_analytics_reader"));
         assert!(ANALYTICS_MODULE_ROLE_GRANTS_SQL.contains("TO cvm_analytics_maintenance"));
+        assert!(
+            !ANALYTICS_MODULE_ROLE_GRANTS_SQL
+                .contains("GRANT cvm_analytics_reader TO cvm_analytics_app")
+        );
         assert!(!ANALYTICS_MODULE_ROLE_GRANTS_SQL.contains("GRANT CREATE"));
         assert!(!ANALYTICS_MODULE_ROLE_GRANTS_SQL.contains("GRANT ALL"));
     }

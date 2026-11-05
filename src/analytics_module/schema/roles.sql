@@ -1,5 +1,6 @@
--- Apply this contract as the schema owner after the module DDL transaction.
--- Role creation and credentials remain an owner-managed deployment operation.
+-- Apply this contract through an owner-authorized migration connection after the
+-- module DDL transaction. Role creation, credentials, and role membership remain
+-- owner-managed provisioning operations; this file only reconciles object grants.
 REVOKE ALL ON TABLE
     cvm_analytics.analytics_module_consumers,
     cvm_analytics.analytics_module_owners,
@@ -40,8 +41,6 @@ GRANT SELECT (
     from_change_id, through_change_id, reason_code, state, attempts,
     last_error_code, updated_at
 ) ON TABLE cvm_analytics.analytics_module_repairs TO cvm_analytics_reader;
-GRANT cvm_analytics_reader TO cvm_analytics_app;
-
 GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance;
 GRANT SELECT, UPDATE ON TABLE
     cvm_analytics.analytics_module_consumers,
