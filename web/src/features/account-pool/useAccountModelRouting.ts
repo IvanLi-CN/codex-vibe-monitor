@@ -13,7 +13,7 @@ export function useAccountModelRouting(detail: UpstreamAccountDetail | null) {
     error: string | null;
   } | null>(null);
   useEffect(() => {
-    if (detail?.kind !== "api_key_codex") return;
+    if (!detail) return;
     const controller = new AbortController();
     const accountId = detail.id;
     setResult({ accountId, states: [], loading: true, error: null });
@@ -35,5 +35,5 @@ export function useAccountModelRouting(detail: UpstreamAccountDetail | null) {
   }, [detail]);
   return result && result.accountId === detail?.id
     ? result
-    : { states: [], loading: detail?.kind === "api_key_codex", error: null };
+    : { states: [], loading: detail != null, error: null };
 }

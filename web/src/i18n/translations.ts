@@ -1608,7 +1608,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
       "Model route unavailable",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "Last failure",
-    "accountPool.upstreamAccounts.modelRouting.reset": "Restore routing",
+    "accountPool.upstreamAccounts.modelRouting.reset": "Restore availability",
     "accountPool.upstreamAccounts.modelRouting.resetting": "Restoring…",
     "accountPool.upstreamAccounts.modelRouting.states.available": "Available",
     "accountPool.upstreamAccounts.modelRouting.states.verifying": "Verifying",
@@ -5339,7 +5339,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
       "模型路由不可用",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "最近失败",
-    "accountPool.upstreamAccounts.modelRouting.reset": "恢复路由",
+    "accountPool.upstreamAccounts.modelRouting.reset": "恢复可用",
     "accountPool.upstreamAccounts.modelRouting.resetting": "恢复中…",
     "accountPool.upstreamAccounts.modelRouting.states.available": "可用",
     "accountPool.upstreamAccounts.modelRouting.states.verifying": "验证中",

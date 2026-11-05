@@ -276,9 +276,10 @@ pub(crate) async fn record_runtime_pool_route_http_failure(
         && !overload;
     let explicit_model =
         is_explicit_model_failure_for_model(status, Some(error_message), request_model);
+    // Model-scoped evidence never changes account-wide health, for either credential kind.
     let changes_account = enabled
-        && (account_kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-            || (hard_failure && !explicit_model));
+        && !explicit_model
+        && (account_kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX || hard_failure);
     let health_after = changes_account.then(|| {
         if hard_failure {
             RuntimeAccountHealth {
@@ -410,9 +411,10 @@ pub(crate) async fn record_runtime_pool_route_http_failure(
         Some((
             classification.failure_kind,
             explicit_model
-                || status == StatusCode::TOO_MANY_REQUESTS
-                || status.is_server_error()
-                || overload,
+                || (account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+                    && (status == StatusCode::TOO_MANY_REQUESTS
+                        || status.is_server_error()
+                        || overload)),
         )),
         now,
     )
@@ -456,9 +458,7 @@ pub(crate) async fn record_runtime_pool_route_http_failure(
         ),
         http_status: Some(i64::from(status.as_u16())),
         update_latest_action: changes_account,
-        unsupported_model: (account_kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
-            .then(|| extract_unsupported_model_from_route_error(status, error_message))
-            .flatten(),
+        unsupported_model: None,
         model,
         memory_error: Some(error_message.to_string()),
     };

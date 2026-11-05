@@ -143,6 +143,7 @@ function demoModelRoutingStates(accountId: number) {
       const state = reset ? "available" : fixture.flow === "recovered" ? "available" : fixture.flow;
       const coolingDown = state === "cooling_down";
       const degraded = state === "degraded";
+      const cacheRestricted = coolingDown && fixture.terminalStatus !== "http_429";
 
       return {
         model: fixture.model,
@@ -152,14 +153,26 @@ function demoModelRoutingStates(accountId: number) {
         changedAt: demoModelRouteTimestamp(fixture.minutesAgo),
         lastSeenAt: demoModelRouteTimestamp(fixture.minutesAgo),
         lastFailureAt: coolingDown || degraded ? demoModelRouteTimestamp(fixture.minutesAgo) : null,
-        lastFailureKind: coolingDown || degraded ? "upstream_http_5xx" : null,
-        lastFailureMessage: coolingDown || degraded ? "Demo request ended with HTTP 502." : null,
+        lastFailureKind:
+          coolingDown || degraded
+            ? fixture.terminalStatus === "http_429"
+              ? "model_quota"
+              : "upstream_http_5xx"
+            : null,
+        lastFailureMessage:
+          coolingDown || degraded
+            ? fixture.terminalStatus === "http_429"
+              ? "Model-specific quota exceeded."
+              : "Demo request ended with HTTP 502."
+            : null,
         cooldownUntil: coolingDown ? demoModelRouteTimestamp(fixture.minutesAgo - 60) : null,
-        probeRequired: coolingDown,
-        cacheConcurrencyLimit: coolingDown ? 1 : null,
-        cacheRecoveryLimit: coolingDown ? 4 : null,
-        cacheUsageMissingSince: coolingDown ? demoModelRouteTimestamp(fixture.minutesAgo) : null,
-        cacheUsageMissingReason: coolingDown ? "missing_cache_input_tokens" : null,
+        probeRequired: coolingDown && fixture.terminalStatus !== "http_429",
+        cacheConcurrencyLimit: cacheRestricted ? 1 : null,
+        cacheRecoveryLimit: cacheRestricted ? 4 : null,
+        cacheUsageMissingSince: cacheRestricted
+          ? demoModelRouteTimestamp(fixture.minutesAgo)
+          : null,
+        cacheUsageMissingReason: cacheRestricted ? "missing_cache_input_tokens" : null,
       };
     });
 }
@@ -168,6 +181,8 @@ function demoModelRouteFixtureTimeline(
   fixture: DemoModelRouteFixture,
 ): ModelRoutingTimelineRecord[] {
   const { accountId, model } = fixture;
+  const failureStatus = fixture.terminalStatus === "http_429" ? 429 : 502;
+  const failureKind = failureStatus === 429 ? "model_quota" : "upstream_http_5xx";
   const accountDisplayName = simulatedAccountDisplayName(accountId);
   const occurredAt = (offsetMinutes = 0) =>
     demoModelRouteTimestamp(fixture.minutesAgo + offsetMinutes);
@@ -197,11 +212,11 @@ function demoModelRouteFixtureTimeline(
     attemptIndex: 1,
     sameAccountRetryIndex: 0,
     routingSource: "selection",
-    status: "http_502",
-    httpStatus: 502,
+    status: `http_${failureStatus}`,
+    httpStatus: failureStatus,
     totalLatencyMs: retryLatencyMs,
-    failureKind: "upstream_http_5xx",
-    reasonCode: "upstream_http_5xx",
+    failureKind,
+    reasonCode: failureKind,
     modelRouteStateBefore: "available",
     modelRouteStateAfter: "degraded",
     modelRoutePriorityBefore: "normal",
@@ -219,7 +234,7 @@ function demoModelRouteFixtureTimeline(
     status: "cooling_down",
     action: "model_route_cooldown",
     source: "call",
-    reasonCode: "upstream_http_5xx",
+    reasonCode: failureKind,
     modelRouteStateBefore: "degraded",
     modelRouteStateAfter: "cooling_down",
     modelRoutePriorityBefore: "demoted",
@@ -300,7 +315,7 @@ function demoModelRouteFixtureTimeline(
         status: "degraded",
         action: "model_route_degraded",
         source: "call",
-        reasonCode: "upstream_http_5xx",
+        reasonCode: failureKind,
         modelRouteStateBefore: "available",
         modelRouteStateAfter: "degraded",
         modelRoutePriorityBefore: "normal",
@@ -324,11 +339,11 @@ function demoModelRouteFixtureTimeline(
       attemptIndex: 2,
       sameAccountRetryIndex: 1,
       routingSource: "retry",
-      status: "http_502",
-      httpStatus: 502,
+      status: `http_${failureStatus}`,
+      httpStatus: failureStatus,
       totalLatencyMs: terminalLatencyMs,
-      failureKind: "upstream_http_5xx",
-      reasonCode: "upstream_http_5xx",
+      failureKind,
+      reasonCode: failureKind,
       modelRouteStateBefore: "degraded",
       modelRouteStateAfter: "cooling_down",
       modelRoutePriorityBefore: "demoted",
@@ -5129,7 +5144,7 @@ function demoUpstreamAccountDetail(account: DemoAccount) {
     recentActions: accountEvents()
       .filter((event) => event.accountDisplayName === account.displayName)
       .slice(0, 4),
-    modelRoutingStates: account.kind === "api_key_codex" ? demoModelRoutingStates(account.id) : [],
+    modelRoutingStates: demoModelRoutingStates(account.id),
   };
 }
 
@@ -6354,7 +6369,7 @@ export async function handleDemoRequest(request: Request) {
   ) {
     const accountId = Number(pathname.split("/").at(-2));
     const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
-    return json(account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : []);
+    return json(demoModelRoutingStates(account.id));
   }
   if (
     /^\/api\/pool\/upstream-accounts\/\d+\/model-routing-events$/.test(pathname) &&
@@ -6363,7 +6378,7 @@ export async function handleDemoRequest(request: Request) {
     const accountId = Number(pathname.split("/").at(-2));
     const account = demoAccounts().find((item) => item.id === accountId);
     const model = url.searchParams.get("model")?.trim();
-    if (account?.kind !== "api_key_codex" || !model) {
+    if (!account || !model) {
       return json(
         { error: "Model routing history is unavailable for this account." },
         { status: 404 },

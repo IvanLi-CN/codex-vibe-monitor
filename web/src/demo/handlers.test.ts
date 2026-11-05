@@ -710,7 +710,7 @@ describe("demo MSW handlers", () => {
         .filter((account) => account.kind === "api_key_codex")
         .every((account) => account.groupName === null && account.boundProxyKeys.length > 0),
     ).toBe(true);
-    expect(events.items).toHaveLength(15);
+    expect(events.items).toHaveLength(16);
     expect(
       events.items.some(
         (event) =>
@@ -1056,6 +1056,38 @@ describe("demo MSW handlers", () => {
     );
     expect(account.recentActions.map((event) => event.source)).not.toEqual(
       expect.arrayContaining(["operator", "maintenance_scheduler"]),
+    );
+  });
+
+  it("restores only the selected OAuth model while retaining its history", async () => {
+    const base = "http://demo.invalid/api/pool/upstream-accounts/101";
+    const states = await (await fetch(`${base}/model-routing`)).json();
+    expect(states).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "gpt-5.4-mini", state: "cooling_down" }),
+        expect.objectContaining({ model: "gpt-5.5", state: "available" }),
+      ]),
+    );
+    const before = await (await fetch(`${base}/model-routing-events?model=gpt-5.4-mini`)).json();
+    const restored = await fetch(`${base}/model-routing/reset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.4-mini" }),
+    });
+    expect(await restored.json()).toMatchObject({
+      state: "available",
+      failureCount: 0,
+      cooldownUntil: null,
+    });
+    const after = await (await fetch(`${base}/model-routing-events?model=gpt-5.4-mini`)).json();
+    expect(after.items.length).toBeGreaterThanOrEqual(before.items.length);
+    expect(after.items.length).toBeGreaterThan(0);
+    const next = await (await fetch(`${base}/model-routing`)).json();
+    expect(next).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "gpt-5.4-mini", state: "available" }),
+        expect.objectContaining({ model: "gpt-5.5", state: "available" }),
+      ]),
     );
   });
 

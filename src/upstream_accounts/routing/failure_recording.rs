@@ -1225,7 +1225,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         .map(|_| false);
     }
 
-    let explicit_model_failure = if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+    let explicit_model_failure = {
         match attempt_id {
             Some(attempt_id) => {
                 attempt_has_explicit_model_failure(pool, attempt_id, status, Some(error_message))
@@ -1233,8 +1233,6 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             }
             None => is_explicit_model_failure(status, Some(error_message)),
         }
-    } else {
-        false
     };
     complete_priority_handoff_from_attempt_or_invoke_admitted(
         pool,
@@ -1254,11 +1252,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     let model_route_failure_enabled = !explicit_model_failure
         || account_status_change_reason_is_enabled(pool, account_id, classification.reason_code)
             .await?;
-    if account_kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-        && let Some(model) = extract_unsupported_model_from_route_error(status, error_message)
-    {
-        ensure_account_has_unsupported_model_tag(pool, account_id, &model).await?;
-    }
+
     if !api_key_temporary_http_failure && model_route_failure_enabled {
         if let Some(attempt_id) = attempt_id {
             record_model_route_failure_from_attempt_with_start_and_reason_admitted(
@@ -1274,9 +1268,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 },
             )
             .await?;
-        } else if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-            && let Some(request_model) = request_model
-        {
+        } else if let Some(request_model) = request_model {
             if explicit_model_failure {
                 record_temporary_model_route_failure_for_model(
                     pool,
@@ -1293,10 +1285,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             }
         }
     }
-    if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-        && explicit_model_failure
-        && !api_key_temporary_http_failure
-    {
+    if explicit_model_failure && !api_key_temporary_http_failure {
         return Ok(false);
     }
 

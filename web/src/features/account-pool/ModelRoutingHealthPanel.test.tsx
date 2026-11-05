@@ -41,7 +41,7 @@ describe("ModelRoutingHealthPanel", () => {
     expect(html).toContain("gpt-5.5-codex");
     expect(html).toContain("未知");
     expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('aria-label="恢复路由: gpt-5.5-codex"');
+    expect(html).toContain('aria-label="恢复可用: gpt-5.5-codex"');
     expect(html).toContain("md:grid-cols-[minmax(0,1fr)_auto_minmax(0,auto)]");
     expect(html).toContain(
       "flex min-w-0 basis-full flex-wrap items-center justify-end gap-2 md:flex-nowrap",

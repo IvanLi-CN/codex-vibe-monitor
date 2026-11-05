@@ -129,7 +129,7 @@ function assertCoolingRowLayout(canvasElement: HTMLElement, mobile: boolean) {
   const coolingSummary = within(canvasElement).getByTestId("model-routing-summary-o4-mini");
   const coolingStatus = within(canvasElement).getByText("模型限流", { exact: true });
   const coolingReset = within(canvasElement).getByRole("button", {
-    name: "恢复路由: o4-mini",
+    name: "恢复可用: o4-mini",
   });
   const coolingExpand = within(canvasElement).getAllByLabelText("展开模型路由历史")[2];
   expect(coolingSummary).toBeDefined();
@@ -243,7 +243,7 @@ export const ResetCoolingModel: Story = {
   args: { states, writesEnabled: true, onReset: fn() },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    const reset = canvas.getByRole("button", { name: "恢复路由: o4-mini" });
+    const reset = canvas.getByRole("button", { name: "恢复可用: o4-mini" });
     await expect(reset).toBeVisible();
     await userEvent.click(reset);
     await expect(args.onReset).toHaveBeenCalledWith("o4-mini");

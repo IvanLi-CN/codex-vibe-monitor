@@ -99,7 +99,10 @@ pub(super) async fn outcome_fact(
     failure: Option<(&str, bool)>,
     now: DateTime<Utc>,
 ) -> Result<Option<RuntimeModelFact>> {
-    if account.kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+    if !matches!(
+        account.kind.as_str(),
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX | UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+    ) {
         return Ok(None);
     }
     let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
@@ -499,7 +502,10 @@ pub(crate) async fn observe_runtime_model_cache(
     else {
         return Ok(ModelRouteCacheObservationOutcome::default());
     };
-    if account.kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+    if !matches!(
+        account.kind.as_str(),
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX | UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+    ) {
         return Ok(ModelRouteCacheObservationOutcome::default());
     }
     let settings =
