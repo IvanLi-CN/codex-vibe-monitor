@@ -23,8 +23,9 @@ pub(crate) const PG_ANALYTICS_REQUIRED_COLUMNS: &[(&str, &str)] = &[(
 
 // Provisioning is intentionally separate from application startup. The runtime only verifies
 // these relations and never creates or mutates the analytics schema implicitly.
-pub(crate) const PG_ANALYTICS_SCHEMA_SQL: &str = concat!(
-    r#"
+// Keep this version-1 SQL byte-stable: the migration runner stores and verifies its checksum.
+// Module DDL is a separate contract and must not be appended to this immutable string.
+pub(crate) const PG_ANALYTICS_SCHEMA_SQL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS cvm_analytics;
 
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_facts (
@@ -254,6 +255,9 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_applied_changes (
 
 CREATE INDEX IF NOT EXISTS analytics_replica_applied_generation_idx
     ON cvm_analytics.analytics_replica_applied_changes (generation, change_id);
-"#,
-    include_str!("../analytics_module/schema/ddl.sql"),
-);
+"#;
+
+/// The deployed checksum for the immutable `pg-analytics` version-1 contract.
+/// Keep this value tied to the original SQL bytes so drift fails the regression test.
+pub(crate) const PG_ANALYTICS_SCHEMA_V1_CHECKSUM: &str =
+    "f330931321d86a26ef9f2fbd09bba44e154ee74fae985ae751bce982c728ae65";

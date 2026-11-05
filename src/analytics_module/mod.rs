@@ -2,7 +2,11 @@ mod schema;
 
 pub(crate) use schema::*;
 
-pub(crate) const ANALYTICS_MODULE_SCHEMA_SQL: &str = include_str!("schema/ddl.sql");
+pub(crate) const ANALYTICS_MODULE_LEDGER_SCHEMA_SQL: &str = include_str!("schema/ledger.sql");
+pub(crate) const ANALYTICS_MODULE_SCHEMA_SQL: &str = concat!(
+    include_str!("schema/ledger.sql"),
+    include_str!("schema/ddl.sql"),
+);
 pub(crate) const ANALYTICS_MODULE_ROLE_GRANTS_SQL: &str = include_str!("schema/roles.sql");
 
 /// A marker interface keeps module declarations uniform while later tasks add storage behavior.
@@ -187,5 +191,54 @@ mod tests {
         assert!(ANALYTICS_MODULE_ROLE_GRANTS_SQL.contains("TO cvm_analytics_maintenance"));
         assert!(!ANALYTICS_MODULE_ROLE_GRANTS_SQL.contains("GRANT CREATE"));
         assert!(!ANALYTICS_MODULE_ROLE_GRANTS_SQL.contains("GRANT ALL"));
+    }
+
+    #[test]
+    fn migration_runner_contract_is_ordered_and_fail_closed() {
+        assert!(ANALYTICS_MODULE_LEDGER_SCHEMA_SQL.contains("schema_version BIGINT"));
+        assert!(ANALYTICS_MODULE_LEDGER_SCHEMA_SQL.contains("PRIMARY KEY (component, step_order)"));
+        assert!(ANALYTICS_MODULE_SCHEMA_SQL.contains("ALTER TABLE"));
+        assert!(ANALYTICS_MODULE_SCHEMA_SQL.contains("CREATE TABLE IF NOT EXISTS"));
+        assert_eq!(
+            AnalyticsModuleMigrationError::LedgerChecksumMismatch.code(),
+            "analytics_module_ddl_checksum_mismatch"
+        );
+        assert_eq!(
+            AnalyticsModuleMigrationError::LedgerNewerVersion.code(),
+            "analytics_module_ddl_newer_version"
+        );
+        assert_eq!(
+            AnalyticsModuleMigrationError::RoleApply.code(),
+            "analytics_module_role_grant_failed"
+        );
+    }
+
+    #[test]
+    fn legacy_pg_schema_v1_checksum_is_byte_stable_and_module_ddl_is_separate() {
+        use sha2::{Digest, Sha256};
+
+        let checksum = format!(
+            "{:x}",
+            Sha256::digest(super::super::PG_ANALYTICS_SCHEMA_SQL.as_bytes())
+        );
+        assert_eq!(checksum, super::super::PG_ANALYTICS_SCHEMA_V1_CHECKSUM);
+        assert!(!super::super::PG_ANALYTICS_SCHEMA_SQL.contains("analytics_module_"));
+        assert!(ANALYTICS_MODULE_SCHEMA_SQL.contains("CREATE TABLE IF NOT EXISTS"));
+        assert!(!ANALYTICS_MODULE_SCHEMA_SQL.contains("DROP TABLE"));
+    }
+
+    #[test]
+    fn legacy_pg_schema_drift_does_not_match_the_deployed_v1_fence() {
+        use sha2::{Digest, Sha256};
+
+        let drifted_schema = format!(
+            "{}\n-- intentional checksum drift",
+            super::super::PG_ANALYTICS_SCHEMA_SQL
+        );
+        let drifted_checksum = format!("{:x}", Sha256::digest(drifted_schema.as_bytes()));
+        assert_ne!(
+            drifted_checksum,
+            super::super::PG_ANALYTICS_SCHEMA_V1_CHECKSUM
+        );
     }
 }
