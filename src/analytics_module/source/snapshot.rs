@@ -31,6 +31,21 @@ pub(crate) struct SourceRetentionPin {
     pub(crate) expires_at: String,
 }
 
+#[derive(Debug, FromRow)]
+struct SourceJournalStateRow {
+    generation: i64,
+    retained_from_change_id: i64,
+    capacity: i64,
+    invalidation_pending: i64,
+    event_count: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct ExistingRetentionPinRow {
+    state: String,
+    unexpired: i64,
+}
+
 pub(crate) async fn ensure_source_snapshot_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
@@ -140,34 +155,88 @@ pub(crate) async fn renew_source_retention_pin_tx(
     pin: &SourceRetentionPin,
 ) -> Result<()> {
     validate_pin(pin)?;
-    let snapshot_exists = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM analytics_source_snapshots \
-         WHERE build_id = ?1 AND state IN ('active', 'completed'))",
-    )
-    .bind(&pin.build_id)
-    .fetch_one(&mut *connection)
-    .await?;
-    if snapshot_exists == 0 {
-        bail!("cannot pin a missing or inactive analytics source snapshot");
-    }
-    sqlx::query(
-        "INSERT INTO analytics_source_retention_pins \
-         (pin_id, build_id, source_kind, source_identity, watermark_change_id, expires_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-         ON CONFLICT(pin_id) DO UPDATE SET build_id = excluded.build_id, \
-         source_kind = excluded.source_kind, source_identity = excluded.source_identity, \
-         watermark_change_id = excluded.watermark_change_id, expires_at = excluded.expires_at, \
-         state = 'active', updated_at = datetime('now')",
+    let existing = sqlx::query_as::<_, ExistingRetentionPinRow>(
+        "SELECT state, julianday(expires_at) > julianday('now') AS unexpired \
+         FROM analytics_source_retention_pins WHERE pin_id = ?1",
     )
     .bind(&pin.pin_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some(existing) = &existing {
+        if existing.state != "active" || existing.unexpired == 0 {
+            bail!("cannot renew an expired or released source retention pin");
+        }
+    }
+    let snapshot = sqlx::query_as::<_, SourceSnapshotRow>(
+        "SELECT build_id, source_instance_id, generation, high_watermark_change_id, \
+         coverage_revision, retained_from_change_id, fact_semantics_version, \
+         stats_semantics_version, manifest_digest FROM analytics_source_snapshots \
+         WHERE build_id = ?1 AND state IN ('active', 'completed')",
+    )
     .bind(&pin.build_id)
-    .bind(&pin.source_kind)
-    .bind(&pin.source_identity)
-    .bind(pin.watermark_change_id)
-    .bind(&pin.expires_at)
-    .execute(&mut *connection)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let snapshot = snapshot
+        .map(SourceSnapshot::try_from)
+        .transpose()?
+        .ok_or_else(|| anyhow!("cannot pin a missing or inactive analytics source snapshot"))?;
+    let journal_state = sqlx::query_as::<_, SourceJournalStateRow>(
+        "SELECT generation, retained_from_change_id, capacity, invalidation_pending, \
+         (SELECT COUNT(*) FROM analytics_change_events) AS event_count \
+         FROM analytics_change_state WHERE id = 1",
+    )
+    .fetch_one(&mut *connection)
     .await
-    .context("renew analytics source retention pin")?;
+    .context("load analytics source journal state")?;
+    validate_snapshot_against_journal(&snapshot, &journal_state)?;
+    if pin.watermark_change_id < snapshot.high_watermark_change_id {
+        bail!("source retention pin does not cover the snapshot watermark");
+    }
+    let expires_in_future = sqlx::query_scalar::<_, i64>("SELECT julianday(?1) > julianday('now')")
+        .bind(&pin.expires_at)
+        .fetch_one(&mut *connection)
+        .await?;
+    if expires_in_future == 0 {
+        bail!("source retention pin expiry must be in the future");
+    }
+    if let Some(existing) = existing {
+        if existing.state != "active" || existing.unexpired == 0 {
+            bail!("cannot renew an expired or released source retention pin");
+        }
+        let updated = sqlx::query(
+            "UPDATE analytics_source_retention_pins SET build_id = ?2, source_kind = ?3, \
+             source_identity = ?4, watermark_change_id = ?5, expires_at = ?6, \
+             updated_at = datetime('now') WHERE pin_id = ?1 AND state = 'active' \
+             AND julianday(expires_at) > julianday('now')",
+        )
+        .bind(&pin.pin_id)
+        .bind(&pin.build_id)
+        .bind(&pin.source_kind)
+        .bind(&pin.source_identity)
+        .bind(pin.watermark_change_id)
+        .bind(&pin.expires_at)
+        .execute(&mut *connection)
+        .await
+        .context("renew analytics source retention pin")?;
+        if updated.rows_affected() != 1 {
+            bail!("cannot renew an expired or released source retention pin");
+        }
+    } else {
+        sqlx::query(
+            "INSERT INTO analytics_source_retention_pins \
+             (pin_id, build_id, source_kind, source_identity, watermark_change_id, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(&pin.pin_id)
+        .bind(&pin.build_id)
+        .bind(&pin.source_kind)
+        .bind(&pin.source_identity)
+        .bind(pin.watermark_change_id)
+        .bind(&pin.expires_at)
+        .execute(&mut *connection)
+        .await
+        .context("create analytics source retention pin")?;
+    }
     Ok(())
 }
 
@@ -222,6 +291,15 @@ pub(crate) async fn assert_source_snapshot_usable(
     if snapshot.generation != generation {
         bail!("analytics source snapshot belongs to another generation");
     }
+    let journal_state = sqlx::query_as::<_, SourceJournalStateRow>(
+        "SELECT generation, retained_from_change_id, capacity, invalidation_pending, \
+         (SELECT COUNT(*) FROM analytics_change_events) AS event_count \
+         FROM analytics_change_state WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await
+    .context("load analytics source journal state")?;
+    validate_snapshot_against_journal(&snapshot, &journal_state)?;
     if required_through_change_id > snapshot.high_watermark_change_id {
         bail!("analytics source snapshot does not cover the requested watermark");
     }
@@ -250,6 +328,25 @@ pub(crate) async fn assert_source_snapshot_usable(
         bail!("analytics source snapshot has no active retention pin covering its watermark");
     }
     Ok(snapshot)
+}
+
+fn validate_snapshot_against_journal(
+    snapshot: &SourceSnapshot,
+    journal_state: &SourceJournalStateRow,
+) -> Result<()> {
+    if snapshot.generation != journal_state.generation {
+        bail!("analytics source snapshot generation is stale");
+    }
+    if journal_state.retained_from_change_id > snapshot.high_watermark_change_id {
+        bail!("analytics source snapshot watermark is below the retained journal floor");
+    }
+    if journal_state.invalidation_pending != 0 {
+        bail!("analytics source journal generation requires a rebuild");
+    }
+    if journal_state.event_count > journal_state.capacity {
+        bail!("analytics source journal capacity is exceeded; target is unavailable");
+    }
+    Ok(())
 }
 
 #[derive(Debug, FromRow)]

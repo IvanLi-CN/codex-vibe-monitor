@@ -913,82 +913,77 @@ async fn append_analytics_change_tx(
         .fetch_one(&mut *tx)
         .await?;
         let evicted_through_change_id = retained_from_change_id.saturating_sub(1);
-        if evicted_through_change_id > 0 {
-            let evicted_from_change_id = sqlx::query_scalar::<_, i64>(
-                "SELECT COALESCE(MIN(change_id), ?1) FROM analytics_change_events \
-                 WHERE change_id < ?1",
-            )
-            .bind(retained_from_change_id)
-            .fetch_one(&mut *tx)
-            .await?;
-            let retention_pinned = sqlx::query_scalar::<_, i64>(
+        let retention_pinned = evicted_through_change_id > 0
+            && sqlx::query_scalar::<_, i64>(
                 "SELECT EXISTS(SELECT 1 FROM analytics_source_retention_pins \
                  WHERE state = 'active' AND julianday(expires_at) > julianday('now') \
-                   AND watermark_change_id >= ?1)",
+                   AND watermark_change_id <= ?1)",
             )
-            .bind(evicted_from_change_id)
+            .bind(evicted_through_change_id)
             .fetch_one(&mut *tx)
             .await
             .unwrap_or(1)
                 != 0;
-            if retention_pinned {
-                bail!(
-                    "analytics source retention pin blocks journal eviction from change {evicted_from_change_id} through change {evicted_through_change_id}"
-                );
-            }
-        }
-        let stale_coverage_exists = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT EXISTS(
-                SELECT 1
-                FROM analytics_change_coverage
-                WHERE generation <> ?1
-                   OR covered_through_change_id < ?2
-            )
-            "#,
-        )
-        .bind(state.generation)
-        .bind(evicted_through_change_id)
-        .fetch_one(&mut *tx)
-        .await?
-            != 0;
-        let generation = if stale_coverage_exists && state.invalidation_pending == 0 {
-            state
-                .generation
-                .checked_add(1)
-                .context("analytics change generation overflow")?
-        } else {
+        if retention_pinned {
+            // Keep ordinary fact writes durable; the snapshot usability gate interrupts builds
+            // while the journal remains over capacity.
             state.generation
-        };
-        sqlx::query("DELETE FROM analytics_change_events WHERE change_id < ?1")
-            .bind(retained_from_change_id)
-            .execute(&mut *tx)
-            .await?;
-        if generation != state.generation {
-            sqlx::query("UPDATE analytics_change_events SET generation = ?1 WHERE change_id >= ?2")
+        } else {
+            let stale_coverage_exists = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM analytics_change_coverage
+                    WHERE generation <> ?1
+                       OR covered_through_change_id < ?2
+                )
+                "#,
+            )
+            .bind(state.generation)
+            .bind(evicted_through_change_id)
+            .fetch_one(&mut *tx)
+            .await?
+                != 0;
+            let generation = if stale_coverage_exists && state.invalidation_pending == 0 {
+                state
+                    .generation
+                    .checked_add(1)
+                    .context("analytics change generation overflow")?
+            } else {
+                state.generation
+            };
+            sqlx::query("DELETE FROM analytics_change_events WHERE change_id < ?1")
+                .bind(retained_from_change_id)
+                .execute(&mut *tx)
+                .await?;
+            if generation != state.generation {
+                sqlx::query(
+                    "UPDATE analytics_change_events SET generation = ?1 WHERE change_id >= ?2",
+                )
                 .bind(generation)
                 .bind(retained_from_change_id)
                 .execute(&mut *tx)
                 .await?;
+            }
+            let invalidation_pending =
+                i64::from(state.invalidation_pending != 0 || stale_coverage_exists);
+            sqlx::query(
+                r#"
+                UPDATE analytics_change_state
+                SET generation = ?1,
+                    retained_from_change_id = ?2,
+                    invalidation_pending = ?3,
+                    updated_at = datetime('now')
+                WHERE id = 1
+                "#,
+            )
+            .bind(generation)
+            .bind(retained_from_change_id)
+            .bind(invalidation_pending)
+            .execute(&mut *tx)
+            .await?;
+            generation
         }
-        let invalidation_pending =
-            i64::from(state.invalidation_pending != 0 || stale_coverage_exists);
-        sqlx::query(
-            r#"
-            UPDATE analytics_change_state
-            SET generation = ?1,
-                retained_from_change_id = ?2,
-                invalidation_pending = ?3,
-                updated_at = datetime('now')
-            WHERE id = 1
-            "#,
-        )
-        .bind(generation)
-        .bind(retained_from_change_id)
-        .bind(invalidation_pending)
-        .execute(&mut *tx)
-        .await?;
-        generation
     } else {
         state.generation
     };
@@ -2566,9 +2561,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capacity_eviction_respects_retention_pin_and_rolls_back() {
+    async fn capacity_eviction_preserves_facts_when_retention_blocks_suffix() {
         let pool = test_pool().await;
-        sqlx::query("UPDATE analytics_change_state SET capacity = 5 WHERE id = 1")
+        sqlx::query("UPDATE analytics_change_state SET capacity = 10 WHERE id = 1")
             .execute(&pool)
             .await
             .expect("set pinned capacity");
@@ -2591,7 +2586,7 @@ mod tests {
             .expect("append pinned event");
             tx.commit().await.expect("commit pinned event");
         }
-        sqlx::query("UPDATE analytics_change_state SET capacity = 2 WHERE id = 1")
+        sqlx::query("UPDATE analytics_change_state SET capacity = 3 WHERE id = 1")
             .execute(&pool)
             .await
             .expect("shrink pinned capacity");
@@ -2614,35 +2609,43 @@ mod tests {
         .await
         .expect("create active retention pin");
 
-        let fact_json = json!({"factVersion": 1, "index": 5}).to_string();
+        let fact_json = json!({"factVersion": 1, "index": 6}).to_string();
         let mut tx = pool.begin().await.expect("begin retention-pinned eviction");
-        let error = append_analytics_change_tx(
+        let receipt = append_analytics_change_tx(
             tx.as_mut(),
             AnalyticsChangeInput {
                 event_kind: "upsert",
                 entity_kind: "test",
                 source: "test",
-                source_row_id: Some(5),
-                entity_key: "test:5",
+                source_row_id: Some(6),
+                entity_key: "test:6",
                 occurred_at: "2026-10-30 12:00:00",
                 fact_json: &fact_json,
             },
         )
         .await
-        .expect_err("reject retention-pinned eviction");
-        assert!(error.to_string().contains("retention pin"));
-        tx.rollback()
+        .expect("preserve fact while retention blocks suffix eviction");
+        tx.commit()
             .await
-            .expect("rollback retention-pinned eviction");
+            .expect("commit fact while retention blocks suffix eviction");
+        assert_eq!(receipt.change_id, 6);
 
-        let (event_count, coverage_revision): (i64, i64) = sqlx::query_as(
-            "SELECT (SELECT COUNT(*) FROM analytics_change_events), coverage_revision \
+        let (generation, retained_from_change_id, event_count, coverage_revision): (
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT generation, retained_from_change_id, \
+                    (SELECT COUNT(*) FROM analytics_change_events), coverage_revision \
              FROM analytics_change_state WHERE id = 1",
         )
         .fetch_one(&pool)
         .await
         .expect("load rolled-back retention state");
-        assert_eq!(event_count, 5);
-        assert_eq!(coverage_revision, 5);
+        assert_eq!(generation, 1);
+        assert_eq!(retained_from_change_id, 1);
+        assert_eq!(event_count, 6);
+        assert_eq!(coverage_revision, 6);
     }
 }

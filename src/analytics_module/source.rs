@@ -181,8 +181,6 @@ pub(crate) struct SourceAppendReceipt {
 struct SourceStateRow {
     generation: i64,
     coverage_revision: i64,
-    retained_from_change_id: i64,
-    capacity: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -238,37 +236,12 @@ pub(crate) async fn append_source_envelope_tx(
     }
 
     let state = sqlx::query_as::<_, SourceStateRow>(
-        "SELECT generation, coverage_revision, retained_from_change_id, capacity \
+        "SELECT generation, coverage_revision \
          FROM analytics_change_state WHERE id = 1",
     )
     .fetch_one(&mut *connection)
     .await
     .context("load analytics source state")?;
-    let latest_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM analytics_change_events")
-        .fetch_one(&mut *connection)
-        .await?;
-    if latest_count >= state.capacity {
-        let oldest = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MIN(change_id) FROM analytics_change_events",
-        )
-        .fetch_one(&mut *connection)
-        .await?
-        .unwrap_or(state.retained_from_change_id);
-        let pinned = sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM analytics_source_retention_pins \
-             WHERE state = 'active' AND julianday(expires_at) > julianday('now') \
-               AND watermark_change_id >= ?1)",
-        )
-        .bind(oldest)
-        .fetch_one(&mut *connection)
-        .await
-        .unwrap_or(1);
-        if pinned != 0 {
-            bail!("analytics source journal capacity is pinned at its retained boundary");
-        }
-        bail!("analytics source journal capacity exhausted; rebuild or advance retention");
-    }
-
     let coverage_revision = state
         .coverage_revision
         .checked_add(1)
@@ -529,10 +502,10 @@ mod tests {
         let snapshot = SourceSnapshot {
             build_id: "build-0001".to_string(),
             source_instance_id: "sqlite-instance-a".to_string(),
-            generation: 3,
+            generation: 1,
             high_watermark_change_id: 42,
             coverage_revision: 17,
-            retained_from_change_id: 10,
+            retained_from_change_id: 1,
             fact_semantics_version: SOURCE_FACT_SEMANTICS_VERSION,
             stats_semantics_version: SOURCE_STATS_SEMANTICS_VERSION,
             manifest_digest: Some("sha256:manifest".to_string()),
@@ -603,40 +576,6 @@ mod tests {
         .expect_err("reject a pin below the snapshot watermark");
         assert!(error.to_string().contains("covering its watermark"));
 
-        sqlx::query(
-            "UPDATE analytics_source_retention_pins SET watermark_change_id = 42, \
-             expires_at = '2000-01-01T00:00:00Z' WHERE pin_id = ?1",
-        )
-        .bind(&pin.pin_id)
-        .execute(&pool)
-        .await
-        .expect("expire retention pin");
-        let error = assert_source_snapshot_usable(
-            &pool,
-            &snapshot.build_id,
-            &snapshot.source_instance_id,
-            snapshot.generation,
-            40,
-        )
-        .await
-        .expect_err("reject an expired retention pin");
-        assert!(error.to_string().contains("expired retention pin"));
-
-        let mut tx = pool.begin().await.expect("begin pin renewal");
-        renew_source_retention_pin_tx(tx.as_mut(), &pin)
-            .await
-            .expect("renew expired retention pin");
-        tx.commit().await.expect("commit pin renewal");
-        assert_source_snapshot_usable(
-            &pool,
-            &snapshot.build_id,
-            &snapshot.source_instance_id,
-            snapshot.generation,
-            40,
-        )
-        .await
-        .expect("accept a renewed covering retention pin");
-
         let mut tx = pool.begin().await.expect("begin pin release");
         assert!(
             release_source_retention_pin_tx(tx.as_mut(), &pin.pin_id)
@@ -655,6 +594,167 @@ mod tests {
         .await
         .expect_err("reject a released retention pin");
         assert!(error.to_string().contains("retention pin"));
+
+        let mut tx = pool.begin().await.expect("begin released pin renewal");
+        let error = renew_source_retention_pin_tx(tx.as_mut(), &pin)
+            .await
+            .expect_err("reject renewal of a released retention pin");
+        assert!(error.to_string().contains("expired or released"));
+        tx.rollback().await.expect("rollback released pin renewal");
+    }
+
+    #[tokio::test]
+    async fn source_append_continues_when_retention_exceeds_capacity() {
+        let pool = test_pool().await;
+        sqlx::query("UPDATE analytics_change_state SET capacity = 1 WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("set source capacity");
+        let first = SourceEnvelopeDraft {
+            source_instance_id: "sqlite-instance-a".to_string(),
+            event_id: "capacity-event-1".to_string(),
+            entity_kind: "invocation".to_string(),
+            entity_key: "invocation:capacity:1".to_string(),
+            operation: SourceOperation::Upsert,
+            occurred_at: "2026-11-05T02:00:00Z".to_string(),
+            payload: serde_json::json!({"index": 1}),
+        };
+        let mut tx = pool.begin().await.expect("begin first capacity event");
+        append_source_envelope_tx(tx.as_mut(), &first)
+            .await
+            .expect("append first capacity event");
+        tx.commit().await.expect("commit first capacity event");
+
+        let snapshot = SourceSnapshot {
+            build_id: "capacity-build".to_string(),
+            source_instance_id: "sqlite-instance-a".to_string(),
+            generation: 1,
+            high_watermark_change_id: 1,
+            coverage_revision: 1,
+            retained_from_change_id: 1,
+            fact_semantics_version: SOURCE_FACT_SEMANTICS_VERSION,
+            stats_semantics_version: SOURCE_STATS_SEMANTICS_VERSION,
+            manifest_digest: None,
+        };
+        create_source_snapshot(&pool, &snapshot)
+            .await
+            .expect("create capacity snapshot");
+        let pin = SourceRetentionPin {
+            pin_id: "capacity-pin".to_string(),
+            build_id: snapshot.build_id.clone(),
+            source_kind: "journal".to_string(),
+            source_identity: snapshot.source_instance_id.clone(),
+            watermark_change_id: 1,
+            expires_at: "2099-01-01T00:00:00Z".to_string(),
+        };
+        renew_source_retention_pin(&pool, &pin)
+            .await
+            .expect("pin capacity snapshot");
+
+        let second = SourceEnvelopeDraft {
+            event_id: "capacity-event-2".to_string(),
+            entity_key: "invocation:capacity:2".to_string(),
+            payload: serde_json::json!({"index": 2}),
+            ..first
+        };
+        let mut tx = pool.begin().await.expect("begin second capacity event");
+        append_source_envelope_tx(tx.as_mut(), &second)
+            .await
+            .expect("continue fact writes over pinned capacity");
+        tx.commit().await.expect("commit second capacity event");
+
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM analytics_change_events")
+            .fetch_one(&pool)
+            .await
+            .expect("count over-capacity source events");
+        assert_eq!(event_count, 2);
+        let error = assert_source_snapshot_usable(
+            &pool,
+            &snapshot.build_id,
+            &snapshot.source_instance_id,
+            snapshot.generation,
+            1,
+        )
+        .await
+        .expect_err("mark an over-capacity build unavailable");
+        assert!(error.to_string().contains("capacity is exceeded"));
+    }
+
+    #[tokio::test]
+    async fn expired_pin_cannot_be_renewed_after_journal_trim() {
+        let pool = test_pool().await;
+        let snapshot = SourceSnapshot {
+            build_id: "trimmed-build".to_string(),
+            source_instance_id: "sqlite-instance-a".to_string(),
+            generation: 1,
+            high_watermark_change_id: 2,
+            coverage_revision: 2,
+            retained_from_change_id: 1,
+            fact_semantics_version: SOURCE_FACT_SEMANTICS_VERSION,
+            stats_semantics_version: SOURCE_STATS_SEMANTICS_VERSION,
+            manifest_digest: None,
+        };
+        create_source_snapshot(&pool, &snapshot)
+            .await
+            .expect("create trimmed snapshot");
+        let pin = SourceRetentionPin {
+            pin_id: "trimmed-pin".to_string(),
+            build_id: snapshot.build_id.clone(),
+            source_kind: "journal".to_string(),
+            source_identity: snapshot.source_instance_id.clone(),
+            watermark_change_id: 2,
+            expires_at: "2099-01-01T00:00:00Z".to_string(),
+        };
+        renew_source_retention_pin(&pool, &pin)
+            .await
+            .expect("pin trimmed snapshot");
+        sqlx::query(
+            "UPDATE analytics_source_retention_pins SET expires_at = '2000-01-01T00:00:00Z' \
+             WHERE pin_id = ?1",
+        )
+        .bind(&pin.pin_id)
+        .execute(&pool)
+        .await
+        .expect("expire trimmed pin");
+        sqlx::query("UPDATE analytics_change_state SET retained_from_change_id = 3 WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("trim journal past snapshot watermark");
+
+        let error = assert_source_snapshot_usable(
+            &pool,
+            &snapshot.build_id,
+            &snapshot.source_instance_id,
+            snapshot.generation,
+            2,
+        )
+        .await
+        .expect_err("reject a snapshot below the retained floor");
+        assert!(error.to_string().contains("retained journal floor"));
+        sqlx::query(
+            "UPDATE analytics_change_state SET generation = 2, retained_from_change_id = 3 \
+             WHERE id = 1",
+        )
+        .execute(&pool)
+        .await
+        .expect("advance trimmed journal generation");
+
+        let error = assert_source_snapshot_usable(
+            &pool,
+            &snapshot.build_id,
+            &snapshot.source_instance_id,
+            snapshot.generation,
+            2,
+        )
+        .await
+        .expect_err("reject a trimmed snapshot");
+        assert!(error.to_string().contains("stale"));
+        let mut tx = pool.begin().await.expect("begin expired pin renewal");
+        let error = renew_source_retention_pin_tx(tx.as_mut(), &pin)
+            .await
+            .expect_err("reject renewal after expiry and trim");
+        assert!(error.to_string().contains("expired or released"));
+        tx.rollback().await.expect("rollback expired pin renewal");
     }
 
     #[test]
