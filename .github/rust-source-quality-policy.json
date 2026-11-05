@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 105,
+    "inventory_entries": 113,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -463,10 +463,58 @@
       "next_module_workstream": "Maintain API-key account mutations, account deletion, group policy, and retry-column fixtures."
     },
     {
-      "path": "src/upstream_accounts/core_runtime_types.rs",
+      "path": "src/upstream_accounts/core_runtime_types/account_models.rs",
       "role": "production",
-      "line_budget": 3619,
-      "next_module_workstream": "Split upstream account runtime types, account state, and capability projections."
+      "line_budget": 601,
+      "next_module_workstream": "Maintain account list, capability, and status-reason model cohesion below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/constants.rs",
+      "role": "production",
+      "line_budget": 219,
+      "next_module_workstream": "Maintain upstream-account constants and status vocabulary as one stable contract below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/credentials.rs",
+      "role": "production",
+      "line_budget": 159,
+      "next_module_workstream": "Maintain stored credentials, usage snapshots, OAuth tokens, and JWT claim DTOs below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/oauth_session_jobs.rs",
+      "role": "production",
+      "line_budget": 853,
+      "next_module_workstream": "Maintain OAuth sessions, mailbox/import DTOs, bulk jobs, and event state below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/oauth_token_lifecycle.rs",
+      "role": "production",
+      "line_budget": 89,
+      "next_module_workstream": "Maintain OAuth token lifecycle normalization and imported-credential probe state below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/reserve.rs",
+      "role": "production",
+      "line_budget": 63,
+      "next_module_workstream": "Maintain reserve quota routing and normalized usage-window snapshots below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/routing_models.rs",
+      "role": "production",
+      "line_budget": 991,
+      "next_module_workstream": "Maintain routing settings, account responses, sticky selections, and usage snapshots below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/runtime_coordination.rs",
+      "role": "production",
+      "line_budget": 698,
+      "next_module_workstream": "Maintain actor coordination, maintenance queues, dispatch mapping, and lifecycle behavior below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/runtime_state.rs",
+      "role": "production",
+      "line_budget": 141,
+      "next_module_workstream": "Maintain runtime construction, locks, job registries, and background-task drain behavior below the production target."
     },
     {
       "path": "src/upstream_accounts/oauth_sessions_callbacks.rs",
@@ -1467,7 +1515,7 @@
       "reason": "Retain this targeted expect for the lease-fenced refresh failure transition contract; remove it when refresh state failure context is carried by a dedicated payload."
     },
     {
-      "path": "src/upstream_accounts/core_runtime_types.rs",
+      "path": "src/upstream_accounts/core_runtime_types/runtime_coordination.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"The actor boundary carries the optimistic-version guards with the existing OAuth upsert command.\" )]",
       "reason": "Retain this targeted expect for the version-fenced OAuth upsert actor boundary; remove it when the command carries a dedicated optimistic-version payload."
