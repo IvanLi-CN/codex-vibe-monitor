@@ -1,3 +1,6 @@
+#[path = "../analytics_module/mod.rs"]
+pub(crate) mod analytics_module;
+
 pub(crate) const PG_ANALYTICS_SCHEMA_NAME: &str = "cvm_analytics";
 
 pub(crate) const PG_ANALYTICS_REQUIRED_RELATIONS: &[&str] = &[
@@ -20,7 +23,8 @@ pub(crate) const PG_ANALYTICS_REQUIRED_COLUMNS: &[(&str, &str)] = &[(
 
 // Provisioning is intentionally separate from application startup. The runtime only verifies
 // these relations and never creates or mutates the analytics schema implicitly.
-pub(crate) const PG_ANALYTICS_SCHEMA_SQL: &str = r#"
+pub(crate) const PG_ANALYTICS_SCHEMA_SQL: &str = concat!(
+    r#"
 CREATE SCHEMA IF NOT EXISTS cvm_analytics;
 
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_facts (
@@ -250,4 +254,6 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_applied_changes (
 
 CREATE INDEX IF NOT EXISTS analytics_replica_applied_generation_idx
     ON cvm_analytics.analytics_replica_applied_changes (generation, change_id);
-"#;
+"#,
+    include_str!("../analytics_module/schema/ddl.sql"),
+);
