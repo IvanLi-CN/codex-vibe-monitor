@@ -60,10 +60,19 @@ describe("complete model routing loading", () => {
     expect(host.textContent).not.toContain("stale-model");
     expect(fetchStates.mock.calls[0][1]?.aborted).toBe(true);
   });
-  it("does not load or create model health rows for OAuth accounts", async () => {
+  it("loads OAuth model health from the same complete account model API", async () => {
+    fetchStates.mockResolvedValueOnce([
+      {
+        model: "oauth-model",
+        state: "cooling_down",
+        priority: "excluded",
+        failureCount: 5,
+        lastSeenAt: "2026-11-05T00:00:00Z",
+      },
+    ]);
     await act(async () => root.render(<Harness id={3} />));
-    expect(fetchStates).not.toHaveBeenCalled();
-    expect(host.textContent).toContain('"states":[]');
+    expect(fetchStates).toHaveBeenCalledWith(3, expect.any(AbortSignal));
+    expect(host.textContent).toContain("oauth-model");
     expect(host.textContent).toContain('"loading":false');
   });
   it("surfaces request errors without claiming an empty successful model set", async () => {

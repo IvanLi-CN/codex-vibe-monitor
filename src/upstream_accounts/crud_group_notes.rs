@@ -148,13 +148,10 @@ pub(crate) async fn get_model_routing_live(
     let (window_minutes, model, route_state, limit) =
         normalize_model_routing_live_query(&params)
             .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
-    let accounts = load_api_key_model_routing_live_accounts(
-        &state.pool,
-        model.as_deref(),
-        route_state.as_deref(),
-    )
-    .await
-    .map_err(internal_error_tuple)?;
+    let accounts =
+        load_model_routing_live_accounts(&state.pool, model.as_deref(), route_state.as_deref())
+            .await
+            .map_err(internal_error_tuple)?;
     let visible_route_keys = route_state.as_ref().map(|_| {
         accounts
             .iter()
@@ -223,10 +220,13 @@ pub(crate) async fn list_upstream_account_model_routing_events(
                     "upstream account was not found".to_string(),
                 )
             })?;
-    if kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+    if !matches!(
+        kind.as_str(),
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX | UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+    ) {
         return Err((
             StatusCode::NOT_FOUND,
-            "model routing history is only available for API Key accounts".to_string(),
+            "model routing history is only available for supported accounts".to_string(),
         ));
     }
     let cursor = params
@@ -490,9 +490,13 @@ async fn load_model_routing_display_names(
     }
 
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, display_name FROM pool_upstream_accounts WHERE kind = ",
+        "SELECT id, display_name FROM pool_upstream_accounts WHERE kind IN (",
     );
     query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
+    query
+        .push(", ")
+        .push_bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .push(")");
     query.push(" AND COALESCE(deleted_at, '') = '' AND id IN (");
     let mut separated = query.separated(", ");
     for account_id in account_ids {
@@ -661,9 +665,13 @@ pub(crate) fn build_model_routing_attempt_timeline_query(
                LIMIT 1
           )
          WHERE accounts.id = attempts.upstream_account_id
-           AND accounts.kind = "#,
+           AND accounts.kind IN ("#,
     ));
     attempt_query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
+    attempt_query
+        .push(", ")
+        .push_bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .push(")");
     attempt_query.push(" AND COALESCE(accounts.deleted_at, '') = ''");
     attempt_query
         .push(" AND ")
@@ -745,9 +753,13 @@ pub(crate) fn build_model_routing_event_timeline_query(
           FROM pool_upstream_account_events AS event
           CROSS JOIN pool_upstream_accounts AS accounts
          WHERE accounts.id = event.account_id
-           AND accounts.kind = "#,
+           AND accounts.kind IN ("#,
     ));
     event_query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
+    event_query
+        .push(", ")
+        .push_bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .push(")");
     event_query.push(" AND COALESCE(accounts.deleted_at, '') = ''");
     event_query.push(" AND event.attempt_id IS NULL AND event.model IS NOT NULL");
     event_query
@@ -2565,10 +2577,7 @@ pub(crate) async fn reset_upstream_account_model_routing(
         .await
         .map_err(internal_error_tuple)?
     else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "API Key model route not found".to_string(),
-        ));
+        return Err((StatusCode::NOT_FOUND, "model route not found".to_string()));
     };
     state
         .subscription_hub

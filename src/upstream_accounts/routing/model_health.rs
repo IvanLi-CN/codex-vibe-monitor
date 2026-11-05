@@ -255,13 +255,14 @@ pub(crate) async fn load_model_route_runtime_snapshots(
                routes.cache_recovery_limit
           FROM pool_upstream_account_model_routes AS routes
           JOIN pool_upstream_accounts AS accounts ON accounts.id = routes.account_id
-         WHERE accounts.kind = ?1
+         WHERE accounts.kind IN (?1, ?3)
            AND COALESCE(accounts.deleted_at, '') = ''
            AND routes.last_seen_at >= ?2
         "#,
     )
     .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
     .bind(cutoff_string())
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -299,8 +300,11 @@ fn cutoff_string() -> String {
     (Utc::now() - chrono::Duration::days(MODEL_ROUTE_RETENTION_DAYS)).to_rfc3339()
 }
 
-fn account_is_api_key(kind: Option<&str>) -> bool {
-    kind == Some(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+fn account_supports_model_routing(kind: Option<&str>) -> bool {
+    matches!(
+        kind,
+        Some(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX | UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    )
 }
 
 fn is_cache_owned_route(row: &ModelRouteRow) -> bool {
@@ -471,7 +475,7 @@ pub(crate) async fn load_model_routing_states(
     Ok(rows.into_iter().map(model_state_from_row).collect())
 }
 
-pub(crate) async fn load_api_key_model_routing_live_accounts(
+pub(crate) async fn load_model_routing_live_accounts(
     pool: &Pool<Sqlite>,
     model_filter: Option<&str>,
     state_filter: Option<&str>,
@@ -502,7 +506,7 @@ pub(crate) async fn load_api_key_model_routing_live_accounts(
                routes.cache_usage_missing_reason
           FROM pool_upstream_account_model_routes AS routes
           JOIN pool_upstream_accounts AS accounts ON accounts.id = routes.account_id
-         WHERE accounts.kind = ?1
+         WHERE accounts.kind IN (?1, ?4)
            AND COALESCE(accounts.deleted_at, '') = ''
            AND routes.last_seen_at >= ?2
            AND (?3 IS NULL OR routes.model = ?3)
@@ -512,6 +516,7 @@ pub(crate) async fn load_api_key_model_routing_live_accounts(
     .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
     .bind(cutoff_string())
     .bind(model_filter)
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
     .fetch_all(pool)
     .await?;
 
@@ -536,7 +541,7 @@ pub(crate) async fn model_route_penalty(
     let Some(model) = model.map(str::trim) else {
         return Ok(ModelRoutePenalty::Normal);
     };
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(ModelRoutePenalty::Normal);
     }
     let row = sqlx::query_as::<_, ModelRouteRow>(
@@ -575,7 +580,7 @@ pub(crate) async fn model_route_concurrency_limit(
     let Some(model) = model.map(str::trim) else {
         return Ok(None);
     };
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(None);
     }
     let row = sqlx::query_as::<_, (String, Option<String>, Option<i64>)>(
@@ -614,7 +619,7 @@ pub(crate) async fn model_route_requires_expired_cooldown_probe(
     let Some(model) = model.map(str::trim) else {
         return Ok(false);
     };
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(false);
     }
     let row = sqlx::query_as::<_, (String, Option<String>)>(
@@ -877,7 +882,7 @@ pub(crate) async fn observe_model_route_cache_hit(
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(ModelRouteCacheObservationOutcome::default());
     }
     let Some(model) = model.map(str::trim) else {
@@ -1165,9 +1170,13 @@ pub(crate) async fn load_model_route_penalties(
         "SELECT routes.account_id, routes.state, routes.priority, routes.cooldown_until \
          FROM pool_upstream_account_model_routes routes \
          INNER JOIN pool_upstream_accounts accounts ON accounts.id = routes.account_id \
-         WHERE accounts.kind = ",
+         WHERE accounts.kind IN (",
     );
-    query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
+    query
+        .push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+        .push(", ")
+        .push_bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .push(")");
     query
         .push(" AND COALESCE(accounts.deleted_at, '') = '' AND routes.model = ")
         .push_bind(model);
@@ -1452,7 +1461,7 @@ pub(crate) async fn observe_model_route_seen_admitted(
     let Some(model) = model.map(str::trim) else {
         return Ok(());
     };
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(());
     }
     let now = now_string();
@@ -1639,7 +1648,7 @@ pub(crate) async fn record_model_route_success_from_attempt_admitted(
     attempt_id: i64,
     request_started_at: Option<&str>,
 ) -> Result<bool> {
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(false);
     }
     let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
@@ -1762,7 +1771,7 @@ pub(crate) async fn record_model_route_success_for_model_admitted(
     model: &str,
     request_started_at: Option<&str>,
 ) -> Result<bool> {
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(false);
     }
     let model = model.trim();
@@ -1930,7 +1939,7 @@ pub(crate) async fn record_temporary_model_route_failure_for_model(
     failure_kind: Option<&str>,
     reason_code: &str,
 ) -> Result<bool> {
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(false);
     }
     let model = model.trim();
@@ -2068,7 +2077,7 @@ async fn record_model_route_failure_from_attempt_inner(
     require_explicit_model_failure: bool,
     reason_code: Option<&str>,
 ) -> Result<bool> {
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(false);
     }
     let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
@@ -2303,7 +2312,7 @@ pub(crate) async fn reset_model_route(
     account_id: i64,
     model: &str,
 ) -> Result<Option<ModelRoutingState>> {
-    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+    if !account_supports_model_routing(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(None);
     }
     let model = model.trim();

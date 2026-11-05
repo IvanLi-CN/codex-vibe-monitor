@@ -2068,9 +2068,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     credentialRefresh?.state !== "needs_reauth" &&
     selectedDetail?.enabled !== false &&
     selectedDetail?.hasRefreshToken !== false;
-  const modelRouting = useAccountModelRouting(
-    selectedDetail?.kind === "api_key_codex" ? selectedDetail : null,
-  );
+  const modelRouting = useAccountModelRouting(selectedDetail);
   const modelRoutingStates = modelRouting.states;
   const resetModelRouting = useCallback(
     async (model: string) => {
@@ -4993,19 +4991,17 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </CardContent>
                   </Card>
 
-                  {selectedDetail.kind === "api_key_codex" ? (
-                    <ModelRoutingHealthPanel
-                      accountId={selectedDetail.id}
-                      states={modelRoutingStates}
-                      error={modelRoutingError ?? modelRouting.error}
-                      loading={modelRouting.loading}
-                      account={selectedDetail}
-                      resettingModel={modelRoutingResetting}
-                      writesEnabled={writesEnabled}
-                      initialExpandedModel={initialExpandedModel}
-                      onReset={(model) => void resetModelRouting(model)}
-                    />
-                  ) : null}
+                  <ModelRoutingHealthPanel
+                    accountId={selectedDetail.id}
+                    states={modelRoutingStates}
+                    error={modelRoutingError ?? modelRouting.error}
+                    loading={modelRouting.loading}
+                    account={selectedDetail}
+                    resettingModel={modelRoutingResetting}
+                    writesEnabled={writesEnabled}
+                    initialExpandedModel={initialExpandedModel}
+                    onReset={(model) => void resetModelRouting(model)}
+                  />
 
                   <Card>
                     <CardHeader>

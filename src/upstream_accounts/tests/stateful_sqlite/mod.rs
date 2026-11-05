@@ -17,6 +17,7 @@ mod maintenance_scheduler_and_schema;
 mod model_catalog;
 mod model_failure_timeline_and_api;
 mod model_mappings;
+mod oauth_model_routing;
 mod oauth_refresh_lease_recovery;
 mod oauth_refresh_observability;
 mod oauth_sync_quota_recovery;

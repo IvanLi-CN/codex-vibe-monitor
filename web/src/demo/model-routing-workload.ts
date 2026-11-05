@@ -4,7 +4,7 @@ export type DemoModelRouteFixture = {
   invocationId: number;
   accountId: number;
   model: string;
-  terminalStatus: "success" | "http_502";
+  terminalStatus: "success" | "http_502" | "http_429";
   flow: DemoModelRouteFlow;
   minutesAgo: number;
 };
@@ -27,12 +27,15 @@ export const DEMO_ROUTE_COMBINATIONS: DemoRouteCombination[] = [
   { accountId: 106, model: "gpt-5.6-terra" },
   { accountId: 112, model: "gpt-5.6-terra" },
   { accountId: 115, model: "gpt-5.6-terra" },
+  { accountId: 101, model: "gpt-5.4-mini" },
+  { accountId: 101, model: "gpt-5.5" },
 ];
 
 const DEMO_ROUTE_SPECIAL_FLOWS: Record<number, DemoModelRouteFlow> = {
   0: "recovered",
   3: "cooling_down",
   8: "degraded",
+  9: "cooling_down",
 };
 
 function minutesAgoForRouteCall(index: number) {
@@ -54,7 +57,10 @@ export function createDemoModelRouteFixtures(): DemoModelRouteFixture[] {
       invocationId: 10_000 + index,
       accountId: combination.accountId,
       model: combination.model,
-      terminalStatus: terminalStatusForFlow(flow),
+      terminalStatus:
+        combination.accountId === 101 && flow === "cooling_down"
+          ? "http_429"
+          : terminalStatusForFlow(flow),
       flow,
       minutesAgo: minutesAgoForRouteCall(index),
     };

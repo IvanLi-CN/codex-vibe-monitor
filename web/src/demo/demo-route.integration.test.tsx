@@ -515,6 +515,39 @@ describe("Web Demo route matrix", () => {
     }
   });
 
+  it("shows and restores OAuth model health in the real account drawer", async () => {
+    renderRoute(
+      "/#/account-pool/pool?upstreamAccountId=101&upstreamAccountTab=healthEvents",
+      "operational",
+    );
+    const resetSelector = '[data-testid="model-routing-reset-gpt-5.4-mini"]';
+    await vi.waitFor(
+      () => {
+        const panel = document.body.querySelector(
+          '[data-testid="upstream-account-model-routing-panel"]',
+        );
+        expect(panel?.textContent).toContain("模型路由健康");
+        expect(panel?.textContent).toContain("gpt-5.5");
+        expect(panel?.querySelector(resetSelector)?.textContent).toContain("恢复可用");
+      },
+      { interval: 1, timeout: 15_000 },
+    );
+    await act(async () => document.body.querySelector<HTMLButtonElement>(resetSelector)!.click());
+    await vi.waitFor(
+      () => {
+        const panel = document.body.querySelector(
+          '[data-testid="upstream-account-model-routing-panel"]',
+        );
+        expect(panel?.querySelector(resetSelector)).toBeNull();
+        expect(panel?.textContent).toContain("gpt-5.4-mini");
+        expect(panel?.textContent).toContain("gpt-5.5");
+      },
+      { interval: 1, timeout: 15_000 },
+    );
+    act(() => root.unmount());
+    root = createRoot(host);
+  });
+
   it("keeps the 26 routes x 4 scenes semantic matrix on the real application", async () => {
     expect(demoRoutes).toHaveLength(26);
     expect(new Set(demoRoutes.map((route) => route.path)).size).toBe(26);
