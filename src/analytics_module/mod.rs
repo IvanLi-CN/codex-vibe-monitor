@@ -200,8 +200,7 @@ pub(crate) trait AnalyticsModuleReader {
         publication.module_id == declaration.id
             && publication.consumer_id == declaration.consumer_id
             && publication.state == AnalyticsPublicationState::Published
-            && publication.reader_version >= declaration.reader_version
-            && !publication.legacy_reader_fenced
+            && declaration.reader_version >= publication.reader_version
     }
 }
 
@@ -274,6 +273,15 @@ mod tests {
             build_id: Some("build-1".to_string()),
         };
         assert!(InvocationAnalyticsModule.accepts(&publication));
+
+        let mut future_publication = publication.clone();
+        future_publication.reader_version = ANALYTICS_MODULE_READER_VERSION + 1;
+        assert!(!InvocationAnalyticsModule.accepts(&future_publication));
+
+        let mut legacy_fenced_publication = publication;
+        legacy_fenced_publication.legacy_reader_fenced = true;
+        assert!(InvocationAnalyticsModule.accepts(&legacy_fenced_publication));
+
         assert!(InvocationAnalyticsModule.owns(&owner));
     }
 
