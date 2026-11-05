@@ -489,7 +489,7 @@
     {
       "path": "src/upstream_accounts/core_runtime_types/oauth_session_jobs.rs",
       "role": "production",
-      "line_budget": 853,
+      "line_budget": 552,
       "next_module_workstream": "Maintain OAuth sessions, mailbox/import DTOs, bulk jobs, and event state below the production target."
     },
     {
