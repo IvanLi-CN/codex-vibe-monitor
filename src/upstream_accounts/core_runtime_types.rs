@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "core_runtime_types/account_models.rs"]
 mod account_models;
+#[path = "core_runtime_types/account_routing_requests.rs"]
+mod account_routing_requests;
 #[path = "core_runtime_types/constants.rs"]
 mod constants;
 #[path = "core_runtime_types/credentials.rs"]
@@ -20,6 +22,7 @@ mod runtime_coordination;
 mod runtime_state;
 
 pub(crate) use account_models::*;
+pub(crate) use account_routing_requests::*;
 pub(crate) use constants::*;
 pub(crate) use credentials::*;
 pub(crate) use oauth_session_jobs::*;

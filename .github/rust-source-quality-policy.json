@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 113,
+    "inventory_entries": 114,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -467,6 +467,12 @@
       "role": "production",
       "line_budget": 601,
       "next_module_workstream": "Maintain account list, capability, and status-reason model cohesion below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types/account_routing_requests.rs",
+      "role": "production",
+      "line_budget": 301,
+      "next_module_workstream": "Maintain upstream-account update, external OAuth, tag, group-routing, status-reason, and sticky-key request models below the production target."
     },
     {
       "path": "src/upstream_accounts/core_runtime_types/constants.rs",
