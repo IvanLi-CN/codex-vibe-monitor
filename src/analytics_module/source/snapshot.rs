@@ -162,10 +162,10 @@ pub(crate) async fn renew_source_retention_pin_tx(
     .bind(&pin.pin_id)
     .fetch_optional(&mut *connection)
     .await?;
-    if let Some(existing) = &existing {
-        if existing.state != "active" || existing.unexpired == 0 {
-            bail!("cannot renew an expired or released source retention pin");
-        }
+    if let Some(existing) = &existing
+        && (existing.state != "active" || existing.unexpired == 0)
+    {
+        bail!("cannot renew an expired or released source retention pin");
     }
     let snapshot = sqlx::query_as::<_, SourceSnapshotRow>(
         "SELECT build_id, source_instance_id, generation, high_watermark_change_id, \
