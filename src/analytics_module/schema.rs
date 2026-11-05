@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 use sqlx::{Connection, PgConnection};
 use std::fmt;
 
+#[cfg(test)]
+#[path = "schema/postgres.rs"]
+mod postgres_tests;
+
 pub(crate) const ANALYTICS_MODULE_VERSION: i64 = 1;
 pub(crate) const ANALYTICS_MODULE_READER_VERSION: i64 = 1;
 pub(crate) const ANALYTICS_MODULE_DDL_COMPONENT: &str = "analytics-module";
