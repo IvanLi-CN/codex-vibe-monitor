@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) const ANALYTICS_SOURCE_EVENT_VERSION: i64 = 1;
 pub(crate) const ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION: i64 = 2;
+pub(crate) const ANALYTICS_SOURCE_INSTANCE_LEGACY: &str = "legacy-sqlite";
 const ANALYTICS_CHANGE_CAPACITY_DEFAULT: i64 = 10_000;
 const ANALYTICS_CHANGE_FACT_MAX_BYTES: usize = 64 * 1024;
 const ANALYTICS_CHANGE_ENTITY_KEY_MAX_BYTES: usize = 512;
@@ -82,6 +83,27 @@ struct ExistingAnalyticsChangeRow {
     generation: i64,
     coverage_revision: i64,
     fact_json: String,
+}
+
+fn analytics_payload_digest(payload: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(payload.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+fn analytics_event_id(
+    entity_kind: &str,
+    source: &str,
+    source_row_id: Option<i64>,
+    entity_key: &str,
+    occurred_at: &str,
+    fact_json: &str,
+    coverage_revision: i64,
+) -> String {
+    let identity = format!(
+        "{entity_kind}\u{0}{source}\u{0}{source_row_id:?}\u{0}{entity_key}\u{0}{occurred_at}\u{0}{fact_json}\u{0}{coverage_revision}"
+    );
+    format!("legacy:{}", analytics_payload_digest(&identity))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +206,12 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
             change_id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_version INTEGER NOT NULL,
             fact_date_semantics_version INTEGER NOT NULL DEFAULT 1,
+            source_instance_id TEXT NOT NULL DEFAULT 'legacy-sqlite',
+            event_id TEXT NOT NULL DEFAULT '',
+            operation_kind TEXT NOT NULL DEFAULT 'legacy',
+            fact_semantics_version INTEGER NOT NULL DEFAULT 1,
+            stats_semantics_version INTEGER NOT NULL DEFAULT 1,
+            payload_digest TEXT NOT NULL DEFAULT '',
             event_kind TEXT NOT NULL CHECK(event_kind IN ('upsert', 'tombstone', 'coverage')),
             entity_kind TEXT NOT NULL,
             source TEXT NOT NULL,
@@ -217,6 +245,76 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
         .await
         .context("failed to add analytics change event fact-date semantics version")?;
     }
+
+    for (column, definition) in [
+        (
+            "source_instance_id",
+            "TEXT NOT NULL DEFAULT 'legacy-sqlite'",
+        ),
+        ("event_id", "TEXT NOT NULL DEFAULT ''"),
+        ("operation_kind", "TEXT NOT NULL DEFAULT 'legacy'"),
+        ("fact_semantics_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("stats_semantics_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("payload_digest", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        let exists = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('analytics_change_events') WHERE name = '{column}')"
+        ))
+        .fetch_one(pool)
+        .await
+        .with_context(|| format!("failed to inspect analytics change column {column}"))?
+            != 0;
+        if !exists {
+            let statement =
+                format!("ALTER TABLE analytics_change_events ADD COLUMN {column} {definition}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| format!("failed to add analytics change column {column}"))?;
+        }
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE analytics_change_events
+        SET source_instance_id = COALESCE(NULLIF(TRIM(source_instance_id), ''), 'legacy-sqlite'),
+            event_id = CASE
+                WHEN TRIM(event_id) = '' THEN 'legacy:' || CAST(change_id AS TEXT)
+                ELSE event_id
+            END,
+            operation_kind = CASE operation_kind
+                WHEN 'legacy' THEN CASE event_kind
+                    WHEN 'tombstone' THEN 'logical_revoke'
+                    WHEN 'coverage' THEN 'archive_coverage'
+                    ELSE 'upsert'
+                END
+                ELSE operation_kind
+            END,
+            fact_semantics_version = CASE
+                WHEN fact_semantics_version <= 0 THEN event_version
+                ELSE fact_semantics_version
+            END,
+            stats_semantics_version = CASE
+                WHEN stats_semantics_version <= 0 THEN fact_date_semantics_version
+                ELSE stats_semantics_version
+            END,
+            payload_digest = CASE
+                WHEN TRIM(payload_digest) = '' THEN 'legacy:' || CAST(change_id AS TEXT)
+                ELSE payload_digest
+            END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill analytics source envelope identity")?;
+
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_change_events_event_id \
+         ON analytics_change_events (event_id)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure analytics source event identity index")?;
 
     sqlx::query(
         r#"
@@ -299,6 +397,56 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure analytics_change_coverage table")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS analytics_source_snapshots (
+            build_id TEXT PRIMARY KEY,
+            source_instance_id TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            high_watermark_change_id INTEGER NOT NULL CHECK(high_watermark_change_id >= 0),
+            coverage_revision INTEGER NOT NULL CHECK(coverage_revision >= 0),
+            retained_from_change_id INTEGER NOT NULL CHECK(retained_from_change_id >= 0),
+            fact_semantics_version INTEGER NOT NULL,
+            stats_semantics_version INTEGER NOT NULL,
+            manifest_digest TEXT,
+            state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active', 'completed', 'failed', 'expired')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure analytics source snapshot table")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS analytics_source_retention_pins (
+            pin_id TEXT PRIMARY KEY,
+            build_id TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            watermark_change_id INTEGER NOT NULL CHECK(watermark_change_id >= 0),
+            expires_at TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active', 'released', 'expired')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY(build_id) REFERENCES analytics_source_snapshots(build_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure analytics source retention pin table")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_analytics_source_retention_pins_watermark \
+         ON analytics_source_retention_pins (state, watermark_change_id, expires_at)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure analytics source retention pin index")?;
 
     sqlx::query(
         r#"
@@ -686,6 +834,12 @@ async fn append_analytics_change_tx(
         INSERT INTO analytics_change_events (
             event_version,
             fact_date_semantics_version,
+            source_instance_id,
+            event_id,
+            operation_kind,
+            fact_semantics_version,
+            stats_semantics_version,
+            payload_digest,
             event_kind,
             entity_kind,
             source,
@@ -696,11 +850,29 @@ async fn append_analytics_change_tx(
             occurred_at,
             fact_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         "#,
     )
     .bind(ANALYTICS_SOURCE_EVENT_VERSION)
     .bind(ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION)
+    .bind(ANALYTICS_SOURCE_INSTANCE_LEGACY)
+    .bind(analytics_event_id(
+        &entity_kind,
+        &source,
+        source_row_id,
+        &entity_key,
+        &occurred_at,
+        fact_json,
+        coverage_revision,
+    ))
+    .bind(match event_kind {
+        "tombstone" => "logical_revoke",
+        "coverage" => "archive_coverage",
+        _ => "upsert",
+    })
+    .bind(ANALYTICS_SOURCE_EVENT_VERSION)
+    .bind(ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION)
+    .bind(analytics_payload_digest(fact_json))
     .bind(event_kind)
     .bind(&entity_kind)
     .bind(&source)
@@ -1669,13 +1841,18 @@ mod tests {
             .await
             .expect("migrate legacy analytics event table");
 
-        let legacy_version: i64 = sqlx::query_scalar(
-            "SELECT fact_date_semantics_version FROM analytics_change_events WHERE entity_key = 'legacy'",
+        let legacy_metadata: (i64, String, String, String, String) = sqlx::query_as(
+            "SELECT fact_date_semantics_version, source_instance_id, event_id, operation_kind, payload_digest \
+             FROM analytics_change_events WHERE entity_key = 'legacy'",
         )
         .fetch_one(&pool)
         .await
-        .expect("load legacy event semantics version");
-        assert_eq!(legacy_version, 1);
+        .expect("load legacy event envelope metadata");
+        assert_eq!(legacy_metadata.0, 1);
+        assert_eq!(legacy_metadata.1, ANALYTICS_SOURCE_INSTANCE_LEGACY);
+        assert_eq!(legacy_metadata.2, "legacy:1");
+        assert_eq!(legacy_metadata.3, "upsert");
+        assert_eq!(legacy_metadata.4, "legacy:1");
 
         let mut tx = pool
             .begin()
@@ -1709,6 +1886,16 @@ mod tests {
             current_version,
             ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION
         );
+        let current_metadata: (String, String, String) = sqlx::query_as(
+            "SELECT source_instance_id, operation_kind, payload_digest \
+             FROM analytics_change_events WHERE entity_key = 'current'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load current event envelope metadata");
+        assert_eq!(current_metadata.0, ANALYTICS_SOURCE_INSTANCE_LEGACY);
+        assert_eq!(current_metadata.1, "upsert");
+        assert_eq!(current_metadata.2, analytics_payload_digest("{}"));
     }
 
     #[tokio::test]
