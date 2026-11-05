@@ -16,7 +16,7 @@ This batch provides the Docker/Compose wiring and operations contract. C2 owns t
 
 ## Compose Modes and Secrets
 
-Use the checked-in `compose.analytics.yml` with one explicit profile. The `sqlite` profile starts only the application and its SQLite data volume; it does not require PostgreSQL, PostgreSQL credentials, or a PostgreSQL network service. The `postgres` profile starts PostgreSQL 18, idempotent role provisioning, the application, and a separate grant step. Both application modes use the same `cvm_data` volume name so a mode change cannot silently select a different SQLite database.
+Use the checked-in `compose.analytics.yml` with one explicit profile. The `sqlite` profile starts only the application and its SQLite data volume; it does not require PostgreSQL, PostgreSQL credentials, or a PostgreSQL network service. The `postgres` profile starts PostgreSQL 18, idempotent role provisioning, the application, and a separate grant step. Both application modes use the same `cvm_data` volume name so a mode change cannot silently select a different SQLite database. The PostgreSQL 18 image stores its cluster under `PGDATA=/var/lib/postgresql/18/docker` and uses `/var/lib/postgresql` as the volume boundary; preserve that mount when replacing or restoring the named volume.
 
 ```sh
 cp .env.example .env
