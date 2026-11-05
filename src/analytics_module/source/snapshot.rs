@@ -236,6 +236,19 @@ pub(crate) async fn assert_source_snapshot_usable(
     if expired_pins != 0 {
         bail!("analytics source snapshot has an expired retention pin");
     }
+    let covering_pins = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM analytics_source_retention_pins \
+         WHERE build_id = ?1 AND state = 'active' \
+           AND julianday(expires_at) > julianday('now') \
+           AND watermark_change_id >= ?2)",
+    )
+    .bind(build_id)
+    .bind(snapshot.high_watermark_change_id)
+    .fetch_one(pool)
+    .await?;
+    if covering_pins == 0 {
+        bail!("analytics source snapshot has no active retention pin covering its watermark");
+    }
     Ok(snapshot)
 }
 

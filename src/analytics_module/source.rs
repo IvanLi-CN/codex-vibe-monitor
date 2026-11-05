@@ -551,10 +551,24 @@ mod tests {
         create_source_snapshot_tx(tx.as_mut(), &snapshot)
             .await
             .expect("create source snapshot");
+        tx.commit().await.expect("commit snapshot transaction");
+
+        let error = assert_source_snapshot_usable(
+            &pool,
+            &snapshot.build_id,
+            &snapshot.source_instance_id,
+            snapshot.generation,
+            40,
+        )
+        .await
+        .expect_err("reject a snapshot without a retention pin");
+        assert!(error.to_string().contains("retention pin"));
+
+        let mut tx = pool.begin().await.expect("begin pin transaction");
         renew_source_retention_pin_tx(tx.as_mut(), &pin)
             .await
             .expect("renew source retention pin");
-        tx.commit().await.expect("commit snapshot transaction");
+        tx.commit().await.expect("commit pin transaction");
 
         let loaded = assert_source_snapshot_usable(
             &pool,
@@ -573,6 +587,58 @@ mod tests {
             Some(snapshot.clone())
         );
 
+        sqlx::query(
+            "UPDATE analytics_source_retention_pins SET watermark_change_id = 41 WHERE pin_id = ?1",
+        )
+        .bind(&pin.pin_id)
+        .execute(&pool)
+        .await
+        .expect("lower retention pin watermark");
+        let error = assert_source_snapshot_usable(
+            &pool,
+            &snapshot.build_id,
+            &snapshot.source_instance_id,
+            snapshot.generation,
+            40,
+        )
+        .await
+        .expect_err("reject a pin below the snapshot watermark");
+        assert!(error.to_string().contains("covering its watermark"));
+
+        sqlx::query(
+            "UPDATE analytics_source_retention_pins SET watermark_change_id = 42, \
+             expires_at = '2000-01-01T00:00:00Z' WHERE pin_id = ?1",
+        )
+        .bind(&pin.pin_id)
+        .execute(&pool)
+        .await
+        .expect("expire retention pin");
+        let error = assert_source_snapshot_usable(
+            &pool,
+            &snapshot.build_id,
+            &snapshot.source_instance_id,
+            snapshot.generation,
+            40,
+        )
+        .await
+        .expect_err("reject an expired retention pin");
+        assert!(error.to_string().contains("expired retention pin"));
+
+        let mut tx = pool.begin().await.expect("begin pin renewal");
+        renew_source_retention_pin_tx(tx.as_mut(), &pin)
+            .await
+            .expect("renew expired retention pin");
+        tx.commit().await.expect("commit pin renewal");
+        assert_source_snapshot_usable(
+            &pool,
+            &snapshot.build_id,
+            &snapshot.source_instance_id,
+            snapshot.generation,
+            40,
+        )
+        .await
+        .expect("accept a renewed covering retention pin");
+
         let mut tx = pool.begin().await.expect("begin pin release");
         assert!(
             release_source_retention_pin_tx(tx.as_mut(), &pin.pin_id)
@@ -580,6 +646,17 @@ mod tests {
                 .expect("release source retention pin")
         );
         tx.commit().await.expect("commit pin release");
+
+        let error = assert_source_snapshot_usable(
+            &pool,
+            &snapshot.build_id,
+            &snapshot.source_instance_id,
+            snapshot.generation,
+            40,
+        )
+        .await
+        .expect_err("reject a released retention pin");
+        assert!(error.to_string().contains("retention pin"));
     }
 
     #[test]
