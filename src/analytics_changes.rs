@@ -914,19 +914,26 @@ async fn append_analytics_change_tx(
         .await?;
         let evicted_through_change_id = retained_from_change_id.saturating_sub(1);
         if evicted_through_change_id > 0 {
+            let evicted_from_change_id = sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(MIN(change_id), ?1) FROM analytics_change_events \
+                 WHERE change_id < ?1",
+            )
+            .bind(retained_from_change_id)
+            .fetch_one(&mut *tx)
+            .await?;
             let retention_pinned = sqlx::query_scalar::<_, i64>(
                 "SELECT EXISTS(SELECT 1 FROM analytics_source_retention_pins \
                  WHERE state = 'active' AND julianday(expires_at) > julianday('now') \
                    AND watermark_change_id >= ?1)",
             )
-            .bind(evicted_through_change_id)
+            .bind(evicted_from_change_id)
             .fetch_one(&mut *tx)
             .await
             .unwrap_or(1)
                 != 0;
             if retention_pinned {
                 bail!(
-                    "analytics source retention pin blocks journal eviction through change {evicted_through_change_id}"
+                    "analytics source retention pin blocks journal eviction from change {evicted_from_change_id} through change {evicted_through_change_id}"
                 );
             }
         }
@@ -2561,11 +2568,11 @@ mod tests {
     #[tokio::test]
     async fn capacity_eviction_respects_retention_pin_and_rolls_back() {
         let pool = test_pool().await;
-        sqlx::query("UPDATE analytics_change_state SET capacity = 2 WHERE id = 1")
+        sqlx::query("UPDATE analytics_change_state SET capacity = 5 WHERE id = 1")
             .execute(&pool)
             .await
             .expect("set pinned capacity");
-        for index in 0..2 {
+        for index in 0..5 {
             let fact_json = json!({"factVersion": 1, "index": index}).to_string();
             let mut tx = pool.begin().await.expect("begin pinned event transaction");
             append_analytics_change_tx(
@@ -2584,6 +2591,10 @@ mod tests {
             .expect("append pinned event");
             tx.commit().await.expect("commit pinned event");
         }
+        sqlx::query("UPDATE analytics_change_state SET capacity = 2 WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("shrink pinned capacity");
         sqlx::query(
             "INSERT INTO analytics_source_snapshots (build_id, source_instance_id, generation, \
              high_watermark_change_id, coverage_revision, retained_from_change_id, \
@@ -2596,14 +2607,14 @@ mod tests {
         sqlx::query(
             "INSERT INTO analytics_source_retention_pins \
              (pin_id, build_id, source_kind, source_identity, watermark_change_id, expires_at) \
-             VALUES ('pin-pinned', 'build-pinned', 'journal', 'sqlite-instance-a', 1, \
+             VALUES ('pin-pinned', 'build-pinned', 'journal', 'sqlite-instance-a', 2, \
                      '2099-01-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
         .expect("create active retention pin");
 
-        let fact_json = json!({"factVersion": 1, "index": 2}).to_string();
+        let fact_json = json!({"factVersion": 1, "index": 5}).to_string();
         let mut tx = pool.begin().await.expect("begin retention-pinned eviction");
         let error = append_analytics_change_tx(
             tx.as_mut(),
@@ -2611,8 +2622,8 @@ mod tests {
                 event_kind: "upsert",
                 entity_kind: "test",
                 source: "test",
-                source_row_id: Some(2),
-                entity_key: "test:2",
+                source_row_id: Some(5),
+                entity_key: "test:5",
                 occurred_at: "2026-10-30 12:00:00",
                 fact_json: &fact_json,
             },
@@ -2631,7 +2642,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("load rolled-back retention state");
-        assert_eq!(event_count, 2);
-        assert_eq!(coverage_revision, 2);
+        assert_eq!(event_count, 5);
+        assert_eq!(coverage_revision, 5);
     }
 }
