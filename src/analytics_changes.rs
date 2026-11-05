@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) const ANALYTICS_SOURCE_EVENT_VERSION: i64 = 1;
 pub(crate) const ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION: i64 = 2;
+pub(crate) const ANALYTICS_SOURCE_INSTANCE_LEGACY: &str = "legacy-sqlite";
 const ANALYTICS_CHANGE_CAPACITY_DEFAULT: i64 = 10_000;
 const ANALYTICS_CHANGE_FACT_MAX_BYTES: usize = 64 * 1024;
 const ANALYTICS_CHANGE_ENTITY_KEY_MAX_BYTES: usize = 512;
@@ -82,6 +83,27 @@ struct ExistingAnalyticsChangeRow {
     generation: i64,
     coverage_revision: i64,
     fact_json: String,
+}
+
+fn analytics_payload_digest(payload: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(payload.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+fn analytics_event_id(
+    entity_kind: &str,
+    source: &str,
+    source_row_id: Option<i64>,
+    entity_key: &str,
+    occurred_at: &str,
+    fact_json: &str,
+    coverage_revision: i64,
+) -> String {
+    let identity = format!(
+        "{entity_kind}\u{0}{source}\u{0}{source_row_id:?}\u{0}{entity_key}\u{0}{occurred_at}\u{0}{fact_json}\u{0}{coverage_revision}"
+    );
+    format!("legacy:{}", analytics_payload_digest(&identity))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +206,12 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
             change_id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_version INTEGER NOT NULL,
             fact_date_semantics_version INTEGER NOT NULL DEFAULT 1,
+            source_instance_id TEXT NOT NULL DEFAULT 'legacy-sqlite',
+            event_id TEXT NOT NULL DEFAULT '',
+            operation_kind TEXT NOT NULL DEFAULT 'legacy',
+            fact_semantics_version INTEGER NOT NULL DEFAULT 1,
+            stats_semantics_version INTEGER NOT NULL DEFAULT 1,
+            payload_digest TEXT NOT NULL DEFAULT '',
             event_kind TEXT NOT NULL CHECK(event_kind IN ('upsert', 'tombstone', 'coverage')),
             entity_kind TEXT NOT NULL,
             source TEXT NOT NULL,
@@ -217,6 +245,76 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
         .await
         .context("failed to add analytics change event fact-date semantics version")?;
     }
+
+    for (column, definition) in [
+        (
+            "source_instance_id",
+            "TEXT NOT NULL DEFAULT 'legacy-sqlite'",
+        ),
+        ("event_id", "TEXT NOT NULL DEFAULT ''"),
+        ("operation_kind", "TEXT NOT NULL DEFAULT 'legacy'"),
+        ("fact_semantics_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("stats_semantics_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("payload_digest", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        let exists = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('analytics_change_events') WHERE name = '{column}')"
+        ))
+        .fetch_one(pool)
+        .await
+        .with_context(|| format!("failed to inspect analytics change column {column}"))?
+            != 0;
+        if !exists {
+            let statement =
+                format!("ALTER TABLE analytics_change_events ADD COLUMN {column} {definition}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| format!("failed to add analytics change column {column}"))?;
+        }
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE analytics_change_events
+        SET source_instance_id = COALESCE(NULLIF(TRIM(source_instance_id), ''), 'legacy-sqlite'),
+            event_id = CASE
+                WHEN TRIM(event_id) = '' THEN 'legacy:' || CAST(change_id AS TEXT)
+                ELSE event_id
+            END,
+            operation_kind = CASE operation_kind
+                WHEN 'legacy' THEN CASE event_kind
+                    WHEN 'tombstone' THEN 'logical_revoke'
+                    WHEN 'coverage' THEN 'archive_coverage'
+                    ELSE 'upsert'
+                END
+                ELSE operation_kind
+            END,
+            fact_semantics_version = CASE
+                WHEN fact_semantics_version <= 0 THEN event_version
+                ELSE fact_semantics_version
+            END,
+            stats_semantics_version = CASE
+                WHEN stats_semantics_version <= 0 THEN fact_date_semantics_version
+                ELSE stats_semantics_version
+            END,
+            payload_digest = CASE
+                WHEN TRIM(payload_digest) = '' THEN 'legacy:' || CAST(change_id AS TEXT)
+                ELSE payload_digest
+            END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill analytics source envelope identity")?;
+
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_change_events_event_id \
+         ON analytics_change_events (event_id)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure analytics source event identity index")?;
 
     sqlx::query(
         r#"
@@ -299,6 +397,56 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure analytics_change_coverage table")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS analytics_source_snapshots (
+            build_id TEXT PRIMARY KEY,
+            source_instance_id TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            high_watermark_change_id INTEGER NOT NULL CHECK(high_watermark_change_id >= 0),
+            coverage_revision INTEGER NOT NULL CHECK(coverage_revision >= 0),
+            retained_from_change_id INTEGER NOT NULL CHECK(retained_from_change_id >= 0),
+            fact_semantics_version INTEGER NOT NULL,
+            stats_semantics_version INTEGER NOT NULL,
+            manifest_digest TEXT,
+            state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active', 'completed', 'failed', 'expired')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure analytics source snapshot table")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS analytics_source_retention_pins (
+            pin_id TEXT PRIMARY KEY,
+            build_id TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            watermark_change_id INTEGER NOT NULL CHECK(watermark_change_id >= 0),
+            expires_at TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active', 'released', 'expired')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY(build_id) REFERENCES analytics_source_snapshots(build_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure analytics source retention pin table")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_analytics_source_retention_pins_watermark \
+         ON analytics_source_retention_pins (state, watermark_change_id, expires_at)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure analytics source retention pin index")?;
 
     sqlx::query(
         r#"
@@ -686,6 +834,12 @@ async fn append_analytics_change_tx(
         INSERT INTO analytics_change_events (
             event_version,
             fact_date_semantics_version,
+            source_instance_id,
+            event_id,
+            operation_kind,
+            fact_semantics_version,
+            stats_semantics_version,
+            payload_digest,
             event_kind,
             entity_kind,
             source,
@@ -696,11 +850,29 @@ async fn append_analytics_change_tx(
             occurred_at,
             fact_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         "#,
     )
     .bind(ANALYTICS_SOURCE_EVENT_VERSION)
     .bind(ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION)
+    .bind(ANALYTICS_SOURCE_INSTANCE_LEGACY)
+    .bind(analytics_event_id(
+        &entity_kind,
+        &source,
+        source_row_id,
+        &entity_key,
+        &occurred_at,
+        fact_json,
+        coverage_revision,
+    ))
+    .bind(match event_kind {
+        "tombstone" => "logical_revoke",
+        "coverage" => "archive_coverage",
+        _ => "upsert",
+    })
+    .bind(ANALYTICS_SOURCE_EVENT_VERSION)
+    .bind(ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION)
+    .bind(analytics_payload_digest(fact_json))
     .bind(event_kind)
     .bind(&entity_kind)
     .bind(&source)
@@ -741,58 +913,77 @@ async fn append_analytics_change_tx(
         .fetch_one(&mut *tx)
         .await?;
         let evicted_through_change_id = retained_from_change_id.saturating_sub(1);
-        let stale_coverage_exists = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT EXISTS(
-                SELECT 1
-                FROM analytics_change_coverage
-                WHERE generation <> ?1
-                   OR covered_through_change_id < ?2
+        let retention_pinned = evicted_through_change_id > 0
+            && sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM analytics_source_retention_pins \
+                 WHERE state = 'active' AND julianday(expires_at) > julianday('now') \
+                   AND watermark_change_id <= ?1)",
             )
-            "#,
-        )
-        .bind(state.generation)
-        .bind(evicted_through_change_id)
-        .fetch_one(&mut *tx)
-        .await?
-            != 0;
-        let generation = if stale_coverage_exists && state.invalidation_pending == 0 {
-            state
-                .generation
-                .checked_add(1)
-                .context("analytics change generation overflow")?
-        } else {
+            .bind(evicted_through_change_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(1)
+                != 0;
+        if retention_pinned {
+            // Keep ordinary fact writes durable; the snapshot usability gate interrupts builds
+            // while the journal remains over capacity.
             state.generation
-        };
-        sqlx::query("DELETE FROM analytics_change_events WHERE change_id < ?1")
-            .bind(retained_from_change_id)
-            .execute(&mut *tx)
-            .await?;
-        if generation != state.generation {
-            sqlx::query("UPDATE analytics_change_events SET generation = ?1 WHERE change_id >= ?2")
+        } else {
+            let stale_coverage_exists = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM analytics_change_coverage
+                    WHERE generation <> ?1
+                       OR covered_through_change_id < ?2
+                )
+                "#,
+            )
+            .bind(state.generation)
+            .bind(evicted_through_change_id)
+            .fetch_one(&mut *tx)
+            .await?
+                != 0;
+            let generation = if stale_coverage_exists && state.invalidation_pending == 0 {
+                state
+                    .generation
+                    .checked_add(1)
+                    .context("analytics change generation overflow")?
+            } else {
+                state.generation
+            };
+            sqlx::query("DELETE FROM analytics_change_events WHERE change_id < ?1")
+                .bind(retained_from_change_id)
+                .execute(&mut *tx)
+                .await?;
+            if generation != state.generation {
+                sqlx::query(
+                    "UPDATE analytics_change_events SET generation = ?1 WHERE change_id >= ?2",
+                )
                 .bind(generation)
                 .bind(retained_from_change_id)
                 .execute(&mut *tx)
                 .await?;
+            }
+            let invalidation_pending =
+                i64::from(state.invalidation_pending != 0 || stale_coverage_exists);
+            sqlx::query(
+                r#"
+                UPDATE analytics_change_state
+                SET generation = ?1,
+                    retained_from_change_id = ?2,
+                    invalidation_pending = ?3,
+                    updated_at = datetime('now')
+                WHERE id = 1
+                "#,
+            )
+            .bind(generation)
+            .bind(retained_from_change_id)
+            .bind(invalidation_pending)
+            .execute(&mut *tx)
+            .await?;
+            generation
         }
-        let invalidation_pending =
-            i64::from(state.invalidation_pending != 0 || stale_coverage_exists);
-        sqlx::query(
-            r#"
-            UPDATE analytics_change_state
-            SET generation = ?1,
-                retained_from_change_id = ?2,
-                invalidation_pending = ?3,
-                updated_at = datetime('now')
-            WHERE id = 1
-            "#,
-        )
-        .bind(generation)
-        .bind(retained_from_change_id)
-        .bind(invalidation_pending)
-        .execute(&mut *tx)
-        .await?;
-        generation
     } else {
         state.generation
     };
@@ -1669,13 +1860,18 @@ mod tests {
             .await
             .expect("migrate legacy analytics event table");
 
-        let legacy_version: i64 = sqlx::query_scalar(
-            "SELECT fact_date_semantics_version FROM analytics_change_events WHERE entity_key = 'legacy'",
+        let legacy_metadata: (i64, String, String, String, String) = sqlx::query_as(
+            "SELECT fact_date_semantics_version, source_instance_id, event_id, operation_kind, payload_digest \
+             FROM analytics_change_events WHERE entity_key = 'legacy'",
         )
         .fetch_one(&pool)
         .await
-        .expect("load legacy event semantics version");
-        assert_eq!(legacy_version, 1);
+        .expect("load legacy event envelope metadata");
+        assert_eq!(legacy_metadata.0, 1);
+        assert_eq!(legacy_metadata.1, ANALYTICS_SOURCE_INSTANCE_LEGACY);
+        assert_eq!(legacy_metadata.2, "legacy:1");
+        assert_eq!(legacy_metadata.3, "upsert");
+        assert_eq!(legacy_metadata.4, "legacy:1");
 
         let mut tx = pool
             .begin()
@@ -1709,6 +1905,16 @@ mod tests {
             current_version,
             ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION
         );
+        let current_metadata: (String, String, String) = sqlx::query_as(
+            "SELECT source_instance_id, operation_kind, payload_digest \
+             FROM analytics_change_events WHERE entity_key = 'current'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load current event envelope metadata");
+        assert_eq!(current_metadata.0, ANALYTICS_SOURCE_INSTANCE_LEGACY);
+        assert_eq!(current_metadata.1, "upsert");
+        assert_eq!(current_metadata.2, analytics_payload_digest("{}"));
     }
 
     #[tokio::test]
@@ -2352,5 +2558,94 @@ mod tests {
         assert_eq!(generation_after_ack, generation);
         assert_eq!(pending_after_ack, 0);
         assert_eq!(retained_after_ack, 3);
+    }
+
+    #[tokio::test]
+    async fn capacity_eviction_preserves_facts_when_retention_blocks_suffix() {
+        let pool = test_pool().await;
+        sqlx::query("UPDATE analytics_change_state SET capacity = 10 WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("set pinned capacity");
+        for index in 0..5 {
+            let fact_json = json!({"factVersion": 1, "index": index}).to_string();
+            let mut tx = pool.begin().await.expect("begin pinned event transaction");
+            append_analytics_change_tx(
+                tx.as_mut(),
+                AnalyticsChangeInput {
+                    event_kind: "upsert",
+                    entity_kind: "test",
+                    source: "test",
+                    source_row_id: Some(index),
+                    entity_key: &format!("test:{index}"),
+                    occurred_at: "2026-10-30 12:00:00",
+                    fact_json: &fact_json,
+                },
+            )
+            .await
+            .expect("append pinned event");
+            tx.commit().await.expect("commit pinned event");
+        }
+        sqlx::query("UPDATE analytics_change_state SET capacity = 3 WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("shrink pinned capacity");
+        sqlx::query(
+            "INSERT INTO analytics_source_snapshots (build_id, source_instance_id, generation, \
+             high_watermark_change_id, coverage_revision, retained_from_change_id, \
+             fact_semantics_version, stats_semantics_version) \
+             VALUES ('build-pinned', 'sqlite-instance-a', 1, 2, 2, 1, 1, 2)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create pinned source snapshot");
+        sqlx::query(
+            "INSERT INTO analytics_source_retention_pins \
+             (pin_id, build_id, source_kind, source_identity, watermark_change_id, expires_at) \
+             VALUES ('pin-pinned', 'build-pinned', 'journal', 'sqlite-instance-a', 2, \
+                     '2099-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("create active retention pin");
+
+        let fact_json = json!({"factVersion": 1, "index": 6}).to_string();
+        let mut tx = pool.begin().await.expect("begin retention-pinned eviction");
+        let receipt = append_analytics_change_tx(
+            tx.as_mut(),
+            AnalyticsChangeInput {
+                event_kind: "upsert",
+                entity_kind: "test",
+                source: "test",
+                source_row_id: Some(6),
+                entity_key: "test:6",
+                occurred_at: "2026-10-30 12:00:00",
+                fact_json: &fact_json,
+            },
+        )
+        .await
+        .expect("preserve fact while retention blocks suffix eviction");
+        tx.commit()
+            .await
+            .expect("commit fact while retention blocks suffix eviction");
+        assert_eq!(receipt.change_id, 6);
+
+        let (generation, retained_from_change_id, event_count, coverage_revision): (
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT generation, retained_from_change_id, \
+                    (SELECT COUNT(*) FROM analytics_change_events), coverage_revision \
+             FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load rolled-back retention state");
+        assert_eq!(generation, 1);
+        assert_eq!(retained_from_change_id, 1);
+        assert_eq!(event_count, 6);
+        assert_eq!(coverage_revision, 6);
     }
 }

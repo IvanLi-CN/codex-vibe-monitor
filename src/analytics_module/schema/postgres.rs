@@ -123,6 +123,20 @@ async fn module_consumers_exists(owner: &mut PgConnection) -> Result<bool> {
     .context("inspect module relation fixture state")
 }
 
+fn ensure_insufficient_privilege(error: sqlx::Error, operation: &str) -> Result<()> {
+    let code = match &error {
+        sqlx::Error::Database(database_error) => {
+            database_error.code().map(|code| code.into_owned())
+        }
+        _ => None,
+    };
+    ensure!(
+        code.as_deref() == Some("42501"),
+        "{operation} returned SQLSTATE {code:?} instead of insufficient_privilege (42501): {error}"
+    );
+    Ok(())
+}
+
 async fn insert_ledger_fixture_row(
     owner: &mut PgConnection,
     schema_version: i64,
@@ -360,24 +374,20 @@ async fn test_role_boundaries(inputs: &FixtureInputs, owner: &mut PgConnection) 
         .fetch_optional(&mut app)
         .await
         .context("reader SELECT contract")?;
-    ensure!(
-        sqlx::query(
-            "INSERT INTO cvm_analytics.analytics_module_consumers
-                (consumer_id, module_id, consumer_version, state, source_instance_id)
-             VALUES ('app-write', 'invocation', 1, 'building', 'fixture')",
-        )
+    let error = sqlx::query(
+        "INSERT INTO cvm_analytics.analytics_module_consumers
+            (consumer_id, module_id, consumer_version, state, source_instance_id)
+         VALUES ('app-write', 'invocation', 1, 'building', 'fixture')",
+    )
+    .execute(&mut app)
+    .await
+    .expect_err("reader application INSERT unexpectedly succeeded");
+    ensure_insufficient_privilege(error, "reader application INSERT contract")?;
+    let error = sqlx::query("CREATE TABLE cvm_analytics.app_must_not_ddl (id INTEGER)")
         .execute(&mut app)
         .await
-        .is_err(),
-        "reader application role unexpectedly retained INSERT privilege"
-    );
-    ensure!(
-        sqlx::query("CREATE TABLE cvm_analytics.app_must_not_ddl (id INTEGER)")
-            .execute(&mut app)
-            .await
-            .is_err(),
-        "application role unexpectedly retained DDL privilege"
-    );
+        .expect_err("application DDL unexpectedly succeeded");
+    ensure_insufficient_privilege(error, "application DDL contract")?;
     app.close()
         .await
         .context("close application fixture connection")?;
@@ -400,24 +410,20 @@ async fn test_role_boundaries(inputs: &FixtureInputs, owner: &mut PgConnection) 
     .execute(&mut maintenance)
     .await
     .context("maintenance UPDATE contract")?;
-    ensure!(
-        sqlx::query(
-            "INSERT INTO cvm_analytics.analytics_module_consumers
-                (consumer_id, module_id, consumer_version, state, source_instance_id)
-             VALUES ('maintenance-write', 'invocation', 1, 'building', 'fixture')",
-        )
+    let error = sqlx::query(
+        "INSERT INTO cvm_analytics.analytics_module_consumers
+            (consumer_id, module_id, consumer_version, state, source_instance_id)
+         VALUES ('maintenance-write', 'invocation', 1, 'building', 'fixture')",
+    )
+    .execute(&mut maintenance)
+    .await
+    .expect_err("maintenance consumer INSERT unexpectedly succeeded");
+    ensure_insufficient_privilege(error, "maintenance consumer INSERT contract")?;
+    let error = sqlx::query("CREATE TABLE cvm_analytics.maintenance_must_not_ddl (id INTEGER)")
         .execute(&mut maintenance)
         .await
-        .is_err(),
-        "maintenance role unexpectedly retained consumer INSERT privilege"
-    );
-    ensure!(
-        sqlx::query("CREATE TABLE cvm_analytics.maintenance_must_not_ddl (id INTEGER)")
-            .execute(&mut maintenance)
-            .await
-            .is_err(),
-        "maintenance role unexpectedly retained DDL privilege"
-    );
+        .expect_err("maintenance DDL unexpectedly succeeded");
+    ensure_insufficient_privilege(error, "maintenance DDL contract")?;
     maintenance
         .close()
         .await

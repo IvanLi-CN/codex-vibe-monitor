@@ -1,6 +1,114 @@
+use anyhow::Result;
+use serde_json::Value;
+use sqlx::{Pool, Sqlite, SqliteConnection};
+
 mod schema;
+pub(crate) mod source;
 
 pub(crate) use schema::*;
+
+pub(crate) const LEGACY_SOURCE_INSTANCE_ID: &str = source::LEGACY_SOURCE_INSTANCE_ID;
+pub(crate) const SOURCE_ENVELOPE_VERSION: i64 = source::SOURCE_ENVELOPE_VERSION;
+pub(crate) const SOURCE_FACT_SEMANTICS_VERSION: i64 = source::SOURCE_FACT_SEMANTICS_VERSION;
+pub(crate) const SOURCE_JOURNAL_EVENT_VERSION: i64 = source::SOURCE_JOURNAL_EVENT_VERSION;
+pub(crate) const SOURCE_STATS_SEMANTICS_VERSION: i64 = source::SOURCE_STATS_SEMANTICS_VERSION;
+
+pub(crate) async fn append_source_envelope_tx(
+    connection: &mut SqliteConnection,
+    draft: &source::SourceEnvelopeDraft,
+) -> Result<(source::SourceEnvelope, source::SourceAppendReceipt)> {
+    source::append_source_envelope_tx(connection, draft).await
+}
+
+pub(crate) fn canonical_json(value: &Value) -> Value {
+    source::canonical_json(value)
+}
+
+pub(crate) fn digest_json(value: &Value) -> Result<String> {
+    source::digest_json(value)
+}
+
+pub(crate) fn decode_legacy_analytics_change(
+    row: &source::LegacyAnalyticsChange,
+) -> Result<source::SourceEnvelope> {
+    source::decode_legacy_analytics_change(row)
+}
+
+pub(crate) fn decode_legacy_event(
+    row: &source::LegacyAnalyticsChange,
+) -> Result<source::SourceEnvelope> {
+    source::decode_legacy_event(row)
+}
+
+pub(crate) async fn ensure_source_snapshot_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    source::ensure_source_snapshot_schema(pool).await
+}
+
+pub(crate) async fn create_source_snapshot_tx(
+    connection: &mut SqliteConnection,
+    snapshot: &source::SourceSnapshot,
+) -> Result<()> {
+    source::create_source_snapshot_tx(connection, snapshot).await
+}
+
+pub(crate) async fn create_source_snapshot(
+    pool: &Pool<Sqlite>,
+    snapshot: &source::SourceSnapshot,
+) -> Result<()> {
+    source::create_source_snapshot(pool, snapshot).await
+}
+
+pub(crate) async fn load_source_snapshot(
+    pool: &Pool<Sqlite>,
+    build_id: &str,
+) -> Result<Option<source::SourceSnapshot>> {
+    source::load_source_snapshot(pool, build_id).await
+}
+
+pub(crate) async fn renew_source_retention_pin_tx(
+    connection: &mut SqliteConnection,
+    pin: &source::SourceRetentionPin,
+) -> Result<()> {
+    source::renew_source_retention_pin_tx(connection, pin).await
+}
+
+pub(crate) async fn renew_source_retention_pin(
+    pool: &Pool<Sqlite>,
+    pin: &source::SourceRetentionPin,
+) -> Result<()> {
+    source::renew_source_retention_pin(pool, pin).await
+}
+
+pub(crate) async fn release_source_retention_pin_tx(
+    connection: &mut SqliteConnection,
+    pin_id: &str,
+) -> Result<bool> {
+    source::release_source_retention_pin_tx(connection, pin_id).await
+}
+
+pub(crate) async fn release_source_retention_pin(
+    pool: &Pool<Sqlite>,
+    pin_id: &str,
+) -> Result<bool> {
+    source::release_source_retention_pin(pool, pin_id).await
+}
+
+pub(crate) async fn assert_source_snapshot_usable(
+    pool: &Pool<Sqlite>,
+    build_id: &str,
+    source_instance_id: &str,
+    generation: i64,
+    required_through_change_id: i64,
+) -> Result<source::SourceSnapshot> {
+    source::assert_source_snapshot_usable(
+        pool,
+        build_id,
+        source_instance_id,
+        generation,
+        required_through_change_id,
+    )
+    .await
+}
 
 pub(crate) const ANALYTICS_MODULE_LEDGER_SCHEMA_SQL: &str = include_str!("schema/ledger.sql");
 pub(crate) const ANALYTICS_MODULE_SCHEMA_SQL: &str = concat!(
