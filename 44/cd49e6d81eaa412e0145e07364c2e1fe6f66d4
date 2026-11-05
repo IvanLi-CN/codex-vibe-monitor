@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.21.1",
+  "base_stable_version": "4.21.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-05T05:07:01Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.21.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "47052ec3bbe40357e751ff558a6f0b107f8aca3e",
+  "pr_number": 1300,
+  "pr_title": "fix(routing): support OAuth model health and recovery",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.21.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.21.1",
+  "target_sha": "44cd49e6d81eaa412e0145e07364c2e1fe6f66d4",
+  "type_label": "type:patch"
+}
