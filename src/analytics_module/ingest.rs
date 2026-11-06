@@ -1014,7 +1014,7 @@ impl PgIngestActor {
         let mut transaction = self.connection.begin().await.map_err(|error| {
             IngestError::retryable(anyhow!(error).context("begin analytics writer transaction"))
         })?;
-        let owner = sqlx::query_as::<_, OwnerRow>(
+        let owner = match sqlx::query_as::<_, OwnerRow>(
             "SELECT source_instance_id, owner_epoch, status
              FROM cvm_analytics.analytics_module_owners
              WHERE module_id = $1
@@ -1025,14 +1025,41 @@ impl PgIngestActor {
         .await
         .map_err(|error| {
             IngestError::retryable(anyhow!(error).context("lock analytics writer owner fence"))
-        })?
-        .ok_or_else(|| IngestError::blocked(anyhow!("analytics writer owner row is missing")))?;
-        ingest_ensure!(
-            owner.status == "active"
-                && owner.owner_epoch == self.binding.owner_epoch
-                && owner.source_instance_id == self.binding.source_instance_id,
-            "analytics writer owner fence rejected the transaction"
-        );
+        }) {
+            Ok(Some(owner)) => owner,
+            Ok(None) => {
+                transaction.rollback().await.map_err(|error| {
+                    IngestError::retryable(
+                        anyhow!(error).context("rollback missing analytics writer owner row"),
+                    )
+                })?;
+                return Err(IngestError::blocked(anyhow!(
+                    "analytics writer owner row is missing"
+                )));
+            }
+            Err(error) => {
+                let query_error = anyhow!(error).context("lock analytics writer owner fence");
+                if let Err(rollback_error) = transaction.rollback().await {
+                    return Err(IngestError::retryable(query_error.context(format!(
+                        "rollback analytics writer owner fence transaction: {rollback_error}"
+                    ))));
+                }
+                return Err(IngestError::retryable(query_error));
+            }
+        };
+        if owner.status != "active"
+            || owner.owner_epoch != self.binding.owner_epoch
+            || owner.source_instance_id != self.binding.source_instance_id
+        {
+            transaction.rollback().await.map_err(|error| {
+                IngestError::retryable(
+                    anyhow!(error).context("rollback fenced analytics writer transaction"),
+                )
+            })?;
+            return Err(IngestError::blocked(anyhow!(
+                "analytics writer owner fence rejected the transaction"
+            )));
+        }
         Ok(transaction)
     }
 
