@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "kind": "analytics-projection-compatibility-record",
+  "release_unit": "analytics-module-postgres",
+  "public_api": {"impact": "patch", "change": "none", "reason": "仅增加内部投影接口，HTTP/SSE 接入由 C6/C7 负责。"},
+  "persistent_state": {
+    "impact": "minor",
+    "source_compatibility_range": "已完成 C2 module schema v1 与 C3 ingest schema v1 的目标；旧 SQLite 与 legacy PG 表保持原状。",
+    "candidate_state": "analytics-module-projection/versioned-projection-v1",
+    "earlier_reader_behavior": "旧 reader 继续被 publication fence 排除；不承诺旧 binary 读取新投影。",
+    "direct_major_skips_supported": false
+  },
+  "operations": [
+    {"order": 1, "id": "projection-ddl-v1", "kind": "ddl", "observable": "独立 DDL ledger 的 checksum/state/error_code", "pauseable": "DDL 事务之前或之后"},
+    {"order": 2, "id": "projection-receipt-replay", "kind": "dml", "observable": "materialized_through 与 durable repair", "pauseable": "每个最多 256 receipt 的事务之后"},
+    {"order": 3, "id": "projection-staging", "kind": "projection", "observable": "staging publication 与完整模型行", "pauseable": "staging 提交之后，pointer 更新之前"},
+    {"order": 4, "id": "projection-publish", "kind": "publication", "observable": "active_publication_id 与 published_through_change_id", "pauseable": "原子 publication 事务之外"}
+  ],
+  "historical_backfill": "C5 独立负责；本迁移不自动读取归档或将 legacy latest facts 视为完整 baseline。",
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery",
+    "stopped_release": "DDL 应用与 marker 同事务；failed/applying 可按相同 checksum 重入；staging 中断保留 last-good，commit unknown 按 publication id/pointer 对账后恢复。"
+  },
+  "validation_contract": [
+    "C2+C3 状态向前迁移、重复迁移、failed 状态重入",
+    "C>P 修正与 tombstone 的旧值隔离",
+    "staging 不可读、发布失败保持 pointer、旧 publication pin 保留",
+    "UTC 跨日区间裁剪与重叠并集、invocation/attempt 不重复贡献"
+  ],
+  "production_constraints": {
+    "staging_max_version_rows": 100000,
+    "interval_max_hour_buckets": 8784,
+    "on_budget_exceeded": "阻断 staging，保留 last-good；容量验收不得把此失败当作 ready。",
+    "cleanup": "不执行版本或源数据删除；pin 之外仍需恢复覆盖证明与单独清理授权。"
+  }
+}
