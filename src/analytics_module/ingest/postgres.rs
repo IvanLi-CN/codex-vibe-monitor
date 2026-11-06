@@ -437,7 +437,10 @@ async fn postgres_ingest_fixture_covers_migration_lock_fence_receive_and_ack_rec
     );
     actor.pending_ack = Some(PendingAck {
         generation: lost_response_event.generation,
-        from_change_id: lost_response_event.change_id,
+        // This is the first source acknowledgement for this consumer. Even though the
+        // simulated lost-response event is change 4, initial coverage must claim the
+        // complete retained journal prefix so it cannot skip changes 1-3.
+        from_change_id: 1,
         through_change_id: lost_response_event.change_id,
     });
     actor
