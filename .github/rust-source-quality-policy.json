@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 114,
+    "inventory_entries": 119,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -525,8 +525,38 @@
     {
       "path": "src/upstream_accounts/oauth_sessions_callbacks.rs",
       "role": "production",
-      "line_budget": 3500,
-      "next_module_workstream": "Split OAuth session callbacks, mailbox transitions, and account mutation helpers."
+      "line_budget": 13,
+      "next_module_workstream": "Maintain the OAuth callback facade as module declarations and crate-visible re-exports below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/oauth_sessions_callbacks/pool_routing.rs",
+      "role": "production",
+      "line_budget": 234,
+      "next_module_workstream": "Maintain pool routing settings, sticky-key selection, runtime publication, and dashboard invalidation cohesion below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/oauth_sessions_callbacks/mailbox_and_login_sessions.rs",
+      "role": "production",
+      "line_budget": 1082,
+      "next_module_workstream": "Maintain mailbox provisioning, expiry/status transitions, and OAuth login-session lifecycle cohesion below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/oauth_sessions_callbacks/account_lifecycle.rs",
+      "role": "production",
+      "line_budget": 733,
+      "next_module_workstream": "Maintain account creation, relogin, update/delete/sync, and manual refresh lifecycle cohesion below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/oauth_sessions_callbacks/callback_identity.rs",
+      "role": "production",
+      "line_budget": 872,
+      "next_module_workstream": "Maintain OAuth callback parsing/persistence, refresh fencing, and identity confirmation/overwrite semantics below the production target."
+    },
+    {
+      "path": "src/upstream_accounts/oauth_sessions_callbacks/account_update.rs",
+      "role": "production",
+      "line_budget": 884,
+      "next_module_workstream": "Maintain the account-update adapter validation, transaction, runtime publication, and action-event boundary below the production target."
     },
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing/archive_compat_and_query_filters.rs",
