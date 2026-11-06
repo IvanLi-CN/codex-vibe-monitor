@@ -138,7 +138,7 @@ impl IngestError {
     }
 
     pub(crate) fn is_retryable(&self) -> bool {
-        matches!(self, Self::Retryable(_))
+        matches!(self, Self::Retryable(_) | Self::AmbiguousCommit(_))
     }
 }
 
@@ -407,6 +407,7 @@ fn same_event_identity(left: &SourceEnvelope, right: &SourceEnvelope) -> bool {
         && left.stats_semantics_version == right.stats_semantics_version
         && left.identity == right.identity
         && left.operation == right.operation
+        && left.envelope_version == right.envelope_version
         && left.occurred_at == right.occurred_at
         && left.payload_digest == right.payload_digest
 }
@@ -488,6 +489,10 @@ struct ReceiptRow {
     entity_kind: String,
     entity_key: String,
     operation_kind: String,
+    envelope_version: i64,
+    fact_semantics_version: i64,
+    stats_semantics_version: i64,
+    occurred_at: String,
     payload_digest: String,
     payload: Json<Value>,
 }
@@ -505,7 +510,7 @@ struct SourceCoverageRow {
     covered_through_change_id: i64,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct SourceJournalRow {
     change_id: i64,
     event_version: i64,
@@ -665,7 +670,9 @@ impl PgIngestActor {
         for event in prefix.events() {
             let existing_by_event = sqlx::query_as::<_, ReceiptRow>(
                 "SELECT event_id, generation, change_id, coverage_revision,
-                        entity_kind, entity_key, operation_kind, payload_digest, payload
+                        entity_kind, entity_key, operation_kind, envelope_version,
+                        fact_semantics_version, stats_semantics_version, occurred_at,
+                        payload_digest, payload
                  FROM cvm_analytics.analytics_module_ingest_receipts
                  WHERE consumer_id = $1 AND source_instance_id = $2 AND event_id = $3",
             )
@@ -689,7 +696,9 @@ impl PgIngestActor {
 
             let existing_by_change = sqlx::query_as::<_, ReceiptRow>(
                 "SELECT event_id, generation, change_id, coverage_revision,
-                        entity_kind, entity_key, operation_kind, payload_digest, payload
+                        entity_kind, entity_key, operation_kind, envelope_version,
+                        fact_semantics_version, stats_semantics_version, occurred_at,
+                        payload_digest, payload
                  FROM cvm_analytics.analytics_module_ingest_receipts
                  WHERE consumer_id = $1 AND source_instance_id = $2
                    AND generation = $3 AND change_id = $4",
@@ -772,8 +781,9 @@ impl PgIngestActor {
                 "INSERT INTO cvm_analytics.analytics_module_ingest_receipts
                     (consumer_id, source_instance_id, event_id, generation, change_id,
                      coverage_revision, entity_kind, entity_key, operation_kind,
-                     payload_digest, payload, payload_bytes)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                     envelope_version, fact_semantics_version, stats_semantics_version,
+                     occurred_at, payload_digest, payload, payload_bytes)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
             )
             .bind(&self.binding.consumer_id)
             .bind(&self.binding.source_instance_id)
@@ -784,6 +794,10 @@ impl PgIngestActor {
             .bind(&event.identity.entity_kind)
             .bind(&event.identity.entity_key)
             .bind(event.operation.as_str())
+            .bind(event.envelope_version)
+            .bind(event.fact_semantics_version)
+            .bind(event.stats_semantics_version)
+            .bind(&event.occurred_at)
             .bind(&event.payload_digest)
             .bind(Json(canonical_json(&event.payload)))
             .bind(payload_bytes)
@@ -933,7 +947,10 @@ impl PgIngestActor {
         }
         let rows = load_source_rows(source_pool, self.binding.checkpoint)
             .await
-            .map_err(IngestError::retryable)?;
+            .map_err(|error| match error {
+                SourceLoadError::Retryable(error) => IngestError::retryable(error),
+                SourceLoadError::Blocked(error) => IngestError::blocked(error),
+            })?;
         if rows.is_empty() {
             return Ok(ConsumeStatus::Idle {
                 checkpoint: self.binding.checkpoint,
@@ -943,7 +960,33 @@ impl PgIngestActor {
         for row in rows {
             events.push(decode_source_row(&row).map_err(IngestError::blocked)?);
         }
-        let receipt = self.receive_batch_with_handlers(&events, handlers).await?;
+        let receipt = match self.receive_batch_with_handlers(&events, handlers).await {
+            Ok(receipt) => receipt,
+            Err(IngestError::AmbiguousCommit(commit_error)) => {
+                if self.confirm_ambiguous_receive(&events).await? {
+                    ReceiveReceipt {
+                        first_change_id: events
+                            .first()
+                            .map(|event| event.change_id)
+                            .unwrap_or(self.binding.checkpoint),
+                        through_change_id: events
+                            .last()
+                            .map(|event| event.change_id)
+                            .unwrap_or(self.binding.checkpoint),
+                        generation: self.binding.generation,
+                        coverage_revision: events
+                            .last()
+                            .map(|event| event.coverage_revision)
+                            .unwrap_or(self.binding.coverage_revision),
+                        inserted_events: 0,
+                        duplicate_events: events.len(),
+                    }
+                } else {
+                    return Err(IngestError::ambiguous_commit(commit_error));
+                }
+            }
+            Err(error) => return Err(error),
+        };
         self.pending_ack = Some(PendingAck {
             generation: source_state.generation,
             from_change_id: receipt.first_change_id,
@@ -968,9 +1011,70 @@ impl PgIngestActor {
     pub(crate) async fn begin_writer_transaction(
         &mut self,
     ) -> IngestResult<sqlx::Transaction<'_, sqlx::Postgres>> {
-        self.connection.begin().await.map_err(|error| {
+        let mut transaction = self.connection.begin().await.map_err(|error| {
             IngestError::retryable(anyhow!(error).context("begin analytics writer transaction"))
-        })
+        })?;
+        let owner = sqlx::query_as::<_, OwnerRow>(
+            "SELECT source_instance_id, owner_epoch, status
+             FROM cvm_analytics.analytics_module_owners
+             WHERE module_id = $1
+             FOR UPDATE",
+        )
+        .bind(self.binding.module_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| {
+            IngestError::retryable(anyhow!(error).context("lock analytics writer owner fence"))
+        })?
+        .ok_or_else(|| IngestError::blocked(anyhow!("analytics writer owner row is missing")))?;
+        ingest_ensure!(
+            owner.status == "active"
+                && owner.owner_epoch == self.binding.owner_epoch
+                && owner.source_instance_id == self.binding.source_instance_id,
+            "analytics writer owner fence rejected the transaction"
+        );
+        Ok(transaction)
+    }
+
+    /// Confirm a lost commit response from the durable C side before allowing A. A successful
+    /// confirmation requires the consumer checkpoint and every receipt to be present on this
+    /// actor's still-locked PostgreSQL session; otherwise the caller leaves the outcome
+    /// ambiguous for supervisor re-acquisition and never acknowledges SQLite blindly.
+    async fn confirm_ambiguous_receive(&mut self, events: &[SourceEnvelope]) -> IngestResult<bool> {
+        self.refresh_binding().await?;
+        let prefix = validate_complete_prefix(&self.binding, self.binding.checkpoint, events)
+            .map_err(IngestError::blocked)?;
+        if self.binding.checkpoint < prefix.through_change_id {
+            return Ok(false);
+        }
+        for event in prefix.events() {
+            let receipt = sqlx::query_as::<_, ReceiptRow>(
+                "SELECT event_id, generation, change_id, coverage_revision,
+                        entity_kind, entity_key, operation_kind, envelope_version,
+                        fact_semantics_version, stats_semantics_version, occurred_at,
+                        payload_digest, payload
+                 FROM cvm_analytics.analytics_module_ingest_receipts
+                 WHERE consumer_id = $1 AND source_instance_id = $2 AND event_id = $3",
+            )
+            .bind(&self.binding.consumer_id)
+            .bind(&self.binding.source_instance_id)
+            .bind(&event.event_id)
+            .fetch_optional(&mut self.connection)
+            .await
+            .map_err(|error| {
+                IngestError::retryable(
+                    anyhow!(error)
+                        .context("confirm analytics ingest receipt after ambiguous commit"),
+                )
+            })?
+            .ok_or_else(|| {
+                IngestError::blocked(anyhow!(
+                    "analytics consumer checkpoint advanced without a matching durable receipt"
+                ))
+            })?;
+            ensure_receipt_matches(&receipt, event).map_err(IngestError::blocked)?;
+        }
+        Ok(true)
     }
 
     async fn try_ack(&self, source_pool: &Pool<Sqlite>) -> std::result::Result<(), String> {
@@ -1378,6 +1482,22 @@ fn ensure_receipt_matches(row: &ReceiptRow, event: &SourceEnvelope) -> Result<()
         "analytics receipt operation mismatch"
     );
     ensure!(
+        row.envelope_version == event.envelope_version,
+        "analytics receipt envelope version mismatch"
+    );
+    ensure!(
+        row.fact_semantics_version == event.fact_semantics_version,
+        "analytics receipt fact semantics version mismatch"
+    );
+    ensure!(
+        row.stats_semantics_version == event.stats_semantics_version,
+        "analytics receipt stats semantics version mismatch"
+    );
+    ensure!(
+        row.occurred_at == event.occurred_at,
+        "analytics receipt occurred_at mismatch"
+    );
+    ensure!(
         row.payload_digest == event.payload_digest,
         "analytics receipt payload digest mismatch"
     );
@@ -1412,8 +1532,16 @@ async fn load_source_coverage(
     .context("load analytics source acknowledgement coverage")
 }
 
-async fn load_source_rows(pool: &Pool<Sqlite>, checkpoint: i64) -> Result<Vec<SourceJournalRow>> {
-    sqlx::query_as::<_, SourceJournalRow>(
+enum SourceLoadError {
+    Retryable(anyhow::Error),
+    Blocked(anyhow::Error),
+}
+
+async fn load_source_rows(
+    pool: &Pool<Sqlite>,
+    checkpoint: i64,
+) -> std::result::Result<Vec<SourceJournalRow>, SourceLoadError> {
+    let rows = sqlx::query_as::<_, SourceJournalRow>(
         "SELECT change_id, event_version, fact_date_semantics_version,
                 source_instance_id, event_id, operation_kind, fact_semantics_version,
                 stats_semantics_version, payload_digest, event_kind, entity_kind,
@@ -1424,10 +1552,56 @@ async fn load_source_rows(pool: &Pool<Sqlite>, checkpoint: i64) -> Result<Vec<So
          LIMIT ?2",
     )
     .bind(checkpoint)
-    .bind(i64::try_from(ANALYTICS_INGEST_MAX_EVENTS_PER_BATCH)?)
+    .bind(
+        i64::try_from(ANALYTICS_INGEST_MAX_EVENTS_PER_BATCH)
+            .expect("analytics ingest event limit fits in SQLite INTEGER"),
+    )
     .fetch_all(pool)
     .await
-    .context("load bounded analytics source prefix")
+    .map_err(|error| {
+        SourceLoadError::Retryable(anyhow!(error).context("load bounded analytics source prefix"))
+    })?;
+    take_bounded_source_prefix(rows).map_err(SourceLoadError::Blocked)
+}
+
+fn take_bounded_source_prefix(rows: Vec<SourceJournalRow>) -> Result<Vec<SourceJournalRow>> {
+    let mut prefix = Vec::with_capacity(rows.len());
+    let mut payload_bytes = 0usize;
+    for row in rows {
+        let row_bytes = source_row_payload_bytes(&row)?;
+        let next_bytes = payload_bytes
+            .checked_add(row_bytes)
+            .context("analytics source prefix payload byte count overflow")?;
+        if !prefix.is_empty()
+            && (row_bytes > ANALYTICS_INGEST_MAX_PAYLOAD_BYTES
+                || next_bytes > ANALYTICS_INGEST_MAX_PAYLOAD_BYTES)
+        {
+            break;
+        }
+        ensure!(
+            next_bytes <= ANALYTICS_INGEST_MAX_PAYLOAD_BYTES,
+            "single analytics source event at change {} exceeds the bounded payload size",
+            row.change_id
+        );
+        payload_bytes = next_bytes;
+        prefix.push(row);
+    }
+    Ok(prefix)
+}
+
+fn source_row_payload_bytes(row: &SourceJournalRow) -> Result<usize> {
+    let payload = serde_json::from_str::<Value>(&row.fact_json).with_context(|| {
+        format!(
+            "decode analytics source payload for byte budget at change {}",
+            row.change_id
+        )
+    })?;
+    ensure!(
+        payload.is_object(),
+        "analytics source payload must be an object at change {}",
+        row.change_id
+    );
+    Ok(serde_json::to_vec(&canonical_json(&payload))?.len())
 }
 
 fn decode_source_row(row: &SourceJournalRow) -> Result<SourceEnvelope> {
@@ -1614,6 +1788,59 @@ mod tests {
         let second = event(2, "event-2", 2);
         assert!(validate_complete_prefix(&binding, 2, &[first.clone(), second.clone()]).is_ok());
         assert!(validate_complete_prefix(&binding, 1, &[first, second]).is_err());
+    }
+
+    #[test]
+    fn duplicate_identity_includes_occurred_at_and_semantics_versions() {
+        let binding = binding();
+        let first = event(1, "event-1", 1);
+        let mut changed_time = first.clone();
+        changed_time.occurred_at = "2026-11-06T00:00:01Z".to_string();
+        assert!(validate_complete_prefix(&binding, 0, &[first.clone(), changed_time]).is_err());
+
+        let mut changed_stats_version = first.clone();
+        changed_stats_version.stats_semantics_version = 1;
+        assert!(validate_complete_prefix(&binding, 0, &[first, changed_stats_version]).is_err());
+    }
+
+    fn journal_row(change_id: i64, payload_size: usize) -> SourceJournalRow {
+        let payload = serde_json::json!({"blob": "x".repeat(payload_size)});
+        SourceJournalRow {
+            change_id,
+            event_version: 1,
+            fact_date_semantics_version: SOURCE_FACT_SEMANTICS_VERSION,
+            source_instance_id: "source-a".to_string(),
+            event_id: format!("event-{change_id}"),
+            operation_kind: "upsert".to_string(),
+            fact_semantics_version: SOURCE_FACT_SEMANTICS_VERSION,
+            stats_semantics_version: SOURCE_STATS_SEMANTICS_VERSION,
+            payload_digest: digest_json(&payload).unwrap(),
+            event_kind: "upsert".to_string(),
+            entity_kind: "invocation".to_string(),
+            entity_key: format!("row-{change_id}"),
+            generation: 7,
+            coverage_revision: change_id,
+            occurred_at: "2026-11-06T00:00:00Z".to_string(),
+            fact_json: serde_json::to_string(&payload).unwrap(),
+        }
+    }
+
+    #[test]
+    fn source_prefix_respects_byte_budget_and_progresses_backlog() {
+        let rows: Vec<_> = (1..=3)
+            .map(|change_id| journal_row(change_id, 400_000))
+            .collect();
+        let first = take_bounded_source_prefix(rows.clone()).unwrap();
+        assert_eq!(first.len(), 2);
+        let remainder =
+            take_bounded_source_prefix(rows.into_iter().skip(first.len()).collect()).unwrap();
+        assert_eq!(remainder.len(), 1);
+
+        let oversized = take_bounded_source_prefix(vec![journal_row(
+            1,
+            ANALYTICS_INGEST_MAX_PAYLOAD_BYTES + 1,
+        )]);
+        assert!(oversized.is_err());
     }
 }
 

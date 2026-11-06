@@ -1,6 +1,6 @@
 use super::*;
 use anyhow::{Context, Result, ensure};
-use sqlx::{Connection, PgConnection, PgPool, Sqlite, sqlite::SqlitePoolOptions};
+use sqlx::{Connection, PgConnection, PgPool, Sqlite, sqlite::SqlitePoolOptions, types::Json};
 use std::env;
 use url::Url;
 
@@ -127,6 +127,23 @@ async fn reset_and_apply(owner: &mut PgConnection) -> Result<()> {
         recovered.recovered_steps == 1,
         "failed ingest migration did not re-enter"
     );
+    sqlx::query(
+        "CREATE TABLE cvm_analytics.analytics_module_ingest_handler_fixture (
+            event_id TEXT PRIMARY KEY,
+            occurred_at TEXT NOT NULL,
+            payload JSONB NOT NULL
+        )",
+    )
+    .execute(&mut *owner)
+    .await
+    .context("create handler rollback fixture table")?;
+    sqlx::query(
+        "GRANT SELECT, INSERT ON TABLE cvm_analytics.analytics_module_ingest_handler_fixture
+         TO cvm_analytics_maintenance",
+    )
+    .execute(&mut *owner)
+    .await
+    .context("grant handler rollback fixture table")?;
     Ok(())
 }
 
@@ -157,20 +174,126 @@ async fn source_fixture() -> Result<(sqlx::Pool<Sqlite>, SourceEnvelope)> {
         .await
         .context("connect source fixture")?;
     crate::analytics_changes::ensure_analytics_changes_schema(&source).await?;
+    let envelope = append_fixture_event(
+        &source,
+        "fixture-event-1",
+        SourceOperation::Upsert,
+        serde_json::json!({"fixture": true, "value": 1}),
+    )
+    .await?;
+    Ok((source, envelope))
+}
+
+async fn append_fixture_event(
+    source: &sqlx::Pool<Sqlite>,
+    event_id: &str,
+    operation: SourceOperation,
+    payload: serde_json::Value,
+) -> Result<SourceEnvelope> {
     let draft = super::super::source::SourceEnvelopeDraft {
         source_instance_id: "source-a".to_string(),
-        event_id: "fixture-event-1".to_string(),
+        event_id: event_id.to_string(),
         entity_kind: "invocation".to_string(),
-        entity_key: "fixture-row-1".to_string(),
-        operation: SourceOperation::Upsert,
+        entity_key: format!("fixture-row-{event_id}"),
+        operation,
         occurred_at: "2026-11-06T00:00:00Z".to_string(),
-        payload: serde_json::json!({"fixture": true, "value": 1}),
+        payload,
     };
     let mut transaction = source.begin().await?;
     let (envelope, _) =
         super::super::append_source_envelope_tx(transaction.as_mut(), &draft).await?;
     transaction.commit().await?;
-    Ok((source, envelope))
+    Ok(envelope)
+}
+
+struct FixtureArchiveHandler {
+    fail_event_id: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl IngestOperationHandler for FixtureArchiveHandler {
+    fn operation(&self) -> SourceOperation {
+        SourceOperation::ArchiveRelocation
+    }
+
+    async fn stage(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        event: &SourceEnvelope,
+    ) -> Result<IngestWorkKind> {
+        sqlx::query(
+            "INSERT INTO cvm_analytics.analytics_module_ingest_handler_fixture
+                (event_id, occurred_at, payload)
+             VALUES ($1, $2, $3)",
+        )
+        .bind(&event.event_id)
+        .bind(&event.occurred_at)
+        .bind(Json(super::super::canonical_json(&event.payload)))
+        .execute(&mut **transaction)
+        .await
+        .context("stage archive handler fixture input")?;
+        if self.fail_event_id.as_deref() == Some(event.event_id.as_str()) {
+            anyhow::bail!("intentional archive handler fixture failure after staging")
+        }
+        Ok(IngestWorkKind::Archive)
+    }
+}
+
+async fn simulate_committed_receive(
+    owner: &mut PgConnection,
+    event: &SourceEnvelope,
+) -> Result<()> {
+    let mut transaction = owner.begin().await?;
+    sqlx::query(
+        "INSERT INTO cvm_analytics.analytics_module_ingest_receipts
+            (consumer_id, source_instance_id, event_id, generation, change_id,
+             coverage_revision, entity_kind, entity_key, operation_kind,
+             envelope_version, fact_semantics_version, stats_semantics_version,
+             occurred_at, payload_digest, payload, payload_bytes)
+         VALUES ('invocation', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+    )
+    .bind(&event.source_instance_id)
+    .bind(&event.event_id)
+    .bind(event.generation)
+    .bind(event.change_id)
+    .bind(event.coverage_revision)
+    .bind(&event.identity.entity_kind)
+    .bind(&event.identity.entity_key)
+    .bind(event.operation.as_str())
+    .bind(event.envelope_version)
+    .bind(event.fact_semantics_version)
+    .bind(event.stats_semantics_version)
+    .bind(&event.occurred_at)
+    .bind(&event.payload_digest)
+    .bind(Json(super::super::canonical_json(&event.payload)))
+    .bind(serde_json::to_vec(&super::super::canonical_json(&event.payload))?.len() as i32)
+    .execute(&mut *transaction)
+    .await
+    .context("simulate committed C receipt")?;
+    sqlx::query(
+        "INSERT INTO cvm_analytics.analytics_module_ingest_work
+            (consumer_id, source_instance_id, generation, change_id, event_id,
+             work_kind, state, attempts, last_error_code)
+         VALUES ('invocation', $1, $2, $3, $4, 'projection', 'pending', 0, NULL)",
+    )
+    .bind(&event.source_instance_id)
+    .bind(event.generation)
+    .bind(event.change_id)
+    .bind(&event.event_id)
+    .execute(&mut *transaction)
+    .await
+    .context("simulate committed C work")?;
+    sqlx::query(
+        "UPDATE cvm_analytics.analytics_module_consumers
+         SET checkpoint = $1, coverage_revision = $2
+         WHERE consumer_id = 'invocation' AND module_id = 'invocation'",
+    )
+    .bind(event.change_id)
+    .bind(event.coverage_revision)
+    .execute(&mut *transaction)
+    .await
+    .context("simulate committed C checkpoint")?;
+    transaction.commit().await.context("commit simulated C")
 }
 
 #[tokio::test]
@@ -214,6 +337,115 @@ async fn postgres_ingest_fixture_covers_migration_lock_fence_receive_and_ack_rec
         "duplicate receive was not idempotent"
     );
 
+    let archive = append_fixture_event(
+        &source,
+        "fixture-archive-2",
+        SourceOperation::ArchiveRelocation,
+        serde_json::json!({"archive": true, "value": 2}),
+    )
+    .await?;
+    let mut archive_handlers = IngestHandlerRegistry::default();
+    archive_handlers.register(FixtureArchiveHandler {
+        fail_event_id: None,
+    })?;
+    let archive_receipt = actor
+        .receive_batch_with_handlers(std::slice::from_ref(&archive), &archive_handlers)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    ensure!(
+        archive_receipt.inserted_events == 1,
+        "registered archive handler did not commit C"
+    );
+    let archive_stage_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM cvm_analytics.analytics_module_ingest_handler_fixture
+         WHERE event_id = 'fixture-archive-2'",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .context("read committed archive handler staging")?;
+    ensure!(
+        archive_stage_count == 1,
+        "archive handler input was not staged"
+    );
+    let archive_work_kind: String = sqlx::query_scalar(
+        "SELECT work_kind
+         FROM cvm_analytics.analytics_module_ingest_work
+         WHERE event_id = 'fixture-archive-2'",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .context("read archive work obligation")?;
+    ensure!(
+        archive_work_kind == "archive",
+        "archive work obligation was not durable"
+    );
+
+    let failed_archive = append_fixture_event(
+        &source,
+        "fixture-archive-fail-3",
+        SourceOperation::ArchiveRelocation,
+        serde_json::json!({"archive": true, "value": 3}),
+    )
+    .await?;
+    let mut failing_handlers = IngestHandlerRegistry::default();
+    failing_handlers.register(FixtureArchiveHandler {
+        fail_event_id: Some("fixture-archive-fail-3".to_string()),
+    })?;
+    ensure!(
+        actor
+            .receive_batch_with_handlers(std::slice::from_ref(&failed_archive), &failing_handlers,)
+            .await
+            .is_err(),
+        "failing archive handler unexpectedly committed"
+    );
+    let failed_stage_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM cvm_analytics.analytics_module_ingest_handler_fixture
+         WHERE event_id = 'fixture-archive-fail-3'",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .context("read rolled-back archive handler staging")?;
+    ensure!(
+        failed_stage_count == 0,
+        "archive handler staging escaped the receive rollback"
+    );
+    let mut retry_handlers = IngestHandlerRegistry::default();
+    retry_handlers.register(FixtureArchiveHandler {
+        fail_event_id: None,
+    })?;
+    actor
+        .receive_batch_with_handlers(std::slice::from_ref(&failed_archive), &retry_handlers)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    let lost_response_event = append_fixture_event(
+        &source,
+        "fixture-lost-response-4",
+        SourceOperation::Upsert,
+        serde_json::json!({"fixture": true, "value": 4}),
+    )
+    .await?;
+    simulate_committed_receive(&mut owner, &lost_response_event).await?;
+    ensure!(
+        actor
+            .confirm_ambiguous_receive(std::slice::from_ref(&lost_response_event))
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        "lost commit response did not confirm durable PG C"
+    );
+    actor.pending_ack = Some(PendingAck {
+        generation: lost_response_event.generation,
+        from_change_id: lost_response_event.change_id,
+        through_change_id: lost_response_event.change_id,
+    });
+    actor
+        .try_ack(&source)
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+    actor.pending_ack = None;
+
     let mut conflicting = envelope.clone();
     conflicting.payload = serde_json::json!({"fixture": true, "value": 2});
     conflicting.payload_digest = digest_json(&conflicting.payload)?;
@@ -224,6 +456,39 @@ async fn postgres_ingest_fixture_covers_migration_lock_fence_receive_and_ack_rec
             .is_err(),
         "conflicting event unexpectedly received"
     );
+
+    let writer_transaction = actor
+        .begin_writer_transaction()
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    writer_transaction
+        .commit()
+        .await
+        .context("commit fenced writer probe")?;
+    sqlx::query(
+        "UPDATE cvm_analytics.analytics_module_owners
+         SET owner_epoch = 2
+         WHERE module_id = 'invocation'",
+    )
+    .execute(&mut owner)
+    .await
+    .context("advance owner epoch for writer fence probe")?;
+    let writer_fence = actor.begin_writer_transaction().await;
+    ensure!(
+        writer_fence
+            .err()
+            .map(|error| error.to_string())
+            .is_some_and(|message| message.contains("owner fence")),
+        "successor writer transaction bypassed the owner epoch fence"
+    );
+    sqlx::query(
+        "UPDATE cvm_analytics.analytics_module_owners
+         SET owner_epoch = 1
+         WHERE module_id = 'invocation'",
+    )
+    .execute(&mut owner)
+    .await
+    .context("restore owner epoch after writer fence probe")?;
 
     let second_actor = PgIngestActor::acquire(&maintenance, binding.clone()).await;
     ensure!(
@@ -279,16 +544,40 @@ async fn postgres_ingest_fixture_covers_migration_lock_fence_receive_and_ack_rec
     let work_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
          FROM cvm_analytics.analytics_module_ingest_work
-         WHERE consumer_id = 'invocation' AND state = 'pending'",
+         WHERE consumer_id = 'invocation'
+           AND event_id = 'fixture-event-1'
+           AND state = 'pending'",
     )
     .fetch_one(&mut owner)
     .await
     .context("read pending projection work")?;
     ensure!(
         work_count == 1,
-        "receive did not persist exactly one pending work item"
+        "receive did not persist the expected pending work item"
     );
 
+    let (occurred_at, envelope_version, fact_version, stats_version): (String, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT occurred_at, envelope_version, fact_semantics_version,
+                    stats_semantics_version
+             FROM cvm_analytics.analytics_module_ingest_receipts
+             WHERE consumer_id = 'invocation' AND event_id = 'fixture-event-1'",
+        )
+        .fetch_one(&mut owner)
+        .await
+        .context("read persisted envelope metadata")?;
+    ensure!(
+        occurred_at == envelope.occurred_at
+            && envelope_version == envelope.envelope_version
+            && fact_version == envelope.fact_semantics_version
+            && stats_version == envelope.stats_semantics_version,
+        "persisted receipt did not retain complete envelope metadata"
+    );
+
+    sqlx::query("DELETE FROM analytics_change_coverage")
+        .execute(&source)
+        .await
+        .context("clear source coverage for acknowledgement recovery")?;
     sqlx::query("DELETE FROM analytics_change_events")
         .execute(&source)
         .await

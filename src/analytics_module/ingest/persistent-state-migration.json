@@ -7,7 +7,7 @@
     "version_impact": "minor"
   },
   "durable_state": {
-    "description": "A receipt binds source_instance_id and event_id to generation, change_id, identity, operation, payload_digest, and the canonical payload; a pending projection work item survives source acknowledgement and restart.",
+    "description": "A receipt binds source_instance_id and event_id to generation, change_id, identity, operation, envelope/fact/stats semantics versions, occurred_at, payload_digest, and the canonical payload; a pending projection or archive work item survives source acknowledgement and restart.",
     "storage_implementation": "PostgreSQL cvm_analytics.analytics_module_ingest_receipts and analytics_module_ingest_work plus analytics_module_ddl_ledger component analytics-module-ingest.",
     "source_compatibility_range": {
       "from_program_versions": "C2 module schema version 1 with legacy pg-analytics schema version 1",
