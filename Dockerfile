@@ -119,6 +119,8 @@ COPY --from=production-web-context /app/web/dist ./web
 RUN chmod 0755 /usr/local/bin/search-raw
 
 ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
+    ANALYTICS_BACKEND=sqlite \
+    POSTGRES_MAX_CONNECTIONS=5 \
     HTTP_BIND=0.0.0.0:8080 \
     STATIC_DIR=/srv/app/web \
     POLL_INTERVAL_SECS=10 \
@@ -132,6 +134,8 @@ LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION} \
 VOLUME ["/srv/app/data"]
 EXPOSE 8080
 
+# Container health follows core readiness. PostgreSQL analytics readiness is checked separately
+# at /health/analytics because it may remain fenced while the core service is serving traffic.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=6 CMD curl --fail --silent http://127.0.0.1:8080/health || exit 1
 
 CMD ["codex-vibe-monitor"]
@@ -158,6 +162,8 @@ RUN chmod 0755 /usr/local/bin/search-raw /usr/local/bin/codex-vibe-monitor
 
 ARG APP_EFFECTIVE_VERSION
 ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
+    ANALYTICS_BACKEND=sqlite \
+    POSTGRES_MAX_CONNECTIONS=5 \
     HTTP_BIND=0.0.0.0:8080 \
     STATIC_DIR=/srv/app/web \
     POLL_INTERVAL_SECS=10 \
