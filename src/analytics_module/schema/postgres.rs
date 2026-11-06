@@ -9,6 +9,7 @@ const MAINTENANCE_URL_ENV: &str = "PG_ANALYTICS_TEST_MAINTENANCE_URL";
 const TERMINATOR_URL_ENV: &str = "PG_ANALYTICS_TEST_TERMINATOR_URL";
 const RESET_AUTH_ENV: &str = "PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET";
 const TERMINATE_AUTH_ENV: &str = "PG_ANALYTICS_TEST_ALLOW_TERMINATE";
+const PG18_TERMINATE_BACKEND_SIGNATURE: &str = "pg_catalog.pg_terminate_backend(integer,bigint)";
 
 struct FixtureInputs {
     owner_url: String,
@@ -266,9 +267,12 @@ async fn ensure_terminator_permission(observer: &mut PgConnection) -> Result<()>
         .context("inspect fixture terminator role")?;
     let can_terminate: bool = sqlx::query_scalar(
         "SELECT has_function_privilege(
-             current_user, 'pg_terminate_backend(integer)', 'EXECUTE'
+             current_user,
+             $1::regprocedure,
+             'EXECUTE'
          )",
     )
+    .bind(PG18_TERMINATE_BACKEND_SIGNATURE)
     .fetch_one(&mut *observer)
     .await
     .context("check fixture termination permission")?;
