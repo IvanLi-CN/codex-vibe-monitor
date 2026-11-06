@@ -189,12 +189,13 @@ curl -fsS http://127.0.0.1:8080/health
 
 ```bash
 cp .env.example .env
+export APP_GIT_REVISION="$(git rev-parse HEAD)"
 docker compose --profile sqlite -f compose.analytics.yml up -d --build
 curl -fsS http://127.0.0.1:8080/health
 curl -fsS http://127.0.0.1:8080/health/analytics
 ```
 
-PostgreSQL 模式需要在 `.secrets/` 中提供三条完整 DSN 文件、三个运行时角色密码文件和一个仅供 Compose provisioning 使用的 PostgreSQL superuser 密码文件，并按 [PostgreSQL 18 analytics 运维手册](docs/runbooks/pg18-analytics.md) 的角色分离要求配置；DSN 与密码不应写入 `.env`、Git 或命令行参数。确认 SQLite 容器已停止后，再执行 `docker compose --profile postgres -f compose.analytics.yml up -d --build`。`/health` 只表示 core readiness；PG 模式必须额外等待 `/health/analytics` 返回 200，连接成功或 PostgreSQL 容器 healthy 都不足以宣告 analytics ready。
+PostgreSQL 模式需要在 `.secrets/` 中提供三条完整 DSN 文件、三个运行时角色密码文件和一个仅供 Compose provisioning 使用的 PostgreSQL superuser 密码文件，并按 [PostgreSQL 18 analytics 运维手册](docs/runbooks/pg18-analytics.md) 的角色分离要求配置；DSN 与密码不应写入 `.env`、Git 或命令行参数。确认 SQLite 容器已停止后，先执行 `export APP_GIT_REVISION="$(git rev-parse HEAD)"`，再执行 `docker compose --profile postgres -f compose.analytics.yml up -d --build`。`/health` 只表示 core readiness；PG 模式必须额外等待 `/health/analytics` 返回 200，连接成功或 PostgreSQL 容器 healthy 都不足以宣告 analytics ready。
 
 切换模式前先执行 `docker compose -f compose.analytics.yml --profile sqlite --profile postgres down`，保留数据卷；切换后的应用会按当前 backend 合同继续或重新建立 analytics readiness。不要同时运行两个应用容器，也不要删除 SQLite 或 PostgreSQL 数据卷来“修复”启动问题。
 

@@ -5,6 +5,9 @@ x-cvm-app: &cvm-app
   build:
     context: .
     target: runtime
+    args:
+      APP_EFFECTIVE_VERSION: ${APP_EFFECTIVE_VERSION:-compose-local}
+      APP_GIT_REVISION: ${APP_GIT_REVISION:?APP_GIT_REVISION must be set to the full Git SHA used for this build}
   init: true
   restart: unless-stopped
   ports:

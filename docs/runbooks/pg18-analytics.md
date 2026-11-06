@@ -20,6 +20,7 @@ Use the checked-in `compose.analytics.yml` with one explicit profile. The `sqlit
 
 ```sh
 cp .env.example .env
+export APP_GIT_REVISION="$(git rev-parse HEAD)"
 docker compose --profile sqlite -f compose.analytics.yml up -d --build
 curl -fsS http://127.0.0.1:8080/health
 curl -fsS http://127.0.0.1:8080/health/analytics
@@ -37,6 +38,7 @@ ls -l .secrets/postgres-migration-url \
   .secrets/postgres-migration-password \
   .secrets/postgres-app-password \
   .secrets/postgres-maintenance-password
+export APP_GIT_REVISION="$(git rev-parse HEAD)"
 docker compose --profile postgres -f compose.analytics.yml up -d --build
 ```
 
