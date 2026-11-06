@@ -2,6 +2,11 @@ use anyhow::Result;
 use serde_json::Value;
 use sqlx::{Pool, Sqlite, SqliteConnection};
 
+pub(crate) mod control;
+pub(crate) mod history;
+pub(crate) mod ingest;
+pub(crate) mod projection;
+pub(crate) mod query;
 mod schema;
 pub(crate) mod source;
 
