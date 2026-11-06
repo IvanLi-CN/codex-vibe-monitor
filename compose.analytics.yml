@@ -1,0 +1,257 @@
+name: ${COMPOSE_PROJECT_NAME:-cvm-analytics}
+
+x-cvm-app: &cvm-app
+  image: ${CVM_IMAGE:-codex-vibe-monitor:analytics-local}
+  build:
+    context: .
+    target: runtime
+    args:
+      APP_EFFECTIVE_VERSION: ${APP_EFFECTIVE_VERSION:-compose-local}
+      APP_GIT_REVISION: ${APP_GIT_REVISION:?APP_GIT_REVISION must be set to the full Git SHA used for this build}
+  init: true
+  restart: unless-stopped
+  ports:
+    - "${CVM_HTTP_PORT:-8080}:8080"
+  environment:
+    DATABASE_PATH: /srv/app/data/codex_vibe_monitor.db
+    HTTP_BIND: 0.0.0.0:8080
+    STATIC_DIR: /srv/app/web
+    POLL_INTERVAL_SECS: "10"
+    REQUEST_TIMEOUT_SECS: "60"
+    POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-5}
+  volumes:
+    - cvm_data:/srv/app/data
+  healthcheck:
+    # Docker health is deliberately the core readiness contract. Analytics readiness
+    # is an additional deployment gate at /health/analytics.
+    test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
+    interval: 10s
+    timeout: 5s
+    start_period: 30s
+    retries: 12
+
+services:
+  cvm-sqlite:
+    <<: *cvm-app
+    profiles: [sqlite]
+    environment:
+      DATABASE_PATH: /srv/app/data/codex_vibe_monitor.db
+      ANALYTICS_BACKEND: sqlite
+      HTTP_BIND: 0.0.0.0:8080
+      STATIC_DIR: /srv/app/web
+      POLL_INTERVAL_SECS: "10"
+      REQUEST_TIMEOUT_SECS: "60"
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-5}
+
+  cvm-postgres:
+    <<: *cvm-app
+    profiles: [postgres]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-provision:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_PATH: /srv/app/data/codex_vibe_monitor.db
+      ANALYTICS_BACKEND: postgres
+      HTTP_BIND: 0.0.0.0:8080
+      STATIC_DIR: /srv/app/web
+      POLL_INTERVAL_SECS: "10"
+      REQUEST_TIMEOUT_SECS: "60"
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-5}
+    secrets:
+      - postgres_migration_url
+      - postgres_database_url
+      - postgres_analytics_maintenance_url
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        export POSTGRES_MIGRATION_URL="$$(cat /run/secrets/postgres_migration_url)"
+        export POSTGRES_DATABASE_URL="$$(cat /run/secrets/postgres_database_url)"
+        export POSTGRES_ANALYTICS_MAINTENANCE_URL="$$(cat /run/secrets/postgres_analytics_maintenance_url)"
+        exec /usr/local/bin/codex-vibe-monitor
+
+  # Provisions roles and database-level access only. The application owns the ordered
+  # schema migration; postgres-grant applies table grants after that migration.
+  postgres-provision:
+    image: ${POSTGRES_IMAGE:-postgres:18-bookworm}
+    profiles: [postgres]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cvm_analytics}
+      POSTGRES_SUPERUSER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_MIGRATION_USER: ${POSTGRES_MIGRATION_USER:-cvm_analytics_migration}
+    secrets:
+      - postgres_superuser_password
+      - postgres_app_password
+      - postgres_migration_password
+      - postgres_maintenance_password
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export PGPASSWORD="$$(cat /run/secrets/postgres_superuser_password)"
+        role_exists() {
+          role_name="$${1}"
+          if ! query_result="$$(psql --host=postgres --port=5432 --username="$${POSTGRES_SUPERUSER}" --dbname=postgres --set=ON_ERROR_STOP=1 --set=role="$${role_name}" --tuples-only --no-align <<'SQL'
+        SELECT 1 FROM pg_roles WHERE rolname = :'role';
+        SQL
+        )"; then
+            echo "failed to inspect PostgreSQL role: $${role_name}" >&2
+            return 2
+          fi
+          query_result="$$(printf '%s' "$${query_result}" | tr -d '[:space:]')"
+          [ "$${query_result}" = "1" ]
+        }
+        ensure_login_role() {
+          role="$${1}"
+          password="$${2}"
+          if role_exists "$${role}"; then
+            psql --host=postgres --port=5432 --username="$${POSTGRES_SUPERUSER}" --dbname=postgres --set=ON_ERROR_STOP=1 --set=role="$${role}" --set=password="$${password}" <<'SQL'
+        ALTER ROLE :"role" LOGIN PASSWORD :'password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        SQL
+          else
+            role_status="$${?}"
+            if [ "$${role_status}" -ne 1 ]; then
+              return "$${role_status}"
+            fi
+            psql --host=postgres --port=5432 --username="$${POSTGRES_SUPERUSER}" --dbname=postgres --set=ON_ERROR_STOP=1 --set=role="$${role}" --set=password="$${password}" <<'SQL'
+        CREATE ROLE :"role" LOGIN PASSWORD :'password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        SQL
+          fi
+        }
+        ensure_group_role() {
+          role="$${1}"
+          if role_exists "$${role}"; then
+            psql --host=postgres --port=5432 --username="$${POSTGRES_SUPERUSER}" --dbname=postgres --set=ON_ERROR_STOP=1 --set=role="$${role}" <<'SQL'
+        ALTER ROLE :"role" NOLOGIN;
+        SQL
+          else
+            role_status="$${?}"
+            if [ "$${role_status}" -ne 1 ]; then
+              return "$${role_status}"
+            fi
+            psql --host=postgres --port=5432 --username="$${POSTGRES_SUPERUSER}" --dbname=postgres --set=ON_ERROR_STOP=1 --set=role="$${role}" <<'SQL'
+        CREATE ROLE :"role" NOLOGIN;
+        SQL
+          fi
+        }
+        ensure_group_role cvm_analytics_reader
+        ensure_login_role "$${POSTGRES_MIGRATION_USER}" "$$(cat /run/secrets/postgres_migration_password)"
+        ensure_login_role cvm_analytics_app "$$(cat /run/secrets/postgres_app_password)"
+        ensure_login_role cvm_analytics_maintenance "$$(cat /run/secrets/postgres_maintenance_password)"
+        psql --host=postgres --port=5432 --username="$${POSTGRES_SUPERUSER}" --dbname=postgres --set=ON_ERROR_STOP=1 --set=POSTGRES_DB="$${POSTGRES_DB}" --set=POSTGRES_MIGRATION_USER="$${POSTGRES_MIGRATION_USER}" <<'SQL'
+        GRANT cvm_analytics_reader TO cvm_analytics_app;
+        REVOKE CONNECT ON DATABASE :"POSTGRES_DB" FROM PUBLIC;
+        GRANT CONNECT ON DATABASE :"POSTGRES_DB" TO :"POSTGRES_MIGRATION_USER";
+        GRANT CREATE ON DATABASE :"POSTGRES_DB" TO :"POSTGRES_MIGRATION_USER";
+        GRANT CONNECT ON DATABASE :"POSTGRES_DB" TO cvm_analytics_app;
+        GRANT CONNECT ON DATABASE :"POSTGRES_DB" TO cvm_analytics_maintenance;
+        SQL
+
+  # The migration role creates cvm_analytics and the runtime tables. This service grants
+  # only the reviewed reader and bounded maintenance DML after /health is core-ready.
+  postgres-grant:
+    image: ${POSTGRES_IMAGE:-postgres:18-bookworm}
+    profiles: [postgres]
+    restart: "no"
+    depends_on:
+      cvm-postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cvm_analytics}
+      POSTGRES_SUPERUSER: ${POSTGRES_SUPERUSER:-postgres}
+    secrets:
+      - postgres_superuser_password
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export PGPASSWORD="$$(cat /run/secrets/postgres_superuser_password)"
+        psql --host=postgres --port=5432 --username="$${POSTGRES_SUPERUSER}" --dbname="$${POSTGRES_DB}" --set=ON_ERROR_STOP=1 <<'SQL'
+        GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_reader;
+        GRANT SELECT (
+          fact_version, source, source_row_id, invoke_id, occurred_at,
+          occurred_at_epoch_ms, stats_date, model, request_model, response_model,
+          reasoning_effort, upstream_account_id, upstream_account_name, status,
+          success_like, terminal, failure_kind, failure_class, is_actionable,
+          input_tokens, output_tokens, cache_input_tokens, reasoning_tokens,
+          total_tokens, cost, cost_input, cost_cache_write, cost_cache_read,
+          cost_output, cost_reasoning, t_total_ms, t_req_read_ms, t_req_parse_ms,
+          t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms,
+          first_token_ms, t_resp_parse_ms
+        ) ON TABLE cvm_analytics.analytics_facts TO cvm_analytics_reader;
+        GRANT SELECT (
+          source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id
+        ) ON TABLE cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_reader;
+        GRANT SELECT (
+          id, replica_id, status, generation, baseline_generation, baseline_change_id,
+          coverage_generation, coverage_revision, coverage_watermark,
+          consumer_checkpoint, source_acknowledged_through, service_eligible,
+          fact_date_semantics_version, last_error_code, updated_at
+        ) ON TABLE cvm_analytics.analytics_replica_state TO cvm_analytics_reader;
+        GRANT SELECT (id, status) ON TABLE cvm_analytics.analytics_state TO cvm_analytics_reader;
+        GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance;
+        GRANT INSERT, UPDATE, DELETE ON TABLE
+          cvm_analytics.analytics_facts,
+          cvm_analytics.analytics_parallel_work_keys
+          TO cvm_analytics_maintenance;
+        GRANT SELECT (source, source_row_id) ON TABLE
+          cvm_analytics.analytics_facts,
+          cvm_analytics.analytics_parallel_work_keys
+          TO cvm_analytics_maintenance;
+        GRANT SELECT, UPDATE ON TABLE
+          cvm_analytics.analytics_replica_state,
+          cvm_analytics.analytics_state
+          TO cvm_analytics_maintenance;
+        GRANT INSERT, DELETE ON TABLE cvm_analytics.analytics_replica_applied_changes
+          TO cvm_analytics_maintenance;
+        GRANT SELECT (change_id) ON TABLE cvm_analytics.analytics_replica_applied_changes
+          TO cvm_analytics_maintenance;
+        GRANT USAGE ON SEQUENCE cvm_analytics.analytics_facts_fact_id_seq
+          TO cvm_analytics_maintenance;
+        SQL
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:18-bookworm}
+    profiles: [postgres]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cvm_analytics}
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+    secrets:
+      - postgres_superuser_password
+    volumes:
+      # PostgreSQL 18 stores PGDATA below /var/lib/postgresql/18/docker and
+      # declares /var/lib/postgresql as the durable volume boundary.
+      - pg_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  cvm_data:
+    name: ${CVM_DATA_VOLUME:-cvm_analytics_data}
+  pg_data:
+    name: ${POSTGRES_DATA_VOLUME:-cvm_analytics_postgres}
+
+secrets:
+  postgres_migration_url:
+    file: ${POSTGRES_MIGRATION_URL_FILE:-.secrets/postgres-migration-url}
+  postgres_database_url:
+    file: ${POSTGRES_DATABASE_URL_FILE:-.secrets/postgres-database-url}
+  postgres_analytics_maintenance_url:
+    file: ${POSTGRES_ANALYTICS_MAINTENANCE_URL_FILE:-.secrets/postgres-analytics-maintenance-url}
+  postgres_superuser_password:
+    file: ${POSTGRES_SUPERUSER_PASSWORD_FILE:-.secrets/postgres-superuser-password}
+  postgres_migration_password:
+    file: ${POSTGRES_MIGRATION_PASSWORD_FILE:-.secrets/postgres-migration-password}
+  postgres_app_password:
+    file: ${POSTGRES_APP_PASSWORD_FILE:-.secrets/postgres-app-password}
+  postgres_maintenance_password:
+    file: ${POSTGRES_MAINTENANCE_PASSWORD_FILE:-.secrets/postgres-maintenance-password}
