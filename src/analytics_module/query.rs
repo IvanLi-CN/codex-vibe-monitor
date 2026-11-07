@@ -149,6 +149,8 @@ impl QueryIdentity {
 pub(crate) struct QueryCacheKey {
     pub(crate) digest: String,
     pub(crate) identity: QueryIdentity,
+    pub(crate) live_snapshot_revision: Option<u64>,
+    pub(crate) live_snapshot_digest: Option<String>,
 }
 
 impl QueryCacheKey {
@@ -156,13 +158,32 @@ impl QueryCacheKey {
         request: &AnalyticsQueryRequest,
         identity: &QueryIdentity,
     ) -> QueryResult<Self> {
+        Self::for_response(request, identity, None)
+    }
+
+    pub(crate) fn for_response(
+        request: &AnalyticsQueryRequest,
+        identity: &QueryIdentity,
+        live: Option<&RuntimeLiveSnapshot>,
+    ) -> QueryResult<Self> {
         request.validate()?;
-        let encoded = serde_json::to_vec(&(request, identity))
-            .map_err(|_| QueryError::internal_contract())?;
+        let live_snapshot_revision = live.map(|snapshot| snapshot.snapshot_revision);
+        let live_snapshot_digest = live
+            .map(|snapshot| digest_runtime_live_entities(&snapshot.rows))
+            .transpose()?;
+        let encoded = serde_json::to_vec(&(
+            request,
+            identity,
+            live_snapshot_revision,
+            &live_snapshot_digest,
+        ))
+        .map_err(|_| QueryError::internal_contract())?;
         let digest = format!("{:x}", Sha256::digest(encoded));
         Ok(Self {
             digest,
             identity: identity.clone(),
+            live_snapshot_revision,
+            live_snapshot_digest,
         })
     }
 }
@@ -1140,6 +1161,14 @@ fn coverage_from_json(value: Option<&Value>) -> QueryResult<CoverageLedger> {
     Ok(ledger)
 }
 
+/// Complete one response handoff after the durable prefix and its coverage admission were read
+/// from the same backend snapshot. A caller that has a live source must construct the producer
+/// from that exact identity, capture once, and pass the resulting tail here; `compose_runtime_tail`
+/// verifies the source/epoch fence before folding it. Seed models and coverage admission are
+/// retained while live facts are recomputed. A live capture error must use the last-good durable
+/// tail (stale when `C > P`) or return unavailable; it must not reuse a prior live snapshot. The
+/// cache key includes the live snapshot revision and entity digest, so a changed live snapshot
+/// cannot reuse an older response identity.
 fn assemble_response(
     request: &AnalyticsQueryRequest,
     identity: QueryIdentity,
@@ -1178,7 +1207,7 @@ fn assemble_response(
         effective_through_change_id: tail.through_change_id,
     }
     .assess(request.max_freshness_age_ms);
-    let cache_key = QueryCacheKey::for_request(request, &identity)?;
+    let cache_key = QueryCacheKey::for_response(request, &identity, tail.live.as_ref())?;
     Ok(AnalyticsQueryResponse {
         backend: identity.backend,
         identity,
@@ -1791,7 +1820,37 @@ mod tests {
         );
         assert!(tail.rows.is_empty());
         assert_eq!(tail.live.as_ref().unwrap().rows.len(), 1);
+        let first_cache_key =
+            QueryCacheKey::for_response(&request(), &published_only, tail.live.as_ref()).unwrap();
         compose_runtime_tail(&published_only, &[], tail).unwrap();
+
+        let second_live_row = row(
+            0,
+            "runtime-row-independent-2",
+            "upsert",
+            json!({
+                "factVersion": 1,
+                "occurredAt": "2026-11-01T00:00:01Z",
+                "successLike": false,
+                "totalTokens": 4
+            }),
+        );
+        hub.upsert(runtime_record(&second_live_row));
+        let mut second_producer =
+            RuntimeTailProducer::new(published_only.clone(), &hub, "runtime-stream-p".into())
+                .unwrap();
+        second_producer
+            .claim("claim-published-only-2".into())
+            .unwrap();
+        let second_tail = second_producer.finish().unwrap();
+        let second_cache_key =
+            QueryCacheKey::for_response(&request(), &published_only, second_tail.live.as_ref())
+                .unwrap();
+        assert_ne!(first_cache_key.digest, second_cache_key.digest);
+        assert_ne!(
+            first_cache_key.live_snapshot_digest,
+            second_cache_key.live_snapshot_digest
+        );
 
         let mut unpublished_gap = identity();
         unpublished_gap.checkpoint = unpublished_gap.published_through_change_id + 2;
