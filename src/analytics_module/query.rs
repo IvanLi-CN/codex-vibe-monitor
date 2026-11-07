@@ -270,9 +270,25 @@ pub(crate) struct RuntimeTailRow {
     pub(crate) payload: Value,
 }
 
+/// Admission proof for a runtime-only suffix. Durable journal/projection rows cannot manufacture
+/// this proof: the caller must bind one source identity to one runtime stream and one exclusive
+/// contribution claim covering the complete change interval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuntimeTailProvenance {
+    pub(crate) source_instance_id: String,
+    pub(crate) generation: i64,
+    pub(crate) owner_epoch: i64,
+    pub(crate) stream_id: String,
+    pub(crate) exclusive_claim_id: String,
+    pub(crate) from_change_id: i64,
+    pub(crate) through_change_id: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeTail {
+    pub(crate) provenance: Option<RuntimeTailProvenance>,
     pub(crate) from_change_id: i64,
     pub(crate) through_change_id: i64,
     pub(crate) rows: Vec<RuntimeTailRow>,
@@ -281,6 +297,7 @@ pub(crate) struct RuntimeTail {
 impl RuntimeTail {
     pub(crate) fn empty(at: i64) -> Self {
         Self {
+            provenance: None,
             from_change_id: at.saturating_add(1),
             through_change_id: at,
             rows: Vec::new(),
@@ -384,6 +401,34 @@ type QueryResult<T> = std::result::Result<T, QueryError>;
 /// Fold a bounded receipt suffix over the immutable publication facts. The suffix is required to
 /// be a complete `(P, C]` prefix. A missing receipt, duplicate change, stale source generation,
 /// or mixed owner epoch therefore fails closed instead of producing a partial chart.
+fn validate_runtime_tail_provenance(
+    identity: &QueryIdentity,
+    tail: &RuntimeTail,
+    is_last_good_fallback: bool,
+) -> QueryResult<()> {
+    if is_last_good_fallback {
+        return if tail.provenance.is_none() {
+            Ok(())
+        } else {
+            Err(QueryError::tail_invalid())
+        };
+    }
+    let Some(provenance) = tail.provenance.as_ref() else {
+        return Err(QueryError::tail_invalid());
+    };
+    if provenance.source_instance_id != identity.source_instance_id
+        || provenance.generation != identity.generation
+        || provenance.owner_epoch != identity.owner_epoch
+        || provenance.stream_id.trim().is_empty()
+        || provenance.exclusive_claim_id.trim().is_empty()
+        || provenance.from_change_id != tail.from_change_id
+        || provenance.through_change_id != tail.through_change_id
+    {
+        return Err(QueryError::tail_invalid());
+    }
+    Ok(())
+}
+
 pub(crate) fn compose_runtime_tail(
     identity: &QueryIdentity,
     base_facts: &[ProjectionFact],
@@ -396,6 +441,7 @@ pub(crate) fn compose_runtime_tail(
     {
         return Err(QueryError::tail_invalid());
     }
+    validate_runtime_tail_provenance(identity, &tail, is_last_good_fallback)?;
     if tail.through_change_id < identity.published_through_change_id || tail.through_change_id < 0 {
         return Err(QueryError::tail_invalid());
     }
@@ -755,6 +801,9 @@ pub(crate) async fn query_postgres_snapshot(
 mod tests {
     use super::*;
     use serde_json::json;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
 
     fn coverage() -> CoverageLedger {
         let mut ledger = CoverageLedger::default();
@@ -831,6 +880,72 @@ mod tests {
         }
     }
 
+    fn runtime_tail(rows: Vec<RuntimeTailRow>) -> RuntimeTail {
+        RuntimeTail {
+            provenance: Some(RuntimeTailProvenance {
+                source_instance_id: "source-a".into(),
+                generation: 1,
+                owner_epoch: 4,
+                stream_id: "runtime-stream-a".into(),
+                exclusive_claim_id: "claim-a".into(),
+                from_change_id: 2,
+                through_change_id: 2,
+            }),
+            from_change_id: 2,
+            through_change_id: 2,
+            rows,
+        }
+    }
+
+    struct SqliteTestLoader {
+        barrier: Option<Arc<Barrier>>,
+        mismatched_identity: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SqlitePrefixLoader for SqliteTestLoader {
+        async fn load_prefix(
+            &self,
+            tx: &mut Transaction<'_, Sqlite>,
+            consumer_id: &str,
+        ) -> QueryResult<SqlitePrefixSnapshot> {
+            let (checkpoint, total_tokens) = sqlx::query_as::<_, (i64, i64)>(
+                "SELECT checkpoint, total_tokens FROM query_snapshot WHERE consumer_id = ?1",
+            )
+            .bind(consumer_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|_| QueryError::unavailable())?;
+            if let Some(barrier) = &self.barrier {
+                barrier.wait().await;
+                let observed = sqlx::query_as::<_, (i64, i64)>(
+                    "SELECT checkpoint, total_tokens FROM query_snapshot WHERE consumer_id = ?1",
+                )
+                .bind(consumer_id)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(|_| QueryError::unavailable())?;
+                if observed != (checkpoint, total_tokens) {
+                    return Err(QueryError::snapshot_inconsistent());
+                }
+            }
+            let mut identity = identity();
+            identity.backend = if self.mismatched_identity {
+                AnalyticsQueryBackend::Postgres
+            } else {
+                AnalyticsQueryBackend::Sqlite
+            };
+            identity.checkpoint = checkpoint;
+            Ok(SqlitePrefixSnapshot {
+                identity,
+                facts: vec![fact("row-a", total_tokens)],
+                models: ProjectionModels::default(),
+                coverage: coverage(),
+                source_updated_at_ms: Some(1_000),
+            })
+        }
+    }
+
     #[test]
     fn tail_correction_and_revoke_are_folded_once() {
         let replacement = json!({
@@ -840,26 +955,54 @@ mod tests {
             "totalTokens": 3,
             "model": "fixture"
         });
-        let tail = RuntimeTail {
-            from_change_id: 2,
-            through_change_id: 2,
-            rows: vec![row(2, "row-a", "correction", replacement)],
-        };
+        let tail = runtime_tail(vec![row(2, "row-a", "correction", replacement)]);
         let (facts, models) =
             compose_runtime_tail(&identity(), &[fact("row-a", 10)], tail).unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].payload["totalTokens"], 3);
         assert!(!models.rollups.is_empty());
 
-        let revoked = RuntimeTail {
-            from_change_id: 2,
-            through_change_id: 2,
-            rows: vec![row(2, "row-a", "logical_revoke", json!({"factVersion": 1}))],
-        };
+        let revoked = runtime_tail(vec![row(
+            2,
+            "row-a",
+            "logical_revoke",
+            json!({"factVersion": 1}),
+        )]);
         let (facts, models) =
             compose_runtime_tail(&identity(), &[fact("row-a", 10)], revoked).unwrap();
         assert!(facts.is_empty());
         assert!(models.rollups.is_empty());
+    }
+
+    #[test]
+    fn runtime_tail_requires_stable_identity_and_exclusive_claim() {
+        let payload = json!({
+            "factVersion": 1,
+            "occurredAt": "2026-11-01T00:00:00Z",
+            "successLike": true,
+            "totalTokens": 3
+        });
+        let mut missing_provenance = runtime_tail(vec![row(2, "row-a", "upsert", payload.clone())]);
+        missing_provenance.provenance = None;
+        assert_eq!(
+            compose_runtime_tail(&identity(), &[], missing_provenance)
+                .unwrap_err()
+                .code,
+            QueryErrorCode::TailInvalid
+        );
+
+        let mut wrong_claim = runtime_tail(vec![row(2, "row-a", "upsert", payload)]);
+        wrong_claim
+            .provenance
+            .as_mut()
+            .expect("fixture provenance")
+            .exclusive_claim_id = "".into();
+        assert_eq!(
+            compose_runtime_tail(&identity(), &[], wrong_claim)
+                .unwrap_err()
+                .code,
+            QueryErrorCode::TailInvalid
+        );
     }
 
     #[test]
@@ -886,11 +1029,7 @@ mod tests {
             ),
             ("logical_revoke", json!({"factVersion": 1})),
         ] {
-            let persistent_tail = RuntimeTail {
-                from_change_id: 2,
-                through_change_id: 2,
-                rows: vec![row(2, "row-a", operation, payload)],
-            };
+            let persistent_tail = runtime_tail(vec![row(2, "row-a", operation, payload)]);
             let (unpublished_facts, _) =
                 compose_runtime_tail(&identity(), &base, persistent_tail.clone()).unwrap();
             match operation {
@@ -942,6 +1081,113 @@ mod tests {
         assert_eq!(interval.end_ms - interval.start_ms, 2);
     }
 
+    #[tokio::test]
+    async fn sqlite_loader_keeps_one_snapshot_and_rejects_identity_mismatch() {
+        let database = std::env::temp_dir().join(format!(
+            "cvm-analytics-query-{}-{}.db",
+            std::process::id(),
+            1
+        ));
+        let database_url = format!("sqlite://{}?mode=rwc", database.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE query_snapshot (
+                consumer_id TEXT PRIMARY KEY,
+                checkpoint INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO query_snapshot VALUES ('invocation', 2, 10)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let loader_barrier = barrier.clone();
+        let query_pool = pool.clone();
+        let query_task = tokio::spawn(async move {
+            query_sqlite_snapshot(
+                &query_pool,
+                &request(),
+                &SqliteTestLoader {
+                    barrier: Some(loader_barrier),
+                    mismatched_identity: false,
+                },
+            )
+            .await
+        });
+        barrier.wait().await;
+        sqlx::query("UPDATE query_snapshot SET checkpoint = 3, total_tokens = 99 WHERE consumer_id = 'invocation'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let response = query_task.await.unwrap().unwrap();
+        assert_eq!(response.identity.checkpoint, 2);
+        assert_eq!(response.facts[0].payload["totalTokens"], 10);
+        assert_eq!(response.tail, RuntimeTail::empty(1));
+        assert_eq!(response.freshness, FreshnessState::Stale);
+
+        let mismatch = query_sqlite_snapshot(
+            &pool,
+            &request(),
+            &SqliteTestLoader {
+                barrier: None,
+                mismatched_identity: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(mismatch.code, QueryErrorCode::SnapshotInconsistent);
+        pool.close().await;
+        let _ = std::fs::remove_file(database);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an owner-created temporary PostgreSQL 18 reader fixture"]
+    async fn postgres_reader_hides_unpublished_persistent_tail() {
+        let url = std::env::var("C6_PG_QUERY_APP_URL").expect("C6_PG_QUERY_APP_URL");
+        let case = std::env::var("C6_PG_QUERY_CASE").expect("C6_PG_QUERY_CASE");
+        let pool = PgPool::connect(&url).await.unwrap();
+        let result = query_postgres_snapshot(&pool, &request()).await;
+        match case.as_str() {
+            "published" => {
+                let response = result.unwrap();
+                assert_eq!(response.identity.published_through_change_id, 1);
+                assert_eq!(response.identity.checkpoint, 1);
+                assert_eq!(response.facts[0].payload["totalTokens"], 10);
+                assert_eq!(response.tail, RuntimeTail::empty(1));
+            }
+            "unpublished" => {
+                let response = result.unwrap();
+                assert_eq!(response.identity.published_through_change_id, 1);
+                assert_eq!(response.identity.checkpoint, 3);
+                assert_eq!(response.facts.len(), 1);
+                assert_eq!(response.facts[0].payload["totalTokens"], 10);
+                assert_eq!(response.tail, RuntimeTail::empty(1));
+                assert_eq!(response.freshness, FreshnessState::Stale);
+            }
+            "blocked" => {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    QueryErrorCode::PublicationUnavailable
+                );
+            }
+            other => panic!("unknown C6_PG_QUERY_CASE: {other}"),
+        }
+        pool.close().await;
+    }
+
     #[test]
     fn tail_gap_and_digest_mismatch_fail_closed() {
         let payload = json!({
@@ -951,22 +1197,14 @@ mod tests {
         });
         let mut bad = row(2, "row-a", "upsert", payload);
         bad.payload_digest = "wrong".into();
-        let tail = RuntimeTail {
-            from_change_id: 2,
-            through_change_id: 2,
-            rows: vec![bad],
-        };
+        let tail = runtime_tail(vec![bad]);
         assert_eq!(
             compose_runtime_tail(&identity(), &[], tail)
                 .unwrap_err()
                 .code,
             QueryErrorCode::TailInvalid
         );
-        let gap = RuntimeTail {
-            from_change_id: 2,
-            through_change_id: 2,
-            rows: vec![row(3, "row-a", "upsert", json!({"factVersion": 1}))],
-        };
+        let gap = runtime_tail(vec![row(3, "row-a", "upsert", json!({"factVersion": 1}))]);
         assert_eq!(
             compose_runtime_tail(&identity(), &[], gap)
                 .unwrap_err()
