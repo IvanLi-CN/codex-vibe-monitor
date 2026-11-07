@@ -360,9 +360,25 @@ async fn test_role_boundaries(inputs: &FixtureInputs, owner: &mut PgConnection) 
     super::apply_analytics_module_schema(owner)
         .await
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    super::apply_analytics_module_roles(owner)
+    let first_roles = super::apply_analytics_module_roles(owner)
         .await
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let second_roles = super::apply_analytics_module_roles(owner)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    ensure!(
+        first_roles.checksum == second_roles.checksum,
+        "repeated role reconciliation changed its checksum"
+    );
+
+    sqlx::query(
+        "INSERT INTO cvm_analytics.analytics_module_owners
+            (module_id, owner_id, source_instance_id, owner_epoch, status)
+         VALUES ('invocation', 'fixture-owner', 'fixture-source', 1, 'active')",
+    )
+    .execute(&mut *owner)
+    .await
+    .context("insert owner role-boundary fixture row")?;
 
     let mut app = connect(&inputs.app_url, "application role").await?;
     let app_inherits_reader: bool =
@@ -378,6 +394,45 @@ async fn test_role_boundaries(inputs: &FixtureInputs, owner: &mut PgConnection) 
         .fetch_optional(&mut app)
         .await
         .context("reader SELECT contract")?;
+    let source_instance_id: String = sqlx::query_scalar(
+        "SELECT source_instance_id
+         FROM cvm_analytics.analytics_module_owners
+         WHERE module_id = 'invocation'",
+    )
+    .fetch_one(&mut app)
+    .await
+    .context("reader owner source-instance SELECT contract")?;
+    ensure!(
+        source_instance_id == "fixture-source",
+        "reader owner source-instance SELECT returned an unexpected value"
+    );
+    let error = sqlx::query(
+        "SELECT owner_id
+         FROM cvm_analytics.analytics_module_owners
+         WHERE module_id = 'invocation'",
+    )
+    .fetch_one(&mut app)
+    .await
+    .expect_err("reader application read of owner_id unexpectedly succeeded");
+    ensure_insufficient_privilege(error, "reader unauthorized owners column contract")?;
+    let error = sqlx::query(
+        "INSERT INTO cvm_analytics.analytics_module_owners
+            (module_id, owner_id, source_instance_id, owner_epoch, status)
+         VALUES ('app-owner-write', 'fixture-owner', 'fixture-source', 1, 'active')",
+    )
+    .execute(&mut app)
+    .await
+    .expect_err("reader application owners INSERT unexpectedly succeeded");
+    ensure_insufficient_privilege(error, "reader owners INSERT contract")?;
+    let error = sqlx::query(
+        "UPDATE cvm_analytics.analytics_module_owners
+         SET status = 'released'
+         WHERE module_id = 'invocation'",
+    )
+    .execute(&mut app)
+    .await
+    .expect_err("reader application owners UPDATE unexpectedly succeeded");
+    ensure_insufficient_privilege(error, "reader owners UPDATE contract")?;
     let error = sqlx::query(
         "INSERT INTO cvm_analytics.analytics_module_consumers
             (consumer_id, module_id, consumer_version, state, source_instance_id)
