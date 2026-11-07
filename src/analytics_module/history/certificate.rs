@@ -389,6 +389,14 @@ impl CertifiedReceiptPrefix {
             seed.provenance_digest() == self.certificate.certificate_digest,
             "certified seed provenance is not bound to this certificate"
         );
+        for incoming in seed.coverage().claims() {
+            ensure!(
+                !self.coverage.claims().iter().any(|existing| {
+                    existing.key == incoming.key && existing.range.overlaps(&incoming.range)
+                }),
+                "certified seed overlaps existing history coverage"
+            );
+        }
         self.coverage.merge(seed.coverage())?;
         self.certified_seeds.push(seed);
         Ok(self)
@@ -552,6 +560,11 @@ impl VerifiedReceiptPrefix<'_> {
 }
 
 impl CertifiedReceiptPrefix {
+    #[cfg(test)]
+    pub(crate) fn certificate_digest_for_test(&self) -> &str {
+        &self.certificate.certificate_digest
+    }
+
     fn all_exact_facts(&self) -> Box<dyn Iterator<Item = &HistoryFact> + '_> {
         match &self.predecessor {
             Some(predecessor) => {

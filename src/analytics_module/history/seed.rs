@@ -1,7 +1,7 @@
 use super::certificate::{CertifiedReceiptPrefix, ExpectedHistoryBinding, TrustedPrefixAnchor};
 use super::coverage::{CoverageKey, CoverageLedger, CoverageRange, SeedCapability};
-use super::importer::StableEntityIdentity;
-use super::snapshot::{BuildSnapshot, ManifestIdentity, SourceFence, sha256_hex};
+use super::importer::{BoundedImport, StableEntityIdentity};
+use super::snapshot::{BuildSnapshot, ManifestIdentity, SourceFence, StableArtifact, sha256_hex};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -18,6 +18,56 @@ pub(crate) struct SeedRow {
     pub(crate) contribution_digest: String,
     pub(crate) aggregate_value: Option<f64>,
     pub(crate) sample_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HistoricalSeedArtifact {
+    manifest: ManifestIdentity,
+    bytes: Vec<u8>,
+}
+
+impl HistoricalSeedArtifact {
+    pub(crate) fn from_verified_artifact(
+        artifact: &StableArtifact,
+        snapshot: &BuildSnapshot,
+    ) -> Result<Self> {
+        snapshot.validate()?;
+        ensure!(
+            snapshot
+                .manifest_identities
+                .iter()
+                .any(|manifest| manifest.same_identity(&artifact.identity)),
+            "historical seed artifact manifest is not pinned by the snapshot"
+        );
+        Self::new(artifact.identity.clone(), artifact.bytes.clone())
+    }
+
+    pub(crate) fn new(manifest: ManifestIdentity, bytes: Vec<u8>) -> Result<Self> {
+        manifest.validate()?;
+        ensure!(!bytes.is_empty(), "historical seed artifact is empty");
+        ensure!(
+            manifest.matches_bytes(&bytes),
+            "historical seed artifact bytes do not match the manifest"
+        );
+        Ok(Self { manifest, bytes })
+    }
+
+    fn decode_rows(&self, bounds: BoundedImport) -> Result<Vec<SeedRow>> {
+        bounds.validate()?;
+        ensure!(
+            self.bytes.len() <= bounds.max_bytes,
+            "historical seed artifact exceeds bounded import size"
+        );
+        let rows: Vec<SeedRow> = serde_json::from_slice(&self.bytes).map_err(|error| {
+            anyhow::anyhow!("historical seed artifact rows are invalid: {error}")
+        })?;
+        ensure!(!rows.is_empty(), "historical seed artifact has no rows");
+        ensure!(
+            rows.len() <= bounds.max_rows,
+            "historical seed artifact exceeds bounded row count"
+        );
+        Ok(rows)
+    }
 }
 
 impl SeedRow {
@@ -104,13 +154,29 @@ pub(crate) fn create_historical_seed_proof(
 pub(crate) fn authenticate_historical_seed(
     snapshot: &BuildSnapshot,
     proof: &HistoricalSeedProof,
-    rows: &[SeedRow],
+    artifact: &HistoricalSeedArtifact,
     receipt: &CertifiedReceiptPrefix,
     expected: &ExpectedHistoryBinding,
     trust: &TrustedPrefixAnchor,
 ) -> Result<CertifiedSeed> {
     snapshot.validate()?;
     let verified = receipt.verify(expected, trust)?;
+    ensure!(
+        verified.snapshot() == snapshot,
+        "historical seed snapshot identity changed"
+    );
+    ensure!(
+        artifact.manifest.same_identity(&proof.manifest),
+        "historical seed proof is bound to another artifact manifest"
+    );
+    ensure!(
+        snapshot
+            .manifest_identities
+            .iter()
+            .any(|manifest| manifest.same_identity(&artifact.manifest)),
+        "historical seed artifact manifest is not pinned by the snapshot"
+    );
+    let rows = artifact.decode_rows(BoundedImport::default())?;
     ensure!(
         verified.snapshot().build_id == snapshot.build_id,
         "historical seed receipt build changed"
@@ -139,14 +205,14 @@ pub(crate) fn authenticate_historical_seed(
         proof.source == *verified.source_fence(),
         "historical seed watermark or coverage fence is not authenticated"
     );
-    validate_seed_bucket_evidence(&verified, rows)?;
+    validate_seed_coverage(&verified, &proof.coverage)?;
     let expected = build_proof(HistoricalSeedInput {
         seed_id: proof.seed_id.clone(),
         source: proof.source.clone(),
         manifest: proof.manifest.clone(),
         coverage: proof.coverage.clone(),
         capabilities: proof.capabilities.clone(),
-        rows: rows.to_vec(),
+        rows: rows.clone(),
         certificate_digest: verified.certificate_digest().to_string(),
         sample_limit: proof.sample_digests.len(),
     })?;
@@ -177,7 +243,7 @@ pub(crate) fn authenticate_historical_seed(
     }
     Ok(CertifiedSeed {
         proof: proof.clone(),
-        rows: rows.to_vec(),
+        rows,
         provenance_digest: verified.certificate_digest().to_string(),
         coverage: coverage_ledger,
     })
@@ -331,6 +397,7 @@ fn build_proof(input: HistoricalSeedInput) -> Result<HistoricalSeedProof> {
             "historical seed contains the same source entity twice"
         );
     }
+    validate_rows_cover_coverage(&coverage, &sorted_rows)?;
     let content_digest = digest_rows(&sorted_rows)?;
     let sample_digests = sorted_rows
         .iter()
@@ -395,28 +462,47 @@ fn capability_matches_key(capability: SeedCapability, key: &CoverageKey) -> bool
     }
 }
 
-fn validate_seed_bucket_evidence(
-    verified: &super::certificate::VerifiedReceiptPrefix<'_>,
+fn validate_rows_cover_coverage(
+    coverage: &[(CoverageKey, CoverageRange)],
     rows: &[SeedRow],
 ) -> Result<()> {
-    for row in rows {
-        let mut covered = false;
-        for proof in verified
-            .bucket_proofs()
-            .filter(|proof| proof.key == row.key && proof.range.contains(&row.range))
-        {
-            if proof.entities.iter().any(|entity| {
-                entity.identity == row.identity
-                    && entity.content_digest == row.content_digest
-                    && entity.contribution_digest == row.contribution_digest
-            }) {
-                covered = true;
-                break;
-            }
+    for (key, declared) in coverage {
+        let mut ranges = rows
+            .iter()
+            .filter(|row| row.key == *key && declared.contains(&row.range))
+            .map(|row| row.range.clone())
+            .collect::<Vec<_>>();
+        ranges.sort();
+        ranges.dedup();
+        ensure!(!ranges.is_empty(), "historical seed coverage has no rows");
+        let mut cursor = declared.start.clone();
+        for range in &ranges {
+            ensure!(
+                range.start == cursor,
+                "historical seed rows do not completely cover their certified range"
+            );
+            cursor = range.end.clone();
         }
         ensure!(
-            covered,
-            "historical seed row lacks certificate bucket evidence"
+            cursor == declared.end,
+            "historical seed rows leave a gap in their certified range"
+        );
+    }
+    Ok(())
+}
+
+fn validate_seed_coverage(
+    verified: &super::certificate::VerifiedReceiptPrefix<'_>,
+    coverage: &[(CoverageKey, CoverageRange)],
+) -> Result<()> {
+    for (key, range) in coverage {
+        ensure!(
+            !verified
+                .coverage()
+                .claims()
+                .iter()
+                .any(|claim| { claim.key == *key && claim.range.overlaps(range) }),
+            "historical seed overlaps exact certificate coverage"
         );
     }
     Ok(())
@@ -428,23 +514,34 @@ fn is_digest(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::certificate::{
+        ExpectedHistoryBinding, SourceEventProof, TrustedPrefixAnchor,
+        build_certified_receipt_prefix,
+    };
+    use super::super::importer::{
+        HistoryFact, ImportSource, NormalizedFactPayload, SourceOperation, facts_digest,
+    };
     use super::super::snapshot::{BuildSnapshot, SourceFence};
     use super::*;
 
-    fn source() -> SourceFence {
+    fn source_at(high_watermark_change_id: i64) -> SourceFence {
         SourceFence {
             source_instance_id: "source-1".to_string(),
             generation: 7,
             owner_epoch: 3,
-            high_watermark_change_id: 10,
-            coverage_revision: 10,
+            high_watermark_change_id,
+            coverage_revision: high_watermark_change_id,
             retained_from_change_id: 0,
             fact_semantics_version: 1,
             stats_semantics_version: 2,
         }
     }
 
-    fn row(key: &str) -> SeedRow {
+    fn source() -> SourceFence {
+        source_at(10)
+    }
+
+    fn row_with_range(key: &str, start: &str, end: &str) -> SeedRow {
         SeedRow {
             source_instance_id: "source-1".to_string(),
             generation: 7,
@@ -454,7 +551,7 @@ mod tests {
                 entity_key: key.to_string(),
             },
             key: CoverageKey::new("calls", "overall", "day").unwrap(),
-            range: CoverageRange::new("2026-01-01", "2026-01-02").unwrap(),
+            range: CoverageRange::new(start, end).unwrap(),
             content_digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
             contribution_digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -462,6 +559,10 @@ mod tests {
             aggregate_value: Some(1.0),
             sample_count: Some(1),
         }
+    }
+
+    fn row(key: &str) -> SeedRow {
+        row_with_range(key, "2026-01-01", "2026-01-02")
     }
 
     fn proof(rows: &[SeedRow]) -> HistoricalSeedProof {
@@ -523,5 +624,174 @@ mod tests {
             sample_limit: historical.sample_digests.len(),
         });
         assert!(result.is_err() || result.unwrap().proof_digest != historical.proof_digest);
+    }
+
+    #[test]
+    fn seed_rows_must_completely_cover_declared_ranges() {
+        let rows = vec![row_with_range("row-1", "2026-01-01", "2026-01-02")];
+        let mut capabilities = BTreeSet::new();
+        capabilities.insert(SeedCapability::Calls);
+        capabilities.insert(SeedCapability::OverallTotals);
+        let manifest =
+            ManifestIdentity::from_bytes("seed-manifest", "source-1", 7, 10, b"seed").unwrap();
+        let result = create_historical_seed_proof(HistoricalSeedInput {
+            seed_id: "seed-1".to_string(),
+            source: source(),
+            manifest,
+            coverage: vec![(
+                CoverageKey::new("calls", "overall", "day").unwrap(),
+                CoverageRange::new("2026-01-01", "2026-01-03").unwrap(),
+            )],
+            capabilities,
+            rows,
+            certificate_digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            sample_limit: 2,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn authenticated_seed_rejects_rebuilt_proof_with_changed_aggregate_or_sample() {
+        let source = source_at(1);
+        let live_bytes = b"live-artifact";
+        let live_manifest =
+            ManifestIdentity::from_bytes("live-manifest", "source-1", 7, 1, live_bytes).unwrap();
+        let mut rows = vec![row_with_range("row-1", "2026-01-02", "2026-01-03")];
+        let seed_bytes = serde_json::to_vec(&rows).unwrap();
+        let seed_manifest =
+            ManifestIdentity::from_bytes("seed-manifest", "source-1", 7, 1, &seed_bytes).unwrap();
+        let snapshot = BuildSnapshot {
+            build_id: "build-1".to_string(),
+            source: source.clone(),
+            retention_pin_id: "pin-1".to_string(),
+            pin_expires_at: "2999-01-01T00:00:00Z".to_string(),
+            manifest_identities: vec![live_manifest.clone(), seed_manifest.clone()],
+            recovery_artifact_id: "recovery-1".to_string(),
+        };
+        let payload = NormalizedFactPayload::test_fixture("live", "inv-1", 1);
+        let content_digest = payload.digest().unwrap();
+        let fact = HistoryFact {
+            source: ImportSource::Live,
+            source_instance_id: "source-1".to_string(),
+            generation: 7,
+            artifact_id: "live-artifact".to_string(),
+            artifact_bytes_digest: live_manifest.sha256.clone(),
+            event_id: "event-1".to_string(),
+            identity: StableEntityIdentity {
+                source_instance_id: "source-1".to_string(),
+                entity_kind: "invocation".to_string(),
+                entity_key: "inv-1".to_string(),
+            },
+            bucket: CoverageKey::new("calls", "overall", "day").unwrap(),
+            range: CoverageRange::new("2026-01-01", "2026-01-02").unwrap(),
+            effective_change_id: 1,
+            operation: SourceOperation::Upsert,
+            payload,
+            content_digest: content_digest.clone(),
+            contribution_key: "bucket:1".to_string(),
+            contribution_digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string(),
+        };
+        let event = SourceEventProof {
+            change_id: 1,
+            event_id: "event-1".to_string(),
+            source_instance_id: "source-1".to_string(),
+            generation: 7,
+            coverage_revision: 1,
+            entity_kind: "invocation".to_string(),
+            entity_key: "inv-1".to_string(),
+            operation: SourceOperation::Upsert,
+            content_digest,
+        };
+        let prefix = build_certified_receipt_prefix(
+            snapshot.clone(),
+            super::super::certificate::CertificateBaseline::SourceFence {
+                source_instance_id: "source-1".to_string(),
+                generation: 7,
+                owner_epoch: 3,
+                through_change_id: 0,
+                coverage_revision: 0,
+            },
+            None,
+            vec![event],
+            vec![fact.clone()],
+            2,
+        )
+        .unwrap();
+        let mut expected = ExpectedHistoryBinding::for_snapshot(&snapshot);
+        expected.artifact_id = "live-artifact".to_string();
+        expected.artifact_bytes_digest = live_manifest.sha256.clone();
+        expected.artifact_facts_digest = facts_digest(&[fact]).unwrap();
+        let artifact = HistoricalSeedArtifact::new(seed_manifest.clone(), seed_bytes).unwrap();
+        let proof = create_historical_seed_proof(HistoricalSeedInput {
+            seed_id: "seed-1".to_string(),
+            source: source.clone(),
+            manifest: seed_manifest,
+            coverage: vec![(
+                CoverageKey::new("calls", "overall", "day").unwrap(),
+                CoverageRange::new("2026-01-02", "2026-01-03").unwrap(),
+            )],
+            capabilities: BTreeSet::from([SeedCapability::Calls, SeedCapability::OverallTotals]),
+            rows: rows.clone(),
+            certificate_digest: prefix.certificate_digest_for_test().to_string(),
+            sample_limit: 2,
+        })
+        .unwrap();
+        let certified = authenticate_historical_seed(
+            &snapshot,
+            &proof,
+            &artifact,
+            &prefix,
+            &expected,
+            &TrustedPrefixAnchor::genesis(2, 2, 4),
+        )
+        .unwrap();
+        let attached = prefix
+            .clone()
+            .attach_certified_seed(certified.clone())
+            .unwrap();
+        assert!(attached.attach_certified_seed(certified.clone()).is_err());
+
+        let mut swapped_snapshot = snapshot.clone();
+        swapped_snapshot.manifest_identities[1] =
+            ManifestIdentity::from_bytes("seed-manifest-replaced", "source-1", 7, 1, b"other")
+                .unwrap();
+        assert!(
+            authenticate_historical_seed(
+                &swapped_snapshot,
+                &proof,
+                &artifact,
+                &prefix,
+                &expected,
+                &TrustedPrefixAnchor::genesis(2, 2, 4),
+            )
+            .is_err()
+        );
+
+        rows[0].aggregate_value = Some(999.0);
+        rows[0].sample_count = Some(999);
+        let forged = create_historical_seed_proof(HistoricalSeedInput {
+            seed_id: proof.seed_id.clone(),
+            source,
+            manifest: proof.manifest.clone(),
+            coverage: proof.coverage.clone(),
+            capabilities: proof.capabilities.clone(),
+            rows,
+            certificate_digest: proof.certificate_digest.clone(),
+            sample_limit: proof.sample_digests.len(),
+        })
+        .unwrap();
+        assert!(
+            authenticate_historical_seed(
+                &snapshot,
+                &forged,
+                &artifact,
+                &prefix,
+                &expected,
+                &TrustedPrefixAnchor::genesis(2, 2, 4),
+            )
+            .is_err()
+        );
     }
 }
