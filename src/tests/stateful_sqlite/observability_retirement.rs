@@ -5,7 +5,8 @@ use serde_json::json;
 async fn retired_performance_apis_return_410_through_the_real_cors_stack() {
     let mut config = test_config();
     config.http_bind = "127.0.0.1:0".parse().expect("ephemeral HTTP bind");
-    let state = test_state_from_config(config, false).await;
+    let mut state = test_state_from_config(config, false).await;
+    enable_test_admin_auth(&mut state);
     state.startup_ready.store(true, Ordering::Release);
     let (address, server) = spawn_http_server(state.clone())
         .await
@@ -31,6 +32,7 @@ async fn retired_performance_apis_return_410_through_the_real_cors_stack() {
         ] {
             let response = client
                 .request(method.clone(), format!("http://{address}{path}"))
+                .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
                 .header(http_header::ORIGIN, "http://localhost:60080")
                 .header(http_header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                 .send()
