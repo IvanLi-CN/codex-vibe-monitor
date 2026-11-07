@@ -24,7 +24,7 @@ GRANT SELECT (
     active_build_id, active_publication_id, legacy_reader_fenced, updated_at
 ) ON TABLE cvm_analytics.analytics_module_consumers TO cvm_analytics_reader;
 GRANT SELECT (
-    module_id, owner_epoch, status, build_id, last_heartbeat, updated_at
+    module_id, source_instance_id, owner_epoch, status, build_id, last_heartbeat, updated_at
 ) ON TABLE cvm_analytics.analytics_module_owners TO cvm_analytics_reader;
 GRANT SELECT (
     build_id, module_id, consumer_id, source_instance_id, source_generation,
