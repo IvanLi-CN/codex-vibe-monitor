@@ -2,7 +2,7 @@ use super::{
     LEGACY_SOURCE_INSTANCE_ID, SourceEnvelope, SourceIdentity, SourceOperation, canonical_json,
     digest_json,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use sqlx::FromRow;
 
@@ -73,4 +73,35 @@ pub(crate) fn decode_legacy_analytics_change(
 
 pub(crate) fn decode_legacy_event(row: &LegacyAnalyticsChange) -> Result<SourceEnvelope> {
     decode_legacy_analytics_change(row)
+}
+
+/// Decode the current source envelope and route the stats semantics to the strict typed reader.
+///
+/// `None` is the explicit legacy-stats result.  A typed entity carrying legacy stats is rejected
+/// instead of being silently downgraded to a less capable payload.
+pub(crate) fn decode_source_envelope(
+    journal_event_version: i64,
+    envelope: &SourceEnvelope,
+) -> Result<Option<super::typed::TypedSourceKind>> {
+    ensure!(
+        journal_event_version == super::SOURCE_JOURNAL_EVENT_VERSION,
+        "unsupported source journal event version {journal_event_version}"
+    );
+    ensure!(
+        envelope.envelope_version == super::SOURCE_ENVELOPE_VERSION,
+        "unsupported source envelope version {}",
+        envelope.envelope_version
+    );
+    ensure!(
+        envelope.fact_semantics_version == super::SOURCE_FACT_SEMANTICS_VERSION,
+        "unsupported source fact semantics version {}",
+        envelope.fact_semantics_version
+    );
+    match envelope.stats_semantics_version {
+        super::typed::SOURCE_TYPED_STATS_SEMANTICS_VERSION => {
+            super::typed::decode_typed_source_envelope(journal_event_version, envelope).map(Some)
+        }
+        super::SOURCE_STATS_SEMANTICS_VERSION => Ok(None),
+        other => bail!("unsupported source stats semantics version {other}"),
+    }
 }

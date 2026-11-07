@@ -120,6 +120,66 @@ pub(crate) struct AnalyticsCoverageReceipt {
     pub(crate) covered_through_change_id: i64,
 }
 
+#[derive(Debug)]
+pub(crate) struct TypedAnalyticsChangeInput {
+    pub(crate) source_instance_id: String,
+    /// Stable source mutation/transaction identity.  Callers must reuse this value when the
+    /// commit outcome is unknown; it must not be derived from entity key and payload digest.
+    pub(crate) event_id: String,
+    pub(crate) entity_kind: crate::analytics_module::source::typed::TypedSourceKind,
+    pub(crate) entity_key: String,
+    pub(crate) operation: crate::analytics_module::source::SourceOperation,
+    pub(crate) occurred_at: String,
+    pub(crate) payload: Value,
+}
+
+pub(crate) async fn append_typed_analytics_change_tx(
+    tx: &mut SqliteConnection,
+    input: TypedAnalyticsChangeInput,
+) -> Result<AnalyticsChangeReceipt> {
+    let draft = crate::analytics_module::source::TypedSourceEnvelopeDraft::new(
+        input.source_instance_id,
+        input.event_id,
+        input.entity_kind,
+        input.entity_key,
+        input.operation,
+        input.occurred_at,
+        input.payload,
+    );
+    let (_, receipt) =
+        crate::analytics_module::source::append_typed_source_envelope_tx(tx, &draft).await?;
+    Ok(AnalyticsChangeReceipt {
+        change_id: receipt.change_id,
+        generation: receipt.generation,
+        coverage_revision: receipt.coverage_revision,
+    })
+}
+
+pub(crate) async fn reconcile_typed_analytics_change_tx(
+    tx: &mut SqliteConnection,
+    input: TypedAnalyticsChangeInput,
+) -> Result<Option<AnalyticsChangeReceipt>> {
+    let draft = crate::analytics_module::source::TypedSourceEnvelopeDraft::new(
+        input.source_instance_id,
+        input.event_id,
+        input.entity_kind,
+        input.entity_key,
+        input.operation,
+        input.occurred_at,
+        input.payload,
+    );
+    let Some((_, receipt)) =
+        crate::analytics_module::source::reconcile_typed_source_envelope_tx(tx, &draft).await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(AnalyticsChangeReceipt {
+        change_id: receipt.change_id,
+        generation: receipt.generation,
+        coverage_revision: receipt.coverage_revision,
+    }))
+}
+
 #[derive(Debug, FromRow)]
 struct InvocationAnalyticsRow {
     id: i64,
@@ -178,6 +238,31 @@ struct AttemptAnalyticsRow {
     connect_latency_ms: Option<f64>,
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
+}
+
+#[derive(Debug, FromRow)]
+struct TypedAttemptAnalyticsRow {
+    id: i64,
+    attempt_public_id: Option<String>,
+    invoke_id: String,
+    occurred_at: String,
+    endpoint: String,
+    request_model: Option<String>,
+    upstream_request_model: Option<String>,
+    upstream_account_id: Option<i64>,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    status: String,
+    phase: Option<String>,
+    http_status: Option<i64>,
+    downstream_http_status: Option<i64>,
+    failure_kind: Option<String>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+    proxy_binding_key_snapshot: Option<String>,
+    finished_at: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -657,6 +742,86 @@ fn normalized_payload(payload: Option<&str>) -> Option<Value> {
     payload
         .filter(|value| !value.trim().is_empty())
         .and_then(|value| serde_json::from_str::<Value>(value).ok())
+}
+
+fn sqlite_json_cast_text(value: Option<&Value>) -> Value {
+    match value {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(value)) => Value::String(value.clone()),
+        Some(Value::Number(value)) => Value::String(value.to_string()),
+        Some(Value::Bool(value)) => Value::String(if *value { "1" } else { "0" }.to_string()),
+        Some(value @ (Value::Array(_) | Value::Object(_))) => serde_json::to_string(value)
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    }
+}
+
+fn sqlite_json_text(value: Option<&Value>) -> Value {
+    value
+        .filter(|value| value.is_string())
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn sqlite_payload_cast_text(payload: Option<&Value>, key: &str) -> Value {
+    sqlite_json_cast_text(payload.and_then(|value| value.get(key)))
+}
+
+fn sqlite_payload_text(payload: Option<&Value>, key: &str) -> Value {
+    sqlite_json_text(payload.and_then(|value| value.get(key)))
+}
+
+fn build_invocation_filter_snapshot(
+    row: &InvocationAnalyticsRow,
+    payload: Option<&Value>,
+) -> Value {
+    let upstream_scope = match sqlite_payload_cast_text(payload, "upstreamScope") {
+        Value::Null => Value::String("external".to_string()),
+        value => value,
+    };
+    let service_tier = match sqlite_payload_text(payload, "serviceTier") {
+        Value::Null => sqlite_payload_text(payload, "service_tier"),
+        value => value,
+    };
+    let failure_kind = match sqlite_payload_text(payload, "failureKind") {
+        Value::Null => row
+            .failure_kind
+            .as_deref()
+            .map(ToOwned::to_owned)
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        value => value,
+    };
+    let prompt_cache_key = sqlite_payload_cast_text(payload, "promptCacheKey");
+    let sticky_key = match sqlite_payload_cast_text(payload, "stickyKey") {
+        Value::Null => prompt_cache_key.clone(),
+        value => value,
+    };
+    json!({
+        "version": crate::analytics_module::source::typed::SOURCE_FILTER_SNAPSHOT_VERSION,
+        "endpoint": sqlite_payload_cast_text(payload, "endpoint"),
+        "upstreamScope": upstream_scope,
+        "transport": sqlite_payload_text(payload, "transport"),
+        "serviceTier": service_tier,
+        "serviceTierSnake": sqlite_payload_text(payload, "service_tier"),
+        "proxyDisplayName": sqlite_payload_cast_text(payload, "proxyDisplayName"),
+        "stickyKey": sticky_key,
+        "requesterIp": sqlite_payload_cast_text(payload, "requesterIp"),
+        "promptCacheKey": prompt_cache_key,
+        "invokeId": row.invoke_id,
+        "model": row.model,
+        "failureKind": failure_kind,
+        "errorMessage": row.error_message,
+        "downstreamErrorMessage": sqlite_payload_text(payload, "downstreamErrorMessage"),
+        "requestModel": sqlite_payload_cast_text(payload, "requestModel"),
+        "responseModel": sqlite_payload_cast_text(payload, "responseModel"),
+        "status": row.status,
+        "failureClass": row.failure_class,
+        "reasoning": sqlite_payload_cast_text(payload, "reasoning"),
+        "upstreamAccountId": row.upstream_account_id,
+        "upstreamAccountName": sqlite_payload_text(payload, "upstreamAccountName"),
+        "reasoningEffort": sqlite_payload_text(payload, "reasoningEffort"),
+    })
 }
 
 fn payload_text(payload: Option<&Value>, key: &str) -> Option<String> {
@@ -1163,6 +1328,181 @@ pub(crate) async fn append_invocation_upsert_for_row_tx(
     .await
 }
 
+pub(crate) async fn append_typed_invocation_upsert_for_row_tx(
+    tx: &mut SqliteConnection,
+    source_instance_id: &str,
+    row_id: i64,
+    event_id: &str,
+) -> Result<AnalyticsChangeReceipt> {
+    let attempt_upstream_account_id_sql =
+        crate::api::invocation_upstream_account_id_from_attempt_fallback_sql("codex_invocations");
+    let row_query = format!(
+        r#"
+        SELECT
+            id,
+            invoke_id,
+            occurred_at,
+            CAST(COALESCE(ROUND((julianday(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+            ) - 2440587.5) * 86400000.0), 0) AS INTEGER) AS occurred_at_epoch_ms,
+            date(
+                occurred_at,
+                CASE WHEN instr(occurred_at, 'T') > 0 THEN '+8 hours' ELSE '+0 hours' END
+            ) AS stats_date,
+            source,
+            {attempt_upstream_account_id_sql} AS upstream_account_id,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            reasoning_tokens,
+            total_tokens,
+            cost,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
+            status,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            first_token_ms,
+            t_resp_parse_ms
+        FROM codex_invocations
+        WHERE id = ?1
+        "#
+    );
+    let row = sqlx::query_as::<_, InvocationAnalyticsRow>(&row_query)
+        .bind(row_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            anyhow!("cannot publish typed analytics invocation for missing row {row_id}")
+        })?;
+
+    if row.source.is_empty() {
+        bail!("typed analytics invocation source must not be empty");
+    }
+    if row.invoke_id.is_empty() {
+        bail!("typed analytics invocation invoke_id must not be empty");
+    }
+    let payload = normalized_payload(row.payload.as_deref());
+    let prompt_cache_key_digest = normalize_analytics_prompt_cache_key_digest(payload.as_ref());
+    let request_model = sqlite_payload_cast_text(payload.as_ref(), "requestModel");
+    let response_model = sqlite_payload_cast_text(payload.as_ref(), "responseModel");
+    let reasoning_effort = sqlite_payload_text(payload.as_ref(), "reasoningEffort");
+    let upstream_account_name = sqlite_payload_text(payload.as_ref(), "upstreamAccountName");
+    let upstream_account_id =
+        payload_i64(payload.as_ref(), "upstreamAccountId").or(row.upstream_account_id);
+    let status = row
+        .status
+        .clone()
+        .ok_or_else(|| anyhow!("typed analytics invocation status must not be null"))?;
+    let error_message = row.error_message.clone();
+    let classification_error_message = normalize_analytics_classification_error_message(
+        payload.as_ref(),
+        row.error_message.as_deref(),
+    );
+    let stored_failure_kind =
+        normalize_analytics_failure_kind(payload.as_ref(), row.failure_kind.as_deref());
+    let stored_failure_class = bounded_text(row.failure_class.as_deref());
+    let classification = crate::api::resolve_failure_classification(
+        Some(status.as_str()),
+        classification_error_message.as_deref(),
+        stored_failure_kind.as_deref(),
+        stored_failure_class.as_deref(),
+        row.is_actionable,
+    );
+    let failure_kind = stored_failure_kind.or(classification.failure_kind.clone());
+    let legacy_success_status = matches!(
+        status.to_ascii_lowercase().as_str(),
+        "http_200" | "warning_success"
+    );
+    let failure_class = match stored_failure_class {
+        Some(_) => Some(classification.failure_class.as_str().to_string()),
+        None => (classification.failure_class != crate::api::FailureClass::None
+            || (legacy_success_status && error_message.as_deref().is_none_or(str::is_empty)))
+        .then(|| classification.failure_class.as_str().to_string()),
+    };
+    let is_actionable = row
+        .is_actionable
+        .filter(|value| (*value != 0) == classification.is_actionable)
+        .or_else(|| {
+            (classification.failure_class != crate::api::FailureClass::None)
+                .then_some(i64::from(classification.is_actionable))
+        });
+    let success_like = crate::api::prompt_invocation_status_is_success_like(
+        Some(status.as_str()),
+        error_message.as_deref(),
+    ) && classification.failure_class == crate::api::FailureClass::None;
+    let entity_key = format!("invocation:{}:{}", row.source, row.id);
+    let fact = json!({
+        "factVersion": crate::analytics_module::source::typed::SOURCE_INVOCATION_FACT_VERSION,
+        "source": row.source,
+        "sourceRowId": row.id,
+        "invokeId": row.invoke_id,
+        "occurredAt": row.occurred_at,
+        "occurredAtEpochMs": row.occurred_at_epoch_ms,
+        "statsDate": row.stats_date,
+        "model": row.model,
+        "requestModel": request_model,
+        "responseModel": response_model,
+        "reasoningEffort": reasoning_effort,
+        "promptCacheKeyDigest": prompt_cache_key_digest,
+        "upstreamAccountId": upstream_account_id,
+        "upstreamAccountName": upstream_account_name,
+        "status": status,
+        "successLike": success_like,
+        "terminal": terminal_status(Some(status.as_str())),
+        "failureKind": failure_kind,
+        "failureClass": failure_class,
+        "isActionable": is_actionable.map(|value| value != 0),
+        "inputTokens": row.input_tokens,
+        "outputTokens": row.output_tokens,
+        "cacheInputTokens": row.cache_input_tokens,
+        "reasoningTokens": row.reasoning_tokens,
+        "totalTokens": row.total_tokens,
+        "cost": row.cost,
+        "costInput": row.cost_input,
+        "costCacheWrite": row.cost_cache_write,
+        "costCacheRead": row.cost_cache_read,
+        "costOutput": row.cost_output,
+        "costReasoning": row.cost_reasoning,
+        "tTotalMs": row.t_total_ms,
+        "tReqReadMs": row.t_req_read_ms,
+        "tReqParseMs": row.t_req_parse_ms,
+        "tUpstreamConnectMs": row.t_upstream_connect_ms,
+        "tUpstreamTtfbMs": row.t_upstream_ttfb_ms,
+        "tUpstreamStreamMs": row.t_upstream_stream_ms,
+        "firstTokenMs": row.first_token_ms,
+        "tRespParseMs": row.t_resp_parse_ms,
+        "filterSnapshot": build_invocation_filter_snapshot(&row, payload.as_ref()),
+    });
+    append_typed_analytics_change_tx(
+        tx,
+        TypedAnalyticsChangeInput {
+            source_instance_id: source_instance_id.to_string(),
+            event_id: event_id.to_string(),
+            entity_kind: crate::analytics_module::source::typed::TypedSourceKind::Invocation,
+            entity_key,
+            operation: crate::analytics_module::source::SourceOperation::Upsert,
+            occurred_at: row.occurred_at,
+            payload: fact,
+        },
+    )
+    .await
+}
+
 pub(crate) async fn append_invocation_tombstone_for_identity_tx(
     tx: &mut SqliteConnection,
     source: &str,
@@ -1231,6 +1571,81 @@ async fn load_attempt_analytics_row_tx(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| anyhow!("cannot publish analytics attempt change for missing row {value}"))
+}
+
+pub(crate) async fn append_typed_attempt_upsert_for_row_tx(
+    tx: &mut SqliteConnection,
+    source_instance_id: &str,
+    row_id: i64,
+    event_id: &str,
+) -> Result<AnalyticsChangeReceipt> {
+    let row = sqlx::query_as::<_, TypedAttemptAnalyticsRow>(
+        r#"
+        SELECT id, attempt_public_id, invoke_id, occurred_at, endpoint,
+               request_model, upstream_request_model, upstream_account_id,
+               attempt_index, distinct_account_index, same_account_retry_index,
+               status, phase, http_status, downstream_http_status, failure_kind,
+               connect_latency_ms, first_byte_latency_ms, stream_latency_ms,
+               proxy_binding_key_snapshot, finished_at
+        FROM pool_upstream_request_attempts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(row_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| anyhow!("cannot publish typed analytics attempt for missing row {row_id}"))?;
+
+    if row.invoke_id.is_empty() || row.endpoint.is_empty() || row.occurred_at.is_empty() {
+        bail!("typed analytics attempt has an empty source identity field");
+    }
+    let binding = row.proxy_binding_key_snapshot.clone();
+    let eligible = binding.as_deref().is_some_and(|value| !value.is_empty())
+        && row
+            .finished_at
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        && !row.status.eq_ignore_ascii_case("budget_exhausted_final");
+    let fact = json!({
+        "factVersion": crate::analytics_module::source::typed::SOURCE_POOL_ATTEMPT_FACT_VERSION,
+        "source": "pool_upstream_request_attempts",
+        "sourceRowId": row.id,
+        "attemptPublicId": row.attempt_public_id,
+        "invokeId": row.invoke_id,
+        "occurredAt": row.occurred_at,
+        "endpoint": row.endpoint,
+        "requestModel": row.request_model,
+        "upstreamRequestModel": row.upstream_request_model,
+        "upstreamAccountId": row.upstream_account_id,
+        "attemptIndex": row.attempt_index,
+        "distinctAccountIndex": row.distinct_account_index,
+        "sameAccountRetryIndex": row.same_account_retry_index,
+        "status": row.status,
+        "phase": row.phase,
+        "httpStatus": row.http_status,
+        "downstreamHttpStatus": row.downstream_http_status,
+        "failureKind": row.failure_kind,
+        "connectLatencyMs": row.connect_latency_ms,
+        "firstByteLatencyMs": row.first_byte_latency_ms,
+        "streamLatencyMs": row.stream_latency_ms,
+        "proxyId": binding,
+        "proxyBindingKey": row.proxy_binding_key_snapshot,
+        "finishedAt": row.finished_at,
+        "eligible": eligible,
+    });
+    append_typed_analytics_change_tx(
+        tx,
+        TypedAnalyticsChangeInput {
+            source_instance_id: source_instance_id.to_string(),
+            event_id: event_id.to_string(),
+            entity_kind: crate::analytics_module::source::typed::TypedSourceKind::PoolAttempt,
+            entity_key: crate::analytics_module::source::typed::pool_attempt_entity_key(row.id)?,
+            operation: crate::analytics_module::source::SourceOperation::Upsert,
+            occurred_at: row.occurred_at,
+            payload: fact,
+        },
+    )
+    .await
 }
 
 pub(crate) async fn append_attempt_upsert_for_row_tx(

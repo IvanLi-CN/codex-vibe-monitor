@@ -4,7 +4,7 @@
 //! state.  This module keeps event identity, operation semantics, and the source snapshot APIs
 //! independent from any particular PostgreSQL consumer.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -14,9 +14,12 @@ use sqlx::{FromRow, SqliteConnection};
 pub(crate) mod decoder;
 #[path = "source/snapshot.rs"]
 pub(crate) mod snapshot;
+#[path = "source/typed.rs"]
+pub(crate) mod typed;
 
 pub(crate) use decoder::{
     LegacyAnalyticsChange, decode_legacy_analytics_change, decode_legacy_event,
+    decode_source_envelope,
 };
 pub(crate) use snapshot::{
     SourceRetentionPin, SourceSnapshot, assert_source_snapshot_usable, create_source_snapshot,
@@ -24,6 +27,7 @@ pub(crate) use snapshot::{
     release_source_retention_pin, release_source_retention_pin_tx, renew_source_retention_pin,
     renew_source_retention_pin_tx,
 };
+pub(crate) use typed::{SOURCE_TYPED_STATS_SEMANTICS_VERSION, TypedSourceEnvelopeDraft};
 
 pub(crate) const SOURCE_ENVELOPE_VERSION: i64 = 2;
 pub(crate) const SOURCE_JOURNAL_EVENT_VERSION: i64 = 1;
@@ -205,8 +209,61 @@ pub(crate) async fn append_source_envelope_tx(
 ) -> Result<(SourceEnvelope, SourceAppendReceipt)> {
     let payload = draft.validate()?;
     let identity = draft.identity()?;
-    let payload_digest = digest_json(&payload)?;
+    append_source_payload_tx(
+        connection,
+        draft.source_instance_id.as_str(),
+        draft.event_id.as_str(),
+        identity,
+        draft.operation,
+        draft.occurred_at.as_str(),
+        payload,
+        SOURCE_STATS_SEMANTICS_VERSION,
+    )
+    .await
+}
 
+pub(crate) async fn append_typed_source_envelope_tx(
+    connection: &mut SqliteConnection,
+    draft: &TypedSourceEnvelopeDraft,
+) -> Result<(SourceEnvelope, SourceAppendReceipt)> {
+    let payload = draft.validate()?;
+    typed::assert_typed_entity_key_collision_free(connection, draft, &payload).await?;
+    let identity = SourceIdentity::new(
+        draft.source_instance_id.clone(),
+        draft.entity_kind.clone(),
+        draft.entity_key.clone(),
+    )?;
+    let result = append_source_payload_tx(
+        connection,
+        draft.source_instance_id.as_str(),
+        draft.event_id.as_str(),
+        identity,
+        draft.operation,
+        draft.occurred_at.as_str(),
+        payload,
+        SOURCE_TYPED_STATS_SEMANTICS_VERSION,
+    )
+    .await?;
+    decode_source_envelope(SOURCE_JOURNAL_EVENT_VERSION, &result.0)?;
+    Ok(result)
+}
+
+/// Reconcile an uncertain typed write by its caller-supplied mutation identity.
+///
+/// This function never inserts.  A caller can use `Some(receipt)` to distinguish a committed
+/// transaction from a not-yet-visible commit before deciding whether a retry may append.
+pub(crate) async fn reconcile_typed_source_envelope_tx(
+    connection: &mut SqliteConnection,
+    draft: &TypedSourceEnvelopeDraft,
+) -> Result<Option<(SourceEnvelope, SourceAppendReceipt)>> {
+    let payload = draft.validate()?;
+    typed::assert_typed_entity_key_collision_free(connection, draft, &payload).await?;
+    let identity = SourceIdentity::new(
+        draft.source_instance_id.clone(),
+        draft.entity_kind.clone(),
+        draft.entity_key.clone(),
+    )?;
+    let payload_digest = digest_json(&payload)?;
     let existing = sqlx::query_as::<_, ExistingSourceEventRow>(
         "SELECT change_id, event_id, generation, coverage_revision, source_instance_id, payload_digest, \
          fact_semantics_version, stats_semantics_version, operation_kind, entity_kind, entity_key, occurred_at \
@@ -215,14 +272,62 @@ pub(crate) async fn append_source_envelope_tx(
     .bind(&draft.event_id)
     .fetch_optional(&mut *connection)
     .await
+    .context("reconcile typed source envelope identity")?;
+    let Some(existing) = existing else {
+        return Ok(None);
+    };
+    if existing.source_instance_id != draft.source_instance_id
+        || existing.payload_digest != payload_digest
+        || existing.stats_semantics_version != SOURCE_TYPED_STATS_SEMANTICS_VERSION
+        || existing.operation_kind != draft.operation.as_str()
+        || existing.entity_kind != identity.entity_kind
+        || existing.entity_key != identity.entity_key
+        || existing.occurred_at != draft.occurred_at
+    {
+        bail!("source event identity conflicts with an existing payload");
+    }
+    let envelope = envelope_from_row(existing, payload)?;
+    let receipt = SourceAppendReceipt {
+        change_id: envelope.change_id,
+        generation: envelope.generation,
+        coverage_revision: envelope.coverage_revision,
+    };
+    Ok(Some((envelope, receipt)))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Legacy and typed source writers share one atomic persistence path with explicit protocol fields."
+)]
+async fn append_source_payload_tx(
+    connection: &mut SqliteConnection,
+    source_instance_id: &str,
+    event_id: &str,
+    identity: SourceIdentity,
+    operation: SourceOperation,
+    occurred_at: &str,
+    payload: Value,
+    stats_semantics_version: i64,
+) -> Result<(SourceEnvelope, SourceAppendReceipt)> {
+    let payload_digest = digest_json(&payload)?;
+
+    let existing = sqlx::query_as::<_, ExistingSourceEventRow>(
+        "SELECT change_id, event_id, generation, coverage_revision, source_instance_id, payload_digest, \
+         fact_semantics_version, stats_semantics_version, operation_kind, entity_kind, entity_key, occurred_at \
+         FROM analytics_change_events WHERE event_id = ?1 LIMIT 1",
+    )
+    .bind(event_id)
+    .fetch_optional(&mut *connection)
+    .await
     .context("load existing source envelope identity")?;
     if let Some(existing) = existing {
-        if existing.source_instance_id != draft.source_instance_id
+        if existing.source_instance_id != source_instance_id
             || existing.payload_digest != payload_digest
-            || existing.operation_kind != draft.operation.as_str()
-            || existing.entity_kind != draft.entity_kind
-            || existing.entity_key != draft.entity_key
-            || existing.occurred_at != draft.occurred_at
+            || existing.stats_semantics_version != stats_semantics_version
+            || existing.operation_kind != operation.as_str()
+            || existing.entity_kind != identity.entity_kind
+            || existing.entity_key != identity.entity_key
+            || existing.occurred_at != occurred_at
         {
             bail!("source event identity conflicts with an existing payload");
         }
@@ -247,7 +352,13 @@ pub(crate) async fn append_source_envelope_tx(
         .checked_add(1)
         .context("analytics source coverage revision overflow")?;
     let fact_json = serde_json::to_string(&payload).context("encode source envelope payload")?;
-    let operation_kind = draft.operation.as_str();
+    if stats_semantics_version == SOURCE_TYPED_STATS_SEMANTICS_VERSION {
+        ensure!(
+            fact_json.len() <= SOURCE_PAYLOAD_MAX_BYTES,
+            "typed source payload exceeds deployed Journal capacity; preserve event_id for an approved carrying repair"
+        );
+    }
+    let operation_kind = operation.as_str();
     let result = sqlx::query(
         "INSERT INTO analytics_change_events (event_version, fact_date_semantics_version, \
          source_instance_id, event_id, operation_kind, fact_semantics_version, \
@@ -256,20 +367,20 @@ pub(crate) async fn append_source_envelope_tx(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12, ?13, ?14, ?15, ?16)",
     )
     .bind(SOURCE_JOURNAL_EVENT_VERSION)
-    .bind(SOURCE_STATS_SEMANTICS_VERSION)
-    .bind(&draft.source_instance_id)
-    .bind(&draft.event_id)
+    .bind(stats_semantics_version)
+    .bind(source_instance_id)
+    .bind(event_id)
     .bind(operation_kind)
     .bind(SOURCE_FACT_SEMANTICS_VERSION)
-    .bind(SOURCE_STATS_SEMANTICS_VERSION)
+    .bind(stats_semantics_version)
     .bind(&payload_digest)
-    .bind(draft.operation.event_kind())
-    .bind(&draft.entity_kind)
-    .bind(&draft.source_instance_id)
-    .bind(&draft.entity_key)
+    .bind(operation.event_kind())
+    .bind(&identity.entity_kind)
+    .bind(source_instance_id)
+    .bind(&identity.entity_key)
     .bind(state.generation)
     .bind(coverage_revision)
-    .bind(&draft.occurred_at)
+    .bind(occurred_at)
     .bind(&fact_json)
     .execute(&mut *connection)
     .await
@@ -285,16 +396,16 @@ pub(crate) async fn append_source_envelope_tx(
 
     let envelope = SourceEnvelope {
         envelope_version: SOURCE_ENVELOPE_VERSION,
-        source_instance_id: draft.source_instance_id.clone(),
-        event_id: draft.event_id.clone(),
+        source_instance_id: source_instance_id.to_string(),
+        event_id: event_id.to_string(),
         generation: state.generation,
         change_id,
         coverage_revision,
         fact_semantics_version: SOURCE_FACT_SEMANTICS_VERSION,
-        stats_semantics_version: SOURCE_STATS_SEMANTICS_VERSION,
+        stats_semantics_version,
         identity,
-        operation: draft.operation,
-        occurred_at: draft.occurred_at.clone(),
+        operation,
+        occurred_at: occurred_at.to_string(),
         payload,
         payload_digest,
     };
@@ -372,6 +483,10 @@ fn envelope_from_row(row: ExistingSourceEventRow, payload: Value) -> Result<Sour
         payload_digest: row.payload_digest,
     })
 }
+
+#[cfg(test)]
+#[path = "source/typed_tests.rs"]
+mod typed_tests;
 
 #[cfg(test)]
 mod tests {
