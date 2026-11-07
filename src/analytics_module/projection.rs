@@ -8,6 +8,9 @@ use sqlx::{Connection, PgConnection, Postgres, Transaction, types::Json};
 
 use super::ingest::PgIngestActor;
 
+#[path = "projection/baseline.rs"]
+pub(crate) mod baseline;
+
 #[path = "projection/migration.rs"]
 mod migration;
 #[path = "projection/model.rs"]
@@ -21,8 +24,8 @@ pub(crate) use model::{ProjectionFact, ProjectionModels, build_models};
 
 pub(crate) const ANALYTICS_PROJECTION_DDL_COMPONENT: &str = "analytics-module-projection";
 pub(crate) const ANALYTICS_PROJECTION_DDL_STEP: &str = "versioned-projection-v1";
-pub(crate) const ANALYTICS_PROJECTION_SCHEMA_VERSION: i64 = 1;
-pub(crate) const ANALYTICS_PROJECTION_READER_VERSION: i64 = 1;
+pub(crate) const ANALYTICS_PROJECTION_SCHEMA_VERSION: i64 = 2;
+pub(crate) const ANALYTICS_PROJECTION_READER_VERSION: i64 = 2;
 const ANALYTICS_PROJECTION_MIGRATION_LOCK_KEY: i64 = 0x0043_564d_5f50_524a;
 pub(crate) const ANALYTICS_PROJECTION_SCHEMA_SQL: &str = include_str!("projection/schema.sql");
 
@@ -123,7 +126,19 @@ pub(crate) async fn materialize_batch(
         if operation != "logical_revoke" {
             model::normalize(&kind, &key, &payload)?;
         }
-        sqlx::query(
+        // Without an exact old version, a correction/revoke may overlap an aggregated
+        // seed contribution which cannot be subtracted safely. Conservatively block this
+        // consumer until a proof-backed rebuild resolves the obligation (range admission
+        // belongs to C6). Never silently classify it as an ordinary dirty projection.
+        let unknown_seed_old = operation != "upsert" && sqlx::query_scalar::<_,bool>(
+            "SELECT EXISTS(SELECT 1 FROM cvm_analytics.analytics_projection_baselines
+                WHERE consumer_id=$1 AND build_id=$2 AND jsonb_array_length(seeds)>0)
+             AND NOT EXISTS(SELECT 1 FROM cvm_analytics.analytics_projection_facts
+                WHERE consumer_id=$1 AND build_id=$2 AND entity_kind=$3 AND entity_key=$4 AND change_id<$5)")
+            .bind(&target.consumer_id).bind(&target.build_id).bind(&kind).bind(&key).bind(change)
+            .fetch_one(&mut *tx).await?;
+        if !unknown_seed_old {
+            sqlx::query(
             "INSERT INTO cvm_analytics.analytics_projection_facts VALUES ($1,$2,$3,$4,$5,$6,$7)",
         )
         .bind(&target.consumer_id)
@@ -135,15 +150,18 @@ pub(crate) async fn materialize_batch(
         .bind(Json(payload))
         .execute(&mut *tx)
         .await?;
+        }
         let repair_id = format!(
             "projection:{}:{}:{}",
             target.consumer_id, target.build_id, change
         );
         sqlx::query("INSERT INTO cvm_analytics.analytics_module_repairs
             (repair_id,module_id,consumer_id,build_id,owner_epoch,from_change_id,through_change_id,reason_code,state)
-            SELECT $1,module_id,consumer_id,$2,owner_epoch,$3,$3,'projection_dirty','pending'
+            SELECT $1,module_id,consumer_id,$2,owner_epoch,$3,$3,$5,$6
             FROM cvm_analytics.analytics_module_consumers WHERE consumer_id=$4")
-            .bind(repair_id).bind(&target.build_id).bind(change).bind(&target.consumer_id).execute(&mut *tx).await?;
+            .bind(repair_id).bind(&target.build_id).bind(change).bind(&target.consumer_id)
+            .bind(if unknown_seed_old { "unknown_seed_old_contribution" } else { "projection_dirty" })
+            .bind(if unknown_seed_old { "blocked" } else { "pending" }).execute(&mut *tx).await?;
         through = change;
     }
     sqlx::query("UPDATE cvm_analytics.analytics_projection_progress SET materialized_through=$3 WHERE consumer_id=$1 AND build_id=$2")
@@ -188,6 +206,12 @@ pub(crate) async fn stage_publication(
     ensure!(!publication_id.is_empty(), "publication id is empty");
     let mut tx = actor.begin_writer_transaction().await?;
     let (checkpoint, coverage) = lock_target(&mut tx, target).await?;
+    let blocked = sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM cvm_analytics.analytics_module_repairs WHERE consumer_id=$1 AND state='blocked')")
+        .bind(&target.consumer_id).fetch_one(&mut *tx).await?;
+    ensure!(
+        !blocked,
+        "projection staging has blocked repair obligations"
+    );
     let through=sqlx::query_scalar::<_,i64>("SELECT materialized_through FROM cvm_analytics.analytics_projection_progress WHERE consumer_id=$1 AND build_id=$2")
         .bind(&target.consumer_id).bind(&target.build_id).fetch_one(&mut *tx).await?;
     ensure!(
@@ -211,10 +235,16 @@ pub(crate) async fn stage_publication(
         count <= 100_000,
         "projection staging exceeds bounded build budget"
     );
-    let models = build_models(&load_versions(&mut tx, &token).await?)?;
+    let mut models = build_models(&load_versions(&mut tx, &token).await?)?;
+    let baseline = sqlx::query_as::<_, (Json<Value>,Json<Value>)>("SELECT coverage,seeds FROM cvm_analytics.analytics_projection_baselines WHERE consumer_id=$1 AND build_id=$2 AND through_change_id<=$3")
+        .bind(&target.consumer_id).bind(&target.build_id).bind(through).fetch_optional(&mut *tx).await?;
+    if let Some((Json(coverage), Json(seeds))) = baseline {
+        models.history_coverage = Some(coverage);
+        models.certified_seeds = seeds;
+    }
     sqlx::query("INSERT INTO cvm_analytics.analytics_module_publications
         (publication_id,module_id,consumer_id,build_id,owner_epoch,published_through_change_id,coverage_revision,projection_version,reader_version,state)
-        SELECT $1,module_id,consumer_id,$2,owner_epoch,$3,$4,$5,1,'staging'
+        SELECT $1,module_id,consumer_id,$2,owner_epoch,$3,$4,$5,2,'staging'
         FROM cvm_analytics.analytics_module_consumers WHERE consumer_id=$6")
         .bind(publication_id).bind(&token.build_id).bind(through).bind(coverage).bind(version).bind(&token.consumer_id).execute(&mut *tx).await?;
     // One certified model row makes an empty projection distinguishable from interrupted staging.
@@ -292,7 +322,7 @@ async fn validate_token(
         JOIN cvm_analytics.analytics_module_owners o ON o.module_id=c.module_id
         WHERE p.publication_id=$1 AND p.consumer_id=$2 AND p.build_id=$3 AND p.owner_epoch=$4
           AND p.published_through_change_id=$5 AND p.coverage_revision=$6 AND p.projection_version=$7
-          AND p.reader_version<=1 AND p.legacy_reader_fenced AND c.owner_epoch=p.owner_epoch
+          AND p.reader_version<=2 AND p.legacy_reader_fenced AND c.owner_epoch=p.owner_epoch
           AND o.owner_epoch=c.owner_epoch AND o.status='active' AND o.source_instance_id=c.source_instance_id
           AND p.published_through_change_id<=c.checkpoint
           AND NOT EXISTS(SELECT 1 FROM cvm_analytics.analytics_module_repairs r
@@ -369,7 +399,7 @@ pub(crate) async fn current_publication(
            AND p.consumer_id=c.consumer_id AND p.build_id=c.active_build_id
            AND p.owner_epoch=c.owner_epoch AND o.owner_epoch=c.owner_epoch AND o.status='active'
            AND o.source_instance_id=c.source_instance_id AND p.published_through_change_id<=c.checkpoint
-           AND p.reader_version<=1 AND p.legacy_reader_fenced
+           AND p.reader_version<=2 AND p.legacy_reader_fenced
            AND NOT EXISTS (SELECT 1 FROM cvm_analytics.analytics_module_repairs r
                WHERE r.consumer_id=c.consumer_id AND r.state='blocked')")
         .bind(consumer_id).fetch_optional(&mut **tx).await?.context("analytics publication is unavailable")?;
@@ -483,3 +513,7 @@ pub(crate) async fn release_build_pin(
         .context("build pin release commit outcome may be unknown")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "projection/baseline_fixture.rs"]
+mod baseline_fixture;

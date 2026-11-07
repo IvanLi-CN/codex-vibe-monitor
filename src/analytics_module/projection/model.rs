@@ -28,6 +28,10 @@ pub(crate) struct Rollup {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ProjectionModels {
+    #[serde(default)]
+    pub(crate) history_coverage: Option<Value>,
+    #[serde(default)]
+    pub(crate) certified_seeds: Value,
     pub(crate) rollups: BTreeMap<String, Rollup>,
     pub(crate) intervals: BTreeMap<String, CanonicalInterval>,
 }
