@@ -253,6 +253,8 @@ pub(crate) struct AnalyticsAdmission {
     notify: Arc<Notify>,
     #[cfg(test)]
     wait_started: Arc<Notify>,
+    #[cfg(test)]
+    drain_started: Arc<Notify>,
 }
 
 impl Default for AnalyticsAdmission {
@@ -276,6 +278,8 @@ impl AnalyticsAdmission {
             notify: Arc::new(Notify::new()),
             #[cfg(test)]
             wait_started: Arc::new(Notify::new()),
+            #[cfg(test)]
+            drain_started: Arc::new(Notify::new()),
         }
     }
 
@@ -404,7 +408,14 @@ impl AnalyticsAdmission {
         self.wait_started.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn drain_started_for_test(&self) -> Arc<Notify> {
+        self.drain_started.clone()
+    }
+
     pub(crate) async fn drain(&self, wait: Duration) -> Result<()> {
+        #[cfg(test)]
+        self.drain_started.notify_waiters();
         timeout(wait, async {
             loop {
                 let notified = self.notify.notified();

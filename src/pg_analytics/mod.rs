@@ -622,76 +622,8 @@ impl PgAnalyticsRuntime {
         );
 
         let current = control.load().await?;
-        match current.phase {
-            schema::analytics_module::control::AnalyticsControlPhase::PgBuilding => {
-                control
-                    .transition(
-                        &lease,
-                        schema::analytics_module::control::AnalyticsControlPhase::PgBuilding,
-                        schema::analytics_module::control::AnalyticsControlPhase::PgPrepared,
-                    )
-                    .await?;
-                control
-                    .enter_switch_pending(
-                        &lease,
-                        schema::analytics_module::control::ANALYTICS_OWNER_LEASE,
-                    )
-                    .await?;
-                control
-                    .publish_pg_active(
-                        &lease,
-                        &evidence.primary_build_id,
-                        &evidence.primary_certificate_digest,
-                        schema::analytics_module::control::AnalyticsSourceFence {
-                            generation: source.generation,
-                            through_change_id: source.latest_change_id,
-                            coverage_revision: source.coverage_revision,
-                        },
-                    )
-                    .await?;
-            }
-            schema::analytics_module::control::AnalyticsControlPhase::PgPrepared => {
-                control
-                    .enter_switch_pending(
-                        &lease,
-                        schema::analytics_module::control::ANALYTICS_OWNER_LEASE,
-                    )
-                    .await?;
-                control
-                    .publish_pg_active(
-                        &lease,
-                        &evidence.primary_build_id,
-                        &evidence.primary_certificate_digest,
-                        schema::analytics_module::control::AnalyticsSourceFence {
-                            generation: source.generation,
-                            through_change_id: source.latest_change_id,
-                            coverage_revision: source.coverage_revision,
-                        },
-                    )
-                    .await?;
-            }
-            schema::analytics_module::control::AnalyticsControlPhase::SwitchPending => {
-                control
-                    .publish_pg_active(
-                        &lease,
-                        &evidence.primary_build_id,
-                        &evidence.primary_certificate_digest,
-                        schema::analytics_module::control::AnalyticsSourceFence {
-                            generation: source.generation,
-                            through_change_id: source.latest_change_id,
-                            coverage_revision: source.coverage_revision,
-                        },
-                    )
-                    .await?;
-            }
-            schema::analytics_module::control::AnalyticsControlPhase::PgActive => {
-                control.admit_pg_active(&lease).await?;
-            }
-            phase => bail!(
-                "PostgreSQL analytics bootstrap resumed from unsupported phase {}",
-                phase.as_str()
-            ),
-        }
+        Self::publish_pg_active_after_bootstrap(control, &lease, current, &evidence, source)
+            .await?;
 
         let state = control.load().await?;
         let postgres_admission = control
@@ -701,6 +633,79 @@ impl PgAnalyticsRuntime {
         self.ready.store(true, Ordering::Release);
         drop(postgres_admission);
         Ok(lease)
+    }
+
+    async fn publish_pg_active_after_bootstrap(
+        control: &schema::analytics_module::control::AnalyticsControl,
+        lease: &schema::analytics_module::control::AnalyticsOwnerLease,
+        current: schema::analytics_module::control::AnalyticsBackendControl,
+        evidence: &AnalyticsModulePublicationEvidence,
+        source: &AnalyticsSourceStatus,
+    ) -> Result<()> {
+        let fence = schema::analytics_module::control::AnalyticsSourceFence {
+            generation: source.generation,
+            through_change_id: source.latest_change_id,
+            coverage_revision: source.coverage_revision,
+        };
+        match current.phase {
+            schema::analytics_module::control::AnalyticsControlPhase::PgBuilding => {
+                control
+                    .transition(
+                        lease,
+                        schema::analytics_module::control::AnalyticsControlPhase::PgBuilding,
+                        schema::analytics_module::control::AnalyticsControlPhase::PgPrepared,
+                    )
+                    .await?;
+                control
+                    .enter_switch_pending(
+                        lease,
+                        schema::analytics_module::control::ANALYTICS_OWNER_LEASE,
+                    )
+                    .await?;
+                control
+                    .publish_pg_active(
+                        lease,
+                        &evidence.primary_build_id,
+                        &evidence.primary_certificate_digest,
+                        fence,
+                    )
+                    .await?;
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::PgPrepared => {
+                control
+                    .enter_switch_pending(
+                        lease,
+                        schema::analytics_module::control::ANALYTICS_OWNER_LEASE,
+                    )
+                    .await?;
+                control
+                    .publish_pg_active(
+                        lease,
+                        &evidence.primary_build_id,
+                        &evidence.primary_certificate_digest,
+                        fence,
+                    )
+                    .await?;
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::SwitchPending => {
+                control
+                    .publish_pg_active(
+                        lease,
+                        &evidence.primary_build_id,
+                        &evidence.primary_certificate_digest,
+                        fence,
+                    )
+                    .await?;
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::PgActive => {
+                control.admit_pg_active(lease).await?;
+            }
+            phase => bail!(
+                "PostgreSQL analytics bootstrap resumed from unsupported phase {}",
+                phase.as_str()
+            ),
+        }
+        Ok(())
     }
 
     fn spawn_ingest_lifecycle(
@@ -5521,6 +5526,169 @@ mod tests {
             .await?,
             1
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn switch_pending_bootstrap_publication_uses_pg_active_cas() -> Result<()> {
+        let source_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let control = Arc::new(schema::analytics_module::control::AnalyticsControl::new(
+            source_pool,
+            "c8-switch-pending-bootstrap-test",
+        ));
+        control.initialize("postgres").await?;
+        let lease = control.begin_pg_build().await?;
+        control
+            .transition(
+                &lease,
+                schema::analytics_module::control::AnalyticsControlPhase::PgBuilding,
+                schema::analytics_module::control::AnalyticsControlPhase::PgPrepared,
+            )
+            .await?;
+        control
+            .enter_switch_pending(
+                &lease,
+                schema::analytics_module::control::ANALYTICS_OWNER_LEASE,
+            )
+            .await?;
+        let current = control.load().await?;
+        assert_eq!(
+            current.phase,
+            schema::analytics_module::control::AnalyticsControlPhase::SwitchPending
+        );
+
+        PgAnalyticsRuntime::publish_pg_active_after_bootstrap(
+            &control,
+            &lease,
+            current,
+            &AnalyticsModulePublicationEvidence {
+                primary_build_id: "c8-switch-pending-build".to_string(),
+                primary_certificate_digest: "c8-switch-pending-certificate".to_string(),
+                source_generation: 7,
+                source_high_watermark: 41,
+                source_coverage_revision: 42,
+                rows: Vec::new(),
+            },
+            &AnalyticsSourceStatus {
+                generation: 7,
+                coverage_revision: 42,
+                retained_from_change_id: 1,
+                latest_change_id: 41,
+                retained_bytes: 0,
+                retention_bound_bytes: ANALYTICS_SOURCE_RETENTION_BOUND_BYTES,
+                capacity: 10_000,
+                invalidation_pending: false,
+                historical_replay_required: false,
+                historical_history_unknown: false,
+                coverage_generation: Some(7),
+                covered_through_change_id: Some(41),
+                coverage_revision_acknowledged: Some(42),
+            },
+        )
+        .await?;
+
+        let active = control.load().await?;
+        assert_eq!(
+            active.phase,
+            schema::analytics_module::control::AnalyticsControlPhase::PgActive
+        );
+        assert_eq!(active.active_backend, "postgres");
+        assert_eq!(active.owner_epoch, lease.owner_epoch);
+        assert!(active.read_admission_open);
+        assert!(active.write_admission_open);
+        let admission = control.admission().snapshot();
+        assert!(admission.read_open);
+        assert!(admission.write_open);
+        assert!(!admission.draining);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly authorized disposable PostgreSQL 18 *_fixture database"]
+    async fn postgres_module_admitted_read_holds_permit_until_transaction_completion() -> Result<()>
+    {
+        let app_url = env::var("PG_ANALYTICS_TEST_APP_URL")
+            .context("PG_ANALYTICS_TEST_APP_URL is required for the admitted-read fixture")?;
+        let postgres_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&app_url)
+            .await?;
+        let source_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let control = Arc::new(schema::analytics_module::control::AnalyticsControl::new(
+            source_pool,
+            "c8-admitted-read-test",
+        ));
+        control.initialize("postgres").await?;
+        let lease = control.begin_pg_build().await?;
+        control
+            .transition(
+                &lease,
+                schema::analytics_module::control::AnalyticsControlPhase::PgBuilding,
+                schema::analytics_module::control::AnalyticsControlPhase::PgPrepared,
+            )
+            .await?;
+        control
+            .enter_switch_pending(
+                &lease,
+                schema::analytics_module::control::ANALYTICS_OWNER_LEASE,
+            )
+            .await?;
+        control
+            .publish_pg_active(
+                &lease,
+                "c8-admitted-read-build",
+                "c8-admitted-read-certificate",
+                schema::analytics_module::control::AnalyticsSourceFence {
+                    generation: 1,
+                    through_change_id: 0,
+                    coverage_revision: 0,
+                },
+            )
+            .await?;
+
+        let runtime = PgAnalyticsRuntime {
+            backend: AnalyticsBackend::Postgres,
+            pool: Some(PgAnalyticsPool {
+                pool: postgres_pool,
+            }),
+            maintenance_pool: None,
+            unavailable: None,
+            ready: Arc::new(AtomicBool::new(true)),
+            control: Some(control.clone()),
+        };
+        let read = runtime
+            .require_admitted_module_read_transaction()
+            .await
+            .map_err(|error| anyhow!(error.to_string()))?;
+        assert_eq!(control.admission().snapshot().active_readers, 1);
+
+        let drain_started = control.admission().drain_started_for_test();
+        let drain_started_notification = drain_started.notified();
+        tokio::pin!(drain_started_notification);
+        drain_started_notification.as_mut().enable();
+        let admission = control.admission().clone();
+        let drain = tokio::spawn(async move { admission.drain(Duration::from_secs(30)).await });
+        drain_started_notification.await;
+        assert!(!drain.is_finished());
+        assert_eq!(control.admission().snapshot().active_readers, 1);
+
+        read.rollback().await?;
+        drain.await??;
+        assert_eq!(control.admission().snapshot().active_readers, 0);
+
+        control.admission().close();
+        let error = match runtime.require_admitted_module_read_transaction().await {
+            Ok(_) => panic!("closed admission must reject a new module read"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("draining"));
         Ok(())
     }
 
