@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "kind": "analytics-projection-compatibility-record",
+  "release_unit": "analytics-module-postgres",
+  "public_api": {
+    "impact": "patch",
+    "change": "none",
+    "reason": "仅增加内部投影接口，HTTP/SSE 接入由 C6/C7 负责。"
+  },
+  "persistent_state": {
+    "impact": "minor",
+    "source_compatibility_range": "已完成 C2 module schema v1 与 C3 ingest schema v1 的目标；旧 SQLite 与 legacy PG 表保持原状。",
+    "candidate_state": "analytics-module-projection/versioned-projection-v1 + certified-baseline-v2",
+    "earlier_reader_behavior": "v1 reader 拒绝含 v2 DDL marker 的状态；publication reader_version=2。v1 schema/checksum/step identity 保持不可变。",
+    "direct_major_skips_supported": false
+  },
+  "operations": [
+    {
+      "order": 1,
+      "id": "projection-ddl-v1",
+      "kind": "ddl",
+      "observable": "独立 DDL ledger 的 checksum/state/error_code",
+      "pauseable": "DDL 事务之前或之后"
+    },
+    {
+      "order": 2,
+      "id": "certified-baseline-v2",
+      "kind": "ddl+dml",
+      "observable": "独立 source receipt、artifact bytes/facts digests、certificate/prefix、coverage/seed rows 与原子 materialized_through",
+      "pauseable": "receipt 注册之后或完整基线事务之外"
+    },
+    {
+      "order": 3,
+      "id": "projection-receipt-replay",
+      "kind": "dml",
+      "observable": "materialized_through 与 durable repair",
+      "pauseable": "每个最多 256 receipt 的事务之后"
+    },
+    {
+      "order": 4,
+      "id": "projection-staging",
+      "kind": "projection",
+      "observable": "staging publication 与完整模型行",
+      "pauseable": "staging 提交之后，pointer 更新之前"
+    },
+    {
+      "order": 5,
+      "id": "projection-publish",
+      "kind": "publication",
+      "observable": "active_publication_id 与 published_through_change_id",
+      "pauseable": "原子 publication 事务之外"
+    }
+  ],
+  "historical_backfill": "C5 提供完整认证链；C4 读取实际 SQLite source snapshot/pin 与 manifest receipt，独立解码固定 artifact 字节，在 fenced PG 事务里验证完整 chain facts 与 seed rows/proof，事实/coverage/seed 全部成功后原子激活 progress。不修改 consumer C。",
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery",
+    "stopped_release": "DDL 应用与 marker 同事务；failed/applying 可按相同 checksum 重入；staging 中断保留 last-good，commit unknown 按 publication id/pointer 对账后恢复。"
+  },
+  "validation_contract": [
+    "C2+C3 状态向前迁移、重复迁移、failed 状态重入",
+    "C>P 修正与 tombstone 的旧值隔离",
+    "staging 不可读、发布失败保持 pointer、旧 publication pin 保留",
+    "UTC 跨日区间裁剪与重叠并集、invocation/attempt 不重复贡献",
+    "retained floor=2 的完整 predecessor+current chain 与真实认证 seed 正向导入",
+    "独立 snapshot/manifest/bytes 错配拒绝；activation 故障回滚全部 facts/progress，重试幂等",
+    "基线导入不修改 C；完整 receipt replay 后 staging/publish；历史修正与删除仍受 P 隔离",
+    "含 seed 的基线后，真实 receive/materialize 入口对未知旧实体 correction/revoke 自动持久 blocked repair，P 保持不变且查询不可用"
+  ],
+  "production_constraints": {
+    "staging_max_version_rows": 100000,
+    "interval_max_hour_buckets": 8784,
+    "on_budget_exceeded": "阻断 staging，保留 last-good；容量验收不得把此失败当作 ready。",
+    "cleanup": "不执行版本或源数据删除；pin 之外仍需恢复覆盖证明与单独清理授权。",
+    "baseline_max_artifact_bytes": 16777216,
+    "baseline_max_artifacts": 256,
+    "baseline_max_facts": 100000,
+    "baseline_trust": "完整 genesis-anchored certificate chain；sample_limit=2、max_chain_depth=64。独立 primary artifact 必须包含整条链的完整 facts；不接受来自 candidate 的 expected/trust。",
+    "unknown_seed_old_contribution": "已含 seed 的 build 若 correction/logical_revoke 没有旧 exact version，消费事务直接生成 blocked repair，不写猜测贡献；保守阻断整个 consumer 的 staging/publication/读取，直至证明式重建处理。"
+  }
+}
