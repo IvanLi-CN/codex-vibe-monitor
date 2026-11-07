@@ -671,7 +671,18 @@ impl PgAnalyticsRuntime {
                     .await?;
             }
             schema::analytics_module::control::AnalyticsControlPhase::SwitchPending => {
-                control.admit_pg_active(&lease).await?;
+                control
+                    .publish_pg_active(
+                        &lease,
+                        &evidence.primary_build_id,
+                        &evidence.primary_certificate_digest,
+                        schema::analytics_module::control::AnalyticsSourceFence {
+                            generation: source.generation,
+                            through_change_id: source.latest_change_id,
+                            coverage_revision: source.coverage_revision,
+                        },
+                    )
+                    .await?;
             }
             schema::analytics_module::control::AnalyticsControlPhase::PgActive => {
                 control.admit_pg_active(&lease).await?;
@@ -976,6 +987,59 @@ impl PgAnalyticsRuntime {
         control.activate_sqlite(&lease).await?;
         control.release_owner(&lease).await?;
         Ok(())
+    }
+
+    /// Begin the analytics-module read contract without requiring the legacy replica/projection
+    /// readiness tables. The admission permit remains held by the returned repeatable-read
+    /// transaction until commit or rollback, so a backend drain cannot finish around a bare
+    /// admission check while the module query is still running.
+    pub(crate) async fn require_admitted_module_read_transaction(
+        &self,
+    ) -> AnalyticsReadResult<AnalyticsReadTransaction<'_>> {
+        let pool = self
+            .require_pool()
+            .map_err(AnalyticsReadError::Unavailable)?;
+        let control = self.control.as_ref().ok_or_else(|| {
+            AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                AnalyticsBackend::Postgres,
+                "PostgreSQL analytics control is unavailable",
+            ))
+        })?;
+        let control_state = control.load().await.map_err(AnalyticsReadError::Internal)?;
+        if control_state.phase != schema::analytics_module::control::AnalyticsControlPhase::PgActive
+            || control_state.active_backend != "postgres"
+        {
+            return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                AnalyticsBackend::Postgres,
+                "PostgreSQL analytics control has not published pg_active",
+            )));
+        }
+        let admission = control
+            .admission()
+            .try_read("postgres", control_state.owner_epoch)
+            .map_err(|error| {
+                AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                    AnalyticsBackend::Postgres,
+                    error.to_string(),
+                ))
+            })?;
+        let mut transaction = pool.inner().begin().await.map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to begin PostgreSQL analytics module read transaction: {error}"
+            ))
+        })?;
+        sqlx::query(PG_ANALYTICS_READ_TRANSACTION_SQL)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| {
+                AnalyticsReadError::Internal(anyhow!(
+                    "failed to configure PostgreSQL analytics module read transaction: {error}"
+                ))
+            })?;
+        Ok(AnalyticsReadTransaction {
+            transaction,
+            admission: Some(admission),
+        })
     }
 
     pub(crate) async fn require_read_transaction(
@@ -5260,20 +5324,203 @@ mod tests {
         context: &str,
     ) -> Result<()> {
         let mut transaction = owner.begin().await?;
-        for statement in PG_ANALYTICS_SCHEMA_SQL
-            .split(';')
-            .map(str::trim)
-            .filter(|statement| !statement.is_empty())
-        {
-            sqlx::query(statement)
-                .execute(&mut *transaction)
-                .await
-                .with_context(|| format!("{context}: {statement}"))?;
-        }
+        sqlx::raw_sql(PG_ANALYTICS_SCHEMA_SQL)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| context.to_string())?;
         transaction
             .commit()
             .await
             .with_context(|| format!("commit {context}"))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sqlite_offline_rollback_rebuilds_and_reopens_admission() -> Result<()> {
+        let mut state =
+            crate::tests::test_state_from_config(crate::tests::test_config(), true).await;
+        let runtime =
+            Arc::new(PgAnalyticsRuntime::initialize(&state.config, state.pool.clone()).await);
+        let control = runtime
+            .analytics_control()
+            .context("SQLite rollback fixture control")?;
+
+        let mut source_tx = state.pool.begin().await?;
+        let (_, receipt) = crate::analytics_module::append_source_envelope_tx(
+            source_tx.as_mut(),
+            &crate::analytics_module::source::SourceEnvelopeDraft {
+                source_instance_id: crate::analytics_module::source::LEGACY_SOURCE_INSTANCE_ID
+                    .to_string(),
+                event_id: "c8-offline-rollback-event".to_string(),
+                entity_kind: "invocation".to_string(),
+                entity_key: "c8-offline-rollback:1".to_string(),
+                operation: crate::analytics_module::source::SourceOperation::Upsert,
+                occurred_at: "2026-11-07T00:00:00Z".to_string(),
+                payload: serde_json::json!({"invokeId": "c8-offline-rollback"}),
+            },
+        )
+        .await?;
+        source_tx.commit().await?;
+        crate::analytics_module::create_source_snapshot(
+            &state.pool,
+            &crate::analytics_module::source::SourceSnapshot {
+                build_id: "c8-offline-rollback-build".to_string(),
+                source_instance_id: crate::analytics_module::source::LEGACY_SOURCE_INSTANCE_ID
+                    .to_string(),
+                generation: receipt.generation,
+                high_watermark_change_id: receipt.change_id,
+                coverage_revision: receipt.coverage_revision,
+                retained_from_change_id: 1,
+                fact_semantics_version:
+                    crate::analytics_module::source::SOURCE_FACT_SEMANTICS_VERSION,
+                stats_semantics_version:
+                    crate::analytics_module::source::SOURCE_STATS_SEMANTICS_VERSION,
+                manifest_digest: None,
+            },
+        )
+        .await?;
+        crate::analytics_module::source::renew_source_retention_pin(
+            &state.pool,
+            &crate::analytics_module::source::SourceRetentionPin {
+                pin_id: "c8-offline-rollback-pin".to_string(),
+                build_id: "c8-offline-rollback-build".to_string(),
+                source_kind: "journal".to_string(),
+                source_identity: crate::analytics_module::source::LEGACY_SOURCE_INSTANCE_ID
+                    .to_string(),
+                watermark_change_id: receipt.change_id,
+                expires_at: "2099-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO codex_invocations
+                (invoke_id, occurred_at, source, status, total_tokens, payload, raw_response)
+             VALUES (?1, ?2, 'proxy', 'success', 1, ?3, '{}')",
+        )
+        .bind("c8-offline-rollback")
+        .bind("2026-11-07T00:00:00Z")
+        .bind(r#"{"model":"c8-test"}"#)
+        .execute(&state.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE startup_backfill_progress
+             SET next_run_after = NULL, enabled = 1",
+        )
+        .execute(&state.pool)
+        .await?;
+
+        let maintenance_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let maintenance = Arc::new(crate::maintenance_store::MaintenanceStore::from_pool(
+            maintenance_pool,
+        ));
+        maintenance.initialize_schema_for_test().await?;
+        sqlx::query(
+            "UPDATE managed_tasks
+             SET enabled = 0
+             WHERE task_key = 'startup_backfill.prompt_cache_conversations_materialization'",
+        )
+        .execute(&maintenance.pool)
+        .await?;
+        maintenance
+            .initialize_prompt_cache_materialization_control(
+                "startup_backfill.prompt_cache_conversations_materialization",
+                crate::maintenance::StartupBackfillTask::PromptCacheConversationsMaterialization
+                    .name(),
+            )
+            .await?;
+        crate::maintenance_store::set_global(maintenance);
+
+        Arc::get_mut(&mut state)
+            .context("SQLite rollback fixture state must remain uniquely owned")?
+            .pg_analytics = runtime.clone();
+
+        sqlx::query(
+            "UPDATE analytics_backend_control
+             SET desired_backend = 'postgres'
+             WHERE id = 1",
+        )
+        .execute(&state.pool)
+        .await?;
+        let lease = control.begin_pg_build().await?;
+        control
+            .transition(
+                &lease,
+                schema::analytics_module::control::AnalyticsControlPhase::PgBuilding,
+                schema::analytics_module::control::AnalyticsControlPhase::PgPrepared,
+            )
+            .await?;
+        control
+            .enter_switch_pending(&lease, Duration::from_secs(1))
+            .await?;
+        control
+            .publish_pg_active(
+                &lease,
+                "c8-offline-rollback-build",
+                "c8-offline-rollback-certificate",
+                schema::analytics_module::control::AnalyticsSourceFence {
+                    generation: receipt.generation,
+                    through_change_id: receipt.change_id,
+                    coverage_revision: receipt.coverage_revision,
+                },
+            )
+            .await?;
+
+        runtime.run_sqlite_rollback_once(state.clone()).await?;
+
+        let completed_backfill_tasks: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM startup_backfill_progress
+             WHERE last_finished_at IS NOT NULL AND last_status = 'ok'",
+        )
+        .fetch_one(&state.pool)
+        .await?;
+        assert!(
+            completed_backfill_tasks > 0,
+            "offline rollback must run at least one startup backfill task"
+        );
+
+        let final_control = control.load().await?;
+        assert_eq!(
+            final_control.phase,
+            schema::analytics_module::control::AnalyticsControlPhase::SqliteActive
+        );
+        assert_eq!(final_control.active_backend, "sqlite");
+        assert_eq!(final_control.desired_backend, "sqlite");
+        assert!(final_control.read_admission_open);
+        assert!(final_control.write_admission_open);
+        let admission = control.admission().snapshot();
+        assert!(admission.read_open);
+        assert!(admission.write_open);
+        assert!(!admission.draining);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM analytics_change_events WHERE event_id = 'c8-offline-rollback-event'",
+            )
+            .fetch_one(&state.pool)
+            .await?,
+            1
+        );
+        assert_eq!(
+            crate::analytics_module::source::load_source_snapshot(
+                &state.pool,
+                "c8-offline-rollback-build",
+            )
+            .await?
+            .context("rollback source snapshot")?
+            .high_watermark_change_id,
+            receipt.change_id
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'c8-offline-rollback'",
+            )
+            .fetch_one(&state.pool)
+            .await?,
+            1
+        );
         Ok(())
     }
 
