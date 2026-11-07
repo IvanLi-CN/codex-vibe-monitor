@@ -4,7 +4,7 @@
 
 ## Current Boundary
 
-SQLite remains the default analytics backend and the existing state source. `ANALYTICS_BACKEND` accepts `sqlite` or `postgres`; the default is `sqlite`. Selecting `postgres` requires `POSTGRES_DATABASE_URL`. `POSTGRES_MAX_CONNECTIONS` defaults to `5` and must be positive. The connection URL is redacted from configuration debug and serialization output and from PostgreSQL failure diagnostics.
+SQLite remains the default analytics backend and the existing state source. `ANALYTICS_BACKEND` accepts `sqlite` or `postgres`; the default is `sqlite`. Selecting `postgres` requires distinct `POSTGRES_MIGRATION_URL`, `POSTGRES_DATABASE_URL`, and `POSTGRES_ANALYTICS_MAINTENANCE_URL` values with distinct effective login roles. `POSTGRES_MAX_CONNECTIONS` defaults to `5` and must be positive. The connection URLs are redacted from configuration debug and serialization output and from PostgreSQL failure diagnostics.
 
 The service now executes the PostgreSQL 18.x analytics schema migration through `POSTGRES_MIGRATION_URL`, records an ordered checksum ledger under an advisory lock, then uses the distinct application and maintenance URLs for verification and online bootstrap. The target database is still created by the PostgreSQL container; the application does not create/delete it. Bootstrap replays each completed invocation archive through the verified gzip SQLite loader, then snapshots live facts and catches up the journal. Missing, unreadable, or schema-incompatible archives keep the target fenced. It does not migrate business writes or silently fall back to a heavy SQLite analytics query after PostgreSQL is selected. Until the archive replay, SQLite snapshot, and journal catch-up converge, `/health/analytics` returns 503 while core `/health` may be 200.
 
@@ -12,7 +12,44 @@ After the corrected v2 bootstrap, the shared `service_eligible` flag remains `FA
 
 Configuration alone does not create the target database or change production query routing. Applying `ANALYTICS_BACKEND=postgres` through an owner-approved runtime change and restart starts migration and online bootstrap; a successful database connection is insufficient because `/health/analytics` must be ready. Keep production enablement gated until the current readiness and read-path evidence is accepted.
 
-Invocation and attempt writes, credentials and routing, task state, TerminalJournal, and production switching are outside this batch. No guarantee or operational command for those paths is introduced here.
+This batch provides the Docker/Compose wiring and operations contract. C2 owns the cross-task public module interfaces, while C8 owns the final backend control state machine and business-writer cutover. Until those tasks are integrated, Compose can validate configuration, roles, core health, migration, and the analytics readiness fence, but it does not prove production analytics read switching or complete source catch-up.
+
+## Compose Modes and Secrets
+
+Use the checked-in `compose.analytics.yml` with one explicit profile. The `sqlite` profile starts only the application and its SQLite data volume; it does not require PostgreSQL, PostgreSQL credentials, or a PostgreSQL network service. The `postgres` profile starts PostgreSQL 18, idempotent role provisioning, the application, and a separate grant step. Both application modes use the same `cvm_data` volume name so a mode change cannot silently select a different SQLite database. The PostgreSQL 18 image stores its cluster under `PGDATA=/var/lib/postgresql/18/docker` and uses `/var/lib/postgresql` as the volume boundary; preserve that mount when replacing or restoring the named volume.
+
+```sh
+cp .env.example .env
+export APP_GIT_REVISION="$(git rev-parse HEAD)"
+docker compose --profile sqlite -f compose.analytics.yml up -d --build
+curl -fsS http://127.0.0.1:8080/health
+curl -fsS http://127.0.0.1:8080/health/analytics
+```
+
+For PostgreSQL mode, create `.secrets/` with owner-readable files named by `.env.example`: three complete DSNs (`postgres-migration-url`, `postgres-database-url`, and `postgres-analytics-maintenance-url`), the migration/application/maintenance role passwords, and the PostgreSQL superuser password used only by the local provisioning service. The DSNs must use the Compose hostname `postgres` for the local profile, distinct login roles, and no credentials in the `.env` file. The migration URL is used only by startup migration; the application URL is reader-only; the maintenance URL is used only for bounded replica DML. The local profile is a validation fixture, not a production TLS or capacity recommendation.
+
+```sh
+install -d -m 700 .secrets
+# Populate these files through the approved secret workflow; do not commit them.
+ls -l .secrets/postgres-migration-url \
+  .secrets/postgres-database-url \
+  .secrets/postgres-analytics-maintenance-url \
+  .secrets/postgres-superuser-password \
+  .secrets/postgres-migration-password \
+  .secrets/postgres-app-password \
+  .secrets/postgres-maintenance-password
+export APP_GIT_REVISION="$(git rev-parse HEAD)"
+docker compose --profile postgres -f compose.analytics.yml up -d --build
+```
+
+The application container healthcheck remains `/health` and therefore represents core readiness. In PostgreSQL mode, `/health/analytics` must also return 200 after migration, bounded bootstrap, source catch-up, and projection verification. A healthy PostgreSQL container, successful TCP connection, or core `/health` response does not prove analytics readiness. Stop the active profile before changing modes and preserve both named volumes:
+
+```sh
+docker compose -f compose.analytics.yml --profile sqlite --profile postgres down
+docker compose --profile postgres -f compose.analytics.yml up -d
+```
+
+Do not run both application services against the same host port or SQLite volume. Do not put DSNs or passwords in `docker compose` command arguments, shell tracing, logs, or committed files.
 
 ## Capacity Budget and Gate
 
@@ -63,28 +100,27 @@ host     all            all                0.0.0.0/0      reject
 host     all            all                ::/0           reject
 ```
 
-Keep the application credential separate from the schema owner and the replica maintenance credential. Use a non-login owner for DDL, a login role with no administrative attributes for the application, and a separate login role for the bounded replica DML. The current startup probe needs database `CONNECT`; it checks relation and column names through `pg_catalog` and executes `SELECT 1`, but does not query table contents. The current PostgreSQL read paths use the reader role with the exact column-level `SELECT` grants shown below; do not add default privileges or rollup-table access. Never grant the application role DDL or table writes. The `analytics-replica` control commands use `POSTGRES_ANALYTICS_MAINTENANCE_URL`; that role receives only the reviewed analytics-table DML and sequence privileges required by the bounded rebuild/consumer, never DDL.
+Keep the migration credential separate from the application and replica maintenance credentials. The current startup migration uses `POSTGRES_MIGRATION_URL` and therefore needs the reviewed schema-owner DDL capability for this exact migration, while the long-lived application role must receive only the reader role and the maintenance role only the bounded replica DML surface. The startup probe needs database `CONNECT`; it checks relation and column names through `pg_catalog` and executes a disposable read-only transaction, but does not query table contents. Do not add default privileges or rollup-table access. The `analytics-replica` control commands use `POSTGRES_ANALYTICS_MAINTENANCE_URL`; that role never receives DDL.
 
-**Owner authorization required to create roles/database or grant privileges. Run through the approved DBA channel; do not place a password in SQL, shell history, or logs. Create roles/database individually as needed because `CREATE DATABASE` cannot run in a transaction block. Apply the reviewed schema file as one `psql --single-transaction` operation; do not execute its compatibility statements individually.**
+**Owner authorization required to create roles/database or grant privileges. Run through the approved DBA channel; do not place a password in SQL, shell history, or logs. Create the database through the PostgreSQL service and provision roles idempotently. The Compose profile performs this role step and the reviewed grants; application startup owns the ordered, checksum-verified schema migration. Do not grant DDL to the application or maintenance roles.**
 
 ```sql
-CREATE ROLE cvm_analytics_owner
-  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE cvm_analytics_reader
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE cvm_analytics_migration
+  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE cvm_analytics_app
   LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE cvm_analytics_maintenance
   LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 GRANT cvm_analytics_reader TO cvm_analytics_app;
 
-CREATE DATABASE cvm_analytics OWNER cvm_analytics_owner;
 REVOKE CONNECT ON DATABASE cvm_analytics FROM PUBLIC;
 GRANT CONNECT ON DATABASE cvm_analytics TO cvm_analytics_app;
 GRANT CONNECT ON DATABASE cvm_analytics TO cvm_analytics_maintenance;
 ```
 
-Set the application password through the approved secret manager or an interactive `psql` password prompt. Do not add it to the SQL above. After the schema transaction succeeds, grant the reader role only the columns used by the current PostgreSQL analytics read paths; do not grant default privileges or access to rollup tables.
+Set each role password through the approved secret manager or an interactive `psql` password prompt. Do not add passwords to the SQL above. After startup migration succeeds, grant the reader role only the columns used by the current PostgreSQL analytics read paths; do not grant default privileges or access to rollup tables. The grant SQL in this runbook is the review reference for the `postgres-grant` Compose service.
 
 The application configuration example is redacted. `<redacted>` is not a usable password. Store the real URL in the approved secret store, make its CA certificate available to the service, and use a private DNS name present in the server certificate.
 
@@ -120,16 +156,9 @@ The DBA, rehearsal, and restore entries use their own approved host, database, a
 Run this sequence only under an owner-approved change window. Do not skip ahead from configuration to production reads.
 
 1. **Capacity gate:** complete and approve the separate volume worksheet above. A failed or unknown budget blocks bootstrap.
-2. **Bootstrap:** an authorized DBA creates the private PostgreSQL 18 database and roles, confirms TLS and network policy, then applies the exact `PG_ANALYTICS_SCHEMA_SQL` from the reviewed source revision. Application startup and the `analytics-replica` control commands are not schema installers. The current source defines this SQL in `src/pg_analytics/schema.rs`; there is no application CLI/API that exports or applies it. Prepare a reviewed standalone file from that exact revision, wrapped with `SET ROLE cvm_analytics_owner` and `RESET ROLE`, and retain its source SHA with the operations record. For an existing replica state table, this owner-applied contract adds `fact_date_semantics_version` with default `1`, explicitly marking existing facts as legacy, fences the shared `service_eligible` flag to false, and moves a caught-up state to `bootstrapping`; only after that DDL succeeds may the maintenance role run the bounded bootstrap rebuild, which promotes the rebuilt state to version `2`. The SQLite source journal migration adds its own additive `fact_date_semantics_version` column with default `1`; do not rewrite retained legacy events, because a current consumer must observe and invalidate on a legacy invocation event rather than apply it.
+2. **Bootstrap:** an authorized operator creates the private PostgreSQL 18 database and roles, confirms TLS and network policy, and starts the approved PostgreSQL profile. The application startup uses `POSTGRES_MIGRATION_URL` to apply the ordered, checksum-verified `PG_ANALYTICS_SCHEMA_SQL` under its advisory lock; it does not create or delete the target database and does not use the application or maintenance credentials for DDL. The `postgres-grant` step then applies the reviewed reader and bounded maintenance grants. For an existing replica state table, the migration contract adds `fact_date_semantics_version` with default `1`, explicitly marking existing facts as legacy, fences the shared `service_eligible` flag to false, and moves a caught-up state to `bootstrapping`; only after that DDL succeeds may the maintenance role run the bounded bootstrap rebuild, which promotes the rebuilt state to version `2`. The SQLite source journal migration adds its own additive `fact_date_semantics_version` column with default `1`; do not rewrite retained legacy events, because a current consumer must observe and invalidate on a legacy invocation event rather than apply it.
 
-   **Owner authorization required to apply the reviewed schema file. The DBA service must be authorized to `SET ROLE cvm_analytics_owner`; the file must contain the exact source SQL between the role statements. The application role and maintenance role must not receive DDL.**
-
-   ```sh
-   psql 'service=cvm-analytics-admin' --set=ON_ERROR_STOP=1 --single-transaction \
-     --file="$PG_ANALYTICS_SCHEMA_FILE"
-   ```
-
-   After the schema transaction succeeds, grant the maintenance role only the bounded replica DML surface. Keep this grant separate from the schema-owner step so a stopped or failed bootstrap can be diagnosed and paused without conflating DDL completion with data rebuild completion.
+   **Owner authorization required to apply the reviewed schema migration and grants. Keep the migration and grant steps separate so a stopped or failed bootstrap can be diagnosed and paused without conflating DDL completion with data rebuild completion.**
 
    ```sql
    GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_reader;

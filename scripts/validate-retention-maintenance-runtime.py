@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Exercise owned maintenance against a real Linux daemon and a caller-leased HTTP port."""
 import argparse
+import base64
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import secrets
 import signal
 import sqlite3
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -19,6 +23,21 @@ from importlib.util import module_from_spec, spec_from_file_location
 SPEC = spec_from_file_location("ownership_upgrade", Path(__file__).with_name("validate-retention-maintenance-upgrade.py"))
 UPGRADE = module_from_spec(SPEC)
 SPEC.loader.exec_module(UPGRADE)
+
+
+@contextmanager
+def runtime_admin_auth():
+    username = "retention-runtime-validator"
+    password = secrets.token_urlsafe(32)
+    descriptor, path = tempfile.mkstemp(prefix="cvm-retention-admin-")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as password_file:
+            os.fchmod(password_file.fileno(), 0o600)
+            password_file.write(password)
+        authorization = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
+        yield username, path, authorization
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 def await_condition(predicate, timeout, message):
@@ -73,7 +92,8 @@ def validate_online(candidate, source, target, port):
     UPGRADE.seed_owner_candidates(target)
     environment = dict(os.environ, DATABASE_PATH=str(target / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(target / "maintenance.sqlite"), ARCHIVE_DIR=str(target / "archives"), PROXY_RAW_DIR=str(target / "raw"), HTTP_BIND=f"127.0.0.1:{port}", OPENAI_UPSTREAM_BASE_URL="http://127.0.0.1:1/", OBSERVABILITY_ENABLED="false", RUST_LOG="warn", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false")
     (target / "raw").mkdir(exist_ok=True)
-    with (target / "daemon.log").open("w") as daemon_log:
+    with runtime_admin_auth() as (admin_username, admin_password_file, authorization), (target / "daemon.log").open("w") as daemon_log:
+        environment.update(ADMIN_AUTH_USERNAME=admin_username, ADMIN_AUTH_PASSWORD_FILE=admin_password_file)
         daemon = subprocess.Popen([str(candidate)], env=environment, stdout=daemon_log, stderr=subprocess.STDOUT)
         pending_cli = None
         blocker = None
@@ -113,7 +133,7 @@ def validate_online(candidate, source, target, port):
                 assert connection.execute("SELECT status FROM codex_invocations WHERE invoke_id='TZYZABAAAA'").fetchone() == ("running",)
             with sqlite3.connect(target / "maintenance.sqlite") as connection:
                 prompt_schedule = connection.execute("SELECT task_name,next_run_after,next_probe_at,suspension_reason,enabled FROM startup_backfill_progress WHERE task_name LIKE '%prompt_cache%' ORDER BY task_name").fetchall()
-            request = urllib.request.Request(f"http://127.0.0.1:{port}/api/system/managed-tasks/prompt_cache_materialization/run", data=b"{}", headers={"content-type": "application/json"}, method="POST")
+            request = urllib.request.Request(f"http://127.0.0.1:{port}/api/system/managed-tasks/prompt_cache_materialization/run", data=b"{}", headers={"content-type": "application/json", "Authorization": authorization}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 assert response.status == 200
             def prompt_finished():
@@ -135,7 +155,7 @@ def validate_online(candidate, source, target, port):
             await_condition(identity_active, 10, "first CLI did not enqueue its identity request")
             duplicate = UPGRADE.execute(candidate, target, "maintenance", "invocation-identity-cleanup", expect_success=False)
             assert "active run" in duplicate.stderr, duplicate.stderr
-            request = urllib.request.Request(f"http://127.0.0.1:{port}/api/system/managed-tasks/invocation_identity_cleanup/run", data=b"{}", headers={"content-type": "application/json"}, method="POST")
+            request = urllib.request.Request(f"http://127.0.0.1:{port}/api/system/managed-tasks/invocation_identity_cleanup/run", data=b"{}", headers={"content-type": "application/json", "Authorization": authorization}, method="POST")
             try:
                 urllib.request.urlopen(request, timeout=2).close()
                 raise AssertionError("page API accepted a duplicate identity request")

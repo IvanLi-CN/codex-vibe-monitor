@@ -491,8 +491,10 @@ async fn persist_startup_backfill_pressure_defer(
     // state update after any queued P1/interactive writer completes, so the defer is coordinated
     // without keeping higher-priority work behind the cancelled backfill.
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-        .await;
+        .acquire_sqlite_analytics(
+            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+        )
+        .await?;
     save_startup_backfill_progress_for_task(
         &state.pool,
         task,
@@ -531,8 +533,10 @@ async fn persist_startup_backfill_archive_lock_defer(
         Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
     let retry_after = format_utc_iso(retry_at);
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-        .await;
+        .acquire_sqlite_analytics(
+            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+        )
+        .await?;
     save_startup_backfill_progress_for_task(
         &state.pool,
         task,

@@ -11,6 +11,7 @@ pub(crate) fn test_config() -> AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
         analytics_backend: AnalyticsBackend::Sqlite,
+        admin_auth: None,
         postgres_database_url: None,
         postgres_migration_url: None,
         postgres_analytics_maintenance_url: None,

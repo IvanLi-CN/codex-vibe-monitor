@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "proposed-design-not-implemented",
+  "migration": {
+    "description": "Move ownership of analytics derived facts, projections, repair state and queries to PostgreSQL while SQLite retains business facts and the analytics source journal.",
+    "release_unit_description": "Future implementation of docs/design/analytics-module-postgres-ownership.md under ADR 0054; this design-only change does not publish a runtime release.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "SQLite business facts, source events and backend control; PostgreSQL derived facts, deduplication, ingest checkpoints, publication coverage and repair obligations; source archives and certified historical aggregate seeds.",
+    "storage_implementation": "SQLite business/source database and source archive files; PostgreSQL 18 analytics target. Frozen SQLite projections remain rollback inputs until separately approved cleanup.",
+    "source_compatibility_range": {
+      "from_program_versions": "Required baseline fixtures: v4.19.5 and v4.19.6. Additional supported earlier-Minor source versions must be enumerated before implementation acceptance.",
+      "to_program_version": "Unassigned candidate implementing ADR 0054; backend rollback uses a binary that understands owner epochs and publications.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-source-control-and-event-contract",
+        "description": "Add versioned source binding/backend control and replay envelope compatibility without replacing business facts or rewriting deployed journal identities.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "ddl-pg-module-builds-and-publications",
+        "description": "Add ordered checksum-ledger migrations for build-scoped and publication-versioned invocation/attempt facts, dimensions, intervals, rollups, deduplication, owner epochs, publication coverage, a distinct module consumer identity and repair state; preserve legacy reader fences.",
+        "order": 2,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-continuous-materializer",
+        "description": "Commit PG facts, deduplication, dirty obligations and ingest checkpoint atomically, then acknowledge the SQLite source prefix. Publish complete read models separately under an owner epoch.",
+        "order": 4,
+        "depends_on": ["ddl-source-control-and-event-contract", "ddl-pg-module-builds-and-publications", "backfill-source-bound-build"],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-backend-cutover",
+        "description": "Drain SQLite derived writers, close analytics admission, advance the source owner epoch, prepare PG through the cutover fence and publish active backend only after verification. Intermediate states remain unavailable.",
+        "order": 5,
+        "depends_on": ["dml-continuous-materializer", "backfill-source-bound-build"],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-source-bound-build",
+        "description": "Build PG staging from consistent live facts, verified pinned invocation/attempt archives and certified aggregate seeds. Record disjoint exact-fact/seed coverage, identity/content digests and an independently verified certificate.",
+        "order": 3,
+        "depends_on": ["ddl-source-control-and-event-contract", "ddl-pg-module-builds-and-publications"],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-source-control-and-event-contract", "ddl-pg-module-builds-and-publications", "backfill-source-bound-build", "dml-continuous-materializer", "dml-backend-cutover"],
+    "progress_signals": ["source instance, generation, retained floor and coverage revision", "owner epoch, backend phase, build and certificate identity", "ingest C, source acknowledgement A and published P", "archive/seed manifest identity and coverage class per metric/dimension/granularity", "consumer registry parity, repair backlog, freshness and bounded errors", "source pins, remaining disk, WAL and build storage budgets"],
+    "pause_points": ["between committed ordered schema migrations", "between bounded build pages and materializer transactions", "before publication of a complete rebuilt date", "before switch_pending and before active-backend CAS", "before separately authorized cleanup"],
+    "atomic_step_pause_semantics": "Pauseable at committed step boundaries; an in-flight atomic transaction either commits or rolls back. A lost SQLite snapshot cannot resume under a different snapshot with the same build certificate."
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery",
+    "backend_rollback": "An epoch-aware binary fences the PG writer, rebuilds SQLite derived projections from certified seeds and complete retained sources, verifies publication, then opens analytics admission. Business facts are never reverse-copied from PG.",
+    "owner_confirmed": ["PG active stops SQLite analytics derived writes; a statistics-unavailable rebuild window is accepted on rollback", "Certified historical aggregate seeds may migrate; missing proof blocks cutover"],
+    "pending_decisions": ["complete consumer boundary approval", "guaranteed rollback retention window and long-term mode portability", "capacity, rebuild and freshness budgets", "complete supported earlier-Minor source compatibility list"]
+  },
+  "validation": {
+    "status": "not-executed-design-only",
+    "required_test_evidence": ["All fact writers atomically append replayable source changes", "Duplicate delivery, ambiguous PG commit and source ack retry preserve single contributions", "Every supported source fixture upgrades and every interrupted migration/build/cutover state safely re-enters or fails closed", "Archive identity loss/replacement, generation changes and retention gaps cannot certify partial history", "Certified seeds preserve supported metrics without overlap or invented raw facts", "Ingest, acknowledgement and publication are independently crash-safe", "Fact, tail and interval reads at P cannot observe later ingest C; version cleanup honors reader/build pins", "A new module consumer cannot adopt an incomplete legacy consumer checkpoint", "Legacy SQLite publication and PG parity share a verified source fence or independent frozen oracle", "Every registered HTTP/SSE/helper consumer selects the same backend and epoch", "SQLite to PG to SQLite to PG with PG offline during rollback", "Docker SQLite without PG inputs and PG restart without unconditional rebuild", "Representative-data capacity, source recovery coverage and backup restore verification"]
+  }
+}

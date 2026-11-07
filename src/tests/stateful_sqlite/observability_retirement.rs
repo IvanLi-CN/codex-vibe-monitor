@@ -5,7 +5,8 @@ use serde_json::json;
 async fn retired_performance_apis_return_410_through_the_real_cors_stack() {
     let mut config = test_config();
     config.http_bind = "127.0.0.1:0".parse().expect("ephemeral HTTP bind");
-    let state = test_state_from_config(config, false).await;
+    let mut state = test_state_from_config(config, false).await;
+    enable_test_admin_auth(&mut state);
     state.startup_ready.store(true, Ordering::Release);
     let (address, server) = spawn_http_server(state.clone())
         .await
@@ -31,6 +32,7 @@ async fn retired_performance_apis_return_410_through_the_real_cors_stack() {
         ] {
             let response = client
                 .request(method.clone(), format!("http://{address}{path}"))
+                .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
                 .header(http_header::ORIGIN, "http://localhost:60080")
                 .header(http_header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                 .send()
@@ -111,6 +113,7 @@ async fn browser_ingestion_rejections_consume_client_budget_before_parsing() {
         let mut config = test_config();
         config.observability.enabled = true;
         let mut state = test_state_from_config(config, false).await;
+        enable_test_admin_auth(&mut state);
         state.startup_ready.store(true, Ordering::Release);
         Arc::get_mut(&mut state)
             .expect("browser fixture is exclusive before HTTP server startup")
@@ -131,6 +134,7 @@ async fn browser_ingestion_rejections_consume_client_budget_before_parsing() {
                 .header("sec-fetch-site", site)
                 .header("x-real-ip", "192.0.2.1")
                 .body(body.to_owned())
+                .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
                 .send()
                 .await
                 .expect("send browser quota fixture");
@@ -143,6 +147,7 @@ async fn browser_ingestion_rejections_consume_client_budget_before_parsing() {
                 .header("sec-fetch-site", site)
                 .header("x-real-ip", "192.0.2.1")
                 .body(next_body.to_owned())
+                .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
                 .send()
                 .await
                 .expect("request exhausted browser client quota");
@@ -154,6 +159,7 @@ async fn browser_ingestion_rejections_consume_client_budget_before_parsing() {
             .header("sec-fetch-site", "same-origin")
             .header("x-real-ip", "192.0.2.2")
             .body(valid.clone())
+            .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
             .send()
             .await
             .expect("request independent browser client quota");
@@ -182,6 +188,7 @@ async fn browser_ingestion_mixed_rejections_consume_global_budget() {
     let mut config = test_config();
     config.observability.enabled = true;
     let mut state = test_state_from_config(config, false).await;
+    enable_test_admin_auth(&mut state);
     state.startup_ready.store(true, Ordering::Release);
     Arc::get_mut(&mut state)
         .expect("browser fixture is exclusive before HTTP server startup")
@@ -212,6 +219,7 @@ async fn browser_ingestion_mixed_rejections_consume_global_budget() {
             .json(&json!({"events":[{
                 "page":"dashboard", "device":"desktop", "kind":"api_request", "valueSeconds":value
             }]}))
+            .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
             .send()
             .await
             .expect("send mixed browser quota fixture");

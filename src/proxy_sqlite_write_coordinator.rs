@@ -185,6 +185,9 @@ pub(crate) struct ProxySqliteWriteCoordinator {
     state: crate::observability::DiagnosticMutex<CoordinatorState>,
     notify: Notify,
     observability: CoordinatorObservability,
+    analytics_admission: std::sync::RwLock<
+        Option<Arc<crate::pg_analytics::analytics_module::control::AnalyticsAdmission>>,
+    >,
 }
 
 impl ProxySqliteWriteCoordinator {
@@ -193,6 +196,41 @@ impl ProxySqliteWriteCoordinator {
         metrics: Arc<crate::ObservabilityRuntime>,
     ) -> anyhow::Result<()> {
         self.observability.bind(&metrics)
+    }
+
+    pub(crate) fn bind_analytics_admission(
+        &self,
+        admission: Arc<crate::pg_analytics::analytics_module::control::AnalyticsAdmission>,
+    ) -> anyhow::Result<()> {
+        let mut current = self
+            .analytics_admission
+            .write()
+            .expect("analytics admission binding");
+        if let Some(existing) = current.as_ref()
+            && !Arc::ptr_eq(existing, &admission)
+        {
+            anyhow::bail!("SQLite coordinator is already bound to another analytics admission");
+        }
+        *current = Some(admission);
+        Ok(())
+    }
+
+    fn try_analytics_write_permit(
+        &self,
+        class: ProxySqliteWriteClass,
+    ) -> Option<crate::pg_analytics::analytics_module::control::AnalyticsWritePermit> {
+        if !matches!(
+            class,
+            ProxySqliteWriteClass::P2Derived | ProxySqliteWriteClass::MaintenanceRetention
+        ) {
+            return None;
+        }
+        let admission = self
+            .analytics_admission
+            .read()
+            .expect("analytics admission binding")
+            .clone()?;
+        admission.try_sqlite_write().ok()
     }
     fn observe_admission(
         &self,
@@ -222,6 +260,7 @@ impl ProxySqliteWriteCoordinator {
             state: crate::observability::DiagnosticMutex::new(CoordinatorState::default()),
             notify: Notify::new(),
             observability: Default::default(),
+            analytics_admission: std::sync::RwLock::new(None),
         }
     }
 
@@ -242,6 +281,7 @@ impl ProxySqliteWriteCoordinator {
                 observed_at: self.observe_admission(class, requested_at.elapsed(), false),
                 notify_background_eligibility: false,
                 fairness_admission: false,
+                analytics_permit: None,
             };
         }
 
@@ -287,6 +327,7 @@ impl ProxySqliteWriteCoordinator {
                         observed_at: self.observe_admission(class, lock_wait, true),
                         notify_background_eligibility: true,
                         fairness_admission: false,
+                        analytics_permit: None,
                     };
                 }
             }
@@ -294,10 +335,68 @@ impl ProxySqliteWriteCoordinator {
         }
     }
 
+    /// Acquire a SQLite permit for an analytics-derived write. When the backend controller is
+    /// bound, a closed SQLite write gate is a deterministic unavailable result rather than a
+    /// permit that could let a stale worker write during PG ownership.
+    pub(crate) async fn acquire_sqlite_analytics(
+        self: &Arc<Self>,
+        class: ProxySqliteWriteClass,
+    ) -> anyhow::Result<ProxySqliteWritePermit> {
+        anyhow::ensure!(
+            matches!(
+                class,
+                ProxySqliteWriteClass::P2Derived | ProxySqliteWriteClass::MaintenanceRetention
+            ),
+            "analytics SQLite admission is only valid for derived or maintenance writes"
+        );
+        let admission = self
+            .analytics_admission
+            .read()
+            .expect("analytics admission binding")
+            .clone();
+        if let Some(admission) = admission {
+            anyhow::ensure!(
+                admission.sqlite_write_open(),
+                "SQLite analytics write admission is closed"
+            );
+            loop {
+                let coordinator_notified = self.notify.notified();
+                tokio::pin!(coordinator_notified);
+                coordinator_notified.as_mut().enable();
+                if let Some(permit) = self.try_acquire(class) {
+                    return Ok(permit);
+                }
+                if !admission.sqlite_write_open() {
+                    anyhow::bail!("SQLite analytics write admission closed while waiting")
+                }
+                tokio::select! {
+                    _ = coordinator_notified => {}
+                    _ = admission.wait_until_sqlite_write_closed() => {
+                        anyhow::bail!("SQLite analytics write admission closed while waiting")
+                    }
+                }
+            }
+        }
+        Ok(self.acquire(class).await)
+    }
+
     pub(crate) fn try_acquire(
         self: &Arc<Self>,
         class: ProxySqliteWriteClass,
     ) -> Option<ProxySqliteWritePermit> {
+        let analytics_permit = self.try_analytics_write_permit(class);
+        if matches!(
+            class,
+            ProxySqliteWriteClass::P2Derived | ProxySqliteWriteClass::MaintenanceRetention
+        ) && self
+            .analytics_admission
+            .read()
+            .expect("analytics admission binding")
+            .is_some()
+            && analytics_permit.is_none()
+        {
+            return None;
+        }
         let requested_at = Instant::now();
         if !self.coordinated {
             let mut state = self.state.lock().expect("proxy sqlite coordinator state");
@@ -311,6 +410,7 @@ impl ProxySqliteWriteCoordinator {
                 observed_at: self.observe_admission(class, requested_at.elapsed(), false),
                 notify_background_eligibility: false,
                 fairness_admission: false,
+                analytics_permit,
             });
         }
         let mut state = self.state.lock().expect("proxy sqlite coordinator state");
@@ -329,6 +429,7 @@ impl ProxySqliteWriteCoordinator {
             observed_at: self.observe_admission(class, lock_wait, true),
             notify_background_eligibility: true,
             fairness_admission: false,
+            analytics_permit,
         })
     }
 
@@ -354,6 +455,16 @@ impl ProxySqliteWriteCoordinator {
         fairness_interval: Duration,
     ) -> Option<ProxySqliteWritePermit> {
         let class = ProxySqliteWriteClass::MaintenanceRetention;
+        let analytics_permit = self.try_analytics_write_permit(class);
+        if self
+            .analytics_admission
+            .read()
+            .expect("analytics admission binding")
+            .is_some()
+            && analytics_permit.is_none()
+        {
+            return None;
+        }
         if !self.coordinated {
             let mut state = self.state.lock().expect("proxy sqlite coordinator state");
             state.direct_write_bypass_count = state.direct_write_bypass_count.saturating_add(1);
@@ -366,6 +477,7 @@ impl ProxySqliteWriteCoordinator {
                 observed_at: self.observe_admission(class, requested_at.elapsed(), false),
                 notify_background_eligibility: false,
                 fairness_admission: false,
+                analytics_permit,
             });
         }
 
@@ -394,6 +506,7 @@ impl ProxySqliteWriteCoordinator {
             observed_at: self.observe_admission(class, lock_wait, true),
             notify_background_eligibility: true,
             fairness_admission,
+            analytics_permit,
         })
     }
 
@@ -507,6 +620,7 @@ pub(crate) struct ProxySqliteWritePermit {
     observed_at: Instant,
     notify_background_eligibility: bool,
     fairness_admission: bool,
+    analytics_permit: Option<crate::pg_analytics::analytics_module::control::AnalyticsWritePermit>,
 }
 
 impl ProxySqliteWritePermit {
@@ -618,6 +732,7 @@ pub(crate) fn test_proxy_sqlite_write_coordinator() -> Arc<ProxySqliteWriteCoord
         state: crate::observability::DiagnosticMutex::new(CoordinatorState::default()),
         notify: Notify::new(),
         observability: Default::default(),
+        analytics_admission: std::sync::RwLock::new(None),
     })
 }
 
@@ -682,6 +797,38 @@ mod tests {
             .await
             .expect("P2 admitted")
             .expect("P2 task");
+    }
+
+    #[tokio::test]
+    async fn analytics_write_waiter_stops_when_sqlite_admission_closes() {
+        let coordinator = test_proxy_sqlite_write_coordinator();
+        let admission =
+            Arc::new(crate::pg_analytics::analytics_module::control::AnalyticsAdmission::new());
+        admission.open("sqlite", 1);
+        coordinator
+            .bind_analytics_admission(admission.clone())
+            .unwrap();
+        let active = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
+        let wait_started = admission.wait_started_for_test();
+        let started = wait_started.notified();
+        tokio::pin!(started);
+        started.as_mut().enable();
+        let waiter = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                coordinator
+                    .acquire_sqlite_analytics(ProxySqliteWriteClass::P2Derived)
+                    .await
+            }
+        });
+        started.await;
+        admission.close();
+        let result = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("analytics waiter observes admission close")
+            .expect("analytics waiter task");
+        assert!(result.is_err());
+        drop(active);
     }
 
     #[tokio::test]

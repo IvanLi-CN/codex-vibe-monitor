@@ -45,7 +45,7 @@
     {
       "path": "src/tests/archive_file_io/archive_http_and_shutdown.rs",
       "role": "test_helper",
-      "line_budget": 1175,
+      "line_budget": 1183,
       "next_module_workstream": "Split archive HTTP and shutdown fixtures by child processes, readiness, imported OAuth jobs, and runtime sequencing."
     },
     {
@@ -135,7 +135,7 @@
     {
       "path": "src/tests/stateful_sqlite/prompt_cache_binding_and_affinity.rs",
       "role": "test_helper",
-      "line_budget": 2052,
+      "line_budget": 2055,
       "next_module_workstream": "Maintain the completed prompt-cache binding and affinity responsibility boundary below the test-helper target."
     },
     {
@@ -417,7 +417,7 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics/startup_health_and_hydration.rs",
       "role": "test_helper",
-      "line_budget": 510,
+      "line_budget": 517,
       "next_module_workstream": "Maintain startup health publication, hydration, readiness, cancellation, and deadline fixtures."
     },
     {
@@ -579,7 +579,7 @@
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing/usage_snapshot_and_oauth_callbacks.rs",
       "role": "test_helper",
-      "line_budget": 687,
+      "line_budget": 688,
       "next_module_workstream": "Maintain usage snapshot, browser retry classification, JWT, manual OAuth callback, and reauth fixtures."
     },
     {
