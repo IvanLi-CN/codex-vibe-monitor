@@ -75,3 +75,40 @@ fn attempt_and_invocation_rollups_are_disjoint() {
         }
     }
 }
+
+#[test]
+fn actual_analytics_fact_payload_accepts_legacy_time_and_preserves_precision() {
+    // AnalyticsFact retains the source timestamp text when it is serialized into a receipt.
+    // Never reinterpret that legacy wall time as UTC or trust a rounded SQL epoch field.
+    for (raw, expected) in [
+        ("2026-11-02 07:59:59", "2026-11-01T23:59:59Z"),
+        ("2026-11-02 07:59:59.999500", "2026-11-01T23:59:59.999500Z"),
+        (
+            "2026-11-02T07:59:59.999500+08:00",
+            "2026-11-01T23:59:59.999500Z",
+        ),
+    ] {
+        let source: crate::pg_analytics::AnalyticsFact = serde_json::from_value(json!({
+            "factVersion":1,"source":"codex","sourceRowId":1,"invokeId":"real-source",
+            "occurredAt":raw,"occurredAtEpochMs":0,"statsDate":"2026-11-02",
+            "successLike":true,"terminal":true,"tTotalMs":0.75
+        }))
+        .unwrap();
+        let payload = serde_json::to_value(source).unwrap();
+        let actual = model::normalize("invocation", "invocation:codex:1", &payload).unwrap();
+        let expected = fact("invocation:codex:1", expected, 0.75);
+        assert_eq!(actual.occurred_at_ms, expected.occurred_at_ms);
+        assert_eq!(actual.interval, expected.interval);
+        assert_eq!(actual.payload["occurredAt"], raw);
+        if raw.contains("999500") {
+            assert_eq!(actual.interval.unwrap().end_ms - actual.occurred_at_ms, 2);
+        }
+        let attempt = model::normalize(
+            "pool_attempt",
+            "attempt:1",
+            &json!({"factVersion":1,"occurredAt":raw}),
+        )
+        .unwrap();
+        assert_eq!(attempt.occurred_at_ms, expected.occurred_at_ms);
+    }
+}

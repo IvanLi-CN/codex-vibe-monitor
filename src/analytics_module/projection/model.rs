@@ -1,5 +1,4 @@
 use super::*;
-use chrono::DateTime;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,9 +44,9 @@ pub(super) fn normalize(kind: &str, key: &str, payload: &Value) -> Result<Projec
     let occurred = payload["occurredAt"]
         .as_str()
         .context("fact occurredAt is missing")?;
-    let occurred_at_ms = DateTime::parse_from_rfc3339(occurred)
-        .context("invalid fact occurredAt")?
-        .timestamp_millis();
+    let occurred_at =
+        crate::stats::parse_to_utc_datetime(occurred).context("invalid fact occurredAt")?;
+    let occurred_at_ms = occurred_at.timestamp_millis();
     let mut dimensions = BTreeMap::new();
     for field in [
         "model",
@@ -72,7 +71,12 @@ pub(super) fn normalize(kind: &str, key: &str, payload: &Value) -> Result<Projec
             .filter(|n| n.is_finite() && *n > 0.0 && *n < (i64::MAX as f64))
             .map(|duration| {
                 let end_ms = occurred_at_ms
-                    .checked_add(duration.ceil() as i64)
+                    .checked_add(
+                        (duration
+                            + f64::from(occurred_at.timestamp_subsec_nanos() % 1_000_000)
+                                / 1_000_000.0)
+                            .ceil() as i64,
+                    )
                     .context("fact interval overflow")?;
                 Ok::<CanonicalInterval, anyhow::Error>(CanonicalInterval {
                     start_ms: occurred_at_ms,
