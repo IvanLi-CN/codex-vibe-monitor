@@ -11,6 +11,7 @@ use super::history::coverage::{
     CoverageClaim, CoverageKey, CoverageKind, CoverageLedger, CoverageRange, SeedCapability,
 };
 use super::projection::{self, ProjectionFact, ProjectionModels, PublicationToken};
+use crate::app_state::RuntimeProjectionHub;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -285,6 +286,15 @@ pub(crate) struct RuntimeTailProvenance {
     pub(crate) through_change_id: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeTailReceipt {
+    provenance: RuntimeTailProvenance,
+    rows_digest: String,
+    entity_digest: String,
+    runtime_snapshot_revision: u64,
+    runtime_snapshot_digest: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeTail {
@@ -292,6 +302,8 @@ pub(crate) struct RuntimeTail {
     pub(crate) from_change_id: i64,
     pub(crate) through_change_id: i64,
     pub(crate) rows: Vec<RuntimeTailRow>,
+    #[serde(skip)]
+    receipt: Option<RuntimeTailReceipt>,
 }
 
 impl RuntimeTail {
@@ -301,8 +313,283 @@ impl RuntimeTail {
             from_change_id: at.saturating_add(1),
             through_change_id: at,
             rows: Vec::new(),
+            receipt: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeTailClaim {
+    identity: QueryIdentity,
+    provenance: RuntimeTailProvenance,
+    source_proof: Option<RuntimeTailSourceProof>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeTailSourceProof {
+    runtime_snapshot_revision: u64,
+    runtime_snapshot_digest: String,
+}
+
+impl RuntimeTailClaim {
+    fn seal(self, rows: Vec<RuntimeTailRow>) -> QueryResult<RuntimeTail> {
+        validate_runtime_tail_rows(&self.identity, &self.provenance, &rows)?;
+        let source_proof = self.source_proof.ok_or_else(QueryError::tail_invalid)?;
+        let receipt = RuntimeTailReceipt {
+            provenance: self.provenance.clone(),
+            rows_digest: digest_runtime_tail_rows(&rows)?,
+            entity_digest: digest_runtime_tail_entities(&rows)?,
+            runtime_snapshot_revision: source_proof.runtime_snapshot_revision,
+            runtime_snapshot_digest: source_proof.runtime_snapshot_digest,
+        };
+        Ok(RuntimeTail {
+            provenance: Some(self.provenance.clone()),
+            from_change_id: self.provenance.from_change_id,
+            through_change_id: self.provenance.through_change_id,
+            rows,
+            receipt: Some(receipt),
+        })
+    }
+}
+
+/// Controlled producer seam for the in-flight source. The producer captures the current-state
+/// `RuntimeProjectionHub` directly; it does not accept query-shaped rows or durable journal
+/// envelopes. Its single-use claim, snapshot fence, and stable entity set remain private so a
+/// durable projection suffix cannot be relabelled by changing strings.
+#[derive(Debug)]
+pub(crate) struct RuntimeTailProducer<'hub> {
+    identity: QueryIdentity,
+    hub: &'hub RuntimeProjectionHub,
+    stream_id: String,
+    claim: Option<RuntimeTailClaim>,
+    finished: bool,
+}
+
+impl<'hub> RuntimeTailProducer<'hub> {
+    pub(crate) fn new(
+        identity: QueryIdentity,
+        hub: &'hub RuntimeProjectionHub,
+        stream_id: String,
+    ) -> QueryResult<Self> {
+        if stream_id.trim().is_empty()
+            || identity.checkpoint <= identity.published_through_change_id
+        {
+            return Err(QueryError::tail_invalid());
+        }
+        Ok(Self {
+            identity,
+            hub,
+            stream_id,
+            claim: None,
+            finished: false,
+        })
+    }
+
+    pub(crate) fn claim(&mut self, exclusive_claim_id: String) -> QueryResult<()> {
+        if self.finished || self.claim.is_some() || exclusive_claim_id.trim().is_empty() {
+            return Err(QueryError::tail_invalid());
+        }
+        let from_change_id = self.identity.published_through_change_id.saturating_add(1);
+        self.claim = Some(RuntimeTailClaim {
+            identity: self.identity.clone(),
+            provenance: RuntimeTailProvenance {
+                source_instance_id: self.identity.source_instance_id.clone(),
+                generation: self.identity.generation,
+                owner_epoch: self.identity.owner_epoch,
+                stream_id: self.stream_id.clone(),
+                exclusive_claim_id,
+                from_change_id,
+                through_change_id: self.identity.checkpoint,
+            },
+            source_proof: None,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> QueryResult<RuntimeTail> {
+        if self.finished {
+            return Err(QueryError::tail_invalid());
+        }
+        self.finished = true;
+        let snapshot_revision_before = self.hub.dashboard_generation();
+        let mut records = self.hub.snapshot();
+        let snapshot_revision_after = self.hub.dashboard_generation();
+        if snapshot_revision_before != snapshot_revision_after {
+            return Err(QueryError::tail_invalid());
+        }
+        let Some(claim) = self.claim.take() else {
+            return Err(QueryError::tail_invalid());
+        };
+        let expected_records = usize::try_from(
+            claim
+                .provenance
+                .through_change_id
+                .saturating_sub(claim.provenance.from_change_id)
+                .saturating_add(1),
+        )
+        .map_err(|_| QueryError::tail_invalid())?;
+        if records.len() != expected_records {
+            return Err(QueryError::tail_invalid());
+        }
+        records.sort_by(|left, right| {
+            left.occurred_at
+                .cmp(&right.occurred_at)
+                .then_with(|| left.invoke_id.cmp(&right.invoke_id))
+        });
+        let mut seen_entities = BTreeSet::new();
+        let mut rows = Vec::with_capacity(records.len());
+        for (offset, record) in records.into_iter().enumerate() {
+            let status = record
+                .status
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if record.id != 0
+                || !matches!(status.as_str(), "running" | "pending")
+                || record.invoke_id.trim().is_empty()
+                || record.occurred_at.trim().is_empty()
+            {
+                return Err(QueryError::tail_invalid());
+            }
+            let entity_key = format!("{}\u{001f}{}", record.invoke_id, record.occurred_at);
+            if !seen_entities.insert(entity_key.clone()) {
+                return Err(QueryError::tail_invalid());
+            }
+            let mut payload =
+                serde_json::to_value(&record).map_err(|_| QueryError::tail_invalid())?;
+            let Some(payload) = payload.as_object_mut() else {
+                return Err(QueryError::tail_invalid());
+            };
+            payload.insert("factVersion".into(), serde_json::json!(1));
+            payload.insert(
+                "occurredAt".into(),
+                serde_json::Value::String(record.occurred_at.clone()),
+            );
+            payload.insert("successLike".into(), serde_json::json!(false));
+            let payload = serde_json::Value::Object(std::mem::take(payload));
+            let payload_digest =
+                super::digest_json(&payload).map_err(|_| QueryError::tail_invalid())?;
+            rows.push(RuntimeTailRow {
+                source_instance_id: claim.provenance.source_instance_id.clone(),
+                generation: claim.provenance.generation,
+                owner_epoch: claim.provenance.owner_epoch,
+                change_id: claim
+                    .provenance
+                    .from_change_id
+                    .saturating_add(offset as i64),
+                coverage_revision: self.identity.coverage_revision,
+                entity_kind: "invocation".into(),
+                entity_key,
+                operation: "upsert".into(),
+                occurred_at: record.occurred_at,
+                payload_digest,
+                payload,
+            });
+        }
+        let runtime_snapshot_digest = digest_runtime_tail_entities(&rows)?;
+        let mut claim = claim;
+        claim.source_proof = Some(RuntimeTailSourceProof {
+            runtime_snapshot_revision: snapshot_revision_after,
+            runtime_snapshot_digest,
+        });
+        claim.seal(rows)
+    }
+}
+
+fn digest_runtime_tail_rows(rows: &[RuntimeTailRow]) -> QueryResult<String> {
+    let value = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "sourceInstanceId": row.source_instance_id,
+                "generation": row.generation,
+                "ownerEpoch": row.owner_epoch,
+                "changeId": row.change_id,
+                "coverageRevision": row.coverage_revision,
+                "entityKind": row.entity_kind,
+                "entityKey": row.entity_key,
+                "operation": row.operation,
+                "occurredAt": row.occurred_at,
+                "payloadDigest": row.payload_digest,
+                "payload": row.payload,
+            })
+        })
+        .collect::<Vec<_>>();
+    super::digest_json(&Value::Array(value)).map_err(|_| QueryError::tail_invalid())
+}
+
+fn digest_runtime_tail_entities(rows: &[RuntimeTailRow]) -> QueryResult<String> {
+    let value = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "changeId": row.change_id,
+                "entityKind": row.entity_kind,
+                "entityKey": row.entity_key,
+            })
+        })
+        .collect::<Vec<_>>();
+    super::digest_json(&Value::Array(value)).map_err(|_| QueryError::tail_invalid())
+}
+
+fn validate_runtime_tail_rows(
+    identity: &QueryIdentity,
+    provenance: &RuntimeTailProvenance,
+    rows: &[RuntimeTailRow],
+) -> QueryResult<()> {
+    if provenance.source_instance_id != identity.source_instance_id
+        || provenance.generation != identity.generation
+        || provenance.owner_epoch != identity.owner_epoch
+        || provenance.stream_id.trim().is_empty()
+        || provenance.exclusive_claim_id.trim().is_empty()
+        || provenance.from_change_id != identity.published_through_change_id.saturating_add(1)
+        || provenance.through_change_id != identity.checkpoint
+        || rows.is_empty()
+    {
+        return Err(QueryError::tail_invalid());
+    }
+
+    let mut expected_change_id = provenance.from_change_id;
+    let mut seen_entities = BTreeSet::new();
+    for row in rows {
+        if row.source_instance_id != provenance.source_instance_id
+            || row.generation != provenance.generation
+            || row.owner_epoch != provenance.owner_epoch
+            || row.change_id != expected_change_id
+            || row.change_id > provenance.through_change_id
+            || row.coverage_revision > identity.coverage_revision
+            || row.entity_kind.trim().is_empty()
+            || row.entity_key.trim().is_empty()
+            || row.occurred_at.trim().is_empty()
+            || row.payload_digest.trim().is_empty()
+            || !row.payload.is_object()
+        {
+            return Err(QueryError::tail_invalid());
+        }
+        let digest = super::digest_json(&row.payload).map_err(|_| QueryError::tail_invalid())?;
+        if digest != row.payload_digest {
+            return Err(QueryError::tail_invalid());
+        }
+        if !matches!(
+            row.operation.as_str(),
+            "upsert" | "correction" | "logical_revoke"
+        ) {
+            return Err(QueryError::tail_invalid());
+        }
+        if !seen_entities.insert((
+            row.change_id,
+            row.entity_kind.clone(),
+            row.entity_key.clone(),
+        )) {
+            return Err(QueryError::tail_invalid());
+        }
+        expected_change_id = expected_change_id.saturating_add(1);
+    }
+    if expected_change_id != provenance.through_change_id.saturating_add(1) {
+        return Err(QueryError::tail_invalid());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -407,7 +694,7 @@ fn validate_runtime_tail_provenance(
     is_last_good_fallback: bool,
 ) -> QueryResult<()> {
     if is_last_good_fallback {
-        return if tail.provenance.is_none() {
+        return if tail.provenance.is_none() && tail.receipt.is_none() {
             Ok(())
         } else {
             Err(QueryError::tail_invalid())
@@ -426,6 +713,17 @@ fn validate_runtime_tail_provenance(
     {
         return Err(QueryError::tail_invalid());
     }
+    let Some(receipt) = tail.receipt.as_ref() else {
+        return Err(QueryError::tail_invalid());
+    };
+    if receipt.provenance != *provenance
+        || receipt.rows_digest != digest_runtime_tail_rows(&tail.rows)?
+        || receipt.entity_digest != digest_runtime_tail_entities(&tail.rows)?
+        || receipt.runtime_snapshot_digest != receipt.entity_digest
+    {
+        return Err(QueryError::tail_invalid());
+    }
+    validate_runtime_tail_rows(identity, provenance, &tail.rows)?;
     Ok(())
 }
 
@@ -478,6 +776,9 @@ pub(crate) fn compose_runtime_tail(
             return Err(QueryError::tail_invalid());
         }
         let entity = (row.entity_kind.clone(), row.entity_key.clone());
+        if row.entity_key.contains('\u{001f}') && facts.contains_key(&entity) {
+            return Err(QueryError::tail_invalid());
+        }
         if let Some(previous_digest) =
             seen_payloads.insert(entity.clone(), row.payload_digest.clone())
             && previous_digest == row.payload_digest
@@ -803,7 +1104,7 @@ mod tests {
     use serde_json::json;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::sync::Arc;
-    use tokio::sync::Barrier;
+    use tokio::sync::{Barrier, Notify};
 
     fn coverage() -> CoverageLedger {
         let mut ledger = CoverageLedger::default();
@@ -880,7 +1181,130 @@ mod tests {
         }
     }
 
+    fn sealed_test_tail(rows: Vec<RuntimeTailRow>) -> RuntimeTail {
+        let provenance = RuntimeTailProvenance {
+            source_instance_id: "source-a".into(),
+            generation: 1,
+            owner_epoch: 4,
+            stream_id: "runtime-stream-a".into(),
+            exclusive_claim_id: "claim-a".into(),
+            from_change_id: 2,
+            through_change_id: 2,
+        };
+        let source_proof = RuntimeTailSourceProof {
+            runtime_snapshot_revision: 1,
+            runtime_snapshot_digest: digest_runtime_tail_entities(&rows).unwrap(),
+        };
+        RuntimeTailClaim {
+            identity: identity(),
+            provenance,
+            source_proof: Some(source_proof),
+        }
+        .seal(rows)
+        .unwrap()
+    }
+
+    fn runtime_record(row: &RuntimeTailRow) -> crate::ApiInvocation {
+        crate::ApiInvocation {
+            id: 0,
+            invoke_id: row.entity_key.clone(),
+            occurred_at: row.occurred_at.clone(),
+            source: "proxy".into(),
+            proxy_display_name: None,
+            model: row
+                .payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            request_model: None,
+            response_model: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_input_tokens: None,
+            reported_cache_write_tokens: None,
+            reasoning_tokens: None,
+            reasoning_effort: None,
+            total_tokens: row.payload.get("totalTokens").and_then(Value::as_i64),
+            cost: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            cache_write_tokens: None,
+            status: Some("running".into()),
+            live_phase: Some("requesting".into()),
+            error_message: None,
+            downstream_status_code: None,
+            failure_kind: None,
+            blocked_binding: None,
+            blocked_binding_json: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            failure_class: None,
+            is_actionable: None,
+            endpoint: None,
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: None,
+            requester_ip: None,
+            prompt_cache_key: None,
+            sticky_key: None,
+            route_mode: None,
+            upstream_account_id: None,
+            upstream_account_name: None,
+            response_content_encoding: None,
+            request_compression_algorithm: None,
+            transport: None,
+            pool_attempt_count: None,
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
+            requested_service_tier: None,
+            service_tier: None,
+            billing_service_tier: None,
+            proxy_weight_delta: None,
+            cost_estimated: None,
+            price_version: None,
+            cost_audit: None,
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            detail_level: "full".into(),
+            detail_pruned_at: None,
+            detail_prune_reason: None,
+            t_total_ms: row.payload.get("tTotalMs").and_then(Value::as_f64),
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            first_token_ms: None,
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+            created_at: row.occurred_at.clone(),
+        }
+    }
+
     fn runtime_tail(rows: Vec<RuntimeTailRow>) -> RuntimeTail {
+        let hub = RuntimeProjectionHub::new(crate::app_state::RuntimeProjectionMode::Auto);
+        for row in &rows {
+            hub.upsert(runtime_record(row));
+        }
+        let mut producer =
+            RuntimeTailProducer::new(identity(), &hub, "runtime-stream-a".into()).unwrap();
+        producer.claim("claim-a".into()).unwrap();
+        producer.finish().unwrap()
+    }
+
+    fn untrusted_runtime_tail(rows: Vec<RuntimeTailRow>) -> RuntimeTail {
         RuntimeTail {
             provenance: Some(RuntimeTailProvenance {
                 source_instance_id: "source-a".into(),
@@ -894,11 +1318,13 @@ mod tests {
             from_change_id: 2,
             through_change_id: 2,
             rows,
+            receipt: None,
         }
     }
 
     struct SqliteTestLoader {
-        barrier: Option<Arc<Barrier>>,
+        first_read: Option<Arc<Barrier>>,
+        writer_committed: Option<Arc<Notify>>,
         mismatched_identity: bool,
     }
 
@@ -916,8 +1342,11 @@ mod tests {
             .fetch_one(&mut **tx)
             .await
             .map_err(|_| QueryError::unavailable())?;
-            if let Some(barrier) = &self.barrier {
+            if let Some(barrier) = &self.first_read {
                 barrier.wait().await;
+            }
+            if let Some(writer_committed) = &self.writer_committed {
+                writer_committed.notified().await;
                 let observed = sqlx::query_as::<_, (i64, i64)>(
                     "SELECT checkpoint, total_tokens FROM query_snapshot WHERE consumer_id = ?1",
                 )
@@ -955,14 +1384,14 @@ mod tests {
             "totalTokens": 3,
             "model": "fixture"
         });
-        let tail = runtime_tail(vec![row(2, "row-a", "correction", replacement)]);
+        let tail = sealed_test_tail(vec![row(2, "row-a", "correction", replacement)]);
         let (facts, models) =
             compose_runtime_tail(&identity(), &[fact("row-a", 10)], tail).unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].payload["totalTokens"], 3);
         assert!(!models.rollups.is_empty());
 
-        let revoked = runtime_tail(vec![row(
+        let revoked = sealed_test_tail(vec![row(
             2,
             "row-a",
             "logical_revoke",
@@ -991,7 +1420,7 @@ mod tests {
             QueryErrorCode::TailInvalid
         );
 
-        let mut wrong_claim = runtime_tail(vec![row(2, "row-a", "upsert", payload)]);
+        let mut wrong_claim = runtime_tail(vec![row(2, "row-a", "upsert", payload.clone())]);
         wrong_claim
             .provenance
             .as_mut()
@@ -999,6 +1428,71 @@ mod tests {
             .exclusive_claim_id = "".into();
         assert_eq!(
             compose_runtime_tail(&identity(), &[], wrong_claim)
+                .unwrap_err()
+                .code,
+            QueryErrorCode::TailInvalid
+        );
+
+        let mut changed_row = runtime_tail(vec![row(2, "row-a", "upsert", payload.clone())]);
+        changed_row.rows[0].payload["totalTokens"] = json!(99);
+        assert_eq!(
+            compose_runtime_tail(&identity(), &[], changed_row)
+                .unwrap_err()
+                .code,
+            QueryErrorCode::TailInvalid
+        );
+
+        let durable_relabel = untrusted_runtime_tail(vec![row(2, "row-a", "upsert", payload)]);
+        assert_eq!(
+            compose_runtime_tail(&identity(), &[], durable_relabel)
+                .unwrap_err()
+                .code,
+            QueryErrorCode::TailInvalid
+        );
+    }
+
+    #[test]
+    fn runtime_tail_producer_captures_only_one_live_hub_claim() {
+        let live_row = row(
+            2,
+            "runtime-row",
+            "upsert",
+            json!({
+                "factVersion": 1,
+                "occurredAt": "2026-11-01T00:00:00Z",
+                "successLike": false,
+                "totalTokens": 3
+            }),
+        );
+        let hub = RuntimeProjectionHub::new(crate::app_state::RuntimeProjectionMode::Auto);
+        hub.upsert(runtime_record(&live_row));
+        let mut producer =
+            RuntimeTailProducer::new(identity(), &hub, "runtime-stream-a".into()).unwrap();
+        producer.claim("claim-a".into()).unwrap();
+        assert_eq!(
+            producer.claim("claim-b".into()).unwrap_err().code,
+            QueryErrorCode::TailInvalid
+        );
+        let tail = producer.finish().unwrap();
+        compose_runtime_tail(&identity(), &[], tail.clone()).unwrap();
+
+        let persisted_hub =
+            RuntimeProjectionHub::new(crate::app_state::RuntimeProjectionMode::Auto);
+        let mut persisted = runtime_record(&live_row);
+        persisted.id = 42;
+        persisted_hub.upsert(persisted);
+        let mut persisted_producer =
+            RuntimeTailProducer::new(identity(), &persisted_hub, "runtime-stream-a".into())
+                .unwrap();
+        persisted_producer.claim("claim-a".into()).unwrap();
+        assert_eq!(
+            persisted_producer.finish().unwrap_err().code,
+            QueryErrorCode::TailInvalid
+        );
+
+        let overlapping_base = fact(&tail.rows[0].entity_key, 1);
+        assert_eq!(
+            compose_runtime_tail(&identity(), &[overlapping_base], tail)
                 .unwrap_err()
                 .code,
             QueryErrorCode::TailInvalid
@@ -1029,13 +1523,13 @@ mod tests {
             ),
             ("logical_revoke", json!({"factVersion": 1})),
         ] {
-            let persistent_tail = runtime_tail(vec![row(2, "row-a", operation, payload)]);
-            let (unpublished_facts, _) =
-                compose_runtime_tail(&identity(), &base, persistent_tail.clone()).unwrap();
-            match operation {
-                "logical_revoke" => assert!(unpublished_facts.is_empty()),
-                _ => assert_ne!(unpublished_facts[0].payload["totalTokens"], 10),
-            }
+            let persistent_tail = untrusted_runtime_tail(vec![row(2, "row-a", operation, payload)]);
+            assert_eq!(
+                compose_runtime_tail(&identity(), &base, persistent_tail)
+                    .unwrap_err()
+                    .code,
+                QueryErrorCode::TailInvalid
+            );
             let admitted = last_good_tail_for_persistent_snapshot(&identity()).unwrap();
             assert_eq!(admitted, RuntimeTail::empty(1));
             let (facts, _) = compose_runtime_tail(&identity(), &base, admitted).unwrap();
@@ -1113,25 +1607,36 @@ mod tests {
             .await
             .unwrap();
 
-        let barrier = Arc::new(Barrier::new(2));
-        let loader_barrier = barrier.clone();
+        let first_read = Arc::new(Barrier::new(2));
+        let writer_committed = Arc::new(Notify::new());
+        let loader_first_read = first_read.clone();
+        let loader_writer_committed = writer_committed.clone();
         let query_pool = pool.clone();
         let query_task = tokio::spawn(async move {
             query_sqlite_snapshot(
                 &query_pool,
                 &request(),
                 &SqliteTestLoader {
-                    barrier: Some(loader_barrier),
+                    first_read: Some(loader_first_read),
+                    writer_committed: Some(loader_writer_committed),
                     mismatched_identity: false,
                 },
             )
             .await
         });
-        barrier.wait().await;
+        first_read.wait().await;
         sqlx::query("UPDATE query_snapshot SET checkpoint = 3, total_tokens = 99 WHERE consumer_id = 'invocation'")
             .execute(&pool)
             .await
             .unwrap();
+        let outside = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT checkpoint, total_tokens FROM query_snapshot WHERE consumer_id = 'invocation'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(outside, (3, 99));
+        writer_committed.notify_one();
         let response = query_task.await.unwrap().unwrap();
         assert_eq!(response.identity.checkpoint, 2);
         assert_eq!(response.facts[0].payload["totalTokens"], 10);
@@ -1142,7 +1647,8 @@ mod tests {
             &pool,
             &request(),
             &SqliteTestLoader {
-                barrier: None,
+                first_read: None,
+                writer_committed: None,
                 mismatched_identity: true,
             },
         )
@@ -1195,16 +1701,16 @@ mod tests {
             "occurredAt": "2026-11-01T00:00:00Z",
             "successLike": true
         });
-        let mut bad = row(2, "row-a", "upsert", payload);
-        bad.payload_digest = "wrong".into();
-        let tail = runtime_tail(vec![bad]);
+        let mut tail = sealed_test_tail(vec![row(2, "row-a", "upsert", payload)]);
+        tail.rows[0].payload_digest = "wrong".into();
         assert_eq!(
             compose_runtime_tail(&identity(), &[], tail)
                 .unwrap_err()
                 .code,
             QueryErrorCode::TailInvalid
         );
-        let gap = runtime_tail(vec![row(3, "row-a", "upsert", json!({"factVersion": 1}))]);
+        let mut gap = runtime_tail(vec![row(2, "row-a", "upsert", json!({"factVersion": 1}))]);
+        gap.rows[0].change_id = 3;
         assert_eq!(
             compose_runtime_tail(&identity(), &[], gap)
                 .unwrap_err()
