@@ -8,7 +8,8 @@ use std::fmt;
 mod postgres_tests;
 
 pub(crate) const ANALYTICS_MODULE_VERSION: i64 = 1;
-pub(crate) const ANALYTICS_MODULE_READER_VERSION: i64 = 1;
+pub(crate) const ANALYTICS_MODULE_READER_VERSION: i64 = 3;
+pub(crate) const ANALYTICS_MODULE_DDL_MIN_READER_VERSION: i64 = 1;
 pub(crate) const ANALYTICS_MODULE_DDL_COMPONENT: &str = "analytics-module";
 pub(crate) const ANALYTICS_MODULE_DDL_STEP: &str = "module-owner-build-publication-v1";
 pub(crate) const ANALYTICS_MODULE_SCHEMA_VERSION: i64 = 1;
@@ -30,7 +31,7 @@ pub(crate) struct AnalyticsDdlStep {
 pub(crate) const ANALYTICS_MODULE_DDL_STEPS: &[AnalyticsDdlStep] = &[AnalyticsDdlStep {
     order: 1,
     step_id: ANALYTICS_MODULE_DDL_STEP,
-    min_reader_version: ANALYTICS_MODULE_READER_VERSION,
+    min_reader_version: ANALYTICS_MODULE_DDL_MIN_READER_VERSION,
     requires_bootstrap: true,
 }];
 

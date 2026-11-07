@@ -245,6 +245,7 @@ mod tests {
         for (index, declaration) in ANALYTICS_MODULE_DECLARATIONS.iter().enumerate() {
             assert!(!declaration.consumer_id.is_empty());
             assert_eq!(declaration.version, ANALYTICS_MODULE_VERSION);
+            assert_eq!(declaration.reader_version, ANALYTICS_MODULE_READER_VERSION);
             assert!(AnalyticsModuleId::ALL.contains(&declaration.id));
             assert!(
                 ANALYTICS_MODULE_DECLARATIONS[index + 1..]
@@ -277,7 +278,11 @@ mod tests {
             status: AnalyticsOwnerStatus::Active,
             build_id: Some("build-1".to_string()),
         };
-        assert!(InvocationAnalyticsModule.accepts(&publication));
+        for reader_version in 1..=ANALYTICS_MODULE_READER_VERSION {
+            let mut compatible_publication = publication.clone();
+            compatible_publication.reader_version = reader_version;
+            assert!(InvocationAnalyticsModule.accepts(&compatible_publication));
+        }
 
         let mut future_publication = publication.clone();
         future_publication.reader_version = ANALYTICS_MODULE_READER_VERSION + 1;
@@ -292,8 +297,18 @@ mod tests {
 
     #[test]
     fn ddl_and_role_contracts_are_forward_only_and_least_privilege() {
+        assert_eq!(ANALYTICS_MODULE_READER_VERSION, 3);
+        assert_eq!(ANALYTICS_MODULE_DDL_MIN_READER_VERSION, 1);
         assert_eq!(ANALYTICS_MODULE_DDL_STEPS.len(), 1);
         assert_eq!(ANALYTICS_MODULE_DDL_STEPS[0].order, 1);
+        assert_eq!(
+            ANALYTICS_MODULE_DDL_STEPS[0].step_id,
+            ANALYTICS_MODULE_DDL_STEP
+        );
+        assert_eq!(
+            ANALYTICS_MODULE_DDL_STEPS[0].min_reader_version,
+            ANALYTICS_MODULE_DDL_MIN_READER_VERSION
+        );
         assert!(ANALYTICS_MODULE_DDL_STEPS[0].requires_bootstrap);
         for relation in [
             "analytics_module_ddl_ledger",

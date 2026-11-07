@@ -198,6 +198,23 @@ async fn test_idempotent_schema(owner: &mut PgConnection) -> Result<()> {
         applied_count == 1,
         "module ledger has an unexpected applied-row count"
     );
+    let (step_id, min_reader_version): (String, i64) = sqlx::query_as(
+        "SELECT step_id, min_reader_version
+         FROM cvm_analytics.analytics_module_ddl_ledger
+         WHERE component = $1 AND step_order = 1",
+    )
+    .bind(super::super::ANALYTICS_MODULE_DDL_COMPONENT)
+    .fetch_one(&mut *owner)
+    .await
+    .context("inspect applied module ledger marker")?;
+    ensure!(
+        step_id == super::super::ANALYTICS_MODULE_DDL_STEP,
+        "module ledger step identity changed"
+    );
+    ensure!(
+        min_reader_version == super::super::ANALYTICS_MODULE_DDL_MIN_READER_VERSION,
+        "module ledger minimum reader marker changed"
+    );
     Ok(())
 }
 
