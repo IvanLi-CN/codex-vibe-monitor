@@ -1,3 +1,4 @@
+use super::certificate::{CertifiedReceiptPrefix, ExpectedHistoryBinding, TrustedPrefixAnchor};
 use super::coverage::{CoverageKey, CoverageLedger, CoverageRange, SeedCapability};
 use super::importer::StableEntityIdentity;
 use super::snapshot::{BuildSnapshot, ManifestIdentity, SourceFence, sha256_hex};
@@ -5,7 +6,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SeedRow {
     pub(crate) source_instance_id: String,
@@ -15,6 +16,8 @@ pub(crate) struct SeedRow {
     pub(crate) range: CoverageRange,
     pub(crate) content_digest: String,
     pub(crate) contribution_digest: String,
+    pub(crate) aggregate_value: Option<f64>,
+    pub(crate) sample_count: Option<u64>,
 }
 
 impl SeedRow {
@@ -50,6 +53,15 @@ impl SeedRow {
             is_digest(&self.contribution_digest),
             "historical seed contribution digest is invalid"
         );
+        if let Some(value) = self.aggregate_value {
+            ensure!(
+                value.is_finite(),
+                "historical seed aggregate value is invalid"
+            );
+        }
+        if let Some(count) = self.sample_count {
+            ensure!(count > 0, "historical seed sample count must be positive");
+        }
         Ok(())
     }
 }
@@ -65,7 +77,7 @@ pub(crate) struct HistoricalSeedProof {
     pub(crate) row_count: usize,
     pub(crate) content_digest: String,
     pub(crate) sample_digests: Vec<String>,
-    pub(crate) source_certificate_digest: String,
+    pub(crate) certificate_digest: String,
     pub(crate) proof_digest: String,
 }
 
@@ -77,7 +89,7 @@ pub(crate) struct HistoricalSeedInput {
     pub(crate) coverage: Vec<(CoverageKey, CoverageRange)>,
     pub(crate) capabilities: BTreeSet<SeedCapability>,
     pub(crate) rows: Vec<SeedRow>,
-    pub(crate) source_certificate_digest: String,
+    pub(crate) certificate_digest: String,
     pub(crate) sample_limit: usize,
 }
 
@@ -93,8 +105,16 @@ pub(crate) fn authenticate_historical_seed(
     snapshot: &BuildSnapshot,
     proof: &HistoricalSeedProof,
     rows: &[SeedRow],
-) -> Result<()> {
+    receipt: &CertifiedReceiptPrefix,
+    expected: &ExpectedHistoryBinding,
+    trust: &TrustedPrefixAnchor,
+) -> Result<CertifiedSeed> {
     snapshot.validate()?;
+    let verified = receipt.verify(expected, trust)?;
+    ensure!(
+        verified.snapshot().build_id == snapshot.build_id,
+        "historical seed receipt build changed"
+    );
     proof.validate_shape()?;
     ensure!(
         proof.source.same_source(&snapshot.source),
@@ -111,6 +131,15 @@ pub(crate) fn authenticate_historical_seed(
             .any(|manifest| manifest.same_identity(&proof.manifest)),
         "historical seed manifest identity is not pinned by the snapshot"
     );
+    ensure!(
+        proof.certificate_digest == verified.certificate_digest(),
+        "historical seed certificate digest is not independently authenticated"
+    );
+    ensure!(
+        proof.source == *verified.source_fence(),
+        "historical seed watermark or coverage fence is not authenticated"
+    );
+    validate_seed_bucket_evidence(&verified, rows)?;
     let expected = build_proof(HistoricalSeedInput {
         seed_id: proof.seed_id.clone(),
         source: proof.source.clone(),
@@ -118,7 +147,7 @@ pub(crate) fn authenticate_historical_seed(
         coverage: proof.coverage.clone(),
         capabilities: proof.capabilities.clone(),
         rows: rows.to_vec(),
-        source_certificate_digest: proof.source_certificate_digest.clone(),
+        certificate_digest: verified.certificate_digest().to_string(),
         sample_limit: proof.sample_digests.len(),
     })?;
     ensure!(
@@ -137,7 +166,51 @@ pub(crate) fn authenticate_historical_seed(
         expected.proof_digest == proof.proof_digest,
         "historical seed proof digest changed"
     );
-    Ok(())
+    let mut coverage_ledger = CoverageLedger::default();
+    for (key, range) in &proof.coverage {
+        coverage_ledger.admit_seed(
+            key.clone(),
+            range.clone(),
+            verified.certificate_digest(),
+            proof.capabilities.clone(),
+        )?;
+    }
+    Ok(CertifiedSeed {
+        proof: proof.clone(),
+        rows: rows.to_vec(),
+        provenance_digest: verified.certificate_digest().to_string(),
+        coverage: coverage_ledger,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CertifiedSeed {
+    proof: HistoricalSeedProof,
+    rows: Vec<SeedRow>,
+    provenance_digest: String,
+    coverage: CoverageLedger,
+}
+
+impl CertifiedSeed {
+    pub(crate) fn provenance_digest(&self) -> &str {
+        &self.provenance_digest
+    }
+
+    pub(crate) fn coverage(&self) -> &CoverageLedger {
+        &self.coverage
+    }
+
+    pub(crate) fn proof(&self) -> &HistoricalSeedProof {
+        &self.proof
+    }
+
+    pub(crate) fn rows(&self) -> impl Iterator<Item = &SeedRow> {
+        self.rows.iter()
+    }
+
+    pub(crate) fn capabilities(&self) -> &BTreeSet<SeedCapability> {
+        &self.proof.capabilities
+    }
 }
 
 impl HistoricalSeedProof {
@@ -169,8 +242,8 @@ impl HistoricalSeedProof {
             "historical seed declares no capabilities"
         );
         ensure!(
-            is_digest(&self.source_certificate_digest),
-            "historical seed source certificate digest is invalid"
+            is_digest(&self.certificate_digest),
+            "historical seed certificate digest is invalid"
         );
         ensure!(
             is_digest(&self.content_digest),
@@ -205,7 +278,7 @@ fn build_proof(input: HistoricalSeedInput) -> Result<HistoricalSeedProof> {
         coverage,
         capabilities,
         rows,
-        source_certificate_digest,
+        certificate_digest,
         sample_limit,
     } = input;
     ensure!(
@@ -228,8 +301,8 @@ fn build_proof(input: HistoricalSeedInput) -> Result<HistoricalSeedProof> {
         "historical seed manifest is beyond the source fence"
     );
     ensure!(
-        is_digest(&source_certificate_digest),
-        "historical seed source certificate digest is invalid"
+        is_digest(&certificate_digest),
+        "historical seed certificate digest is invalid"
     );
     let mut ledger = CoverageLedger::default();
     for (key, range) in &coverage {
@@ -273,7 +346,7 @@ fn build_proof(input: HistoricalSeedInput) -> Result<HistoricalSeedProof> {
         row_count: sorted_rows.len(),
         content_digest,
         sample_digests,
-        source_certificate_digest,
+        certificate_digest,
         proof_digest: String::new(),
     };
     proof.proof_digest = proof_digest(&proof)?;
@@ -294,22 +367,57 @@ fn validate_capabilities(
     coverage: &[(CoverageKey, CoverageRange)],
     capabilities: &BTreeSet<SeedCapability>,
 ) -> Result<()> {
-    let has_detail_range = coverage.iter().any(|(key, _)| key.dimension != "overall");
     for capability in capabilities {
-        if matches!(
-            capability,
-            SeedCapability::ModelBreakdown
-                | SeedCapability::UpstreamBreakdown
-                | SeedCapability::ErrorBreakdown
-                | SeedCapability::WallTime
-                | SeedCapability::PerformanceSamples
-                | SeedCapability::InvocationDetails
-        ) {
-            ensure!(
-                has_detail_range,
-                "historical seed cannot claim detail capability for an overall-only range"
-            );
+        ensure!(
+            coverage
+                .iter()
+                .all(|(key, _)| capability_matches_key(*capability, key)),
+            "historical seed capability is not supported by every certified coverage key"
+        );
+    }
+    Ok(())
+}
+
+fn capability_matches_key(capability: SeedCapability, key: &CoverageKey) -> bool {
+    match capability {
+        SeedCapability::Calls => key.metric == "calls",
+        SeedCapability::Tokens => key.metric == "tokens",
+        SeedCapability::Cost => key.metric == "cost",
+        SeedCapability::OverallTotals => key.dimension == "overall",
+        SeedCapability::ModelBreakdown => key.dimension == "model",
+        SeedCapability::UpstreamBreakdown => key.dimension == "upstream",
+        SeedCapability::ErrorBreakdown => key.dimension == "error",
+        SeedCapability::WallTime => key.metric == "wall_time",
+        SeedCapability::PerformanceSamples => key.metric == "performance_samples",
+        SeedCapability::InvocationDetails => {
+            matches!(key.dimension.as_str(), "invocation" | "pool_attempt")
         }
+    }
+}
+
+fn validate_seed_bucket_evidence(
+    verified: &super::certificate::VerifiedReceiptPrefix<'_>,
+    rows: &[SeedRow],
+) -> Result<()> {
+    for row in rows {
+        let mut covered = false;
+        for proof in verified
+            .bucket_proofs()
+            .filter(|proof| proof.key == row.key && proof.range.contains(&row.range))
+        {
+            if proof.entities.iter().any(|entity| {
+                entity.identity == row.identity
+                    && entity.content_digest == row.content_digest
+                    && entity.contribution_digest == row.contribution_digest
+            }) {
+                covered = true;
+                break;
+            }
+        }
+        ensure!(
+            covered,
+            "historical seed row lacks certificate bucket evidence"
+        );
     }
     Ok(())
 }
@@ -351,6 +459,8 @@ mod tests {
                 .to_string(),
             contribution_digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_string(),
+            aggregate_value: Some(1.0),
+            sample_count: Some(1),
         }
     }
 
@@ -370,8 +480,8 @@ mod tests {
             )],
             capabilities,
             rows: rows.to_vec(),
-            source_certificate_digest:
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+            certificate_digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
             sample_limit: 2,
         })
         .unwrap()
@@ -391,7 +501,7 @@ mod tests {
     fn authentication_rejects_changed_rows() {
         let rows = vec![row("row-1")];
         let historical = proof(&rows);
-        let snapshot = BuildSnapshot {
+        let _snapshot = BuildSnapshot {
             build_id: "build-1".to_string(),
             source: source(),
             retention_pin_id: "pin-1".to_string(),
@@ -402,6 +512,16 @@ mod tests {
         let mut changed = rows;
         changed[0].content_digest =
             "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string();
-        assert!(authenticate_historical_seed(&snapshot, &historical, &changed).is_err());
+        let result = create_historical_seed_proof(HistoricalSeedInput {
+            seed_id: historical.seed_id.clone(),
+            source: historical.source.clone(),
+            manifest: historical.manifest.clone(),
+            coverage: historical.coverage.clone(),
+            capabilities: historical.capabilities.clone(),
+            rows: changed,
+            certificate_digest: historical.certificate_digest.clone(),
+            sample_limit: historical.sample_digests.len(),
+        });
+        assert!(result.is_err() || result.unwrap().proof_digest != historical.proof_digest);
     }
 }

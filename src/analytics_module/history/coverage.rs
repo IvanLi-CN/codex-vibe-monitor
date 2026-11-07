@@ -114,6 +114,13 @@ impl CoverageLedger {
         &self.claims
     }
 
+    pub(crate) fn merge(&mut self, other: &Self) -> Result<()> {
+        for claim in &other.claims {
+            self.admit(claim.clone())?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn admit_exact(
         &mut self,
         key: CoverageKey,
