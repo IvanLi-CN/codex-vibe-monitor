@@ -71,11 +71,12 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
         "tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_health_and_hydration::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure",
     );
     let _whole_test = test_timing_span("whole_test");
-    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
+    let (mut state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-hot-read-readiness-pressure",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
     .await;
+    enable_test_admin_auth(&mut state);
     state.startup_ready.store(false, Ordering::Release);
     let (addr, server_handle) = spawn_http_server(state.clone())
         .await
@@ -111,7 +112,10 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
     for endpoint in ["/api/stats/summary?window=today", "/api/system/status"] {
         let response = tokio::time::timeout(
             Duration::from_millis(250),
-            client.get(format!("http://{addr}{endpoint}")).send(),
+            client
+                .get(format!("http://{addr}{endpoint}"))
+                .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
+                .send(),
         )
         .await
         .expect("hot-read request must not wait for SQLite during startup")
@@ -133,7 +137,10 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
     );
 
     for endpoint in ["/api/stats/summary?window=today", "/api/system/status"] {
-        let response = reqwest::get(format!("http://{addr}{endpoint}"))
+        let response = client
+            .get(format!("http://{addr}{endpoint}"))
+            .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
+            .send()
             .await
             .expect("hydrated hot-read endpoint should respond");
         assert_eq!(response.status(), StatusCode::OK);

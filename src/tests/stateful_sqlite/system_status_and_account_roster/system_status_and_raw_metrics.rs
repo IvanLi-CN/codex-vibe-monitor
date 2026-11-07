@@ -294,15 +294,16 @@ async fn system_status_aggregates_counts_and_file_sizes() {
 
 #[tokio::test]
 async fn system_storage_endpoint_reads_only_the_memory_snapshot_when_sqlite_is_closed() {
-    let state = test_state_with_openai_base(
+    let mut state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:1/").expect("valid test upstream URL"),
     )
     .await;
+    enable_test_admin_auth(&mut state);
     state.pool.close().await;
 
     let response = build_app_router(state)
         .oneshot(
-            Request::builder()
+            test_admin_request()
                 .uri("/api/system/storage")
                 .body(Body::empty())
                 .expect("build storage request"),

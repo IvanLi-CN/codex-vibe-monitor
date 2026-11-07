@@ -422,10 +422,11 @@ async fn prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slot
 
 #[tokio::test]
 async fn prompt_cache_conversation_binding_route_accepts_encoded_key() {
-    let state = test_state_with_openai_base(
+    let mut state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_test_admin_auth(&mut state);
     let group_name = "prompt-cache-bindings-route-group";
     ensure_test_group_binding(&state.pool, group_name, None).await;
     insert_test_pool_api_key_account_with_options(
@@ -468,6 +469,7 @@ async fn prompt_cache_conversation_binding_route_accepts_encoded_key() {
             "bindingKind": "group",
             "groupName": group_name,
         }))
+        .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
         .send()
         .await
         .expect("patch route binding over router");
@@ -490,6 +492,7 @@ async fn prompt_cache_conversation_binding_route_accepts_encoded_key() {
         .get(format!(
             "http://{addr}/api/stats/prompt-cache-conversation-bindings/{encoded_key}"
         ))
+        .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
         .send()
         .await
         .expect("get route binding over router");

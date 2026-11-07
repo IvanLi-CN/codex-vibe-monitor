@@ -445,10 +445,10 @@ pub(crate) fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
 }
 
 pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
-    apply_startup_readiness_gate(
-        build_app_router_without_browser(state.clone()).merge(browser_ingest_router(state.clone())),
-        state,
-    )
+    let router =
+        build_app_router_without_browser(state.clone()).merge(browser_ingest_router(state.clone()));
+    let router = apply_startup_readiness_gate(router, state.clone());
+    apply_private_admin_auth(router, state.config.admin_auth.clone())
 }
 
 fn apply_startup_readiness_gate(router: Router, state: Arc<AppState>) -> Router {
@@ -627,6 +627,7 @@ pub(crate) async fn spawn_http_server(
     }
     router = router.merge(browser_ingest_router(state.clone()));
     router = apply_startup_readiness_gate(router, state.clone());
+    router = apply_private_admin_auth(router, state.config.admin_auth.clone());
     router = router
         .layer(TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
             tracing::info_span!("request", method = %request.method(), uri_path = %observability::http_request_trace_path(request), version = ?request.version())

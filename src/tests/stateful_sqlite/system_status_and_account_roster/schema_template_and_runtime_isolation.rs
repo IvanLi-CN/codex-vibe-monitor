@@ -5,17 +5,15 @@ static SYSTEM_TASK_RUN_RETENTION_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mut
 
 #[tokio::test]
 async fn system_task_runs_filter_and_routes_serve_json() {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::{body::Body, http::StatusCode};
     use serde_json::Value;
     use tower::ServiceExt;
 
-    let state = test_state_with_openai_base(
+    let mut state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_test_admin_auth(&mut state);
 
     let startup_handle = begin_system_task_run(
         &state.pool,
@@ -261,7 +259,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     let response = app
         .clone()
         .oneshot(
-            Request::builder()
+            test_admin_request()
                 .uri("/api/system/tasks?taskKind=retention_archive&status=failed&startedAtFrom=2026-06-22T09:00:00Z&startedAtTo=2026-06-22T09:30:00Z&page=1&pageSize=1")
                 .body(Body::empty())
                 .expect("build request"),
@@ -284,7 +282,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     let cursor_with_page_response = app
         .clone()
         .oneshot(
-            Request::builder()
+            test_admin_request()
                 .uri("/api/system/tasks?cursor=eyJzdGFydGVkQXQiOiIyMDI2LTA2LTIyVDA5OjE1OjAwWiIsImlkIjoyfQ&page=2")
                 .body(Body::empty())
                 .expect("build invalid cursor and page request"),
@@ -296,7 +294,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     let invalid_range_response = app
         .clone()
         .oneshot(
-            Request::builder()
+            test_admin_request()
                 .uri("/api/system/tasks?startedAtFrom=not-a-date")
                 .body(Body::empty())
                 .expect("build invalid request"),
@@ -308,7 +306,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     let app = build_app_router(state);
     let response = app
         .oneshot(
-            Request::builder()
+            test_admin_request()
                 .uri("/api/system/status")
                 .body(Body::empty())
                 .expect("build request"),
