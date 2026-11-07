@@ -1,4 +1,118 @@
 use super::*;
+use hmac::{Hmac, Mac};
+
+pub(crate) const ENV_ADMIN_AUTH_USERNAME: &str = "ADMIN_AUTH_USERNAME";
+pub(crate) const ENV_ADMIN_AUTH_PASSWORD_FILE: &str = "ADMIN_AUTH_PASSWORD_FILE";
+pub(crate) const ADMIN_AUTH_HMAC_KEY: &[u8] = b"cvm-admin-auth-credential-v1";
+const ADMIN_AUTH_USERNAME_MAX_BYTES: usize = 128;
+const ADMIN_AUTH_PASSWORD_MAX_BYTES: usize = 4096;
+
+#[derive(Clone)]
+pub(crate) enum AdminAuthConfig {
+    Configured { credential_tag: [u8; 32] },
+    Unavailable,
+}
+
+impl fmt::Debug for AdminAuthConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AdminAuthConfig")
+            .field("configured", &matches!(self, Self::Configured { .. }))
+            .finish()
+    }
+}
+
+impl AdminAuthConfig {
+    pub(crate) fn from_credentials(username: String, password: &str) -> Result<Self> {
+        validate_admin_auth_username(&username)?;
+        validate_admin_auth_password(password.as_bytes())?;
+        Ok(Self::Configured {
+            credential_tag: admin_auth_credential_tag(&username, password),
+        })
+    }
+}
+
+fn admin_auth_credential_tag(username: &str, password: &str) -> [u8; 32] {
+    let mut verifier = Hmac::<Sha256>::new_from_slice(ADMIN_AUTH_HMAC_KEY)
+        .expect("static admin auth HMAC key must be valid");
+    verifier.update(username.as_bytes());
+    verifier.update(&[0]);
+    verifier.update(password.as_bytes());
+    verifier.finalize().into_bytes().into()
+}
+
+fn validate_admin_auth_username(username: &str) -> Result<()> {
+    if username.is_empty() {
+        bail!("{ENV_ADMIN_AUTH_USERNAME} must not be empty");
+    }
+    if username.len() > ADMIN_AUTH_USERNAME_MAX_BYTES
+        || username
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b':')
+    {
+        bail!("{ENV_ADMIN_AUTH_USERNAME} contains an invalid value");
+    }
+    Ok(())
+}
+
+fn validate_admin_auth_password(password: &[u8]) -> Result<()> {
+    if password.is_empty() {
+        bail!("{ENV_ADMIN_AUTH_PASSWORD_FILE} must not be empty");
+    }
+    if password.len() > ADMIN_AUTH_PASSWORD_MAX_BYTES
+        || password.iter().any(|byte| byte.is_ascii_control())
+    {
+        bail!("{ENV_ADMIN_AUTH_PASSWORD_FILE} contains an invalid value");
+    }
+    std::str::from_utf8(password).context("ADMIN_AUTH_PASSWORD_FILE must contain valid UTF-8")?;
+    Ok(())
+}
+
+fn load_admin_auth_config() -> Option<AdminAuthConfig> {
+    let username = match env::var_os(ENV_ADMIN_AUTH_USERNAME) {
+        None => None,
+        Some(value) => match value.into_string() {
+            Ok(value) => Some(value),
+            Err(_) => return unavailable_admin_auth("username is not valid UTF-8"),
+        },
+    };
+    let password_file = env::var_os(ENV_ADMIN_AUTH_PASSWORD_FILE).map(PathBuf::from);
+    match (username, password_file) {
+        (None, None) => None,
+        (Some(username), Some(password_file)) => {
+            if validate_admin_auth_username(&username).is_err() {
+                return unavailable_admin_auth("username is invalid");
+            }
+            if password_file.as_os_str().is_empty() {
+                return unavailable_admin_auth("password file path is empty");
+            }
+            let password = match fs::read(password_file) {
+                Ok(password) => password,
+                Err(_) => return unavailable_admin_auth("password file is unreadable"),
+            };
+            if validate_admin_auth_password(&password).is_err() {
+                return unavailable_admin_auth("password file content is invalid");
+            }
+            let password = match std::str::from_utf8(&password) {
+                Ok(password) => password,
+                Err(_) => return unavailable_admin_auth("password file is not valid UTF-8"),
+            };
+            Some(
+                AdminAuthConfig::from_credentials(username, password)
+                    .expect("validated admin auth credentials must construct"),
+            )
+        }
+        _ => unavailable_admin_auth("username and password file must be set together"),
+    }
+}
+
+fn unavailable_admin_auth(reason: &'static str) -> Option<AdminAuthConfig> {
+    warn!(
+        reason,
+        "admin auth unavailable; private HTTP routes are closed"
+    );
+    Some(AdminAuthConfig::Unavailable)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -341,6 +455,8 @@ pub(crate) struct AppConfig {
     pub(crate) openai_upstream_base_url: Url,
     pub(crate) database_path: PathBuf,
     pub(crate) analytics_backend: AnalyticsBackend,
+    #[serde(skip_serializing)]
+    pub(crate) admin_auth: Option<AdminAuthConfig>,
     pub(crate) postgres_database_url: Option<PostgresDatabaseUrl>,
     pub(crate) postgres_migration_url: Option<PostgresDatabaseUrl>,
     pub(crate) postgres_analytics_maintenance_url: Option<PostgresDatabaseUrl>,
@@ -505,6 +621,7 @@ impl AppConfig {
             bail!("maintenance database must differ from DATABASE_PATH");
         }
         let observability = ObservabilityConfig::from_env()?;
+        let admin_auth = load_admin_auth_config();
         let poll_interval = overrides
             .poll_interval_secs
             .or_else(|| {
@@ -838,6 +955,7 @@ impl AppConfig {
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
             database_path,
             analytics_backend,
+            admin_auth,
             postgres_database_url,
             postgres_migration_url,
             postgres_analytics_maintenance_url,

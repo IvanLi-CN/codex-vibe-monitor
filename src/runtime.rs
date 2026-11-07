@@ -315,12 +315,13 @@ async fn run_startup_recovery_batch(
         .map_err(|reason| anyhow!("startup recovery background slot unavailable: {reason}"))?;
     let write_permit = timeout(
         STARTUP_RECOVERY_ADMISSION_BUDGET,
-        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator().acquire(
-            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
-        ),
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire_sqlite_analytics(
+                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+            ),
     )
     .await
-    .map_err(|_| anyhow!("startup recovery write admission exceeded 250ms"))?;
+    .map_err(|_| anyhow!("startup recovery write admission exceeded 250ms"))??;
     let started = Instant::now();
     let recovered = match component {
         "invocations" => crate::proxy::recover_proxy_invocations_with_connection(
@@ -843,6 +844,9 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     state
         .pg_analytics
         .spawn_bootstrap_lifecycle(state.pool.clone(), state.shutdown.clone());
+    state
+        .pg_analytics
+        .spawn_sqlite_rollback_lifecycle(state.clone());
     let readiness_at = Instant::now();
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
@@ -1087,7 +1091,11 @@ pub(crate) async fn run() -> Result<()> {
 
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
-        let pg_analytics = Arc::new(PgAnalyticsRuntime::initialize(&config).await);
+        let pg_analytics = Arc::new(PgAnalyticsRuntime::initialize(&config, pool.clone()).await);
+        if let Some(control) = pg_analytics.analytics_control() {
+            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                .bind_analytics_admission(control.admission_handle())?;
+        }
         if let Some(unavailable) = pg_analytics.unavailable_reason() {
             warn!(backend = %unavailable.backend, reason = %unavailable.reason, "analytics backend is unavailable; preserving unavailable semantics");
         }

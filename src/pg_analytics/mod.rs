@@ -344,6 +344,51 @@ pub(crate) struct PgAnalyticsRuntime {
     maintenance_pool: Option<PgAnalyticsPool>,
     unavailable: Option<AnalyticsUnavailable>,
     ready: Arc<AtomicBool>,
+    control: Option<Arc<schema::analytics_module::control::AnalyticsControl>>,
+}
+
+/// A PostgreSQL read transaction carries its backend admission for the same lifetime. A permit
+/// that is dropped at the admission check would let a switch drain complete while the SQL
+/// snapshot is still in flight.
+pub(crate) struct AnalyticsReadTransaction<'a> {
+    transaction: sqlx::Transaction<'a, sqlx::Postgres>,
+    admission: Option<schema::analytics_module::control::AnalyticsReadPermit>,
+}
+
+impl<'a> std::ops::Deref for AnalyticsReadTransaction<'a> {
+    type Target = sqlx::Transaction<'a, sqlx::Postgres>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.transaction
+    }
+}
+
+impl<'a> std::ops::DerefMut for AnalyticsReadTransaction<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.transaction
+    }
+}
+
+impl<'a> AnalyticsReadTransaction<'a> {
+    pub(crate) async fn commit(self) -> std::result::Result<(), sqlx::Error> {
+        let Self {
+            transaction,
+            admission,
+        } = self;
+        let result = transaction.commit().await;
+        drop(admission);
+        result
+    }
+
+    pub(crate) async fn rollback(self) -> std::result::Result<(), sqlx::Error> {
+        let Self {
+            transaction,
+            admission,
+        } = self;
+        let result = transaction.rollback().await;
+        drop(admission);
+        result
+    }
 }
 
 impl PgAnalyticsRuntime {
@@ -354,12 +399,42 @@ impl PgAnalyticsRuntime {
             maintenance_pool: None,
             unavailable: None,
             ready: Arc::new(AtomicBool::new(false)),
+            control: None,
         }
     }
 
-    pub(crate) async fn initialize(config: &AppConfig) -> Self {
+    pub(crate) async fn initialize(config: &AppConfig, source_pool: Pool<Sqlite>) -> Self {
+        let owner_id = format!(
+            "analytics-owner-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let control = Arc::new(schema::analytics_module::control::AnalyticsControl::new(
+            source_pool,
+            owner_id,
+        ));
+        if let Err(error) = control.initialize(config.analytics_backend.as_str()).await {
+            return Self {
+                backend: config.analytics_backend,
+                pool: None,
+                maintenance_pool: None,
+                unavailable: Some(AnalyticsUnavailable::new(
+                    config.analytics_backend,
+                    format!("analytics backend control is unavailable: {error}"),
+                )),
+                ready: Arc::new(AtomicBool::new(false)),
+                control: Some(control),
+            };
+        }
         if config.analytics_backend == AnalyticsBackend::Sqlite {
-            return Self::disabled();
+            return Self {
+                backend: AnalyticsBackend::Sqlite,
+                pool: None,
+                maintenance_pool: None,
+                unavailable: None,
+                ready: Arc::new(AtomicBool::new(false)),
+                control: Some(control),
+            };
         }
 
         let result: Result<(PgAnalyticsPool, PgAnalyticsPool)> = async {
@@ -379,6 +454,7 @@ impl PgAnalyticsRuntime {
                     "analytics replica bootstrap is pending",
                 )),
                 ready: Arc::new(AtomicBool::new(false)),
+                control: Some(control.clone()),
             },
             Err(error) => {
                 let reason = sanitize_postgres_error(
@@ -394,9 +470,16 @@ impl PgAnalyticsRuntime {
                     maintenance_pool: None,
                     unavailable: Some(AnalyticsUnavailable::new(config.analytics_backend, reason)),
                     ready: Arc::new(AtomicBool::new(false)),
+                    control: Some(control),
                 }
             }
         }
+    }
+
+    pub(crate) fn analytics_control(
+        &self,
+    ) -> Option<Arc<schema::analytics_module::control::AnalyticsControl>> {
+        self.control.clone()
     }
 
     pub(crate) fn backend(&self) -> AnalyticsBackend {
@@ -464,8 +547,15 @@ impl PgAnalyticsRuntime {
                 if shutdown.is_cancelled() {
                     return;
                 }
-                match runtime.bootstrap_once(&source_pool).await {
-                    Ok(()) => return,
+                match runtime.bootstrap_once(&source_pool, &shutdown).await {
+                    Ok(lease) => {
+                        runtime.spawn_ingest_lifecycle(
+                            source_pool.clone(),
+                            lease,
+                            shutdown.clone(),
+                        );
+                        return;
+                    }
                     Err(error) => {
                         warn!(error = %sanitize_postgres_error(&error, None), "PostgreSQL analytics bootstrap is unavailable; retrying");
                     }
@@ -479,26 +569,446 @@ impl PgAnalyticsRuntime {
         });
     }
 
-    async fn bootstrap_once(&self, source_pool: &Pool<Sqlite>) -> Result<()> {
+    /// Start the source-authoritative PostgreSQL transition, then admit the target only after
+    /// the legacy replica and every C4/C5 publication prove the same source fence. The legacy
+    /// bootstrap remains a required compatibility target, but it no longer owns the switch.
+    async fn bootstrap_once(
+        &self,
+        source_pool: &Pool<Sqlite>,
+        shutdown: &CancellationToken,
+    ) -> Result<schema::analytics_module::control::AnalyticsOwnerLease> {
         let target = self
             .maintenance_pool
             .as_ref()
             .context("PostgreSQL analytics maintenance pool is unavailable")?;
-        let report = bootstrap_replica(source_pool, target.inner(), false).await?;
+        let control = self
+            .control
+            .as_ref()
+            .context("analytics backend control is unavailable")?;
+        let lease = control.begin_pg_build().await?;
+        control.renew_owner(&lease).await?;
+        let report = tokio::select! {
+            _ = shutdown.cancelled() => bail!("PostgreSQL analytics bootstrap cancelled"),
+            report = bootstrap_replica(source_pool, target.inner(), false) => report?,
+        };
         anyhow::ensure!(
             report.service_eligible,
             "PostgreSQL analytics replica completed without becoming service eligible"
         );
+        control.renew_owner(&lease).await?;
+
+        let source = report
+            .source
+            .as_ref()
+            .context("PostgreSQL analytics bootstrap did not return a source fence")?;
+        anyhow::ensure!(
+            !source.invalidation_pending
+                && !source.historical_replay_required
+                && !source.historical_history_unknown
+                && source.coverage_generation == Some(source.generation)
+                && source.covered_through_change_id == Some(source.latest_change_id)
+                && source.coverage_revision_acknowledged == Some(source.coverage_revision),
+            "PostgreSQL analytics source proof is incomplete"
+        );
+
+        let source_instance_id = control.load().await?.source_instance_id;
+        rebind_module_owner_fence(target.inner(), &lease, &source_instance_id).await?;
+        let evidence = load_module_publication_evidence(target.inner(), &lease).await?;
+        anyhow::ensure!(
+            evidence.source_generation == source.generation
+                && evidence.source_high_watermark == source.latest_change_id
+                && evidence.source_coverage_revision == source.coverage_revision,
+            "C4/C5 publication fence does not match the source CAS fence"
+        );
+
+        let current = control.load().await?;
+        match current.phase {
+            schema::analytics_module::control::AnalyticsControlPhase::PgBuilding => {
+                control
+                    .transition(
+                        &lease,
+                        schema::analytics_module::control::AnalyticsControlPhase::PgBuilding,
+                        schema::analytics_module::control::AnalyticsControlPhase::PgPrepared,
+                    )
+                    .await?;
+                control
+                    .enter_switch_pending(
+                        &lease,
+                        schema::analytics_module::control::ANALYTICS_OWNER_LEASE,
+                    )
+                    .await?;
+                control
+                    .publish_pg_active(
+                        &lease,
+                        &evidence.primary_build_id,
+                        &evidence.primary_certificate_digest,
+                        schema::analytics_module::control::AnalyticsSourceFence {
+                            generation: source.generation,
+                            through_change_id: source.latest_change_id,
+                            coverage_revision: source.coverage_revision,
+                        },
+                    )
+                    .await?;
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::PgPrepared => {
+                control
+                    .enter_switch_pending(
+                        &lease,
+                        schema::analytics_module::control::ANALYTICS_OWNER_LEASE,
+                    )
+                    .await?;
+                control
+                    .publish_pg_active(
+                        &lease,
+                        &evidence.primary_build_id,
+                        &evidence.primary_certificate_digest,
+                        schema::analytics_module::control::AnalyticsSourceFence {
+                            generation: source.generation,
+                            through_change_id: source.latest_change_id,
+                            coverage_revision: source.coverage_revision,
+                        },
+                    )
+                    .await?;
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::SwitchPending => {
+                control.admit_pg_active(&lease).await?;
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::PgActive => {
+                control.admit_pg_active(&lease).await?;
+            }
+            phase => bail!(
+                "PostgreSQL analytics bootstrap resumed from unsupported phase {}",
+                phase.as_str()
+            ),
+        }
+
+        let state = control.load().await?;
+        let postgres_admission = control
+            .admission()
+            .try_read("postgres", state.owner_epoch)
+            .map_err(|error| anyhow!(error))?;
         self.ready.store(true, Ordering::Release);
+        drop(postgres_admission);
+        Ok(lease)
+    }
+
+    fn spawn_ingest_lifecycle(
+        self: &Arc<Self>,
+        source_pool: Pool<Sqlite>,
+        lease: schema::analytics_module::control::AnalyticsOwnerLease,
+        shutdown: CancellationToken,
+    ) {
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = runtime
+                .run_ingest_lifecycle(source_pool, lease, shutdown)
+                .await
+            {
+                runtime.ready.store(false, Ordering::Release);
+                if let Some(control) = runtime.control.as_ref() {
+                    control.admission().close();
+                }
+                warn!(
+                    error = %sanitize_postgres_error(&error, None),
+                    "PostgreSQL analytics ingest lifecycle fenced the backend"
+                );
+            }
+        });
+    }
+
+    async fn run_ingest_lifecycle(
+        &self,
+        source_pool: Pool<Sqlite>,
+        lease: schema::analytics_module::control::AnalyticsOwnerLease,
+        shutdown: CancellationToken,
+    ) -> Result<()> {
+        let control = self
+            .control
+            .as_ref()
+            .context("analytics backend control is unavailable")?;
+        let target = self
+            .maintenance_pool
+            .as_ref()
+            .context("PostgreSQL analytics maintenance pool is unavailable")?;
+        let mut retry_delay = schema::analytics_module::ingest::ANALYTICS_INGEST_RETRY_INITIAL;
+        loop {
+            if shutdown.is_cancelled() {
+                control.close_and_drain(Duration::from_secs(5)).await.ok();
+                control.release_owner(&lease).await.ok();
+                return Ok(());
+            }
+            control.renew_owner(&lease).await?;
+            let state = control.load().await?;
+            anyhow::ensure!(
+                state.phase == schema::analytics_module::control::AnalyticsControlPhase::PgActive
+                    && state.active_backend == "postgres",
+                "PostgreSQL analytics ingest lifecycle lost the pg_active fence"
+            );
+            let source_generation = state
+                .fence_generation
+                .context("PostgreSQL analytics source generation is unknown")?;
+            let bindings = load_active_ingest_bindings(target.inner(), lease.owner_epoch).await?;
+            anyhow::ensure!(
+                !bindings.is_empty(),
+                "PostgreSQL analytics ingest registry has no active consumers"
+            );
+            let postgres_admission = control
+                .admission()
+                .try_read("postgres", lease.owner_epoch)
+                .map_err(|error| anyhow!(error))?;
+            let mut progressed = false;
+            for binding in bindings {
+                let module_id = parse_analytics_module_id(&binding.module_id)?;
+                let source_binding = schema::analytics_module::ingest::SourceBinding::new(
+                    module_id,
+                    binding.consumer_id,
+                    binding.source_instance_id,
+                    source_generation,
+                    lease.owner_epoch,
+                    binding.checkpoint,
+                    binding.coverage_revision,
+                )?;
+                match schema::analytics_module::ingest::PgIngestActor::acquire(
+                    target.inner(),
+                    source_binding,
+                )
+                .await
+                {
+                    Ok(mut actor) => {
+                        let result = actor.drain(&source_pool).await;
+                        let close_result = actor.close().await;
+                        match result {
+                            Ok(batches) => {
+                                progressed |= batches > 0;
+                            }
+                            Err(error) if error.is_retryable() => {
+                                close_result.ok();
+                                retry_delay = std::cmp::min(
+                                    retry_delay.saturating_mul(2),
+                                    schema::analytics_module::ingest::ANALYTICS_INGEST_RETRY_MAX,
+                                );
+                                break;
+                            }
+                            Err(error) => {
+                                close_result.ok();
+                                return Err(anyhow!(error.to_string()));
+                            }
+                        }
+                        if let Err(error) = close_result {
+                            if error.is_retryable() {
+                                break;
+                            }
+                            return Err(anyhow!(error.to_string()));
+                        }
+                        retry_delay =
+                            schema::analytics_module::ingest::ANALYTICS_INGEST_RETRY_INITIAL;
+                    }
+                    Err(error) if error.is_retryable() => {
+                        retry_delay = std::cmp::min(
+                            retry_delay.saturating_mul(2),
+                            schema::analytics_module::ingest::ANALYTICS_INGEST_RETRY_MAX,
+                        );
+                        break;
+                    }
+                    Err(error) => return Err(anyhow!(error.to_string())),
+                }
+            }
+            drop(postgres_admission);
+            let wait = if progressed {
+                Duration::ZERO
+            } else {
+                retry_delay.max(schema::analytics_module::ingest::ANALYTICS_INGEST_IDLE_CADENCE)
+            };
+            tokio::select! {
+                _ = shutdown.cancelled() => {},
+                _ = tokio::time::sleep(wait) => {},
+            }
+        }
+    }
+
+    /// Resume an interrupted PG->SQLite transition on a process configured for SQLite. The
+    /// rebuild uses the existing bounded SQLite backfill workers while read admission remains
+    /// closed; only the owner-scoped derived-write gate is opened for that rebuild.
+    pub(crate) fn spawn_sqlite_rollback_lifecycle(self: &Arc<Self>, state: Arc<crate::AppState>) {
+        if self.backend != AnalyticsBackend::Sqlite {
+            return;
+        }
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            let mut delay = Duration::from_secs(1);
+            loop {
+                if state.shutdown.is_cancelled() {
+                    return;
+                }
+                match runtime.run_sqlite_rollback_once(state.clone()).await {
+                    Ok(()) => return,
+                    Err(error) => {
+                        warn!(
+                            error = %sanitize_postgres_error(&error, None),
+                            "SQLite analytics rollback/rebuild is unavailable; retrying"
+                        );
+                    }
+                }
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(60));
+            }
+        });
+    }
+
+    async fn run_sqlite_rollback_once(&self, state: Arc<crate::AppState>) -> Result<()> {
+        let control = self
+            .control
+            .as_ref()
+            .context("analytics backend control is unavailable")?;
+        let durable = control.load().await?;
+        let lease = match durable.phase {
+            schema::analytics_module::control::AnalyticsControlPhase::PgActive => {
+                let owner = control.claim_owner(durable.owner_epoch).await?;
+                control
+                    .begin_sqlite_rollback(
+                        &owner,
+                        schema::analytics_module::control::AnalyticsControlPhase::PgActive,
+                    )
+                    .await?
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::RollbackBuilding => {
+                let lease = control.claim_owner(durable.owner_epoch).await?;
+                control.open_rollback_write_admission(&lease).await?;
+                lease
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::SqlitePrepared => {
+                control.claim_owner(durable.owner_epoch).await?
+            }
+            schema::analytics_module::control::AnalyticsControlPhase::SqliteActive => return Ok(()),
+            phase => bail!(
+                "SQLite rollback resumed from unsupported phase {}",
+                phase.as_str()
+            ),
+        };
+        control.renew_owner(&lease).await?;
+        let durable = control.load().await?;
+        if durable.phase == schema::analytics_module::control::AnalyticsControlPhase::SqlitePrepared
+        {
+            control.activate_sqlite(&lease).await?;
+            control.release_owner(&lease).await?;
+            return Ok(());
+        }
+        let build_id = durable
+            .build_id
+            .as_deref()
+            .context("SQLite rollback build identity is unknown")?;
+        let certificate_id = durable
+            .certificate_id
+            .as_deref()
+            .context("SQLite rollback certificate identity is unknown")?;
+        let required_through_change_id = durable
+            .fence_high_watermark_change_id
+            .context("SQLite rollback source watermark is unknown")?;
+        let source_snapshot = control
+            .assert_rollback_source(build_id, required_through_change_id)
+            .await?;
+        anyhow::ensure!(
+            source_snapshot.high_watermark_change_id >= required_through_change_id
+                && source_snapshot.coverage_revision
+                    >= durable.fence_coverage_revision.unwrap_or_default(),
+            "SQLite rollback source snapshot does not cover the PG fence"
+        );
+        control.open_rollback_write_admission(&lease).await?;
+
+        let rebuild_cancel = state.shutdown.child_token();
+        let heartbeat_stop = CancellationToken::new();
+        let heartbeat_failed = Arc::new(AtomicBool::new(false));
+        let heartbeat_failed_for_task = heartbeat_failed.clone();
+        let heartbeat_control = control.clone();
+        let heartbeat_lease = lease.clone();
+        let heartbeat_cancel = rebuild_cancel.clone();
+        let heartbeat_stop_for_task = heartbeat_stop.clone();
+        let heartbeat = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = heartbeat_stop_for_task.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                        if heartbeat_control.renew_owner(&heartbeat_lease).await.is_err() {
+                            heartbeat_failed_for_task.store(true, Ordering::Release);
+                            heartbeat_cancel.cancel();
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        let pass = crate::maintenance::run_startup_backfill_maintenance_pass(
+            state.clone(),
+            &rebuild_cancel,
+            Some(crate::maintenance::StartupBackfillTask::ordered_tasks()),
+        )
+        .await;
+        heartbeat_stop.cancel();
+        heartbeat.await.ok();
+        if heartbeat_failed.load(Ordering::Acquire) {
+            control.admission().close();
+            bail!("SQLite rollback owner lease renewal failed")
+        }
+        if state.shutdown.is_cancelled() {
+            control.admission().close();
+            return Ok(());
+        }
+        anyhow::ensure!(
+            !pass.had_failure && !pass.deferred,
+            "SQLite rollback rebuild did not complete: {}",
+            pass.detail.as_deref().unwrap_or("deferred or failed task")
+        );
+        let fence = schema::analytics_module::control::AnalyticsSourceFence {
+            generation: durable
+                .fence_generation
+                .context("SQLite rollback source generation is unknown")?,
+            through_change_id: required_through_change_id,
+            coverage_revision: durable
+                .fence_coverage_revision
+                .context("SQLite rollback source coverage revision is unknown")?,
+        };
+        control
+            .prepare_sqlite_active(&lease, &source_snapshot.build_id, certificate_id, fence)
+            .await?;
+        control.activate_sqlite(&lease).await?;
+        control.release_owner(&lease).await?;
         Ok(())
     }
 
     pub(crate) async fn require_read_transaction(
         &self,
-    ) -> AnalyticsReadResult<sqlx::Transaction<'_, sqlx::Postgres>> {
+    ) -> AnalyticsReadResult<AnalyticsReadTransaction<'_>> {
         let pool = self
             .require_pool()
             .map_err(AnalyticsReadError::Unavailable)?;
+        let admission = if let Some(control) = self.control.as_ref() {
+            let control_state = control.load().await.map_err(AnalyticsReadError::Internal)?;
+            if control_state.phase
+                != schema::analytics_module::control::AnalyticsControlPhase::PgActive
+                || control_state.active_backend != "postgres"
+            {
+                return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                    AnalyticsBackend::Postgres,
+                    "PostgreSQL analytics control has not published pg_active",
+                )));
+            }
+            Some(
+                control
+                    .admission()
+                    .try_read("postgres", control_state.owner_epoch)
+                    .map_err(|error| {
+                        AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+                            AnalyticsBackend::Postgres,
+                            error.to_string(),
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
         let mut transaction = pool.inner().begin().await.map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
                 "failed to begin PostgreSQL analytics read transaction: {error}"
@@ -566,7 +1076,10 @@ impl PgAnalyticsRuntime {
                 ),
             )));
         }
-        Ok(transaction)
+        Ok(AnalyticsReadTransaction {
+            transaction,
+            admission,
+        })
     }
 }
 
@@ -629,6 +1142,22 @@ async fn migrate_postgres_schema(config: &AppConfig) -> Result<()> {
         .bind(checksum)
         .execute(&mut *connection)
         .await?;
+
+        // The migration role is the only runtime that may apply the ordered analytics
+        // provisioning contract. Keep C2 and C3 as separate ledgers and use their owner
+        // connection APIs; application and maintenance pools are opened only afterwards.
+        schema::analytics_module::apply_analytics_module_schema(&mut connection)
+            .await
+            .map_err(|error| anyhow!("apply analytics module schema: {error}"))?;
+        schema::analytics_module::apply_analytics_module_roles(&mut connection)
+            .await
+            .map_err(|error| anyhow!("apply analytics module roles: {error}"))?;
+        schema::analytics_module::ingest::apply_analytics_ingest_migration(&mut connection)
+            .await
+            .context("apply analytics ingest migration")?;
+        schema::analytics_module::projection::apply_analytics_projection_migration(&mut connection)
+            .await
+            .context("apply analytics projection migration")?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -796,7 +1325,7 @@ pub(crate) async fn query_account_window_usage(
         .push(" ORDER BY occurred_at_epoch_ms ASC, source_row_id ASC");
     let rows = query
         .build_query_as::<AnalyticsAccountUsageRow>()
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut **transaction)
         .await
         .map_err(|error| {
             AnalyticsReadError::Internal(anyhow!(
@@ -1042,6 +1571,251 @@ struct AnalyticsReplicaStatusReport {
     service_eligible: bool,
     state: Option<AnalyticsReplicaState>,
     source: Option<AnalyticsSourceStatus>,
+}
+
+#[derive(Debug, FromRow)]
+struct AnalyticsModulePublicationRow {
+    module_id: String,
+    consumer_id: String,
+    source_instance_id: String,
+    owner_epoch: i64,
+    build_id: String,
+    source_generation: i64,
+    source_high_watermark: i64,
+    source_coverage_revision: i64,
+    publication_id: String,
+    published_through_change_id: i64,
+    publication_coverage_revision: i64,
+    certificate_digest: String,
+}
+
+#[derive(Debug)]
+struct AnalyticsModulePublicationEvidence {
+    primary_build_id: String,
+    primary_certificate_digest: String,
+    source_generation: i64,
+    source_high_watermark: i64,
+    source_coverage_revision: i64,
+    rows: Vec<AnalyticsModulePublicationRow>,
+}
+
+#[derive(Debug, FromRow)]
+struct AnalyticsIngestBindingRow {
+    module_id: String,
+    consumer_id: String,
+    source_instance_id: String,
+    checkpoint: i64,
+    coverage_revision: i64,
+}
+
+fn parse_analytics_module_id(raw: &str) -> Result<schema::analytics_module::AnalyticsModuleId> {
+    schema::analytics_module::AnalyticsModuleId::ALL
+        .into_iter()
+        .find(|module| module.as_str() == raw)
+        .context("analytics consumer refers to an unknown module")
+}
+
+async fn load_active_ingest_bindings(
+    pool: &sqlx::PgPool,
+    owner_epoch: i64,
+) -> Result<Vec<AnalyticsIngestBindingRow>> {
+    sqlx::query_as::<_, AnalyticsIngestBindingRow>(
+        "SELECT module_id, consumer_id, source_instance_id, checkpoint, coverage_revision
+         FROM cvm_analytics.analytics_module_consumers
+         WHERE state = 'active' AND owner_epoch = $1
+         ORDER BY module_id, consumer_id",
+    )
+    .bind(owner_epoch)
+    .fetch_all(pool)
+    .await
+    .context("load active analytics ingest bindings")
+}
+
+async fn rebind_module_owner_fence(
+    pool: &sqlx::PgPool,
+    lease: &schema::analytics_module::control::AnalyticsOwnerLease,
+    source_instance_id: &str,
+) -> Result<()> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .context("begin analytics module owner rebind")?;
+    for declaration in schema::analytics_module::ANALYTICS_MODULE_DECLARATIONS {
+        let owner_updated = sqlx::query(
+            "UPDATE cvm_analytics.analytics_module_owners
+             SET owner_id = $1, owner_epoch = $2, status = 'active', last_heartbeat = NOW(), updated_at = NOW()
+             WHERE module_id = $3 AND source_instance_id = $4",
+        )
+        .bind(&lease.owner_id)
+        .bind(lease.owner_epoch)
+        .bind(declaration.id.as_str())
+        .bind(source_instance_id)
+        .execute(&mut *transaction)
+        .await
+        .with_context(|| format!("rebind analytics module owner {}", declaration.id.as_str()))?;
+        anyhow::ensure!(
+            owner_updated.rows_affected() == 1,
+            "analytics module owner {} is missing for source {}",
+            declaration.id.as_str(),
+            source_instance_id
+        );
+
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_module_consumers
+             SET owner_epoch = $1, updated_at = NOW()
+             WHERE module_id = $2 AND source_instance_id = $3
+               AND state IN ('building', 'active')",
+        )
+        .bind(lease.owner_epoch)
+        .bind(declaration.id.as_str())
+        .bind(source_instance_id)
+        .execute(&mut *transaction)
+        .await
+        .with_context(|| format!("rebind analytics consumers {}", declaration.id.as_str()))?;
+
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_module_builds
+             SET owner_epoch = $1, updated_at = NOW()
+             WHERE module_id = $2 AND source_instance_id = $3
+               AND state IN ('building', 'ready')",
+        )
+        .bind(lease.owner_epoch)
+        .bind(declaration.id.as_str())
+        .bind(source_instance_id)
+        .execute(&mut *transaction)
+        .await
+        .with_context(|| format!("rebind analytics builds {}", declaration.id.as_str()))?;
+
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_module_publications
+             SET owner_epoch = $1, updated_at = NOW()
+             WHERE module_id = $2 AND state IN ('staging', 'published')",
+        )
+        .bind(lease.owner_epoch)
+        .bind(declaration.id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .with_context(|| format!("rebind analytics publications {}", declaration.id.as_str()))?;
+    }
+    transaction
+        .commit()
+        .await
+        .context("commit analytics module owner rebind")?;
+    Ok(())
+}
+
+async fn load_module_publication_evidence(
+    pool: &sqlx::PgPool,
+    lease: &schema::analytics_module::control::AnalyticsOwnerLease,
+) -> Result<AnalyticsModulePublicationEvidence> {
+    let rows = sqlx::query_as::<_, AnalyticsModulePublicationRow>(
+        "SELECT c.module_id, c.consumer_id, c.source_instance_id, c.owner_epoch,
+                b.build_id, b.source_generation, b.source_high_watermark,
+                b.source_coverage_revision, p.publication_id,
+                p.published_through_change_id, p.coverage_revision,
+                baseline.certificate_digest
+         FROM cvm_analytics.analytics_module_consumers c
+         JOIN cvm_analytics.analytics_module_builds b
+           ON b.consumer_id = c.consumer_id AND b.build_id = c.active_build_id
+          AND b.module_id = c.module_id AND b.owner_epoch = c.owner_epoch
+         JOIN cvm_analytics.analytics_module_publications p
+           ON p.publication_id = c.active_publication_id
+          AND p.consumer_id = c.consumer_id AND p.build_id = b.build_id
+          AND p.owner_epoch = c.owner_epoch AND p.state = 'published'
+         JOIN cvm_analytics.analytics_projection_baselines baseline
+           ON baseline.consumer_id = c.consumer_id AND baseline.build_id = b.build_id
+         WHERE c.state = 'active' AND c.owner_epoch = $1 AND b.state = 'ready'
+           AND p.legacy_reader_fenced
+           AND p.published_through_change_id <= c.checkpoint
+           AND NOT EXISTS (
+               SELECT 1 FROM cvm_analytics.analytics_module_repairs r
+               WHERE r.consumer_id = c.consumer_id AND r.state = 'blocked'
+           )
+         ORDER BY c.module_id",
+    )
+    .bind(lease.owner_epoch)
+    .fetch_all(pool)
+    .await
+    .context("load C4/C5 analytics publication evidence")?;
+    anyhow::ensure!(
+        rows.len() == schema::analytics_module::ANALYTICS_MODULE_DECLARATIONS.len(),
+        "C4/C5 analytics publication evidence is incomplete: expected {} modules, found {}",
+        schema::analytics_module::ANALYTICS_MODULE_DECLARATIONS.len(),
+        rows.len()
+    );
+
+    let expected = schema::analytics_module::ANALYTICS_MODULE_DECLARATIONS
+        .iter()
+        .map(|declaration| (declaration.id.as_str(), declaration.consumer_id))
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual = rows
+        .iter()
+        .map(|row| (row.module_id.as_str(), row.consumer_id.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    anyhow::ensure!(
+        actual == expected,
+        "C4/C5 analytics publication registry does not match the module registry"
+    );
+    for row in &rows {
+        anyhow::ensure!(
+            row.owner_epoch == lease.owner_epoch
+                && row.build_id.trim() != ""
+                && row.publication_id.trim() != ""
+                && row.certificate_digest.trim() != ""
+                && row.published_through_change_id >= 0
+                && row.published_through_change_id <= row.source_high_watermark
+                && row.publication_coverage_revision <= row.source_coverage_revision,
+            "C4/C5 publication evidence is not fence-complete for consumer {}",
+            row.consumer_id
+        );
+    }
+
+    let first = rows
+        .first()
+        .context("C4/C5 publication evidence is empty")?;
+    anyhow::ensure!(
+        rows.iter().all(|row| {
+            row.source_instance_id == first.source_instance_id
+                && row.source_generation == first.source_generation
+                && row.source_high_watermark == first.source_high_watermark
+                && row.source_coverage_revision == first.source_coverage_revision
+        }),
+        "C4/C5 publications do not share one source fence"
+    );
+
+    let mut transaction = pool
+        .begin()
+        .await
+        .context("begin C4/C5 publication API verification")?;
+    for declaration in schema::analytics_module::ANALYTICS_MODULE_DECLARATIONS {
+        let token = schema::analytics_module::projection::current_publication(
+            &mut transaction,
+            declaration.consumer_id,
+        )
+        .await
+        .with_context(|| format!("verify current publication {}", declaration.consumer_id))?;
+        schema::analytics_module::projection::models_at(&mut transaction, &token)
+            .await
+            .with_context(|| {
+                format!(
+                    "verify published projection model {}",
+                    declaration.consumer_id
+                )
+            })?;
+    }
+    transaction
+        .rollback()
+        .await
+        .context("rollback C4/C5 publication API verification")?;
+
+    Ok(AnalyticsModulePublicationEvidence {
+        primary_build_id: first.build_id.clone(),
+        primary_certificate_digest: first.certificate_digest.clone(),
+        source_generation: first.source_generation,
+        source_high_watermark: first.source_high_watermark,
+        source_coverage_revision: first.source_coverage_revision,
+        rows,
+    })
 }
 
 #[derive(Debug, Clone, Default, FromRow)]
@@ -3959,6 +4733,7 @@ mod tests {
             maintenance_pool: None,
             unavailable: None,
             ready: Arc::new(AtomicBool::new(false)),
+            control: None,
         };
         let error = query_account_window_usage(
             &runtime,
@@ -4595,6 +5370,7 @@ mod tests {
                 maintenance_pool: None,
                 unavailable: None,
                 ready: Arc::new(AtomicBool::new(true)),
+                control: None,
             };
 
         let app_ddl = sqlx::query("CREATE TABLE cvm_analytics.app_must_not_ddl (id INTEGER)")
@@ -4789,7 +5565,7 @@ mod tests {
         let snapshot_fact_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM cvm_analytics.analytics_facts",
         )
-        .fetch_one(&mut *in_flight_reader)
+        .fetch_one(&mut **in_flight_reader)
         .await?;
         anyhow::ensure!(
             snapshot_fact_count == 1,

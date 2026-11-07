@@ -1,6 +1,7 @@
 use super::*;
 
 mod archive;
+mod auth;
 mod cli;
 mod hourly_rollups;
 mod ownership;
@@ -12,6 +13,7 @@ mod startup_backfill;
 mod startup_prep;
 
 pub(crate) use archive::*;
+pub(crate) use auth::*;
 pub(crate) use cli::*;
 pub(crate) use hourly_rollups::*;
 pub(crate) use ownership::*;
