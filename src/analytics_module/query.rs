@@ -41,12 +41,23 @@ impl AnalyticsQueryBackend {
 /// Parameters which must participate in a response cache identity. The storage backend is
 /// intentionally not a parameter here; it is part of `QueryIdentity`, so a backend switch can
 /// never reuse a response produced by the other store.
+///
+/// `range` remains the long-term presentation range from the public analytics contract for legacy
+/// requests. Consumer views which are not one of those fixed windows use `consumer_range` instead;
+/// the latter is deliberately part of this request rather than an alias for `coverage_range`. The
+/// range tag is normalized to `all`, `current`, or `explicit` by `with_consumer_range`, so a new
+/// consumer request does not masquerade as a long-term window. The query layer still reads one
+/// published prefix and its admitted coverage. Consumers apply the `Current` limit or `Explicit`
+/// boundary to that response, while both the tag and typed value participate in the shared cache
+/// identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AnalyticsQueryRequest {
     pub(crate) consumer_id: String,
     pub(crate) query_name: String,
     pub(crate) range: String,
+    #[serde(default)]
+    pub(crate) consumer_range: Option<AnalyticsQueryRange>,
     pub(crate) dimension: String,
     pub(crate) series_key: String,
     pub(crate) timezone: String,
@@ -55,6 +66,62 @@ pub(crate) struct AnalyticsQueryRequest {
     pub(crate) required_seed_capability: Option<SeedCapability>,
     pub(crate) now_ms: i64,
     pub(crate) max_freshness_age_ms: Option<i64>,
+}
+
+/// Consumer-facing window semantics which are not part of the fixed long-term range set.
+///
+/// `All` means all facts visible in the admitted publication response, not unbounded history.
+/// `Current` is a bounded newest-N view over that same response. `Explicit` carries the consumer
+/// boundary independently from the coverage proof; validation requires the explicit boundary to
+/// be contained by `coverage_range` before the response can be admitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum AnalyticsQueryRange {
+    All,
+    Current { limit: i64 },
+    Explicit { start: String, end: String },
+}
+
+impl AnalyticsQueryRange {
+    pub(crate) fn all() -> Self {
+        Self::All
+    }
+
+    pub(crate) fn current(limit: i64) -> Self {
+        Self::Current { limit }
+    }
+
+    pub(crate) fn explicit(start: impl Into<String>, end: impl Into<String>) -> Self {
+        Self::Explicit {
+            start: start.into(),
+            end: end.into(),
+        }
+    }
+
+    fn tag(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Current { .. } => "current",
+            Self::Explicit { .. } => "explicit",
+        }
+    }
+
+    fn validate_against(&self, coverage_range: &CoverageRange) -> QueryResult<()> {
+        match self {
+            Self::All => Ok(()),
+            Self::Current { limit } if *limit > 0 => Ok(()),
+            Self::Current { .. } => Err(QueryError::invalid_query()),
+            Self::Explicit { start, end } => {
+                let explicit = CoverageRange::new(start.clone(), end.clone())
+                    .map_err(|_| QueryError::invalid_query())?;
+                if coverage_range.contains(&explicit) {
+                    Ok(())
+                } else {
+                    Err(QueryError::invalid_query())
+                }
+            }
+        }
+    }
 }
 
 impl AnalyticsQueryRequest {
@@ -73,7 +140,12 @@ impl AnalyticsQueryRequest {
         if self.series_key.len() > MAX_QUERY_KEY_BYTES {
             return Err(QueryError::invalid_query());
         }
-        if !matches!(self.range.as_str(), "7d" | "30d" | "180d" | "365d")
+        let long_term_range = matches!(self.range.as_str(), "7d" | "30d" | "180d" | "365d");
+        let range_valid = match &self.consumer_range {
+            None => long_term_range,
+            Some(consumer_range) => self.range == consumer_range.tag(),
+        };
+        if !range_valid
             || !matches!(self.dimension.as_str(), "overall" | "model" | "upstream")
             || self.now_ms < 0
             || self.max_freshness_age_ms.is_some_and(|age| age < 0)
@@ -88,7 +160,16 @@ impl AnalyticsQueryRequest {
             self.coverage_range.end.clone(),
         )
         .map_err(|_| QueryError::invalid_query())?;
+        if let Some(consumer_range) = &self.consumer_range {
+            consumer_range.validate_against(&self.coverage_range)?;
+        }
         Ok(())
+    }
+
+    pub(crate) fn with_consumer_range(mut self, consumer_range: AnalyticsQueryRange) -> Self {
+        self.range = consumer_range.tag().to_string();
+        self.consumer_range = Some(consumer_range);
+        self
     }
 }
 
@@ -1287,6 +1368,22 @@ pub(crate) async fn query_sqlite_snapshot(
     result
 }
 
+/// Execute a consumer-range request through the same SQLite publication, coverage, tail,
+/// freshness, and cache-identity path as the legacy long-term entry point.
+pub(crate) async fn query_sqlite_snapshot_for_consumer_range(
+    pool: &Pool<Sqlite>,
+    request: &AnalyticsQueryRequest,
+    consumer_range: AnalyticsQueryRange,
+    loader: &dyn SqlitePrefixLoader,
+) -> QueryResult<AnalyticsQueryResponse> {
+    query_sqlite_snapshot(
+        pool,
+        &request.clone().with_consumer_range(consumer_range),
+        loader,
+    )
+    .await
+}
+
 /// Read admission and every PostgreSQL component query use one transaction. In particular,
 /// `current_publication`, `models_at`, and `facts_at` cannot observe different owner epochs or
 /// publication pointers. Durable rows after P remain invisible until the next publication.
@@ -1359,6 +1456,16 @@ pub(crate) async fn query_postgres_snapshot(
     result
 }
 
+/// Execute a consumer-range request through the same PostgreSQL publication, coverage, tail,
+/// freshness, and cache-identity path as the legacy long-term entry point.
+pub(crate) async fn query_postgres_snapshot_for_consumer_range(
+    pool: &PgPool,
+    request: &AnalyticsQueryRequest,
+    consumer_range: AnalyticsQueryRange,
+) -> QueryResult<AnalyticsQueryResponse> {
+    query_postgres_snapshot(pool, &request.clone().with_consumer_range(consumer_range)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1384,6 +1491,7 @@ mod tests {
             consumer_id: "invocation".into(),
             query_name: "overview".into(),
             range: "7d".into(),
+            consumer_range: None,
             dimension: "overall".into(),
             series_key: String::new(),
             timezone: "Asia/Shanghai".into(),
@@ -2115,6 +2223,65 @@ mod tests {
         sqlite_identity.backend = AnalyticsQueryBackend::Sqlite;
         let third = QueryCacheKey::for_request(&request(), &sqlite_identity).unwrap();
         assert_ne!(first.digest, third.digest);
+    }
+
+    #[test]
+    fn consumer_ranges_are_typed_and_explicit_ranges_need_coverage() {
+        let mut all = request().with_consumer_range(AnalyticsQueryRange::all());
+        assert_eq!(all.range, "all");
+        assert!(all.validate().is_ok());
+
+        all = request().with_consumer_range(AnalyticsQueryRange::current(10));
+        assert!(all.validate().is_ok());
+
+        all = request().with_consumer_range(AnalyticsQueryRange::current(0));
+        assert_eq!(
+            all.validate().unwrap_err().code,
+            QueryErrorCode::InvalidQuery
+        );
+
+        all = request()
+            .with_consumer_range(AnalyticsQueryRange::explicit("2026-11-02", "2026-11-04"));
+        assert!(all.validate().is_ok());
+
+        all = request()
+            .with_consumer_range(AnalyticsQueryRange::explicit("2026-10-31", "2026-11-04"));
+        assert_eq!(
+            all.validate().unwrap_err().code,
+            QueryErrorCode::InvalidQuery
+        );
+
+        let mut mismatched = request();
+        mismatched.consumer_range = Some(AnalyticsQueryRange::all());
+        assert_eq!(
+            mismatched.validate().unwrap_err().code,
+            QueryErrorCode::InvalidQuery
+        );
+    }
+
+    #[test]
+    fn consumer_range_is_part_of_the_shared_cache_identity() {
+        let legacy = QueryCacheKey::for_request(&request(), &identity()).unwrap();
+        let all = QueryCacheKey::for_request(
+            &request().with_consumer_range(AnalyticsQueryRange::all()),
+            &identity(),
+        )
+        .unwrap();
+        let current = QueryCacheKey::for_request(
+            &request().with_consumer_range(AnalyticsQueryRange::current(10)),
+            &identity(),
+        )
+        .unwrap();
+        let explicit = QueryCacheKey::for_request(
+            &request()
+                .with_consumer_range(AnalyticsQueryRange::explicit("2026-11-02", "2026-11-04")),
+            &identity(),
+        )
+        .unwrap();
+
+        assert_ne!(legacy.digest, all.digest);
+        assert_ne!(all.digest, current.digest);
+        assert_ne!(current.digest, explicit.digest);
     }
 
     #[test]
