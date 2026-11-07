@@ -224,6 +224,10 @@ async fn certified_baseline_matrix(
     // historical prefix must come from proof, never from the numerical C checkpoint.
     sqlx::query("DELETE FROM cvm_analytics.analytics_module_ingest_receipts WHERE consumer_id='invocation' AND change_id<=2")
         .execute(&mut *owner).await?;
+    // Tail 3 retracts the known row-2 from this independent history fixture; tail 4
+    // introduces row-3. Keep the earlier publication isolation fixture unchanged.
+    sqlx::query("UPDATE cvm_analytics.analytics_module_ingest_receipts SET entity_key=CASE change_id WHEN 3 THEN 'row-2' ELSE 'row-3' END WHERE consumer_id='invocation' AND change_id IN (3,4)")
+        .execute(&mut *owner).await?;
     assert!(materialize_batch(actor, &target, 64).await.is_err());
     // Missing receipt cannot skip a retained prefix, even though C is already ahead.
     assert!(
@@ -313,7 +317,7 @@ async fn certified_baseline_matrix(
     publish(actor, &token).await?;
     let mut reader = pool.begin().await?;
     let facts = facts_at(&mut reader, &token).await?;
-    assert_eq!(facts.len(), 3);
+    assert_eq!(facts.len(), 2);
     assert!(facts.iter().any(|f| f.entity_key == "row-1"));
     let models = models_at(&mut reader, &token).await?;
     assert_eq!(models.certified_seeds[0]["rows"][0]["aggregateValue"], 7.0);
