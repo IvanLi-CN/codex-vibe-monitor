@@ -194,7 +194,7 @@ pub(crate) async fn import_certified_baseline(
     let (Json(snapshot),Json(expected),Json(trust),Json(facts),Json(artifacts)) =
         sqlx::query_as::<_,(Json<BuildSnapshot>,Json<ExpectedHistoryBinding>,Json<TrustedPrefixAnchor>,Json<Vec<HistoryFact>>,Json<Vec<PinnedArtifact>>)>(
         "SELECT snapshot,expected,trust,facts,seed_artifacts FROM cvm_analytics.analytics_projection_sources
-         WHERE consumer_id=$1 AND build_id=$2 FOR UPDATE")
+         WHERE consumer_id=$1 AND build_id=$2")
         .bind(&target.consumer_id).bind(&target.build_id).fetch_optional(&mut *tx).await?
         .context("baseline has no durable source receipt")?;
     check_build(&mut tx, target, &snapshot).await?;
