@@ -271,9 +271,8 @@ pub(crate) struct RuntimeTailRow {
     pub(crate) payload: Value,
 }
 
-/// Admission proof for a runtime-only suffix. Durable journal/projection rows cannot manufacture
-/// this proof: the caller must bind one source identity to one runtime stream and one exclusive
-/// contribution claim covering the complete change interval.
+/// Admission proof for a durable publication suffix. Durable journal/projection rows cannot be
+/// relabelled across source identity, stream, or publication interval.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeTailProvenance {
@@ -286,13 +285,46 @@ pub(crate) struct RuntimeTailProvenance {
     pub(crate) through_change_id: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuntimeLiveProvenance {
+    pub(crate) source_instance_id: String,
+    pub(crate) generation: i64,
+    pub(crate) owner_epoch: i64,
+    pub(crate) stream_id: String,
+    pub(crate) exclusive_claim_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuntimeLiveRow {
+    pub(crate) source_instance_id: String,
+    pub(crate) generation: i64,
+    pub(crate) owner_epoch: i64,
+    pub(crate) coverage_revision: i64,
+    pub(crate) entity_kind: String,
+    pub(crate) entity_key: String,
+    pub(crate) occurred_at: String,
+    pub(crate) payload_digest: String,
+    pub(crate) payload: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuntimeLiveSnapshot {
+    pub(crate) provenance: RuntimeLiveProvenance,
+    pub(crate) snapshot_revision: u64,
+    pub(crate) rows: Vec<RuntimeLiveRow>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RuntimeTailReceipt {
-    provenance: RuntimeTailProvenance,
+    persistent_provenance: Option<RuntimeTailProvenance>,
+    live_provenance: Option<RuntimeLiveProvenance>,
     rows_digest: String,
     entity_digest: String,
-    runtime_snapshot_revision: u64,
-    runtime_snapshot_digest: String,
+    runtime_snapshot_revision: Option<u64>,
+    runtime_snapshot_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -302,6 +334,7 @@ pub(crate) struct RuntimeTail {
     pub(crate) from_change_id: i64,
     pub(crate) through_change_id: i64,
     pub(crate) rows: Vec<RuntimeTailRow>,
+    pub(crate) live: Option<RuntimeLiveSnapshot>,
     #[serde(skip)]
     receipt: Option<RuntimeTailReceipt>,
 }
@@ -313,6 +346,7 @@ impl RuntimeTail {
             from_change_id: at.saturating_add(1),
             through_change_id: at,
             rows: Vec::new(),
+            live: None,
             receipt: None,
         }
     }
@@ -323,6 +357,12 @@ struct RuntimeTailClaim {
     identity: QueryIdentity,
     provenance: RuntimeTailProvenance,
     source_proof: Option<RuntimeTailSourceProof>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeLiveClaim {
+    identity: QueryIdentity,
+    provenance: RuntimeLiveProvenance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,32 +376,61 @@ impl RuntimeTailClaim {
         validate_runtime_tail_rows(&self.identity, &self.provenance, &rows)?;
         let source_proof = self.source_proof.ok_or_else(QueryError::tail_invalid)?;
         let receipt = RuntimeTailReceipt {
-            provenance: self.provenance.clone(),
+            persistent_provenance: Some(self.provenance.clone()),
+            live_provenance: None,
             rows_digest: digest_runtime_tail_rows(&rows)?,
             entity_digest: digest_runtime_tail_entities(&rows)?,
-            runtime_snapshot_revision: source_proof.runtime_snapshot_revision,
-            runtime_snapshot_digest: source_proof.runtime_snapshot_digest,
+            runtime_snapshot_revision: Some(source_proof.runtime_snapshot_revision),
+            runtime_snapshot_digest: Some(source_proof.runtime_snapshot_digest),
         };
         Ok(RuntimeTail {
             provenance: Some(self.provenance.clone()),
             from_change_id: self.provenance.from_change_id,
             through_change_id: self.provenance.through_change_id,
             rows,
+            live: None,
             receipt: Some(receipt),
+        })
+    }
+}
+
+impl RuntimeLiveClaim {
+    fn seal(self, snapshot_revision: u64, rows: Vec<RuntimeLiveRow>) -> QueryResult<RuntimeTail> {
+        validate_runtime_live_rows(&self.identity, &self.provenance, &rows)?;
+        let rows_digest = digest_runtime_live_rows(&rows)?;
+        let entity_digest = digest_runtime_live_entities(&rows)?;
+        Ok(RuntimeTail {
+            provenance: None,
+            from_change_id: self.identity.published_through_change_id.saturating_add(1),
+            through_change_id: self.identity.published_through_change_id,
+            rows: Vec::new(),
+            live: Some(RuntimeLiveSnapshot {
+                provenance: self.provenance.clone(),
+                snapshot_revision,
+                rows,
+            }),
+            receipt: Some(RuntimeTailReceipt {
+                persistent_provenance: None,
+                live_provenance: Some(self.provenance),
+                rows_digest,
+                entity_digest: entity_digest.clone(),
+                runtime_snapshot_revision: Some(snapshot_revision),
+                runtime_snapshot_digest: Some(entity_digest),
+            }),
         })
     }
 }
 
 /// Controlled producer seam for the in-flight source. The producer captures the current-state
 /// `RuntimeProjectionHub` directly; it does not accept query-shaped rows or durable journal
-/// envelopes. Its single-use claim, snapshot fence, and stable entity set remain private so a
+/// envelopes. Its per-response claim, snapshot fence, and stable entity set remain private so a
 /// durable projection suffix cannot be relabelled by changing strings.
 #[derive(Debug)]
 pub(crate) struct RuntimeTailProducer<'hub> {
     identity: QueryIdentity,
     hub: &'hub RuntimeProjectionHub,
     stream_id: String,
-    claim: Option<RuntimeTailClaim>,
+    claim: Option<RuntimeLiveClaim>,
     finished: bool,
 }
 
@@ -371,8 +440,7 @@ impl<'hub> RuntimeTailProducer<'hub> {
         hub: &'hub RuntimeProjectionHub,
         stream_id: String,
     ) -> QueryResult<Self> {
-        if stream_id.trim().is_empty()
-            || identity.checkpoint <= identity.published_through_change_id
+        if stream_id.trim().is_empty() || identity.checkpoint < identity.published_through_change_id
         {
             return Err(QueryError::tail_invalid());
         }
@@ -389,19 +457,15 @@ impl<'hub> RuntimeTailProducer<'hub> {
         if self.finished || self.claim.is_some() || exclusive_claim_id.trim().is_empty() {
             return Err(QueryError::tail_invalid());
         }
-        let from_change_id = self.identity.published_through_change_id.saturating_add(1);
-        self.claim = Some(RuntimeTailClaim {
+        self.claim = Some(RuntimeLiveClaim {
             identity: self.identity.clone(),
-            provenance: RuntimeTailProvenance {
+            provenance: RuntimeLiveProvenance {
                 source_instance_id: self.identity.source_instance_id.clone(),
                 generation: self.identity.generation,
                 owner_epoch: self.identity.owner_epoch,
                 stream_id: self.stream_id.clone(),
                 exclusive_claim_id,
-                from_change_id,
-                through_change_id: self.identity.checkpoint,
             },
-            source_proof: None,
         });
         Ok(())
     }
@@ -420,17 +484,6 @@ impl<'hub> RuntimeTailProducer<'hub> {
         let Some(claim) = self.claim.take() else {
             return Err(QueryError::tail_invalid());
         };
-        let expected_records = usize::try_from(
-            claim
-                .provenance
-                .through_change_id
-                .saturating_sub(claim.provenance.from_change_id)
-                .saturating_add(1),
-        )
-        .map_err(|_| QueryError::tail_invalid())?;
-        if records.len() != expected_records {
-            return Err(QueryError::tail_invalid());
-        }
         records.sort_by(|left, right| {
             left.occurred_at
                 .cmp(&right.occurred_at)
@@ -438,7 +491,7 @@ impl<'hub> RuntimeTailProducer<'hub> {
         });
         let mut seen_entities = BTreeSet::new();
         let mut rows = Vec::with_capacity(records.len());
-        for (offset, record) in records.into_iter().enumerate() {
+        for record in records {
             let status = record
                 .status
                 .as_deref()
@@ -470,30 +523,19 @@ impl<'hub> RuntimeTailProducer<'hub> {
             let payload = serde_json::Value::Object(std::mem::take(payload));
             let payload_digest =
                 super::digest_json(&payload).map_err(|_| QueryError::tail_invalid())?;
-            rows.push(RuntimeTailRow {
+            rows.push(RuntimeLiveRow {
                 source_instance_id: claim.provenance.source_instance_id.clone(),
                 generation: claim.provenance.generation,
                 owner_epoch: claim.provenance.owner_epoch,
-                change_id: claim
-                    .provenance
-                    .from_change_id
-                    .saturating_add(offset as i64),
                 coverage_revision: self.identity.coverage_revision,
                 entity_kind: "invocation".into(),
                 entity_key,
-                operation: "upsert".into(),
                 occurred_at: record.occurred_at,
                 payload_digest,
                 payload,
             });
         }
-        let runtime_snapshot_digest = digest_runtime_tail_entities(&rows)?;
-        let mut claim = claim;
-        claim.source_proof = Some(RuntimeTailSourceProof {
-            runtime_snapshot_revision: snapshot_revision_after,
-            runtime_snapshot_digest,
-        });
-        claim.seal(rows)
+        claim.seal(snapshot_revision_after, rows)
     }
 }
 
@@ -527,6 +569,40 @@ fn digest_runtime_tail_entities(rows: &[RuntimeTailRow]) -> QueryResult<String> 
                 "changeId": row.change_id,
                 "entityKind": row.entity_kind,
                 "entityKey": row.entity_key,
+            })
+        })
+        .collect::<Vec<_>>();
+    super::digest_json(&Value::Array(value)).map_err(|_| QueryError::tail_invalid())
+}
+
+fn digest_runtime_live_rows(rows: &[RuntimeLiveRow]) -> QueryResult<String> {
+    let value = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "sourceInstanceId": row.source_instance_id,
+                "generation": row.generation,
+                "ownerEpoch": row.owner_epoch,
+                "coverageRevision": row.coverage_revision,
+                "entityKind": row.entity_kind,
+                "entityKey": row.entity_key,
+                "occurredAt": row.occurred_at,
+                "payloadDigest": row.payload_digest,
+                "payload": row.payload,
+            })
+        })
+        .collect::<Vec<_>>();
+    super::digest_json(&Value::Array(value)).map_err(|_| QueryError::tail_invalid())
+}
+
+fn digest_runtime_live_entities(rows: &[RuntimeLiveRow]) -> QueryResult<String> {
+    let value = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "entityKind": row.entity_kind,
+                "entityKey": row.entity_key,
+                "occurredAt": row.occurred_at,
             })
         })
         .collect::<Vec<_>>();
@@ -590,6 +666,93 @@ fn validate_runtime_tail_rows(
         return Err(QueryError::tail_invalid());
     }
     Ok(())
+}
+
+fn validate_runtime_live_rows(
+    identity: &QueryIdentity,
+    provenance: &RuntimeLiveProvenance,
+    rows: &[RuntimeLiveRow],
+) -> QueryResult<()> {
+    if provenance.source_instance_id != identity.source_instance_id
+        || provenance.generation != identity.generation
+        || provenance.owner_epoch != identity.owner_epoch
+        || provenance.stream_id.trim().is_empty()
+        || provenance.exclusive_claim_id.trim().is_empty()
+    {
+        return Err(QueryError::tail_invalid());
+    }
+
+    let mut seen_entities = BTreeSet::new();
+    for row in rows {
+        if row.source_instance_id != provenance.source_instance_id
+            || row.generation != provenance.generation
+            || row.owner_epoch != provenance.owner_epoch
+            || row.coverage_revision > identity.coverage_revision
+            || row.entity_kind != "invocation"
+            || row.entity_key.trim().is_empty()
+            || row.occurred_at.trim().is_empty()
+            || row.payload_digest.trim().is_empty()
+            || !row.payload.is_object()
+        {
+            return Err(QueryError::tail_invalid());
+        }
+        let digest = super::digest_json(&row.payload).map_err(|_| QueryError::tail_invalid())?;
+        if digest != row.payload_digest
+            || !seen_entities
+                .insert(stable_live_entity_key(row)?.ok_or_else(QueryError::tail_invalid)?)
+        {
+            return Err(QueryError::tail_invalid());
+        }
+        normalize_tail_fact(&row.entity_kind, &row.entity_key, &row.payload)?;
+    }
+    Ok(())
+}
+
+fn stable_live_entity_key(row: &RuntimeLiveRow) -> QueryResult<Option<String>> {
+    let invoke_id = row
+        .payload
+        .get("invokeId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let occurred_at = row
+        .payload
+        .get("occurredAt")
+        .and_then(Value::as_str)
+        .unwrap_or(&row.occurred_at);
+    let Some(invoke_id) = invoke_id else {
+        return Ok(None);
+    };
+    let occurred_at = crate::stats::parse_to_utc_datetime(occurred_at)
+        .ok_or_else(QueryError::tail_invalid)?
+        .timestamp_millis();
+    Ok(Some(format!(
+        "invocation\u{001f}{invoke_id}\u{001f}{occurred_at}"
+    )))
+}
+
+fn stable_fact_entity_key(fact: &ProjectionFact) -> QueryResult<Option<String>> {
+    if fact.entity_kind != "invocation" {
+        return Ok(None);
+    }
+    let Some(invoke_id) = fact
+        .payload
+        .get("invokeId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(occurred_at) = fact.payload.get("occurredAt").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let occurred_at = crate::stats::parse_to_utc_datetime(occurred_at)
+        .ok_or_else(QueryError::tail_invalid)?
+        .timestamp_millis();
+    Ok(Some(format!(
+        "invocation\u{001f}{invoke_id}\u{001f}{occurred_at}"
+    )))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -685,9 +848,10 @@ impl std::error::Error for QueryError {}
 
 type QueryResult<T> = std::result::Result<T, QueryError>;
 
-/// Fold a bounded receipt suffix over the immutable publication facts. The suffix is required to
-/// be a complete `(P, C]` prefix. A missing receipt, duplicate change, stale source generation,
-/// or mixed owner epoch therefore fails closed instead of producing a partial chart.
+/// Fold a bounded durable receipt suffix and an independently fenced live snapshot over the
+/// immutable publication facts. Durable rows must be a complete `(P, C]` prefix; live rows never
+/// receive journal change IDs. A missing receipt, duplicate change, stale source generation, or
+/// mixed owner epoch therefore fails closed instead of producing a partial chart.
 fn validate_runtime_tail_provenance(
     identity: &QueryIdentity,
     tail: &RuntimeTail,
@@ -699,6 +863,16 @@ fn validate_runtime_tail_provenance(
         } else {
             Err(QueryError::tail_invalid())
         };
+    }
+    if tail.rows.is_empty() && tail.provenance.is_none() && tail.live.is_some() {
+        if tail
+            .receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.persistent_provenance.is_none())
+        {
+            return Ok(());
+        }
+        return Err(QueryError::tail_invalid());
     }
     let Some(provenance) = tail.provenance.as_ref() else {
         return Err(QueryError::tail_invalid());
@@ -716,10 +890,10 @@ fn validate_runtime_tail_provenance(
     let Some(receipt) = tail.receipt.as_ref() else {
         return Err(QueryError::tail_invalid());
     };
-    if receipt.provenance != *provenance
+    if receipt.persistent_provenance.as_ref() != Some(provenance)
         || receipt.rows_digest != digest_runtime_tail_rows(&tail.rows)?
         || receipt.entity_digest != digest_runtime_tail_entities(&tail.rows)?
-        || receipt.runtime_snapshot_digest != receipt.entity_digest
+        || receipt.runtime_snapshot_digest.as_deref() != Some(receipt.entity_digest.as_str())
     {
         return Err(QueryError::tail_invalid());
     }
@@ -727,19 +901,42 @@ fn validate_runtime_tail_provenance(
     Ok(())
 }
 
+fn validate_runtime_live_snapshot(identity: &QueryIdentity, tail: &RuntimeTail) -> QueryResult<()> {
+    let Some(live) = tail.live.as_ref() else {
+        return Ok(());
+    };
+    let Some(receipt) = tail.receipt.as_ref() else {
+        return Err(QueryError::tail_invalid());
+    };
+    if receipt.live_provenance.as_ref() != Some(&live.provenance)
+        || receipt.runtime_snapshot_revision != Some(live.snapshot_revision)
+        || receipt.rows_digest != digest_runtime_live_rows(&live.rows)?
+        || receipt.entity_digest != digest_runtime_live_entities(&live.rows)?
+        || receipt.runtime_snapshot_digest.as_deref() != Some(receipt.entity_digest.as_str())
+    {
+        return Err(QueryError::tail_invalid());
+    }
+    validate_runtime_live_rows(identity, &live.provenance, &live.rows)
+}
+
 pub(crate) fn compose_runtime_tail(
     identity: &QueryIdentity,
     base_facts: &[ProjectionFact],
     tail: RuntimeTail,
 ) -> QueryResult<(Vec<ProjectionFact>, ProjectionModels)> {
-    let is_last_good_fallback =
-        tail.rows.is_empty() && tail.through_change_id == identity.published_through_change_id;
+    let is_last_good_fallback = tail.rows.is_empty()
+        && tail.live.is_none()
+        && tail.through_change_id == identity.published_through_change_id;
+    let is_live_only = tail.rows.is_empty() && tail.live.is_some();
     if tail.from_change_id != identity.published_through_change_id.saturating_add(1)
-        || (tail.through_change_id != identity.checkpoint && !is_last_good_fallback)
+        || (tail.through_change_id != identity.checkpoint
+            && !is_last_good_fallback
+            && !is_live_only)
     {
         return Err(QueryError::tail_invalid());
     }
     validate_runtime_tail_provenance(identity, &tail, is_last_good_fallback)?;
+    validate_runtime_live_snapshot(identity, &tail)?;
     if tail.through_change_id < identity.published_through_change_id || tail.through_change_id < 0 {
         return Err(QueryError::tail_invalid());
     }
@@ -754,6 +951,19 @@ pub(crate) fn compose_runtime_tail(
     let mut expected_change = identity.published_through_change_id.saturating_add(1);
     let mut seen_changes = BTreeSet::new();
     let mut seen_payloads = BTreeMap::<(String, String), String>::new();
+    let mut stable_entities = BTreeMap::<String, (String, String)>::new();
+    for fact in facts.values() {
+        if let Some(stable_key) = stable_fact_entity_key(fact)?
+            && stable_entities
+                .insert(
+                    stable_key,
+                    (fact.entity_kind.clone(), fact.entity_key.clone()),
+                )
+                .is_some()
+        {
+            return Err(QueryError::snapshot_inconsistent());
+        }
+    }
     for row in &tail.rows {
         if row.source_instance_id != identity.source_instance_id
             || row.generation != identity.generation
@@ -776,9 +986,6 @@ pub(crate) fn compose_runtime_tail(
             return Err(QueryError::tail_invalid());
         }
         let entity = (row.entity_kind.clone(), row.entity_key.clone());
-        if row.entity_key.contains('\u{001f}') && facts.contains_key(&entity) {
-            return Err(QueryError::tail_invalid());
-        }
         if let Some(previous_digest) =
             seen_payloads.insert(entity.clone(), row.payload_digest.clone())
             && previous_digest == row.payload_digest
@@ -788,6 +995,9 @@ pub(crate) fn compose_runtime_tail(
         match row.operation.as_str() {
             "upsert" | "correction" => {
                 let fact = normalize_tail_fact(&row.entity_kind, &row.entity_key, &row.payload)?;
+                if let Some(stable_key) = stable_fact_entity_key(&fact)? {
+                    stable_entities.insert(stable_key, entity.clone());
+                }
                 facts.insert(entity, fact);
             }
             "logical_revoke" => {
@@ -797,7 +1007,24 @@ pub(crate) fn compose_runtime_tail(
         }
         expected_change = expected_change.saturating_add(1);
     }
-    if !is_last_good_fallback && expected_change != identity.checkpoint.saturating_add(1) {
+    if let Some(live) = tail.live.as_ref() {
+        for row in &live.rows {
+            let stable_key = stable_live_entity_key(row)?.ok_or_else(QueryError::tail_invalid)?;
+            if stable_entities.contains_key(&stable_key) {
+                return Err(QueryError::tail_invalid());
+            }
+            let entity = (row.entity_kind.clone(), row.entity_key.clone());
+            let fact = normalize_tail_fact(&row.entity_kind, &row.entity_key, &row.payload)?;
+            if facts.insert(entity.clone(), fact).is_some() {
+                return Err(QueryError::tail_invalid());
+            }
+            stable_entities.insert(stable_key, entity);
+        }
+    }
+    if !is_last_good_fallback
+        && !is_live_only
+        && expected_change != identity.checkpoint.saturating_add(1)
+    {
         return Err(QueryError::tail_invalid());
     }
     let facts: Vec<_> = facts.into_values().collect();
@@ -933,7 +1160,12 @@ fn assemble_response(
     // With no live suffix the publication model is already authoritative, including any
     // certified-seed rollups that cannot be reconstructed from exact facts. A non-empty suffix
     // is recomputed from the visible facts and carries the publication's provenance metadata.
-    if tail.rows.is_empty() {
+    let has_unpublished_contribution = !tail.rows.is_empty()
+        || tail
+            .live
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.rows.is_empty());
+    if !has_unpublished_contribution {
         tail_models = models;
     } else {
         tail_models.history_coverage = models.history_coverage.take();
@@ -1165,6 +1397,27 @@ mod tests {
         .unwrap()
     }
 
+    fn fact_with_runtime_identity(
+        storage_key: &str,
+        invoke_id: &str,
+        occurred_at: &str,
+        tokens: i64,
+    ) -> ProjectionFact {
+        normalize_tail_fact(
+            "invocation",
+            storage_key,
+            &json!({
+                "factVersion": 1,
+                "invokeId": invoke_id,
+                "occurredAt": occurred_at,
+                "successLike": true,
+                "totalTokens": tokens,
+                "model": "fixture"
+            }),
+        )
+        .unwrap()
+    }
+
     fn row(change_id: i64, key: &str, operation: &str, payload: Value) -> RuntimeTailRow {
         RuntimeTailRow {
             source_instance_id: "source-a".into(),
@@ -1318,6 +1571,7 @@ mod tests {
             from_change_id: 2,
             through_change_id: 2,
             rows,
+            live: None,
             receipt: None,
         }
     }
@@ -1412,7 +1666,7 @@ mod tests {
             "totalTokens": 3
         });
         let mut missing_provenance = runtime_tail(vec![row(2, "row-a", "upsert", payload.clone())]);
-        missing_provenance.provenance = None;
+        missing_provenance.receipt = None;
         assert_eq!(
             compose_runtime_tail(&identity(), &[], missing_provenance)
                 .unwrap_err()
@@ -1422,9 +1676,10 @@ mod tests {
 
         let mut wrong_claim = runtime_tail(vec![row(2, "row-a", "upsert", payload.clone())]);
         wrong_claim
-            .provenance
+            .live
             .as_mut()
-            .expect("fixture provenance")
+            .expect("live snapshot")
+            .provenance
             .exclusive_claim_id = "".into();
         assert_eq!(
             compose_runtime_tail(&identity(), &[], wrong_claim)
@@ -1434,7 +1689,8 @@ mod tests {
         );
 
         let mut changed_row = runtime_tail(vec![row(2, "row-a", "upsert", payload.clone())]);
-        changed_row.rows[0].payload["totalTokens"] = json!(99);
+        changed_row.live.as_mut().expect("live snapshot").rows[0].payload["totalTokens"] =
+            json!(99);
         assert_eq!(
             compose_runtime_tail(&identity(), &[], changed_row)
                 .unwrap_err()
@@ -1490,13 +1746,83 @@ mod tests {
             QueryErrorCode::TailInvalid
         );
 
-        let overlapping_base = fact(&tail.rows[0].entity_key, 1);
+        let live_row = &tail.live.as_ref().expect("live snapshot").rows[0];
+        let invoke_id = live_row
+            .payload
+            .get("invokeId")
+            .and_then(Value::as_str)
+            .expect("runtime invoke id");
+        let overlapping_base =
+            fact_with_runtime_identity("invocation:proxy:1", invoke_id, &live_row.occurred_at, 1);
         assert_eq!(
             compose_runtime_tail(&identity(), &[overlapping_base], tail)
                 .unwrap_err()
                 .code,
             QueryErrorCode::TailInvalid
         );
+    }
+
+    #[test]
+    fn runtime_snapshot_is_independent_of_persistent_publication_delta() {
+        let live_row = row(
+            0,
+            "runtime-row-independent",
+            "upsert",
+            json!({
+                "factVersion": 1,
+                "occurredAt": "2026-11-01T00:00:00Z",
+                "successLike": false,
+                "totalTokens": 3
+            }),
+        );
+
+        let mut published_only = identity();
+        published_only.checkpoint = published_only.published_through_change_id;
+        let hub = RuntimeProjectionHub::new(crate::app_state::RuntimeProjectionMode::Auto);
+        hub.upsert(runtime_record(&live_row));
+        let mut producer =
+            RuntimeTailProducer::new(published_only.clone(), &hub, "runtime-stream-p".into())
+                .unwrap();
+        producer.claim("claim-published-only".into()).unwrap();
+        let tail = producer.finish().unwrap();
+        assert_eq!(
+            tail.through_change_id,
+            published_only.published_through_change_id
+        );
+        assert!(tail.rows.is_empty());
+        assert_eq!(tail.live.as_ref().unwrap().rows.len(), 1);
+        compose_runtime_tail(&published_only, &[], tail).unwrap();
+
+        let mut unpublished_gap = identity();
+        unpublished_gap.checkpoint = unpublished_gap.published_through_change_id + 2;
+        let empty_hub = RuntimeProjectionHub::new(crate::app_state::RuntimeProjectionMode::Auto);
+        let mut empty_producer = RuntimeTailProducer::new(
+            unpublished_gap.clone(),
+            &empty_hub,
+            "runtime-stream-e".into(),
+        )
+        .unwrap();
+        empty_producer.claim("claim-empty-live".into()).unwrap();
+        let empty_tail = empty_producer.finish().unwrap();
+        assert!(empty_tail.rows.is_empty());
+        assert!(empty_tail.live.as_ref().unwrap().rows.is_empty());
+        compose_runtime_tail(&unpublished_gap, &[], empty_tail).unwrap();
+
+        let non_matching_hub =
+            RuntimeProjectionHub::new(crate::app_state::RuntimeProjectionMode::Auto);
+        non_matching_hub.upsert(runtime_record(&live_row));
+        let mut non_matching_producer = RuntimeTailProducer::new(
+            unpublished_gap.clone(),
+            &non_matching_hub,
+            "runtime-stream-n".into(),
+        )
+        .unwrap();
+        non_matching_producer
+            .claim("claim-one-of-three".into())
+            .unwrap();
+        let non_matching_tail = non_matching_producer.finish().unwrap();
+        assert_eq!(non_matching_tail.live.as_ref().unwrap().rows.len(), 1);
+        compose_runtime_tail(&unpublished_gap, &[], non_matching_tail).unwrap();
     }
 
     #[test]
@@ -1709,7 +2035,7 @@ mod tests {
                 .code,
             QueryErrorCode::TailInvalid
         );
-        let mut gap = runtime_tail(vec![row(2, "row-a", "upsert", json!({"factVersion": 1}))]);
+        let mut gap = sealed_test_tail(vec![row(2, "row-a", "upsert", json!({"factVersion": 1}))]);
         gap.rows[0].change_id = 3;
         assert_eq!(
             compose_runtime_tail(&identity(), &[], gap)
