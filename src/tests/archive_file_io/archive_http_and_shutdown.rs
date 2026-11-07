@@ -166,6 +166,7 @@ async fn post_same_origin_json(
         .header(reqwest::header::REFERER, format!("{origin}/"))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body)
+        .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
         .send()
         .await
         .expect("request should succeed")
@@ -181,6 +182,7 @@ async fn delete_same_origin(
         .delete(format!("{origin}{path}"))
         .header(reqwest::header::ORIGIN, &origin)
         .header(reqwest::header::REFERER, format!("{origin}/"))
+        .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
         .send()
         .await
         .expect("request should succeed")
@@ -211,6 +213,7 @@ async fn collect_sse_events_until(
 ) -> Vec<(String, String)> {
     let response = client
         .get(format!("http://{addr}{path}"))
+        .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
         .send()
         .await
         .expect("sse request should succeed");
@@ -258,7 +261,8 @@ async fn collect_sse_events_until(
 
 #[tokio::test]
 async fn imported_oauth_validate_route_accepts_large_request_body() {
-    let state = test_state_from_config(test_config(), false).await;
+    let mut state = test_state_from_config(test_config(), false).await;
+    enable_test_admin_auth(&mut state);
     let (addr, server_handle) = spawn_http_server(state.clone())
         .await
         .expect("spawn http server");
@@ -302,7 +306,8 @@ async fn imported_oauth_validate_route_accepts_large_request_body() {
 
 #[tokio::test]
 async fn imported_oauth_import_route_accepts_large_request_body() {
-    let state = test_state_from_config(test_config(), false).await;
+    let mut state = test_state_from_config(test_config(), false).await;
+    enable_test_admin_auth(&mut state);
     let (addr, server_handle) = spawn_http_server(state.clone())
         .await
         .expect("spawn http server");
@@ -336,7 +341,8 @@ async fn imported_oauth_import_route_accepts_large_request_body() {
 
 #[tokio::test]
 async fn imported_oauth_validation_job_stream_replays_snapshot_and_completed_terminal_event() {
-    let state = test_state_from_config(test_config(), false).await;
+    let mut state = test_state_from_config(test_config(), false).await;
+    enable_test_admin_auth(&mut state);
     let (addr, server_handle) = spawn_http_server(state.clone())
         .await
         .expect("spawn http server");
@@ -413,7 +419,8 @@ async fn imported_oauth_validation_job_stream_replays_snapshot_and_completed_ter
 
 #[tokio::test]
 async fn imported_oauth_validation_job_delete_removes_completed_job() {
-    let state = test_state_from_config(test_config(), false).await;
+    let mut state = test_state_from_config(test_config(), false).await;
+    enable_test_admin_auth(&mut state);
     let (addr, server_handle) = spawn_http_server(state.clone())
         .await
         .expect("spawn http server");
@@ -474,6 +481,7 @@ async fn imported_oauth_validation_job_delete_removes_completed_job() {
         .get(format!(
             "http://{addr}/api/pool/upstream-accounts/oauth/imports/validation-jobs/{job_id}/events"
         ))
+        .header(reqwest::header::AUTHORIZATION, test_admin_authorization())
         .send()
         .await
         .expect("lookup request should succeed");

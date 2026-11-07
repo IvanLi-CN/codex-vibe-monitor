@@ -127,10 +127,11 @@ async fn health_is_ready_while_locked_recovery_resumes_after_release() {
 
 #[tokio::test]
 async fn health_becomes_ready_before_pending_recovery_completes() {
-    let state = test_state_with_openai_base(
+    let mut state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_test_admin_auth(&mut state);
     sqlx::query(
         "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, payload, raw_response) VALUES ('pending-startup-recovery', '2026-10-18T00:00:00Z', 'proxy', 'running', 0, '{}', '{}')",
     )
@@ -143,7 +144,7 @@ async fn health_becomes_ready_before_pending_recovery_completes() {
     let business_response = app
         .clone()
         .oneshot(
-            Request::builder()
+            test_admin_request()
                 .uri("/api/system/status")
                 .body(Body::empty())
                 .expect("build business request"),
