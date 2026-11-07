@@ -1,9 +1,11 @@
-//! Unified analytics reads over the SQLite source journal and the PostgreSQL projection.
+//! Unified analytics reads over immutable publication snapshots.
 //!
 //! The query boundary is deliberately narrower than either storage implementation: a response
 //! is admitted against one immutable publication identity, one source prefix, and one coverage
-//! proof. SQLite and PostgreSQL adapters therefore share the same tail folding, cache identity,
-//! and unavailable semantics instead of each growing a subtly different read contract.
+//! proof. SQLite and PostgreSQL adapters therefore share the same cache identity, freshness, and
+//! unavailable semantics instead of each growing a subtly different read contract. Runtime tails
+//! are reserved for an independently authenticated in-flight source; durable rows after P are
+//! never treated as a query-visible suffix.
 
 use super::history::coverage::{
     CoverageClaim, CoverageKey, CoverageKind, CoverageLedger, CoverageRange, SeedCapability,
@@ -12,7 +14,7 @@ use super::projection::{self, ProjectionFact, ProjectionModels, PublicationToken
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Pool, Postgres, Sqlite, Transaction, types::Json};
+use sqlx::{PgPool, Pool, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -387,9 +389,10 @@ pub(crate) fn compose_runtime_tail(
     base_facts: &[ProjectionFact],
     tail: RuntimeTail,
 ) -> QueryResult<(Vec<ProjectionFact>, ProjectionModels)> {
+    let is_last_good_fallback =
+        tail.rows.is_empty() && tail.through_change_id == identity.published_through_change_id;
     if tail.from_change_id != identity.published_through_change_id.saturating_add(1)
-        || tail.through_change_id != identity.checkpoint
-        || (tail.rows.is_empty() && tail.through_change_id != identity.published_through_change_id)
+        || (tail.through_change_id != identity.checkpoint && !is_last_good_fallback)
     {
         return Err(QueryError::tail_invalid());
     }
@@ -447,7 +450,7 @@ pub(crate) fn compose_runtime_tail(
         }
         expected_change = expected_change.saturating_add(1);
     }
-    if expected_change != identity.checkpoint.saturating_add(1) {
+    if !is_last_good_fallback && expected_change != identity.checkpoint.saturating_add(1) {
         return Err(QueryError::tail_invalid());
     }
     let facts: Vec<_> = facts.into_values().collect();
@@ -496,9 +499,13 @@ fn normalize_tail_fact(
         payload
             .get("tTotalMs")
             .and_then(Value::as_f64)
-            .filter(|duration| duration.is_finite() && *duration > 0.0)
+            .filter(|duration| {
+                duration.is_finite() && *duration > 0.0 && *duration < i64::MAX as f64
+            })
             .and_then(|duration| {
-                let duration_ms = duration.ceil() as i64;
+                let duration_ms = (duration
+                    + f64::from(occurred_at.timestamp_subsec_nanos() % 1_000_000) / 1_000_000.0)
+                    .ceil() as i64;
                 occurred_at_ms
                     .checked_add(duration_ms)
                     .map(|end_ms| serde_json::json!({"start_ms": occurred_at_ms, "end_ms": end_ms}))
@@ -605,75 +612,64 @@ fn assemble_response(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SqlitePublicationState {
-    pub(crate) consumer_id: String,
-    pub(crate) source_instance_id: String,
-    pub(crate) generation: i64,
-    pub(crate) owner_epoch: i64,
-    pub(crate) build_id: String,
-    pub(crate) publication_id: String,
-    pub(crate) projection_version: i64,
-    pub(crate) published_through_change_id: i64,
-    pub(crate) checkpoint: i64,
-    pub(crate) coverage_revision: i64,
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SqlitePrefixSnapshot {
+    pub(crate) identity: QueryIdentity,
+    pub(crate) facts: Vec<ProjectionFact>,
+    pub(crate) models: ProjectionModels,
+    pub(crate) coverage: CoverageLedger,
     pub(crate) source_updated_at_ms: Option<i64>,
 }
 
-impl SqlitePublicationState {
-    fn identity(&self) -> QueryResult<QueryIdentity> {
-        QueryIdentity::from_publication(
-            AnalyticsQueryBackend::Sqlite,
-            &PublicationToken {
-                publication_id: self.publication_id.clone(),
-                consumer_id: self.consumer_id.clone(),
-                build_id: self.build_id.clone(),
-                owner_epoch: self.owner_epoch,
-                through_change_id: self.published_through_change_id,
-                coverage_revision: self.coverage_revision,
-                projection_version: self.projection_version,
-            },
-            self.source_instance_id.clone(),
-            self.generation,
-            self.checkpoint,
-        )
-    }
+/// Implementations must read the durable SQLite publication identity, prefix facts/models,
+/// coverage, and source checkpoint through the transaction supplied here. The query adapter does
+/// not accept caller-owned state, so a prefix read cannot be paired with a newer journal
+/// transaction by accident. The returned identity is the immutable admission token for the same
+/// transaction.
+#[async_trait::async_trait]
+pub(crate) trait SqlitePrefixLoader: Send + Sync {
+    async fn load_prefix(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        consumer_id: &str,
+    ) -> QueryResult<SqlitePrefixSnapshot>;
 }
 
-/// Execute the SQLite adapter inside one transaction. Prefix facts/models are supplied by the
-/// existing SQLite read store, while the source journal tail is read from that same transaction.
+fn last_good_tail_for_persistent_snapshot(identity: &QueryIdentity) -> QueryResult<RuntimeTail> {
+    if identity.checkpoint < identity.published_through_change_id {
+        return Err(QueryError::snapshot_inconsistent());
+    }
+    // Persistent rows after P are not an in-flight runtime source. Keep the published facts and
+    // models intact, and let freshness report C > P as stale until a new publication exists.
+    Ok(RuntimeTail::empty(identity.published_through_change_id))
+}
+
+/// Execute the SQLite adapter inside one transaction. The loader owns all durable reads for the
+/// identity, prefix, models, coverage, and source checkpoint. No persistent `(P, C]` rows are
+/// folded into the response.
 pub(crate) async fn query_sqlite_snapshot(
     pool: &Pool<Sqlite>,
     request: &AnalyticsQueryRequest,
-    state: &SqlitePublicationState,
-    prefix_facts: Vec<ProjectionFact>,
-    prefix_models: ProjectionModels,
-    coverage: CoverageLedger,
+    loader: &dyn SqlitePrefixLoader,
 ) -> QueryResult<AnalyticsQueryResponse> {
     request.validate()?;
-    if request.consumer_id != state.consumer_id {
+    let mut tx = pool.begin().await.map_err(|_| QueryError::unavailable())?;
+    let prefix = loader.load_prefix(&mut tx, &request.consumer_id).await?;
+    if prefix.identity.backend != AnalyticsQueryBackend::Sqlite
+        || prefix.identity.consumer_id != request.consumer_id
+    {
         return Err(QueryError::snapshot_inconsistent());
     }
-    let mut tx = pool.begin().await.map_err(|_| QueryError::unavailable())?;
-    let identity = state.identity()?;
-    let tail = load_sqlite_tail(
-        &mut tx,
-        &identity.source_instance_id,
-        identity.generation,
-        identity.published_through_change_id,
-        identity.checkpoint,
-        identity.coverage_revision,
-        identity.owner_epoch,
-    )
-    .await?;
+    let identity = prefix.identity.clone();
+    let tail = last_good_tail_for_persistent_snapshot(&identity)?;
     let result = assemble_response(
         request,
         identity,
-        prefix_facts,
-        prefix_models,
+        prefix.facts,
+        prefix.models,
         tail,
-        coverage,
-        state.source_updated_at_ms,
+        prefix.coverage,
+        prefix.source_updated_at_ms,
     );
     if result.is_ok() {
         tx.commit().await.map_err(|_| QueryError::unavailable())?;
@@ -683,73 +679,9 @@ pub(crate) async fn query_sqlite_snapshot(
     result
 }
 
-async fn load_sqlite_tail(
-    tx: &mut Transaction<'_, Sqlite>,
-    source_instance_id: &str,
-    generation: i64,
-    published_through: i64,
-    checkpoint: i64,
-    _coverage_revision: i64,
-    owner_epoch: i64,
-) -> QueryResult<RuntimeTail> {
-    if checkpoint == published_through {
-        return Ok(RuntimeTail::empty(checkpoint));
-    }
-    let rows = sqlx::query_as::<_, (i64, i64, String, String, String, String, String, String, String)>(
-        "SELECT change_id, coverage_revision, entity_kind, entity_key, operation_kind, occurred_at, payload_digest, fact_json, source_instance_id
-         FROM analytics_change_events
-         WHERE source_instance_id = ?1 AND generation = ?2 AND change_id > ?3 AND change_id <= ?4
-         ORDER BY change_id",
-    )
-    .bind(source_instance_id)
-    .bind(generation)
-    .bind(published_through)
-    .bind(checkpoint)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|_| QueryError::unavailable())?;
-    let rows = rows
-        .into_iter()
-        .map(
-            |(
-                change_id,
-                row_coverage_revision,
-                entity_kind,
-                entity_key,
-                operation,
-                occurred_at,
-                payload_digest,
-                fact_json,
-                row_source_instance_id,
-            )| {
-                let payload =
-                    serde_json::from_str(&fact_json).map_err(|_| QueryError::tail_invalid())?;
-                Ok(RuntimeTailRow {
-                    source_instance_id: row_source_instance_id,
-                    generation,
-                    owner_epoch,
-                    change_id,
-                    coverage_revision: row_coverage_revision,
-                    entity_kind,
-                    entity_key,
-                    operation,
-                    occurred_at,
-                    payload_digest,
-                    payload,
-                })
-            },
-        )
-        .collect::<QueryResult<Vec<_>>>()?;
-    Ok(RuntimeTail {
-        from_change_id: published_through.saturating_add(1),
-        through_change_id: checkpoint,
-        rows,
-    })
-}
-
 /// Read admission and every PostgreSQL component query use one transaction. In particular,
-/// `current_publication`, `models_at`, `facts_at`, and the receipt tail cannot observe different
-/// owner epochs or publication pointers.
+/// `current_publication`, `models_at`, and `facts_at` cannot observe different owner epochs or
+/// publication pointers. Durable rows after P remain invisible until the next publication.
 pub(crate) async fn query_postgres_snapshot(
     pool: &PgPool,
     request: &AnalyticsQueryRequest,
@@ -800,7 +732,7 @@ pub(crate) async fn query_postgres_snapshot(
     let facts = projection::facts_at(&mut tx, &token)
         .await
         .map_err(|_| QueryError::publication_unavailable())?;
-    let tail = load_postgres_tail(&mut tx, &identity).await?;
+    let tail = last_good_tail_for_persistent_snapshot(&identity)?;
     let coverage = coverage_from_json(models.history_coverage.as_ref())?;
     let result = assemble_response(
         request,
@@ -817,78 +749,6 @@ pub(crate) async fn query_postgres_snapshot(
         let _ = tx.rollback().await;
     }
     result
-}
-
-async fn load_postgres_tail(
-    tx: &mut Transaction<'_, Postgres>,
-    identity: &QueryIdentity,
-) -> QueryResult<RuntimeTail> {
-    if identity.checkpoint == identity.published_through_change_id {
-        return Ok(RuntimeTail::empty(identity.checkpoint));
-    }
-    let rows = sqlx::query_as::<
-        _,
-        (
-            String,
-            i64,
-            i64,
-            i64,
-            String,
-            String,
-            String,
-            String,
-            String,
-            Json<Value>,
-        ),
-    >(
-        "SELECT source_instance_id, generation, change_id, coverage_revision,
-                entity_kind, entity_key, operation_kind, occurred_at, payload_digest, payload
-         FROM cvm_analytics.analytics_module_ingest_receipts
-         WHERE consumer_id = $1 AND source_instance_id = $2 AND generation = $3
-           AND change_id > $4 AND change_id <= $5
-         ORDER BY change_id",
-    )
-    .bind(&identity.consumer_id)
-    .bind(&identity.source_instance_id)
-    .bind(identity.generation)
-    .bind(identity.published_through_change_id)
-    .bind(identity.checkpoint)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|_| QueryError::unavailable())?;
-    Ok(RuntimeTail {
-        from_change_id: identity.published_through_change_id.saturating_add(1),
-        through_change_id: identity.checkpoint,
-        rows: rows
-            .into_iter()
-            .map(
-                |(
-                    source_instance_id,
-                    generation,
-                    change_id,
-                    coverage_revision,
-                    entity_kind,
-                    entity_key,
-                    operation,
-                    occurred_at,
-                    payload_digest,
-                    Json(payload),
-                )| RuntimeTailRow {
-                    source_instance_id,
-                    generation,
-                    owner_epoch: identity.owner_epoch,
-                    change_id,
-                    coverage_revision,
-                    entity_kind,
-                    entity_key,
-                    operation,
-                    occurred_at,
-                    payload_digest,
-                    payload,
-                },
-            )
-            .collect(),
-    })
 }
 
 #[cfg(test)]
@@ -1000,6 +860,86 @@ mod tests {
             compose_runtime_tail(&identity(), &[fact("row-a", 10)], revoked).unwrap();
         assert!(facts.is_empty());
         assert!(models.rollups.is_empty());
+    }
+
+    #[test]
+    fn persistent_unpublished_rows_keep_last_good_for_insert_correction_revoke_and_seed() {
+        let base = vec![fact("row-a", 10)];
+        for (operation, payload) in [
+            (
+                "upsert",
+                json!({
+                    "factVersion": 1,
+                    "occurredAt": "2026-11-01T00:00:00Z",
+                    "successLike": true,
+                    "totalTokens": 30
+                }),
+            ),
+            (
+                "correction",
+                json!({
+                    "factVersion": 1,
+                    "occurredAt": "2026-11-01T00:00:00Z",
+                    "successLike": true,
+                    "totalTokens": 3
+                }),
+            ),
+            ("logical_revoke", json!({"factVersion": 1})),
+        ] {
+            let persistent_tail = RuntimeTail {
+                from_change_id: 2,
+                through_change_id: 2,
+                rows: vec![row(2, "row-a", operation, payload)],
+            };
+            let (unpublished_facts, _) =
+                compose_runtime_tail(&identity(), &base, persistent_tail.clone()).unwrap();
+            match operation {
+                "logical_revoke" => assert!(unpublished_facts.is_empty()),
+                _ => assert_ne!(unpublished_facts[0].payload["totalTokens"], 10),
+            }
+            let admitted = last_good_tail_for_persistent_snapshot(&identity()).unwrap();
+            assert_eq!(admitted, RuntimeTail::empty(1));
+            let (facts, _) = compose_runtime_tail(&identity(), &base, admitted).unwrap();
+            assert_eq!(facts[0].payload["totalTokens"], 10);
+        }
+
+        let published_models = ProjectionModels {
+            certified_seeds: json!({"seed": "unknown-old-contribution"}),
+            history_coverage: Some(json!({"proof": "published"})),
+            ..ProjectionModels::default()
+        };
+        let response = assemble_response(
+            &request(),
+            identity(),
+            base,
+            published_models,
+            RuntimeTail::empty(1),
+            coverage(),
+            Some(1_000),
+        )
+        .unwrap();
+        assert_eq!(
+            response.models.certified_seeds["seed"],
+            "unknown-old-contribution"
+        );
+        assert_eq!(response.freshness, FreshnessState::Stale);
+    }
+
+    #[test]
+    fn interval_normalization_preserves_submillisecond_occurrence_precision() {
+        let normalized = normalize_tail_fact(
+            "invocation",
+            "precise-row",
+            &json!({
+                "factVersion": 1,
+                "occurredAt": "2026-11-01T00:00:00.000900Z",
+                "successLike": true,
+                "tTotalMs": 0.2
+            }),
+        )
+        .unwrap();
+        let interval = normalized.interval.unwrap();
+        assert_eq!(interval.end_ms - interval.start_ms, 2);
     }
 
     #[test]
