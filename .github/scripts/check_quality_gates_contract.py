@@ -1416,7 +1416,16 @@ def ci_metadata_job_if(job_id: str) -> str:
 
 def normalize_ci_metadata_jobs(workflow: dict[str, Any]) -> None:
     """Validate the exact event wrapper before checking unchanged job contracts."""
-    for job_id, job in require_mapping(workflow.get("jobs"), "ci-pr.yml.jobs").items():
+    jobs = require_mapping(workflow.get("jobs"), "ci-pr.yml.jobs")
+    # Deploy this compatibility reader before activating the new workflow format:
+    # merge_group deliberately reads its trusted checker from the base branch.
+    wrapped = [isinstance(job.get("name"), str) and job["name"].startswith("${{") for job in jobs.values()]
+    require(all(wrapped) or not any(wrapped), "ci-pr.yml: static and metadata-only job formats must not be mixed")
+    if not any(wrapped):
+        for job_id, job in jobs.items():
+            require(job.get("if") == CI_ORIGINAL_JOB_IF.get(job_id), f"ci-pr.yml.jobs.{job_id}: original event guard drifted")
+        return
+    for job_id, job in jobs.items():
         raw_name = job.get("name", "")
         match = re.search(r" \|\| '([^']+)' }}$", raw_name) if isinstance(raw_name, str) else None
         require(match is not None, f"ci-pr.yml.jobs.{job_id}: metadata-only check name isolation missing")

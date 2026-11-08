@@ -633,3 +633,5 @@ Gate 必须有明确输入 job、适用性、成功/失败/取消/missing/skippe
 - [GitHub Actions concurrency](https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency)
 - [Store and share data with workflow artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data)
 - [Remove workflow artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/remove-workflow-artifacts)
+
+工作流检查名合同变化应先部署向前兼容的可信校验器，再启用新格式。merge_group 读取 base 校验器，不能只凭同仓 PR 使用候选校验器通过就断言首次上线可用。

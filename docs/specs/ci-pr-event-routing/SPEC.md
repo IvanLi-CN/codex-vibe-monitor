@@ -18,6 +18,10 @@ PR 的 edited 事件在携带 title 或 body 变更且未携带 base 变更时�
 
 opened、reopened、synchronize、ready_for_review、merge_group、base 编辑，以及缺少已识别元数据字段的 edited 事件 MUST 保持完整验证路径；原任务依赖、门禁名称及生产者失败传播 MUST 保持原义。元数据编辑 MUST 不取消代码运行。
 
+### REQ-CI-EVENT-004
+
+首次启用 MUST 先将兼容校验器部署到 base，再修改生产工作流。兼容校验器 MUST 接受完整原格式和完整事件包装格式，并拒绝混合格式及守卫漂移。merge_group 的可信脚本来源 MUST 保持 base。
+
 ## Verification
 
 ### VER-CI-EVENT-001
@@ -34,6 +38,11 @@ opened、reopened、synchronize、ready_for_review、merge_group、base 编辑�
 
 - covers: `REQ-CI-EVENT-001`, `REQ-CI-EVENT-002`
 - 托管平台上完整代码验证通过后修改 PR 正文，确认新 CI PR 运行仅产生独立名称的 skipped jobs，且不消耗重型任务 runner、不改变原代码检查结果。
+
+### VER-CI-EVENT-004
+
+- covers: `REQ-CI-EVENT-004`
+- 分别验证完整原格式和完整包装格式可被兼容校验器接受；逐 job 混用两种格式或改写原格式守卫必须被拒绝。启用前确认 base 已包含该兼容校验器。
 
 ## Related ADRs
 
