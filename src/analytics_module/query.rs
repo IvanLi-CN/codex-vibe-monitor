@@ -15,7 +15,7 @@ use crate::app_state::RuntimeProjectionHub;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Pool, Sqlite, Transaction};
+use sqlx::{PgPool, Pool, Postgres, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -1397,7 +1397,27 @@ pub(crate) async fn query_postgres_snapshot(
         .execute(&mut *tx)
         .await
         .map_err(|_| QueryError::unavailable())?;
-    let token = projection::current_publication(&mut tx, &request.consumer_id)
+    let result = query_postgres_snapshot_in_transaction(&mut tx, request).await;
+    if result.is_ok() {
+        tx.commit().await.map_err(|_| QueryError::unavailable())?;
+    } else {
+        let _ = tx.rollback().await;
+    }
+    result
+}
+
+/// Read one PostgreSQL publication snapshot through a caller-owned repeatable-read transaction.
+///
+/// The caller must have already started and configured the transaction, and is responsible for
+/// its final commit or rollback. This function never begins, configures, commits, rolls back, or
+/// otherwise replaces the supplied transaction, so an admitted C8 read permit can remain held
+/// through the caller's response handoff and transaction completion.
+pub(crate) async fn query_postgres_snapshot_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &AnalyticsQueryRequest,
+) -> QueryResult<AnalyticsQueryResponse> {
+    request.validate()?;
+    let token = projection::current_publication(&mut *tx, &request.consumer_id)
         .await
         .map_err(|_| QueryError::publication_unavailable())?;
     let metadata = sqlx::query_as::<_, (String, i64, i64, i64, i64)>(
@@ -1415,7 +1435,7 @@ pub(crate) async fn query_postgres_snapshot(
     .bind(&token.publication_id)
     .bind(token.owner_epoch)
     .bind(token.through_change_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(|_| QueryError::publication_unavailable())?
     .ok_or_else(QueryError::publication_unavailable)?;
@@ -1431,15 +1451,15 @@ pub(crate) async fn query_postgres_snapshot(
         generation,
         checkpoint,
     )?;
-    let models = projection::models_at(&mut tx, &token)
+    let models = projection::models_at(tx, &token)
         .await
         .map_err(|_| QueryError::publication_unavailable())?;
-    let facts = projection::facts_at(&mut tx, &token)
+    let facts = projection::facts_at(tx, &token)
         .await
         .map_err(|_| QueryError::publication_unavailable())?;
     let tail = last_good_tail_for_persistent_snapshot(&identity)?;
     let coverage = coverage_from_json(models.history_coverage.as_ref())?;
-    let result = assemble_response(
+    assemble_response(
         request,
         identity,
         facts,
@@ -1447,13 +1467,7 @@ pub(crate) async fn query_postgres_snapshot(
         tail,
         coverage,
         Some(source_updated_at_ms),
-    );
-    if result.is_ok() {
-        tx.commit().await.map_err(|_| QueryError::unavailable())?;
-    } else {
-        let _ = tx.rollback().await;
-    }
-    result
+    )
 }
 
 /// Execute a consumer-range request through the same PostgreSQL publication, coverage, tail,
@@ -1464,6 +1478,17 @@ pub(crate) async fn query_postgres_snapshot_for_consumer_range(
     consumer_range: AnalyticsQueryRange,
 ) -> QueryResult<AnalyticsQueryResponse> {
     query_postgres_snapshot(pool, &request.clone().with_consumer_range(consumer_range)).await
+}
+
+/// Read a consumer-range request through a caller-owned PostgreSQL publication transaction.
+/// The transaction lifecycle remains with the caller, just like the base snapshot seam.
+pub(crate) async fn query_postgres_snapshot_for_consumer_range_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &AnalyticsQueryRequest,
+    consumer_range: AnalyticsQueryRange,
+) -> QueryResult<AnalyticsQueryResponse> {
+    query_postgres_snapshot_in_transaction(tx, &request.clone().with_consumer_range(consumer_range))
+        .await
 }
 
 #[cfg(test)]
@@ -2181,6 +2206,41 @@ mod tests {
                     result.unwrap_err().code,
                     QueryErrorCode::PublicationUnavailable
                 );
+            }
+            other => panic!("unknown C6_PG_QUERY_CASE: {other}"),
+        }
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an owner-created temporary PostgreSQL 18 reader fixture"]
+    async fn postgres_caller_owned_snapshot_leaves_transaction_with_caller() {
+        let url = std::env::var("C6_PG_QUERY_APP_URL").expect("C6_PG_QUERY_APP_URL");
+        let case = std::env::var("C6_PG_QUERY_CASE").expect("C6_PG_QUERY_CASE");
+        let pool = PgPool::connect(&url).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+
+        let result = query_postgres_snapshot_in_transaction(&mut tx, &request()).await;
+        match case.as_str() {
+            "published" | "unpublished" => {
+                result.unwrap();
+                let sentinel: i32 = sqlx::query_scalar("SELECT 1")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap();
+                assert_eq!(sentinel, 1);
+                tx.commit().await.unwrap();
+            }
+            "blocked" => {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    QueryErrorCode::PublicationUnavailable
+                );
+                tx.rollback().await.unwrap();
             }
             other => panic!("unknown C6_PG_QUERY_CASE: {other}"),
         }
