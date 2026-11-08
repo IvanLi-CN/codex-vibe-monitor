@@ -7,3 +7,5 @@
 PR #1320 已部署第一版兼容读取器。PR #1321 的独立名称方案在 CLI 中保留旧成功，但 GitHub 实际合并界面出现 11 个 Expected，未通过验收；原生单 job 重跑也未恢复门禁。受控 Checks API 失败探针落入旧 check suite，未被实际门禁采用，因此禁止用人工重放替代原生验证。
 
 主人随后授权一个轻量 runner，并授权最小权限的失败探针。探针完成后，最终方案恢复原生检查名称，以一个原有必需 job 只读核验完整 CI；后续启用提交必须移除 Review Policy 中的临时探针和 checks:write。新的兼容准备仍保持生产调度不变；优化 PR 的合并继续等待主人确认。
+
+兼容 PR #1322 将可信读取器、事件证明合同及启动隔离部署到 base。启用阶段保留原生检查名称，以 Repository Tooling Checks 核验完整 CI 后放行其余 skipped 检查，并撤回 Review Policy 的临时失败探针与 checks:write。

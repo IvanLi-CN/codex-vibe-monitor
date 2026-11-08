@@ -1,6 +1,6 @@
 # PR CI 事件路由实现
 
-上线分为兼容与启用两步。兼容阶段保持生产 `.github/workflows/ci-pr.yml` 不变，将可信读取器和新格式合同先部署到 base；fixture 演练未来工作流。启用阶段保留全部原检查名称，在 16 个重型 job 入口加元数据守卫，仅 Repository Tooling Checks 执行轻量证据路径。其代码路径仍执行原工具合同和检查。
+上线分为兼容与启用两步。可信读取器和新格式合同先部署到 base，再由 `.github/workflows/ci-pr.yml` 启用单门禁路径。生产格式保留全部原检查名称，在 16 个重型 job 入口加元数据守卫，仅 Repository Tooling Checks 执行轻量证据路径。其代码路径仍执行原工具合同和检查。
 
 轻量 job 从事件 base SHA 读取 `.github/scripts/ci_pr_metadata_evidence.py`，不执行候选分支中的读取器。读取器使用 `/usr/bin/python3 -I`，Git 使用绝对路径；合同固定 Ubuntu runner、checkout 及步骤 shell，约束 workflow 环境并拒绝 job 环境、容器与 shell defaults，防止候选代码在可信读取器之前执行。完整和元数据运行均先上传一个绑定 run/attempt、PR、head/base 和 merge SHA 的微型 `event.json`，保留七日。元数据路径使用 `contents:read` 和 `actions:read`，不创建检查、不写状态、不修改必需检查规则。完整代码路径保持原十五分钟超时，元数据路径最多七十五分钟，其中证据等待最多一小时，等待期间门禁保持未完成。
 
@@ -8,4 +8,4 @@
 
 事件条件使用官方 `@actions/expressions` 执行矩阵测试；读取器的离线对抗测试由 `.github/scripts/test-ci-pr-metadata-evidence.py` 承担，接入既有 quality-gates self-tests。兼容校验器在恢复原合同前精确检查全部事件守卫、原步骤守卫、可信读取步骤、附件设置和只读权限。
 
-托管平台验收必须同时取得实际合并门禁和 Actions 运行证据。成功路径确认一个 runner 与可合并状态；失败路径确认同一必需证据 job 阻断合并。当前兼容提交仅证明准备阶段，不能宣称优化已生效。回退以完整格式为单位恢复原静态工作流，保留完整验证路径。
+托管平台验收必须同时取得实际合并门禁和 Actions 运行证据。成功路径确认一个 runner 与可合并状态；失败路径确认同一必需证据 job 阻断合并。生产启用的收益与真实门禁结果由当前候选的托管平台证据证明，不能仅凭兼容准备提交宣称完成。回退以完整格式为单位恢复原静态工作流，保留完整验证路径。
