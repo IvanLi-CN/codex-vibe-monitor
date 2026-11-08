@@ -12,7 +12,7 @@
 
 保留全部原生检查名称。元数据编辑跳过 16 个重型 job，仅现有必需 Repository Tooling Checks 执行可信读取器。该门禁必须证明相同 PR、head/base 最近完整原生 CI 的全部 17 个 job 在同一完整 attempt 成功；任何较新失败、取消、未知证明、证据过期或部分重跑都阻断复用。失败传播由这个全局必需门禁承担，不再要求每个 skipped 检查单独保留旧失败。
 
-读取器固定来自事件 base SHA，使用只读 Actions API；每次完整及元数据运行产生微型事件证明附件，区分调度路径并绑定身份。附件下载不携带 API token，证明保留七日。生产调度启用前先将读取器和格式兼容合同部署到 base；merge_group 继续使用 base 的可信合同校验器。
+轻量路径固定 runner、checkout 和执行步骤，拒绝候选环境及 shell defaults 注入；绝对路径的 Python 以隔离模式启动，避免 `sitecustomize` 等候选代码先行执行。读取器固定来自事件 base SHA，使用只读 Actions API；每次完整及元数据运行产生微型事件证明附件，区分调度路径并绑定身份。附件下载不携带 API token，证明保留七日。生产调度启用前先将读取器和格式兼容合同部署到 base；merge_group 继续使用 base 的可信合同校验器。
 
 ## 取舍与后果
 

@@ -202,7 +202,32 @@ for field,value in [('permissions',{'contents':'read','actions':'write'}),('time
     except m['ContractError']:
         continue
     raise AssertionError((field,'unsafe evidence configuration accepted'))
-print('ci-pr metadata evidence guard and trust mutation checks passed')
+# Startup injection must be rejected before trusting the base reader.
+for scope in ('workflow-env','job-env','defaults','checkout-env','container','runner'):
+    for key,value in [('PYTHONPATH','.'),('PATH','.'),('BASH_ENV','candidate.sh'),('LD_PRELOAD','candidate.so')]:
+        changed=copy.deepcopy(workflow)
+        job=changed['jobs']['repository-tooling-checks']
+        if scope == 'workflow-env': changed['env'][key]=value
+        elif scope == 'job-env': job['env']={key:value}
+        elif scope == 'defaults': changed['defaults']={'run':{'shell':'candidate {0}'}}
+        elif scope == 'checkout-env': job['steps'][0]['env']={key:value}
+        elif scope == 'container': job['container']='candidate:latest'
+        else: job['runs-on']='self-hosted'
+        try:
+            normalize(changed)
+        except m['ContractError']:
+            continue
+        raise AssertionError((scope,key,'candidate startup injection accepted'))
+for index in (1,3):
+    changed=copy.deepcopy(workflow)
+    step=changed['jobs']['repository-tooling-checks']['steps'][index]
+    step['run']=step['run'].replace('/usr/bin/python3 -I','python3')
+    try:
+        normalize(changed)
+    except m['ContractError']:
+        continue
+    raise AssertionError((index,'non-isolated interpreter accepted'))
+print('ci-pr metadata evidence guards, trust and startup isolation mutation checks passed')
 `,
   ],
   {

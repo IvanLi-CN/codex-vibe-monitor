@@ -5,6 +5,10 @@ import datetime as dt
 import importlib.util
 import io
 import json
+import os
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -218,6 +222,20 @@ class EvidenceTests(unittest.TestCase):
             else:
                 with self.assertRaises(evidence.EvidenceError):
                     evidence.decode_proof(stream.getvalue())
+
+    def test_isolated_interpreter_ignores_candidate_startup_hook(self):
+        # Run the real interpreter and actual helper, not a simulated validator.
+        with tempfile.TemporaryDirectory(prefix='ci-event-startup-') as root:
+            Path(root, 'sitecustomize.py').write_text('import os; os._exit(42)\n')
+            environment = dict(os.environ, PYTHONPATH=root)
+            helper = str(Path(evidence.__file__).resolve())
+            vulnerable = subprocess.run([sys.executable, helper, '--help'], cwd=root,
+                                        env=environment, capture_output=True, check=False)
+            self.assertEqual(vulnerable.returncode, 42)
+            isolated = subprocess.run([sys.executable, '-I', helper, '--help'], cwd=root,
+                                      env=environment, capture_output=True, check=False)
+            self.assertEqual(isolated.returncode, 0, isolated.stderr)
+            self.assertIn(b'write-proof', isolated.stdout)
 
     def test_artifact_redirect_strips_token(self):
         import urllib.error

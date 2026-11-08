@@ -24,7 +24,7 @@ opened、reopened、synchronize、ready_for_review、merge_group、base 编辑�
 
 ### REQ-CI-EVENT-005
 
-元数据证据读取器 MUST 仅使用只读权限，从原生 Actions 运行读取事件证明和完整 job 集合。事件证明 MUST 绑定 run/attempt、head/base 和合成 merge commit；全部 17 个原始 job MUST 在同一 attempt 成功，完成时间均在七日内。下载附件 MUST 限制大小、成员和有效期，并且 MUST NOT 将 GitHub API 凭据转发至附件下载域名。接受证据前 MUST 再次核对 live PR 的 head/base、运行集合及源 attempt/status；证据集合变化 MUST 重新验证。较新 attempt 的执行时间 MUST 优先于原始运行编号，时间顺序不明 MUST 阻断复用。
+元数据路径 MUST 使用固定 runner、checkout 和隔离解释器，拒绝候选分支的启动环境、容器及 shell defaults 注入。元数据证据读取器 MUST 仅使用只读权限，从原生 Actions 运行读取事件证明和完整 job 集合。事件证明 MUST 绑定 run/attempt、head/base 和合成 merge commit；全部 17 个原始 job MUST 在同一 attempt 成功，完成时间均在七日内。下载附件 MUST 限制大小、成员和有效期，并且 MUST NOT 将 GitHub API 凭据转发至附件下载域名。接受证据前 MUST 再次核对 live PR 的 head/base、运行集合及源 attempt/status；证据集合变化 MUST 重新验证。较新 attempt 的执行时间 MUST 优先于原始运行编号，时间顺序不明 MUST 阻断复用。
 
 ## Verification
 

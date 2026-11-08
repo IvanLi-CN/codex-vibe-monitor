@@ -125,9 +125,9 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git fetch --no-tags origin "$BASE_SHA"
-          git show "$BASE_SHA:.github/scripts/ci_pr_metadata_evidence.py" > "$RUNNER_TEMP/ci-pr-metadata-evidence.py"
-          python3 "$RUNNER_TEMP/ci-pr-metadata-evidence.py" write-proof --proof-dir "$RUNNER_TEMP/ci-pr-event-proof"
+          /usr/bin/git fetch --no-tags origin "$BASE_SHA"
+          /usr/bin/git show "$BASE_SHA:.github/scripts/ci_pr_metadata_evidence.py" > "$RUNNER_TEMP/ci-pr-metadata-evidence.py"
+          /usr/bin/python3 -I "$RUNNER_TEMP/ci-pr-metadata-evidence.py" write-proof --proof-dir "$RUNNER_TEMP/ci-pr-event-proof"
       - name: Upload CI event provenance
         uses: actions/upload-artifact@v7
         with:
@@ -137,10 +137,11 @@ jobs:
           retention-days: 7
           overwrite: true
       - name: Validate complete CI evidence
+        shell: bash
         if: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body) }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 "$RUNNER_TEMP/ci-pr-metadata-evidence.py" validate --proof-dir "$RUNNER_TEMP/ci-pr-event-proof"
+        run: /usr/bin/python3 -I "$RUNNER_TEMP/ci-pr-metadata-evidence.py" validate --proof-dir "$RUNNER_TEMP/ci-pr-event-proof"
 
       - name: Set up Bun
         if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
