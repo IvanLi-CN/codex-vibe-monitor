@@ -569,6 +569,12 @@ Gate 必须有明确输入 job、适用性、成功/失败/取消/missing/skippe
 
 这些能力仍需用第 2、7 章的指标重新验证，不能自动等同于最优拓扑。
 
+### PR 元数据编辑的检查身份隔离
+
+纯标题或正文 edited 事件可以跳过重型验证，但不能继续使用原 required-check 名称：GitHub 将条件跳过视为成功，可能掩盖同一 SHA 的失败或运行中代码检查。元数据路径使用独立 `Metadata only / …` 名称；base 编辑、未知 edited 和代码事件保留完整路径。事件条件直接在 job 入口计算，不新增 classifier runner，元数据 namespace 继续与代码 namespace 隔离以避免取消正在运行的代码验证。
+
+使用 GitHub 官方 `@actions/expressions` 对事件矩阵和 check identity 执行回归，随后在真实 PR 中编辑正文，确认只有隔离名称的 skipped jobs。不得仅根据整个元数据 workflow 绿色就宣告原代码检查通过。长期合同见 `docs/specs/ci-pr-event-routing/SPEC.md`。
+
 ### 迁移验证的有界并行
 
 `validate-retention-maintenance-upgrade.py --jobs 2` 只允许不同历史版本的验证重叠执行；每个版本仍在独立目录内顺序执行全部迁移、真实文件、SQLite 和 owner 断言。默认 `--jobs 1` 保留串行诊断及回退入口，CI 在同一个 runner 内最多运行两个版本，不新增 job、cache 或 artifact。
@@ -627,3 +633,5 @@ Gate 必须有明确输入 job、适用性、成功/失败/取消/missing/skippe
 - [GitHub Actions concurrency](https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency)
 - [Store and share data with workflow artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data)
 - [Remove workflow artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/remove-workflow-artifacts)
+
+工作流检查名合同变化应先部署向前兼容的可信校验器，再启用新格式。merge_group 读取 base 校验器，不能只凭同仓 PR 使用候选校验器通过就断言首次上线可用。

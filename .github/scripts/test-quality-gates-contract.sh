@@ -7,6 +7,8 @@ fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-validator-contract.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-candidate-binding.py"
 
+bun "$repo_root/.github/scripts/test-ci-pr-event-policy.mjs"
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
@@ -265,13 +267,13 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 needle = """  build:
-    name: Build Artifacts
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Build Artifacts' || 'Build Artifacts' }}"
     needs:
       - build-pr-smoke-artifacts
       - retention-migration-validation
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"""
+    if: ${{ (always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}"""
 replacement = needle.replace(
-    "    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+    "    if: ${{ (always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}",
     "    if: ${{ always() && github.event_name == 'pull_request' }}",
     1,
 )
@@ -285,7 +287,7 @@ PY
     echo "expected Build Artifacts merge-group condition fixture to fail" >&2
     exit 1
   fi
-  grep -q "ci-pr.yml.jobs.build.if must stay" "$tmp_dir/build-merge-group.log"
+  grep -q "ci-pr.yml.jobs.build: metadata-only event guard drifted" "$tmp_dir/build-merge-group.log"
   cp "$fixtures_root/ci-pr.yml" "$path"
 }
 
@@ -889,8 +891,8 @@ path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
 needle = '''  backend-tests-lightweight:
     needs: backend-test-archive
-    if: always()
-    name: Backend Tests (Lightweight)
+    if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Tests (Lightweight)' || 'Backend Tests (Lightweight)' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -1140,7 +1142,7 @@ repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
 needle = """  build:
-    name: Build Artifacts
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Build Artifacts' || 'Build Artifacts' }}"
     needs:
       - build-pr-smoke-artifacts
       - retention-migration-validation
