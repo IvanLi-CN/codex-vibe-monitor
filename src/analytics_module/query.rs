@@ -2228,6 +2228,13 @@ mod tests {
         match case.as_str() {
             "published" | "unpublished" => {
                 result.unwrap();
+                query_postgres_snapshot_for_consumer_range_in_transaction(
+                    &mut tx,
+                    &request(),
+                    AnalyticsQueryRange::explicit("2026-11-01", "2026-11-08"),
+                )
+                .await
+                .unwrap();
                 let sentinel: i32 = sqlx::query_scalar("SELECT 1")
                     .fetch_one(&mut *tx)
                     .await
