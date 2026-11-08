@@ -266,9 +266,6 @@ pub(crate) async fn recover_summary_projection_all_time_global_archive(
     verified_paths: &[String],
     global_totals: &mut StatsTotals,
 ) -> Result<bool> {
-    if preparation.archive_scan_paths.global_unmaterialized_count == 0 {
-        return Ok(false);
-    }
     #[cfg(test)]
     pause_summary_projection_test_interleave(
         context.input.pool,
@@ -276,6 +273,9 @@ pub(crate) async fn recover_summary_projection_all_time_global_archive(
         SummaryProjectionTestInterleaveStage::BeforeAllTimeArchiveScan,
     )
     .await?;
+    if preparation.archive_scan_paths.global_unmaterialized_count == 0 {
+        return Ok(false);
+    }
     let totals = crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
         context.input.pool,
         InvocationSourceScope::All,
