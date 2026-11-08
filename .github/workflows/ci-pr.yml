@@ -28,7 +28,8 @@ env:
 
 jobs:
   lint:
-    name: Lint & Format Check
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Lint & Format Check' || 'Lint & Format Check' }}"
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -105,7 +106,8 @@ jobs:
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
   repository-tooling-checks:
-    name: Repository Tooling Checks
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Repository Tooling Checks' || 'Repository Tooling Checks' }}"
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -305,7 +307,8 @@ jobs:
         run: bun run lint:docs
 
   frontend-tests:
-    name: Front-end Tests
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Front-end Tests' || 'Front-end Tests' }}"
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -338,7 +341,8 @@ jobs:
           bun run test:pwa-assets
 
   storybook-accessibility-tests:
-    name: Storybook Accessibility Tests
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Storybook Accessibility Tests' || 'Storybook Accessibility Tests' }}"
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -375,7 +379,8 @@ jobs:
         run: bun run test-storybook
 
   docs-demo-build:
-    name: Docs & Web Demo Build
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Docs & Web Demo Build' || 'Docs & Web Demo Build' }}"
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -443,7 +448,8 @@ jobs:
           grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
 
   records-overlay-e2e-producer:
-    name: PR E2E Test Producer
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / PR E2E Test Producer' || 'PR E2E Test Producer' }}"
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -573,9 +579,9 @@ jobs:
           fi
 
   records-overlay-e2e:
-    name: Records Overlay E2E
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Records Overlay E2E' || 'Records Overlay E2E' }}"
     needs: records-overlay-e2e-producer
-    if: always()
+    if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -585,7 +591,8 @@ jobs:
         run: test "$PRODUCER_RESULT" = success
 
   backend-test-archive:
-    name: Backend Test Archive Producer
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Test Archive Producer' || 'Backend Test Archive Producer' }}"
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -672,8 +679,8 @@ jobs:
 
   backend-tests-lightweight:
     needs: backend-test-archive
-    if: always()
-    name: Backend Tests (Lightweight)
+    if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Tests (Lightweight)' || 'Backend Tests (Lightweight)' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -717,8 +724,8 @@ jobs:
 
   backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
-    if: always()
-    name: Backend Tests (Stateful SQLite shard 1/2)
+    if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Tests (Stateful SQLite shard 1/2)' || 'Backend Tests (Stateful SQLite shard 1/2)' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -762,8 +769,8 @@ jobs:
 
   backend-tests-stateful-sqlite-shard-2:
     needs: backend-test-archive
-    if: always()
-    name: Backend Tests (Stateful SQLite shard 2/2)
+    if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Tests (Stateful SQLite shard 2/2)' || 'Backend Tests (Stateful SQLite shard 2/2)' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -806,11 +813,11 @@ jobs:
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   backend-tests-stateful-sqlite:
-    name: Backend Tests (Stateful SQLite)
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Tests (Stateful SQLite)' || 'Backend Tests (Stateful SQLite)' }}"
     needs:
       - backend-tests-stateful-sqlite-shard-1
       - backend-tests-stateful-sqlite-shard-2
-    if: always()
+    if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -826,9 +833,9 @@ jobs:
           test "${SHARD_TWO_RESULT}" = success
 
   backend-tests-representative-scale:
-    name: Backend Tests (Representative Scale)
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Tests (Representative Scale)' || 'Backend Tests (Representative Scale)' }}"
     needs: backend-test-archive
-    if: always()
+    if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -878,8 +885,8 @@ jobs:
 
   backend-tests-archive-file-io:
     needs: backend-test-archive
-    if: always()
-    name: Backend Tests (Archive / File I/O)
+    if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Tests (Archive / File I/O)' || 'Backend Tests (Archive / File I/O)' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -922,8 +929,8 @@ jobs:
         run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   build-pr-smoke-artifacts:
-    name: PR Smoke Artifact Producer
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / PR Smoke Artifact Producer' || 'PR Smoke Artifact Producer' }}"
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -1044,11 +1051,11 @@ jobs:
 
 
   build:
-    name: Build Artifacts
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Build Artifacts' || 'Build Artifacts' }}"
     needs:
       - build-pr-smoke-artifacts
       - retention-migration-validation
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+    if: ${{ (always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -1100,9 +1107,9 @@ jobs:
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
   retention-migration-validation:
-    name: Retention Migration Validation
+    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Retention Migration Validation' || 'Retention Migration Validation' }}"
     needs: build-pr-smoke-artifacts
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+    if: ${{ (always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

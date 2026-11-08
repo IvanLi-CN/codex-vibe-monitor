@@ -42,7 +42,7 @@ opened、reopened、synchronize、ready_for_review、merge_group、base 编辑�
 ### VER-CI-EVENT-004
 
 - covers: `REQ-CI-EVENT-004`
-- 分别验证完整原格式和完整包装格式可被兼容校验器接受；逐 job 混用两种格式或改写原格式守卫必须被拒绝。启用前确认 base 已包含该兼容校验器。
+- 分别验证完整原格式和完整包装格式可被兼容校验器接受；逐 job 混用两种格式或改写原格式守卫必须被拒绝。启用前确认 base 已包含该兼容校验器，并用从 base 提取的校验器验证待启用生产工作流。
 
 ## Related ADRs
 
