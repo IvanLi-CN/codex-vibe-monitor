@@ -1391,7 +1391,7 @@ def require_retention_migration_validation_contract(
     )
 
 
-# Pure title/body edits cannot publish skipped results under required-check names.
+# Metadata edits require a single evidence gate before skipped canonical checks are safe.
 # Unknown edits and base changes conservatively keep the full validation path.
 CI_METADATA_ONLY = "github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)"
 CI_ORIGINAL_JOB_IF = {
@@ -1414,6 +1414,86 @@ def ci_metadata_job_if(job_id: str) -> str:
     return "${{ (" + expression + ") && !(" + CI_METADATA_ONLY + ") }}"
 
 
+CI_EVIDENCE_STEPS = [{'name': 'Resolve trusted CI event evidence',
+  'shell': 'bash',
+  'env': {'BASE_SHA': '${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}'},
+  'run': 'set -euo pipefail\n'
+         '[[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]\n'
+         'git fetch --no-tags origin "$BASE_SHA"\n'
+         'git show "$BASE_SHA:.github/scripts/ci_pr_metadata_evidence.py" > '
+         '"$RUNNER_TEMP/ci-pr-metadata-evidence.py"\n'
+         'python3 "$RUNNER_TEMP/ci-pr-metadata-evidence.py" write-proof --proof-dir '
+         '"$RUNNER_TEMP/ci-pr-event-proof"\n'},
+ {'name': 'Upload CI event provenance',
+  'uses': 'actions/upload-artifact@v7',
+  'with': {'name': 'ci-pr-event-proof-${{ github.run_id }}-${{ github.run_attempt }}',
+           'path': '${{ runner.temp }}/ci-pr-event-proof/event.json',
+           'if-no-files-found': 'error',
+           'retention-days': 7,
+           'overwrite': True}},
+ {'name': 'Validate complete CI evidence',
+  'if': "${{ github.event_name == 'pull_request' && github.event.action == 'edited' && "
+        '!github.event.changes.base && (github.event.changes.title || github.event.changes.body) }}',
+  'env': {'GITHUB_TOKEN': '${{ github.token }}'},
+  'run': 'python3 "$RUNNER_TEMP/ci-pr-metadata-evidence.py" validate --proof-dir '
+         '"$RUNNER_TEMP/ci-pr-event-proof"'}]
+CI_TOOLING_STEP_IF = {'Checkout': None,
+ 'Set up Bun': None,
+ 'Cache Bun downloads': None,
+ 'Install repo tooling': None,
+ 'Install Lefthook for hook smoke': None,
+ 'Install front-end dependencies': None,
+ 'Type-check Web Demo sources': None,
+ 'Install docs-site dependencies': None,
+ 'Worktree bootstrap smoke': None,
+ 'Git hook contract smoke': None,
+ 'Bun-first guard': None,
+ 'Check quality-gates scripts': None,
+ 'Resolve trusted quality-gates sources': None,
+ 'Quality-gates contract check': "steps.trusted-quality-gates.outputs.supports_final_topology == 'true'",
+ 'Quality-gates live rules check': "steps.trusted-quality-gates.outputs.supports_final_topology == 'true' && "
+                                   "(github.event_name != 'pull_request' || github.base_ref == 'main')",
+ 'Quality gates self-tests': None,
+ 'Observability tooling and performance evidence checks': None,
+ 'Front-end lint': None,
+ 'Docs-site lint': None}
+CI_EVIDENCE_TIMEOUT = "${{ (" + CI_METADATA_ONLY + ") && 75 || 15 }}"
+
+
+def ci_metadata_step_if(original: str | None) -> str:
+    expression = original[3:-2].strip() if original and original.startswith("${{") else original
+    prefix = "(" + expression + ") && " if expression else ""
+    return "${{ " + prefix + "!(" + CI_METADATA_ONLY + ") }}"
+
+
+def normalize_ci_evidence_jobs(jobs: dict[str, Any]) -> None:
+    for job_id, job in jobs.items():
+        original = CI_ORIGINAL_JOB_IF.get(job_id)
+        expected = original if job_id == "repository-tooling-checks" else ci_metadata_job_if(job_id)
+        require(job.get("if") == expected, f"ci-pr.yml.jobs.{job_id}: metadata-only event guard drifted")
+        if original is None:
+            job.pop("if", None)
+        else:
+            job["if"] = original
+    job = jobs["repository-tooling-checks"]
+    where = "ci-pr.yml.jobs.repository-tooling-checks"
+    require(job.get("permissions") == {"contents": "read", "actions": "read"}, f"{where}: evidence permissions must remain read-only")
+    require(job.get("timeout-minutes") == CI_EVIDENCE_TIMEOUT, f"{where}: evidence timeout drifted")
+    steps = job.get("steps", [])
+    require(steps[1:4] == CI_EVIDENCE_STEPS, f"{where}: trusted event evidence steps drifted")
+    del steps[1:4]
+    require([step.get("name") for step in steps] == list(CI_TOOLING_STEP_IF), f"{where}: original tooling step set drifted")
+    for step in steps[1:]:
+        original = CI_TOOLING_STEP_IF[step["name"]]
+        require(step.get("if") == ci_metadata_step_if(original), f"{where}: metadata-only step guard drifted")
+        if original is None:
+            step.pop("if", None)
+        else:
+            step["if"] = original
+    job.pop("permissions")
+    job["timeout-minutes"] = 15
+
+
 def normalize_ci_metadata_jobs(workflow: dict[str, Any]) -> None:
     """Validate the exact event wrapper before checking unchanged job contracts."""
     jobs = require_mapping(workflow.get("jobs"), "ci-pr.yml.jobs")
@@ -1422,6 +1502,11 @@ def normalize_ci_metadata_jobs(workflow: dict[str, Any]) -> None:
     wrapped = [isinstance(job.get("name"), str) and job["name"].startswith("${{") for job in jobs.values()]
     require(all(wrapped) or not any(wrapped), "ci-pr.yml: static and metadata-only job formats must not be mixed")
     if not any(wrapped):
+        if (any(job.get("if") == ci_metadata_job_if(job_id) for job_id, job in jobs.items())
+                or any(step.get("name") == "Validate complete CI evidence"
+                       for step in jobs.get("repository-tooling-checks", {}).get("steps", []))):
+            normalize_ci_evidence_jobs(jobs)
+            return
         for job_id, job in jobs.items():
             require(job.get("if") == CI_ORIGINAL_JOB_IF.get(job_id), f"ci-pr.yml.jobs.{job_id}: original event guard drifted")
         return
