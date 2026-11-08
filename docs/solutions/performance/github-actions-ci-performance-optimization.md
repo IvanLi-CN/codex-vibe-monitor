@@ -569,11 +569,13 @@ Gate 必须有明确输入 job、适用性、成功/失败/取消/missing/skippe
 
 这些能力仍需用第 2、7 章的指标重新验证，不能自动等同于最优拓扑。
 
-### PR 元数据编辑的检查身份隔离
+### PR 元数据编辑与实际合并门禁
 
-纯标题或正文 edited 事件可以跳过重型验证，但不能继续使用原 required-check 名称：GitHub 将条件跳过视为成功，可能掩盖同一 SHA 的失败或运行中代码检查。元数据路径使用独立 `Metadata only / …` 名称；base 编辑、未知 edited 和代码事件保留完整路径。事件条件直接在 job 入口计算，不新增 classifier runner，元数据 namespace 继续与代码 namespace 隔离以避免取消正在运行的代码验证。
+独立 skipped 名称虽然不会在 CLI 中覆盖原检查，但 PR #1321 的实际 GitHub 合并界面仍出现 11 个 Expected；CLI required checks 绿色不足以证明平台认可旧运行。原生单 job 重跑和手工 Checks API 重放也未恢复门禁，不应据此交付。
 
-使用 GitHub 官方 `@actions/expressions` 对事件矩阵和 check identity 执行回归，随后在真实 PR 中编辑正文，确认只有隔离名称的 skipped jobs。不得仅根据整个元数据 workflow 绿色就宣告原代码检查通过。长期合同见 `docs/specs/ci-pr-event-routing/SPEC.md`。
+采用原生规范名称时，skipped 状态必须由一个实际必需的轻量 job 补充完整代码证据：同一 PR、head/base、最近完整 run 的同一 attempt 全部任务成功，证据未过期；新的失败、取消、未知证明或部分重跑不得回退到旧成功。读取器从事件 base 获取，仅授予读权限；不调整仓库必需检查规则。元数据与代码使用独立 concurrency namespace，避免取消代码验证。
+
+完整运行与元数据运行需要微型事件证明，才能识别最新运行属于哪条路径。该新增附件和单 runner 的成本必须在启用后的真实运行中披露。验收必须覆盖实际合并界面、成功与受控失败路径，并记录 runner 数和时间；兼容准备阶段不能宣称优化完成。长期合同见 `docs/specs/ci-pr-event-routing/SPEC.md`。
 
 ### 迁移验证的有界并行
 

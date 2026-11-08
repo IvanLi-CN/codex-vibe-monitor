@@ -8,6 +8,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-candidate-binding.py"
 
 bun "$repo_root/.github/scripts/test-ci-pr-event-policy.mjs"
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/.github/scripts/test-ci-pr-metadata-evidence.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/.github/scripts/test-ci-pr-metadata-evidence.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/.github/scripts/test-ci-pr-metadata-evidence.py"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
@@ -267,7 +270,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 needle = """  build:
-    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Build Artifacts' || 'Build Artifacts' }}"
+    name: Build Artifacts
     needs:
       - build-pr-smoke-artifacts
       - retention-migration-validation
@@ -892,7 +895,7 @@ text = path.read_text()
 needle = '''  backend-tests-lightweight:
     needs: backend-test-archive
     if: ${{ (always()) && !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
-    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Backend Tests (Lightweight)' || 'Backend Tests (Lightweight)' }}"
+    name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -1142,7 +1145,7 @@ repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
 needle = """  build:
-    name: "${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) && 'Metadata only / Build Artifacts' || 'Build Artifacts' }}"
+    name: Build Artifacts
     needs:
       - build-pr-smoke-artifacts
       - retention-migration-validation

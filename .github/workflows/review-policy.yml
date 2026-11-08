@@ -29,10 +29,6 @@ jobs:
     if: ${{ github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -76,37 +72,3 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 "${{ steps.trusted-quality-gates.outputs.metadata_script }}" review
-
-      - name: Probe metadata check origin (intentional failure)
-        if: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.pull_request.number == 1321 && github.event.pull_request.head.repo.full_name == github.repository && !github.event.changes.base && (github.event.changes.title || github.event.changes.body) }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 - <<'PYTHON'
-          import json, os, re, urllib.request
-          with open(os.environ["GITHUB_EVENT_PATH"]) as source:
-              event = json.load(source)
-          pr = event["pull_request"]
-          repository = os.environ["GITHUB_REPOSITORY"]
-          assert pr["number"] == 1321 and pr["head"]["repo"]["full_name"] == repository
-          assert re.fullmatch(r"[0-9a-f]{40}", pr["head"]["sha"])
-          payload = {
-              "name": "Repository Tooling Checks",
-              "head_sha": pr["head"]["sha"],
-              "status": "completed",
-              "conclusion": "failure",
-              "external_id": "metadata-negative-probe-" + os.environ["GITHUB_RUN_ID"],
-              "output": {
-                  "title": "Intentional negative probe: metadata check origin",
-                  "summary": "Diagnostic failure only. No successful code-validation result is asserted. This probe must be removed before delivery.",
-              },
-          }
-          request = urllib.request.Request(
-              os.environ["GITHUB_API_URL"] + "/repos/" + repository + "/check-runs",
-              data=json.dumps(payload).encode(), method="POST",
-              headers={"Accept": "application/vnd.github+json", "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"]},
-          )
-          with urllib.request.urlopen(request, timeout=15) as response:
-              result = json.load(response)
-          print(json.dumps({key: result[key] for key in ["id", "name", "conclusion"]}))
-          PYTHON
