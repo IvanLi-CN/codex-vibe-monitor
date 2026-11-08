@@ -1391,8 +1391,48 @@ def require_retention_migration_validation_contract(
     )
 
 
+# Pure title/body edits cannot publish skipped results under required-check names.
+# Unknown edits and base changes conservatively keep the full validation path.
+CI_METADATA_ONLY = "github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)"
+CI_ORIGINAL_JOB_IF = {
+    "records-overlay-e2e": "always()",
+    **{key: "always()" for key in ["backend-tests-lightweight", "backend-tests-stateful-sqlite-shard-1", "backend-tests-stateful-sqlite-shard-2", "backend-tests-stateful-sqlite", "backend-tests-representative-scale", "backend-tests-archive-file-io"]},
+    "build-pr-smoke-artifacts": "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+    **{key: "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}" for key in ["build", "retention-migration-validation"]},
+}
+
+
+def ci_metadata_job_name(name: str) -> str:
+    return "${{ (" + CI_METADATA_ONLY + ") && 'Metadata only / " + name + "' || '" + name + "' }}"
+
+
+def ci_metadata_job_if(job_id: str) -> str:
+    original = CI_ORIGINAL_JOB_IF.get(job_id)
+    if original is None:
+        return "${{ !(" + CI_METADATA_ONLY + ") }}"
+    expression = original[3:-2].strip() if original.startswith("${{") else original
+    return "${{ (" + expression + ") && !(" + CI_METADATA_ONLY + ") }}"
+
+
+def normalize_ci_metadata_jobs(workflow: dict[str, Any]) -> None:
+    """Validate the exact event wrapper before checking unchanged job contracts."""
+    for job_id, job in require_mapping(workflow.get("jobs"), "ci-pr.yml.jobs").items():
+        raw_name = job.get("name", "")
+        match = re.search(r" \|\| '([^']+)' }}$", raw_name) if isinstance(raw_name, str) else None
+        require(match is not None, f"ci-pr.yml.jobs.{job_id}: metadata-only check name isolation missing")
+        name = match.group(1)
+        require(raw_name == ci_metadata_job_name(name), f"ci-pr.yml.jobs.{job_id}: metadata-only check name isolation drifted")
+        require(job.get("if") == ci_metadata_job_if(job_id), f"ci-pr.yml.jobs.{job_id}: metadata-only event guard drifted")
+        job["name"] = name
+        if job_id in CI_ORIGINAL_JOB_IF:
+            job["if"] = CI_ORIGINAL_JOB_IF[job_id]
+        else:
+            job.pop("if", None)
+
+
 def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
+    normalize_ci_metadata_jobs(workflow)
     workflow_name = workflow.get("name")
     require(isinstance(workflow_name, str) and workflow_name, "ci-pr.yml: workflow name must stay non-empty")
     expected_jobs = set(contract.expected_pr_workflows.get(workflow_name, ()))
