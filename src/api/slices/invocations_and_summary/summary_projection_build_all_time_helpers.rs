@@ -192,6 +192,13 @@ pub(crate) async fn hydrate_summary_projection_all_time_global(
             })?,
         );
     }
+    #[cfg(test)]
+    pause_summary_projection_test_interleave(
+        context.input.pool,
+        context.input.mode,
+        SummaryProjectionTestInterleaveStage::AfterAllTimeArchiveDiscovery,
+    )
+    .await?;
     let verified_paths = verify_summary_projection_archive_file_paths_sha256(
         &preparation.archive_scan_paths.global,
         context.input.all_time_archive_manifest_sha256,
@@ -262,6 +269,13 @@ pub(crate) async fn recover_summary_projection_all_time_global_archive(
     if preparation.archive_scan_paths.global_unmaterialized_count == 0 {
         return Ok(false);
     }
+    #[cfg(test)]
+    pause_summary_projection_test_interleave(
+        context.input.pool,
+        context.input.mode,
+        SummaryProjectionTestInterleaveStage::BeforeAllTimeArchiveScan,
+    )
+    .await?;
     let totals = crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
         context.input.pool,
         InvocationSourceScope::All,
