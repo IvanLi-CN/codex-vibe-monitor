@@ -6,26 +6,23 @@ import json
 from pathlib import Path
 import subprocess
 
+from retention_fixture_cache import prepare_fixtures
+
 SPEC = spec_from_file_location("ownership_upgrade", Path(__file__).with_name("validate-retention-maintenance-upgrade.py"))
 UPGRADE = module_from_spec(SPEC)
 SPEC.loader.exec_module(UPGRADE)
 MANIFEST_PATH = Path(__file__).parents[1] / "docs/adr/assets/retention-maintenance-task-ownership/released-state-sources.json"
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    args = parser.parse_args()
-    manifest = json.loads(MANIFEST_PATH.read_text())
-    sources = {source["tag"]: source for source in manifest["sources"]}
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+def generate(output_dir, sources):
+    output_dir.mkdir(parents=True, exist_ok=True)
     for version in UPGRADE.VERSIONS:
         source_manifest = sources[version]
         image = source_manifest["image"]
         expected_digest = source_manifest["digest"]
         assert image.endswith(f":{version}")
         assert expected_digest.startswith(f"{image.rsplit(':', 1)[0]}@sha256:")
-        target = args.output_dir.resolve() / version
+        target = output_dir.resolve() / version
         if (target / "source.json").exists():
             source = json.loads((target / "source.json").read_text())
             assert (
@@ -54,6 +51,20 @@ def main():
         source = {"tag": version, "image": image, "imageRef": expected_digest, "digest": expected_digest, "generator": "released maintenance verify-archive-storage --dry-run", "command": command, "exitCode": result.returncode}
         (target / "source.json").write_text(json.dumps(source, indent=2) + "\n")
         print(version, expected_digest, flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--cache-dir", type=Path)
+    args = parser.parse_args()
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    sources = {source["tag"]: source for source in manifest["sources"]}
+    assert set(sources) == set(UPGRADE.VERSIONS), "Released fixture version coverage drifted"
+    if args.cache_dir is None:
+        generate(args.output_dir, sources)
+    else:
+        prepare_fixtures(args.output_dir, args.cache_dir, sources, lambda output: generate(output, sources))
 
 
 if __name__ == "__main__":

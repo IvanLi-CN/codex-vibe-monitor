@@ -637,3 +637,7 @@ Gate 必须有明确输入 job、适用性、成功/失败/取消/missing/skippe
 - [Remove workflow artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/remove-workflow-artifacts)
 
 工作流检查名合同变化应先部署向前兼容的可信校验器，再启用新格式。merge_group 读取 base 校验器，不能只凭同仓 PR 使用候选校验器通过就断言首次上线可用。
+
+## 旧版本迁移 fixture 的缓存边界
+
+可复用已发布镜像生成的原始 fixture，但缓存键须绑定镜像 digest 清单、生成器及完整生成依赖，恢复后核对逐版本来源和文件清单。缓存与工作目录分离，先保存原始快照，再让候选验证器操作副本并重新播种时效数据；不要保存候选执行后的数据库或测试结果。精确命中仅省去准备过程，全部兼容性、恢复及运行时断言仍重新执行。损坏或身份不符必须失败闭锁，冷生成失败不能发布缓存。参见 [CI fixture 复用合同](../../specs/ci-retention-fixture-reuse/SPEC.md)。

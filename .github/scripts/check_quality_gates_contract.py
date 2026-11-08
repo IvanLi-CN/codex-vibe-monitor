@@ -1207,6 +1207,25 @@ def require_storybook_browser_install(workflow, workflow_path: str) -> None:
     )
 
 
+def require_retention_fixture_cache_contract(job, fixture_command, where):
+    names = [step.get("name") for step in job["steps"]]
+    cached = "--cache-dir" in fixture_command or any(name in names for name in ("Restore released-source fixtures", "Save released-source fixtures"))
+    if not cached:
+        return  # Retain the original complete format for base-first deployment and rollback.
+    key = "${{ runner.os }}-${{ runner.arch }}-retention-release-fixtures-v1-${{ hashFiles('scripts/generate-retention-maintenance-release-fixtures.py', 'scripts/retention_fixture_cache.py', 'scripts/validate-retention-maintenance-upgrade.py', 'docs/adr/assets/retention-maintenance-task-ownership/released-state-sources.json') }}"
+    path = "${{ runner.temp }}/retention-release-fixture-cache"
+    restore = uses_step_config(job, "Restore released-source fixtures", "actions/cache/restore@v5", where)
+    save = uses_step_config(job, "Save released-source fixtures", "actions/cache/save@v5", where)
+    require(restore.get("id") == "retention-fixture-cache", f"{where}: fixture cache restore identity drifted")
+    require_exact_if(restore, "${{ steps.retention_scope.outputs.required == 'true' }}", where)
+    require_exact_if(save, "${{ steps.retention_scope.outputs.required == 'true' && steps.retention-fixture-cache.outputs.cache-hit != 'true' }}", where)
+    for step in (restore, save):
+        require(step.get("with") == {"path": path, "key": key}, f"{where}: fixture cache requires exact input key and isolated snapshot path without fallback keys")
+    require(fixture_command == ["python3", "scripts/generate-retention-maintenance-release-fixtures.py", "--output-dir", "$RUNNER_TEMP/retention-migration-fixtures", "--cache-dir", "$RUNNER_TEMP/retention-release-fixture-cache"], f"{where}: fixture cache must prepare a separate working copy")
+    order = [names.index(name) for name in ("Restore released-source fixtures", "Generate released-source fixtures", "Save released-source fixtures", "Run released-source migration validation")]
+    require(order == sorted(order), f"{where}: fixture cache must be saved before candidate migration mutates state")
+
+
 def require_retention_migration_validation_contract(
     workflow: dict[str, Any], expected_jobs: set[str], auxiliary_jobs: set[str]
 ) -> None:
@@ -1313,6 +1332,7 @@ def require_retention_migration_validation_contract(
         "$RUNNER_TEMP/retention-migration-fixtures" in fixture_command,
         f"{where} must generate manifest-pinned released-source fixtures",
     )
+    require_retention_fixture_cache_contract(job, fixture_command, where)
     upgrade_where = f"{where}.steps['Run released-source migration validation']"
     upgrade_command = require_command(
         step_config(job, "Run released-source migration validation", where),

@@ -112,3 +112,4 @@
 
 - Historical specs: `docs/archive/specs/`
 - Legacy plans: removed after migration
+  | - | CI 旧版本迁移 fixture 复用 | active | `ci-retention-fixture-reuse/SPEC.md` | `ci-retention-fixture-reuse/IMPLEMENTATION.md` | topic anchor: CI / released fixture cache |

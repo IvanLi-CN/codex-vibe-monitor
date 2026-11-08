@@ -6,6 +6,7 @@ fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-validator-contract.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-candidate-binding.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-fixture-cache.py"
 
 bun "$repo_root/.github/scripts/test-ci-pr-event-policy.mjs"
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/.github/scripts/test-ci-pr-metadata-evidence.py"

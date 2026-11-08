@@ -1172,7 +1172,7 @@ jobs:
           required=false
           while IFS= read -r path; do
             case "$path" in
-              .github/quality-gates.json|.github/scripts/check_quality_gates_contract.py|.github/workflows/ci-pr.yml|.cargo/config.toml|build.rs|Cargo.lock|Cargo.toml|Dockerfile|rust-toolchain.toml|src/*|vendor/hotpath/*|scripts/bind-retention-maintenance-candidate.py|scripts/generate-retention-maintenance-release-fixtures.py|scripts/validate-retention-maintenance-runtime.py|scripts/validate-retention-maintenance-upgrade.py|docs/adr/assets/retention-maintenance-task-ownership/*|docs/specs/retention-maintenance-task-ownership/*)
+              .github/quality-gates.json|.github/scripts/check_quality_gates_contract.py|.github/workflows/ci-pr.yml|.cargo/config.toml|build.rs|Cargo.lock|Cargo.toml|Dockerfile|rust-toolchain.toml|src/*|vendor/hotpath/*|scripts/retention_fixture_cache.py|scripts/test-retention-fixture-cache.py|scripts/bind-retention-maintenance-candidate.py|scripts/generate-retention-maintenance-release-fixtures.py|scripts/validate-retention-maintenance-runtime.py|scripts/validate-retention-maintenance-upgrade.py|docs/adr/assets/retention-maintenance-task-ownership/*|docs/specs/retention-maintenance-task-ownership/*)
                 required=true
                 ;;
             esac
@@ -1206,11 +1206,27 @@ jobs:
             --binary-sha256 "$binary_sha256" \
             --output "$RUNNER_TEMP/candidate-identity.json"
 
+      - name: Restore released-source fixtures
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        id: retention-fixture-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/retention-release-fixture-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-retention-release-fixtures-v1-${{ hashFiles('scripts/generate-retention-maintenance-release-fixtures.py', 'scripts/retention_fixture_cache.py', 'scripts/validate-retention-maintenance-upgrade.py', 'docs/adr/assets/retention-maintenance-task-ownership/released-state-sources.json') }}
+
       - name: Generate released-source fixtures
         if: ${{ steps.retention_scope.outputs.required == 'true' }}
         run: |
           python3 scripts/generate-retention-maintenance-release-fixtures.py \
-            --output-dir "$RUNNER_TEMP/retention-migration-fixtures"
+            --output-dir "$RUNNER_TEMP/retention-migration-fixtures" \
+            --cache-dir "$RUNNER_TEMP/retention-release-fixture-cache"
+
+      - name: Save released-source fixtures
+        if: ${{ steps.retention_scope.outputs.required == 'true' && steps.retention-fixture-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/retention-release-fixture-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-retention-release-fixtures-v1-${{ hashFiles('scripts/generate-retention-maintenance-release-fixtures.py', 'scripts/retention_fixture_cache.py', 'scripts/validate-retention-maintenance-upgrade.py', 'docs/adr/assets/retention-maintenance-task-ownership/released-state-sources.json') }}
 
       - name: Run released-source migration validation
         if: ${{ steps.retention_scope.outputs.required == 'true' }}
