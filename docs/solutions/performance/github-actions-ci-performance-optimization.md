@@ -569,6 +569,12 @@ Gate 必须有明确输入 job、适用性、成功/失败/取消/missing/skippe
 
 这些能力仍需用第 2、7 章的指标重新验证，不能自动等同于最优拓扑。
 
+### 迁移验证的有界并行
+
+`validate-retention-maintenance-upgrade.py --jobs 2` 只允许不同历史版本的验证重叠执行；每个版本仍在独立目录内顺序执行全部迁移、真实文件、SQLite 和 owner 断言。默认 `--jobs 1` 保留串行诊断及回退入口，CI 在同一个 runner 内最多运行两个版本，不新增 job、cache 或 artifact。
+
+聚合结果只能由协调线程写入，按原版本顺序输出；任何版本失败都必须让命令失败，同时保留其他已完成版本和失败版本的诊断。`candidate.json` 保持候选 SHA256 与完整版本集合绑定，版本结果附带耗时，以区分单版本回归和调度收益。评估时同时比较迁移步骤墙钟、整个 required 路径和 runner total，不能只凭两个版本发生重叠就宣告性能验收通过。
+
 ### 10.3 现有 Solution、Spec 与脚本
 
 | 来源                                     | 事实职责                                     | 本 Solution 的用法        |

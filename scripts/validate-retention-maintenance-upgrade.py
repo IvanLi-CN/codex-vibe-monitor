@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate each released ownership source with an already-built candidate on Linux."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
@@ -11,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 
 SHANGHAI = timezone(timedelta(hours=8))
 VERSIONS = [*[f"v4.0.{index}" for index in range(7)], "v4.1.0", "v4.1.1", "v4.1.2", "v4.1.3", "v4.2.0", "v4.2.1", "v4.2.2"]
@@ -535,23 +537,60 @@ def validate_source(candidate, source, target):
     return {"source": json.loads((source / "source.json").read_text()), "status": "passed", "claims": ["controls-preserved", "new-defaults", "retired-environment-ignored", "all-retention-owner-previews-read-only", "all-retention-owner-one-shots-mutated-owner-fixtures-with-archive-raw-proofs", "explicit-real-mode", "archive-only", "protected-identities", "paused-manual", "no-startup-recovery", "interrupted-forward-reentry"]}
 
 
+def positive_jobs(value):
+    jobs = int(value)
+    if not 1 <= jobs <= 2:
+        raise argparse.ArgumentTypeError("jobs must be 1 or 2")
+    return jobs
+
+
+def validate_versions(candidate, fixtures_root, output_dir, jobs):
+    """Only independent version directories overlap; each version stays sequential."""
+    candidate = candidate.resolve()
+    candidate_digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    (output_dir / "candidate.json").write_text(json.dumps({"candidateSha256": candidate_digest, "sourceVersions": VERSIONS}, indent=2) + "\n")
+    results = {}
+    started = time.monotonic()
+
+    def validate(version):
+        version_started = time.monotonic()
+        result = validate_source(candidate, fixtures_root / version, output_dir / version)
+        result["candidateSha256"] = candidate_digest
+        result["durationSeconds"] = round(time.monotonic() - version_started, 3)
+        return result
+
+    # The coordinator alone writes the aggregate. On failure, preserve all completed
+    # evidence and drain running versions before propagating the original failure.
+    failure = None
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = {executor.submit(validate, version): version for version in VERSIONS}
+        for future in as_completed(futures):
+            version = futures[future]
+            try:
+                results[version] = future.result()
+            except Exception as error:
+                if failure is None:
+                    failure = error
+                print(version, "failed:", error, flush=True)
+                continue
+            ordered = [results[item] for item in VERSIONS if item in results]
+            (output_dir / "results.json").write_text(json.dumps(ordered, indent=2) + "\n")
+            print(version, "passed", flush=True)
+    print(f"Upgrade validation: jobs={jobs} versions={len(results)}/{len(VERSIONS)} elapsed={time.monotonic() - started:.3f}s", flush=True)
+    if failure is not None:
+        raise failure
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixtures-root", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--jobs", type=positive_jobs, default=1, help="independent release versions in flight (1 or 2)")
     args = parser.parse_args()
     args.output_dir = resolve_output_dir(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=False)
-    candidate_digest = hashlib.sha256(args.candidate.read_bytes()).hexdigest()
-    (args.output_dir / "candidate.json").write_text(json.dumps({"candidateSha256": candidate_digest, "sourceVersions": VERSIONS}, indent=2) + "\n")
-    results = []
-    for version in VERSIONS:
-        result = validate_source(args.candidate.resolve(), args.fixtures_root / version, args.output_dir / version)
-        result["candidateSha256"] = candidate_digest
-        results.append(result)
-        (args.output_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
-        print(version, "passed", flush=True)
+    validate_versions(args.candidate, args.fixtures_root, args.output_dir, args.jobs)
 
 
 if __name__ == "__main__":
