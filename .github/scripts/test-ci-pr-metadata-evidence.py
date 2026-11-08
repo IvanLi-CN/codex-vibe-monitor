@@ -92,6 +92,46 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(evidence.Pending):
             self.validate(FakeAPI([run(), newer]))
 
+    def test_older_run_later_attempt_outranks_newer_run_number(self):
+        earlier_pass = run(101)
+        earlier_pass[0]['run_started_at'] = (NOW - dt.timedelta(hours=1)).isoformat()
+        for conclusion in ('failure', 'cancelled', 'timed_out'):
+            later_attempt = run(100, conclusion=conclusion, attempt=2)
+            with self.subTest(conclusion=conclusion), self.assertRaises(evidence.EvidenceError):
+                self.validate(FakeAPI([earlier_pass, later_attempt]))
+        later_attempt = run(100, attempt=2)
+        later_attempt[0]['status'] = 'in_progress'
+        with self.assertRaises(evidence.Pending):
+            self.validate(FakeAPI([earlier_pass, later_attempt]))
+        later_attempt = run(100, attempt=2)
+        later_attempt[2][0]['started_at'] = (NOW - dt.timedelta(hours=2)).isoformat()
+        with self.assertRaises(evidence.EvidenceError):
+            self.validate(FakeAPI([earlier_pass, later_attempt]))
+        # A genuinely complete, later rerun remains reusable.
+        self.assertEqual(self.validate(FakeAPI([earlier_pass, run(100, attempt=2)])), 100)
+
+    def test_same_second_attempt_order_is_not_assumed_safe(self):
+        # The lower run number could have been rerun after the higher run passed.
+        with self.assertRaises(evidence.EvidenceError):
+            self.validate(FakeAPI([run(101), run(100, conclusion='failure', attempt=2)]))
+
+    def test_ci_snapshot_change_retries_instead_of_accepting_stale_success(self):
+        for change in ('new-full', 'source-attempt', 'source-pending', 'new-metadata'):
+            class ChangingAPI(FakeAPI):
+                def request(self, path):
+                    if path.startswith('/git/commits/'):
+                        if change == 'new-full':
+                            self.sources.append(run(101, conclusion='failure'))
+                        elif change == 'source-attempt':
+                            self.sources[0] = run(100, conclusion='failure', attempt=2)
+                        elif change == 'source-pending':
+                            self.sources[0][0]['status'] = 'in_progress'
+                        else:
+                            self.sources.append(run(101, 'metadata'))
+                    return super().request(path)
+            with self.subTest(change=change), self.assertRaises(evidence.Pending):
+                self.validate(ChangingAPI())
+
     def test_missing_newer_marker_never_falls_back(self):
         newer = list(run(101))
         newer[1] = evidence.EvidenceError('No provenance')

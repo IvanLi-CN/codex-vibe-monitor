@@ -171,12 +171,29 @@ def jobs_for_attempt(api, run):
     return jobs
 
 
+def evidence_runs(api, expected):
+    runs = api.pages('/actions/workflows/ci-pr.yml/runs?event=pull_request&head_sha=' + expected['head_sha'], 'workflow_runs')
+    runs = [run for run in runs if run['id'] != expected['run_id']]
+    # A later attempt of an older run is newer validation. run_number alone
+    # would let an earlier pass hide that attempt's failure or pending state.
+    return sorted(runs, key=lambda run: (
+        dt.datetime.fromisoformat(run['run_started_at'].replace('Z', '+00:00')),
+        run['run_number'], run['run_attempt'],
+    ), reverse=True)
+
+
+def evidence_snapshot(runs):
+    # Freeze values, not references: provider state can change during downloads.
+    keys = ('id', 'run_number', 'run_attempt', 'run_started_at', 'status', 'conclusion', 'head_sha', 'event')
+    return tuple(tuple(run[key] for key in keys) for run in runs)
+
+
 def validate_once(api, expected, now=None):
     check_live_pr(api, expected)
-    runs = api.pages('/actions/workflows/ci-pr.yml/runs?event=pull_request&head_sha=' + expected['head_sha'], 'workflow_runs')
-    runs = sorted((r for r in runs if r['id'] != expected['run_id']), key=lambda r: r['run_number'], reverse=True)
+    runs = evidence_runs(api, expected)
+    snapshot = evidence_snapshot(runs)
     require(runs, 'No prior complete CI run exists')
-    for run in runs:
+    for index, run in enumerate(runs):
         # Do not reuse a run from another PR or fork sharing a commit.
         require(run['event'] == 'pull_request' and run['head_sha'] == expected['head_sha']
                 and run['head_repository']['full_name'] == expected['head_repository'], 'CI run identity mismatch')
@@ -192,6 +209,10 @@ def validate_once(api, expected, now=None):
         if run['status'] != 'completed':
             raise Pending(f'Full CI run {run["id"]} is still running')
         require(run['conclusion'] == 'success', f'Latest full CI run {run["id"]} did not succeed')
+        # Provider timestamps have one-second resolution. A lower-numbered
+        # rerun in the same second cannot safely be assumed older than this pass.
+        require(not any(other['run_started_at'] == run['run_started_at']
+                        for other in runs[index + 1:]), 'Ambiguous CI attempt chronology')
         jobs = jobs_for_attempt(api, run)
         require(all(j['status'] == 'completed' and j['conclusion'] == 'success' for j in jobs), 'Full CI contains a failed or skipped job')
         current_time = now or dt.datetime.now(dt.timezone.utc)
@@ -202,6 +223,10 @@ def validate_once(api, expected, now=None):
         require({p['sha'] for p in commit['parents']} == {expected['head_sha'], expected['base_sha']}
                 and len(commit['parents']) == 2, 'Full CI merge commit does not bind the requested head/base')
         check_live_pr(api, expected)
+        # PR identity alone cannot detect a same-head rerun or newly started CI.
+        # Retry the entire reduction if its input set changed while validating.
+        if evidence_snapshot(evidence_runs(api, expected)) != snapshot:
+            raise Pending('CI evidence changed during validation; checking the latest attempt again')
         return run['id']
     raise EvidenceError('No prior full CI run exists')
 
