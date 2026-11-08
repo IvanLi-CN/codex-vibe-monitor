@@ -1167,6 +1167,7 @@ jobs:
         run: |
           python3 scripts/validate-retention-maintenance-upgrade.py \
             --fixtures-root "$RUNNER_TEMP/retention-migration-fixtures" \
+            --jobs 2 \
             --candidate "$PWD/.ci-smoke/codex-vibe-monitor" \
             --output-dir "$RUNNER_TEMP/retention-migration-results"
 
