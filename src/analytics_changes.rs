@@ -1,10 +1,12 @@
 use super::*;
 
+#[path = "analytics_changes/journal_migration.rs"]
+mod journal_migration;
+
 pub(crate) const ANALYTICS_SOURCE_EVENT_VERSION: i64 = 1;
 pub(crate) const ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION: i64 = 2;
 pub(crate) const ANALYTICS_SOURCE_INSTANCE_LEGACY: &str = "legacy-sqlite";
 const ANALYTICS_CHANGE_CAPACITY_DEFAULT: i64 = 10_000;
-const ANALYTICS_CHANGE_FACT_MAX_BYTES: usize = 64 * 1024;
 const ANALYTICS_CHANGE_ENTITY_KEY_MAX_BYTES: usize = 512;
 const ANALYTICS_CHANGE_TEXT_MAX_CHARS: usize = 256;
 
@@ -200,35 +202,11 @@ struct ArchiveAnalyticsRow {
 }
 
 pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Result<()> {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS analytics_change_events (
-            change_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_version INTEGER NOT NULL,
-            fact_date_semantics_version INTEGER NOT NULL DEFAULT 1,
-            source_instance_id TEXT NOT NULL DEFAULT 'legacy-sqlite',
-            event_id TEXT NOT NULL DEFAULT '',
-            operation_kind TEXT NOT NULL DEFAULT 'legacy',
-            fact_semantics_version INTEGER NOT NULL DEFAULT 1,
-            stats_semantics_version INTEGER NOT NULL DEFAULT 1,
-            payload_digest TEXT NOT NULL DEFAULT '',
-            event_kind TEXT NOT NULL CHECK(event_kind IN ('upsert', 'tombstone', 'coverage')),
-            entity_kind TEXT NOT NULL,
-            source TEXT NOT NULL,
-            source_row_id INTEGER,
-            entity_key TEXT NOT NULL,
-            generation INTEGER NOT NULL,
-            coverage_revision INTEGER NOT NULL,
-            occurred_at TEXT NOT NULL,
-            fact_json TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            CHECK(length(fact_json) <= 65536)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure analytics_change_events table")?;
+    journal_migration::validate_preflight(pool).await?;
+    sqlx::query(journal_migration::ANALYTICS_CHANGE_EVENTS_CREATE_SQL)
+        .execute(pool)
+        .await
+        .context("failed to ensure analytics_change_events table")?;
 
     let fact_date_semantics_column_exists = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('analytics_change_events') WHERE name = 'fact_date_semantics_version')",
@@ -612,6 +590,8 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
             .with_context(|| format!("failed to ensure analytics change index: {statement}"))?;
     }
 
+    journal_migration::ensure_complete_inline_payload_storage(pool).await?;
+
     Ok(())
 }
 
@@ -792,10 +772,6 @@ async fn append_analytics_change_tx(
     if !fact.is_object() {
         bail!("analytics change fact must be a JSON object");
     }
-    if fact_json.len() > ANALYTICS_CHANGE_FACT_MAX_BYTES {
-        bail!("analytics change fact exceeds the bounded size");
-    }
-
     if let Some(existing) = sqlx::query_as::<_, ExistingAnalyticsChangeRow>(
         r#"
         SELECT change_id, event_kind, generation, coverage_revision, fact_json

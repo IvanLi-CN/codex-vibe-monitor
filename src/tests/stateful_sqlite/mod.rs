@@ -110,6 +110,7 @@ pub(crate) async fn hydrate_stats_snapshot_for_test(state: &Arc<AppState>) {
 }
 
 mod account_activity_v2_progress_handler;
+mod analytics_journal_payload_migration;
 mod durable_attempt_ordering;
 mod gpt6_usage_integrity;
 mod invocation_list_queries_and_filters;

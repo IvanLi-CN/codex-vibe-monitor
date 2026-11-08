@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "implementation-in-progress-validation-pending",
+  "change": {
+    "description": "Remove the Analytics Journal fact_json storage ceiling through a compatible forward migration while preserving existing public APIs and source facts.",
+    "release_unit_description": "C18 Analytics Journal complete inline payload storage migration",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "No HTTP/SSE or typed public API changes are in scope. The candidate reads the supported legacy Journal shapes, preserves old fields and identities, and adds a forward storage form that remains readable by same-Major consumers.",
+      "assessed_at": "2026-11-08T00:00:00+08:00",
+      "evidence": ["docs/adr/0055-analytics-journal-complete-inline-payload.md"]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "The implementation remains limited to the owned SQLite Journal storage, migration tests, and migration records; typed ingestion, PostgreSQL, deployment, and production timing are unchanged."
+      },
+      "reasoning": "The forward copy preserves row identity, source envelope fields, event kind, payload bytes, indexes, sequence high-water, and surrounding analytics state. Older same-Major readers can read the canonical TEXT column; public response and wire contracts are unchanged.",
+      "reassessed_at": "2026-11-08T00:00:00+08:00",
+      "evidence": [
+        "src/analytics_changes/journal_migration.rs",
+        "src/tests/stateful_sqlite/analytics_journal_payload_migration.rs",
+        "src/tests/archive_file_io/analytics_journal_payload_migration.rs"
+      ]
+    },
+    "verified": null
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "none",
+      "supported_consumer_range": "Existing same-Major HTTP/SSE clients and typed consumers; no public route, response, or configuration contract changes.",
+      "evidence": ["src/analytics_changes.rs"]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "impact": "patch",
+      "state_description": "SQLite Analytics Journal events and its source envelope, event identity, state/coverage/snapshot/pin references, and AUTOINCREMENT sequence.",
+      "source_program_compatibility_range": "Baseline dd6f108cc2796238c3c5dc4d7dad122a9df63275 and earlier supported 12-column Journal schemas with any declared compatibility-column subset; candidate and same-Major forward-repair readers.",
+      "evidence": ["docs/adr/assets/analytics-journal-complete-inline-payload/persistent-state-migration-record.json"]
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["analytics-journal-complete-inline-payload"],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}

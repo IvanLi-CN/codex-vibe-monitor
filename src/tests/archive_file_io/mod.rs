@@ -14,6 +14,7 @@ mod terminal_journal_recovery;
 #[allow(unused_imports)]
 pub(crate) use super::*;
 
+mod analytics_journal_payload_migration;
 mod archive_backfill_test_support;
 mod archive_copy_summary_and_manifest;
 mod archive_http_and_shutdown;
