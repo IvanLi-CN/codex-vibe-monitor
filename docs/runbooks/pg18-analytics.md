@@ -248,3 +248,16 @@ This batch does not move invocation or attempt writes, credentials or routing, t
 - [I1/I2/I3 specification](../specs/pg18-analytics/SPEC.md)
 - [Implementation status](../specs/pg18-analytics/IMPLEMENTATION.md)
 - [ADR 0051](../adr/0051-pg18-analytics-offload.md)
+
+## Table ownership release gate
+
+The first releasable SQLite table is `long_term_usage_daily`. It may be quarantined only after PostgreSQL `analytics_facts` and `analytics_daily_rollups` pass the following proof against one captured SQLite snapshot. A healthy connection or matching high-water mark alone is insufficient.
+
+1. **Journal interval:** record `snapshot_change_id`, `source_head_change_id`, `consumer_checkpoint`, and `source_acknowledged_through`. Require `snapshot_change_id <= consumer_checkpoint = source_acknowledged_through <= source_head_change_id` and no missing journal IDs in the retained interval.
+2. **Fact identity:** compare `(source, source_row_id)` sets, grouped by Shanghai statistics date. Require zero missing keys, zero unexpected keys, zero duplicate keys, and equal tombstone counts.
+3. **Generation fence:** require equal source/target generation, equal coverage revision, current `fact_date_semantics_version`, `status='caught_up'`, and the effective eligibility predicate to be true. Any legacy event, retention gap, or generation change invalidates the proof and fences reads.
+4. **Daily projection:** recompute daily aggregates from PG facts in a repeatable-read transaction and compare with `analytics_daily_rollups`. Require exact integer/sample equality and deterministic decimal equality for costs; floating-point timing values must use the existing normalized tolerance. A mismatch keeps the target unavailable.
+5. **Retention:** prove that the retained source journal and verified archives cover the complete configured query horizon plus the replay safety window. Do not quarantine SQLite while any archive is unreadable, any journal segment is compacted without proof, or any repair cursor still references the table.
+6. **Quarantine:** stop the SQLite daily projection writer, record a zero-writer observation, rename the table to a timestamped quarantine name, and retain a checksum/export. Keep the source journal and business facts intact. Physical deletion requires a separate approved cleanup operation after one backup cycle and a successful restore rehearsal.
+
+The release record must include the snapshot identifier, all counts/set-difference results, generation tuple, projection checksum, retention proof, quarantine name, backup digest, and the operator-approved observation window. Rollback restores `ANALYTICS_BACKEND=sqlite`, fences PG, and leaves the quarantined SQLite table available; it never reverse-copies from PostgreSQL.
