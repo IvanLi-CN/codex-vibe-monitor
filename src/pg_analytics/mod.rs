@@ -2706,6 +2706,7 @@ async fn apply_replica_batch(
             coverage_revision = $2,
             coverage_watermark = $3,
             consumer_checkpoint = $3,
+            source_acknowledged_through = $3,
             status = 'running',
             service_eligible = FALSE,
             last_error_code = NULL,
@@ -4542,6 +4543,10 @@ mod tests {
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_reader",
                 "GRANT SELECT (fact_version, source, source_row_id, invoke_id, occurred_at, occurred_at_epoch_ms, stats_date, model, request_model, response_model, reasoning_effort, upstream_account_id, upstream_account_name, status, success_like, terminal, failure_kind, failure_class, is_actionable, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, first_token_ms, t_resp_parse_ms) ON TABLE cvm_analytics.analytics_facts TO cvm_analytics_reader",
                 "GRANT SELECT (source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id) ON TABLE cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_reader",
+                // The first ownership cutover serves the daily analytics read model from
+                // PostgreSQL. Keep the grant column-scoped so the reader cannot reach
+                // maintenance-only state or future columns by default.
+                "GRANT SELECT (stats_date, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples, updated_at) ON TABLE cvm_analytics.analytics_daily_rollups TO cvm_analytics_reader",
                 "GRANT SELECT (id, replica_id, status, generation, baseline_generation, baseline_change_id, coverage_generation, coverage_revision, coverage_watermark, consumer_checkpoint, source_acknowledged_through, service_eligible, fact_date_semantics_version, last_error_code, updated_at) ON TABLE cvm_analytics.analytics_replica_state TO cvm_analytics_reader",
                 "GRANT SELECT (id, status) ON TABLE cvm_analytics.analytics_state TO cvm_analytics_reader",
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
