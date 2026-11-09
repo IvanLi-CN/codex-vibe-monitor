@@ -245,6 +245,11 @@ pub(super) async fn refresh_long_term_stats_once(
     retention_days: u64,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
+    // During the staged ownership cutover, PostgreSQL is the only analytics writer. Keep the
+    // legacy SQLite projection writer fenced until its replacement is explicitly selected.
+    if std::env::var("ANALYTICS_BACKEND").as_deref() == Ok("postgres") {
+        bail!("SQLite long-term analytics writes are fenced while ANALYTICS_BACKEND=postgres");
+    }
     let refresh_started_at = format_utc_iso(Utc::now());
     let state_snapshot =
         sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
