@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 118,
+    "inventory_entries": 126,
     "suppression_entries": 140
   },
   "loc_targets": {
@@ -551,6 +551,54 @@
       "role": "production",
       "line_budget": 884,
       "next_module_workstream": "Maintain the account-update adapter validation, transaction, runtime publication, and action-event boundary below the production target."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+      "role": "production",
+      "line_budget": 1343,
+      "next_module_workstream": "Maintain summary snapshot bootstrap, coverage recovery scheduling, live-tail reconciliation, and legacy source restoration below the production target."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary/summary_projection_compacted_source_recovery_model.rs",
+      "role": "production",
+      "line_budget": 481,
+      "next_module_workstream": "Maintain compacted-source recovery identities, windows, budgets, cursors, fences, and pure range helpers below the production target."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary/summary_projection_compacted_source_recovery_query.rs",
+      "role": "production",
+      "line_budget": 1111,
+      "next_module_workstream": "Maintain bounded compacted-source recovery queries, candidate selection, staging, connection cleanup, and contention handling below the production target."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary/summary_projection_compacted_source_recovery_publication.rs",
+      "role": "production",
+      "line_budget": 1297,
+      "next_module_workstream": "Maintain compacted-source recovery checkpoint reset, state transitions, snapshot publication, and bounded turn orchestration below the production target."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary/summary_projection_lifecycle_build_wait.rs",
+      "role": "production",
+      "line_budget": 583,
+      "next_module_workstream": "Maintain summary refresh modes, deadline handling, build waiting, and freshness keepalive behavior below the production target."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary/summary_projection_compacted_source_recovery_budget_tests.rs",
+      "role": "test_helper",
+      "line_budget": 314,
+      "next_module_workstream": "Maintain compacted-source recovery budget, cursor, adaptive-page, and retry contract assertions below the test-helper target."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary/summary_projection_compacted_source_recovery_tests.rs",
+      "role": "test_helper",
+      "line_budget": 149,
+      "next_module_workstream": "Maintain public one-page, explain-plan, and complete-turn compacted-source recovery test helpers below the test-helper target."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary/summary_projection_lifecycle_test_support.rs",
+      "role": "test_helper",
+      "line_budget": 121,
+      "next_module_workstream": "Maintain lifecycle timeout, interleave deadline, coverage counter, and bootstrap test seams below the test-helper target."
     },
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing/archive_compat_and_query_filters.rs",
