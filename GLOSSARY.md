@@ -118,6 +118,29 @@ _Avoid_: yesterday's timeline when Yesterday is selected for statistics.
 
 **Historical Activity Calendar**:
 A daily view of global invocation counts, cost, or Token usage across 365 consecutive browser-local dates ending today.
+
+## Analytics Migration Language
+
+**Business Fact**:
+The SQLite-owned invocation or attempt record that is authoritative for product behavior and cannot be reconstructed from an analytics projection.
+
+**Source Journal**:
+The append-only SQLite change log that records committed analytics-relevant fact changes and their source identity for replay.
+
+**Analytics Fact**:
+A normalized, privacy-bounded derived record keyed by `(source, source_row_id)` and owned by the analytics storage module.
+
+**Projection**:
+A query-oriented aggregate or read model computed from analytics facts; it is disposable and rebuildable.
+
+**Analytics Write Ownership**:
+The store that accepts the authoritative module write after the business fact and source-journal contract has completed; ownership is independent from business-fact authority.
+
+**Cutover Fence**:
+A durable generation/status boundary that rejects new reads or writes until source coverage, replay acknowledgement, and projection validation agree.
+
+**Completeness Proof**:
+The tuple of source generation, journal coverage interval, retention proof, row/key reconciliation, and projection checksum that demonstrates an analytics table can serve all supported queries.
 _Avoid_: six calendar months, a calendar controlled by the selected statistics range.
 
 ## Performance Acceptance Language
