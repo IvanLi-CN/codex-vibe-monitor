@@ -489,6 +489,12 @@ impl PgAnalyticsRuntime {
             report.service_eligible,
             "PostgreSQL analytics replica completed without becoming service eligible"
         );
+        // The daily rollup is the first PG-owned query model. Build it only after the
+        // source journal replay has made the fact replica eligible, and keep the runtime
+        // fenced if the maintenance rebuild fails.
+        self.rebuild_daily_rollups()
+            .await
+            .context("failed to rebuild PostgreSQL daily analytics rollups")?;
         self.ready.store(true, Ordering::Release);
         Ok(())
     }
