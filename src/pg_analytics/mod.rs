@@ -568,6 +568,49 @@ impl PgAnalyticsRuntime {
         }
         Ok(transaction)
     }
+
+    /// Rebuild the first PG-owned query model from normalized analytics facts.
+    ///
+    /// This operation is deliberately maintenance-only: the source journal and facts remain
+    /// the replay boundary, while the daily table is disposable and can be reconstructed after
+    /// a fence or retention repair. Callers must hold the bootstrap/write fence before invoking
+    /// it so readers cannot observe the delete-and-rebuild window.
+    pub(crate) async fn rebuild_daily_rollups(&self) -> Result<()> {
+        let pool = self
+            .maintenance_pool
+            .as_ref()
+            .context("PostgreSQL analytics maintenance pool is unavailable")?;
+        let mut transaction = pool.inner().begin().await?;
+        sqlx::query("DELETE FROM cvm_analytics.analytics_daily_rollups")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO cvm_analytics.analytics_daily_rollups
+                (stats_date, dimension, series_key, display_name, calls,
+                 token_total, token_samples, cost_total, cost_samples,
+                 usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples,
+                 output_tokens_total, stream_duration_ms, output_speed_samples,
+                 first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples)
+            SELECT stats_date, 'overall', 'overall', '全部调用',
+                   COUNT(*),
+                   COALESCE(SUM(total_tokens), 0), COUNT(total_tokens),
+                   COALESCE(SUM(cost), 0), COUNT(cost),
+                   COALESCE(SUM(t_upstream_stream_ms), 0), COUNT(t_upstream_stream_ms),
+                   COALESCE(SUM(t_total_ms), 0), COUNT(t_total_ms),
+                   COALESCE(SUM(output_tokens), 0),
+                   COALESCE(SUM(t_upstream_stream_ms), 0), COUNT(t_upstream_stream_ms),
+                   COALESCE(SUM(t_upstream_ttfb_ms), 0), COUNT(t_upstream_ttfb_ms),
+                   COALESCE(SUM(t_resp_parse_ms), 0), COUNT(t_resp_parse_ms)
+            FROM cvm_analytics.analytics_facts
+            GROUP BY stats_date
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
 }
 
 async fn migrate_postgres_schema(config: &AppConfig) -> Result<()> {
@@ -4551,6 +4594,7 @@ mod tests {
                 "GRANT SELECT (id, status) ON TABLE cvm_analytics.analytics_state TO cvm_analytics_reader",
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
                 "GRANT INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
+                "GRANT INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_daily_rollups TO cvm_analytics_maintenance",
                 "GRANT SELECT (source, source_row_id) ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
                 "GRANT SELECT, UPDATE ON TABLE cvm_analytics.analytics_replica_state, cvm_analytics.analytics_state TO cvm_analytics_maintenance",
                 "GRANT INSERT, DELETE ON TABLE cvm_analytics.analytics_replica_applied_changes TO cvm_analytics_maintenance",
