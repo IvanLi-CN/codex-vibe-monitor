@@ -3249,7 +3249,7 @@ async fn load_source_context_transaction(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
 ) -> Result<SourceContext> {
     let state = sqlx::query_as::<_, SourceChangeState>(
-        "SELECT generation, coverage_revision, retained_from_change_id, capacity, invalidation_pending, historical_replay_required, historical_history_unknown, owner_kind, owner_epoch, serving_fence, serving_ack_change_id, journal_backpressure, analytics_unavailable, handoff_state FROM analytics_change_state WHERE id = 1",
+        "SELECT generation, coverage_revision, retained_from_change_id, capacity, invalidation_pending, historical_replay_required, historical_history_unknown, owner_kind, owner_epoch, serving_fence, writer_id, serving_ack_change_id, journal_backpressure, analytics_unavailable, handoff_state FROM analytics_change_state WHERE id = 1",
     )
     .fetch_one(&mut **transaction)
     .await
@@ -4177,7 +4177,7 @@ mod tests {
 
     #[test]
     fn schema_contract_is_separate_from_runtime_verification() {
-        assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 5);
+        assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 7);
         assert_eq!(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.len(), 2);
         assert_eq!(PG_ANALYTICS_REQUIRED_COLUMNS.len(), 5);
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("CREATE SCHEMA IF NOT EXISTS cvm_analytics"));
