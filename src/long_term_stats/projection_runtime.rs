@@ -1,4 +1,5 @@
 use super::*;
+use crate::analytics_changes::load_analytics_serving_fence;
 use crate::observability::contention::{
     PendingKind, PerformanceGauge, StatsProjection, current_performance, spawn_performance,
 };
@@ -31,6 +32,136 @@ pub(super) const LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES: usize =
 pub(crate) enum LongTermProjectionFlushOutcome {
     Completed,
     DeferredByPressure { retry_at: Option<Instant> },
+}
+
+/// The durable analytics owner decides which long-term projection may be written or served.
+/// SQLite rollback is intentionally a distinct route from the legacy serving tables: during a
+/// PostgreSQL handoff those tables are frozen and only the bounded rollback copy may be touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LongTermProjectionRoute {
+    SqliteServing,
+    PostgresServing,
+    SqliteRollback,
+    Unavailable,
+}
+
+pub(crate) async fn long_term_projection_route(
+    state: &AppState,
+) -> Result<LongTermProjectionRoute> {
+    let ownership = state.config.analytics_ownership_v2()?;
+    let fence = match load_analytics_serving_fence(&state.pool).await {
+        Ok(fence) => fence,
+        // Older databases can reach this helper before the additive ownership migration has
+        // completed. Preserve the pre-V2 SQLite behavior while the feature is disabled, but fail
+        // closed when the owner contract was explicitly enabled.
+        Err(error) if error.to_string().contains("no such table") => {
+            return Ok(match ownership {
+                AnalyticsOwnershipV2::Disabled => LongTermProjectionRoute::SqliteServing,
+                AnalyticsOwnershipV2::Enabled => LongTermProjectionRoute::Unavailable,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    if fence.unavailable {
+        return Ok(LongTermProjectionRoute::Unavailable);
+    }
+    Ok(match (ownership, fence.owner_kind) {
+        (AnalyticsOwnershipV2::Disabled, "sqlite") => LongTermProjectionRoute::SqliteServing,
+        (AnalyticsOwnershipV2::Disabled, "postgres") => LongTermProjectionRoute::SqliteRollback,
+        (AnalyticsOwnershipV2::Enabled, "sqlite") => LongTermProjectionRoute::SqliteServing,
+        (AnalyticsOwnershipV2::Enabled, "postgres") => LongTermProjectionRoute::PostgresServing,
+        (_, _) => LongTermProjectionRoute::Unavailable,
+    })
+}
+
+pub(super) async fn long_term_projection_rollback_ready(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM long_term_projection_rollback_state WHERE id = 1 AND state = 'ready')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0)
+}
+
+async fn refresh_long_term_projection_rollback_copy(state: &AppState) -> Result<()> {
+    let fence = load_analytics_serving_fence(&state.pool).await?;
+    let mut tx = state.pool.begin().await?;
+    let current = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        "SELECT owner_epoch, serving_fence, generation, state FROM long_term_projection_rollback_state WHERE id = 1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if current.0 == fence.owner_epoch
+        && current.1 == fence.serving_fence
+        && current.2 == fence.generation
+        && current.3 == "ready"
+    {
+        tx.commit().await?;
+        return Ok(());
+    }
+    for (rollback, source, columns) in [
+        (
+            "long_term_usage_hourly_rollback",
+            "long_term_usage_hourly",
+            "bucket_start_epoch, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples, updated_at",
+        ),
+        (
+            "long_term_usage_daily_rollback",
+            "long_term_usage_daily",
+            "stats_date, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples, updated_at",
+        ),
+    ] {
+        sqlx::query(&format!("DELETE FROM {rollback}"))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&format!(
+            "INSERT INTO {rollback} ({columns}) SELECT {columns} FROM {source}"
+        ))
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("DELETE FROM long_term_projection_interval_state_rollback")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO long_term_projection_interval_state_rollback SELECT * FROM long_term_projection_interval_state")
+        .execute(&mut *tx)
+        .await?;
+    let cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(cursor_row_id, 0) FROM long_term_projection_state WHERE consumer = ?1",
+    )
+    .bind(LONG_TERM_PROJECTION_CONSUMER)
+    .fetch_optional(&mut *tx)
+    .await?
+    .unwrap_or_default();
+    sqlx::query(
+        "UPDATE long_term_projection_rollback_state SET owner_epoch = ?1, serving_fence = ?2, generation = ?3, source_cursor_row_id = ?4, state = 'ready', last_rebuilt_at = datetime('now'), last_error = NULL, updated_at = datetime('now') WHERE id = 1",
+    )
+    .bind(fence.owner_epoch)
+    .bind(fence.serving_fence)
+    .bind(fence.generation)
+    .bind(cursor)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn defer_long_term_projection_for_route(
+    state: &AppState,
+    route: LongTermProjectionRoute,
+) -> LongTermProjectionFlushOutcome {
+    let (state_name, reason) = match route {
+        LongTermProjectionRoute::SqliteServing => return LongTermProjectionFlushOutcome::Completed,
+        LongTermProjectionRoute::PostgresServing => ("postgres_serving", "owner_postgres"),
+        LongTermProjectionRoute::SqliteRollback => ("rollback_pending", "rollback_projection"),
+        LongTermProjectionRoute::Unavailable => ("unavailable", "serving_fence_unavailable"),
+    };
+    let mut runtime = state.long_term_projection_runtime.lock().await;
+    runtime.state = state_name.to_string();
+    runtime.last_defer_reason = Some(reason.to_string());
+    LongTermProjectionFlushOutcome::DeferredByPressure {
+        retry_at: Some(Instant::now() + LONG_TERM_PROJECTION_FLUSH_INTERVAL),
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -529,13 +660,30 @@ pub(crate) fn spawn_long_term_projection_supervisor(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    let backfill_handle = spawn_long_term_stats_backfill(
-        state.observability.clone(),
-        state.pool.clone(),
-        state.config.long_term_stats_hourly_retention_days,
-        cancel.clone(),
-    );
     spawn_performance(state.observability.clone(), async move {
+        // Do not start the legacy backfill writer until the durable fence confirms that SQLite is
+        // the serving owner. The incremental worker applies the same guard on every flush, but
+        // the initial materializer has its own task and must be fenced before it is spawned.
+        let backfill_handle = match long_term_projection_route(&state).await {
+            Ok(LongTermProjectionRoute::SqliteServing) => Some(spawn_long_term_stats_backfill(
+                state.observability.clone(),
+                state.pool.clone(),
+                state.config.long_term_stats_hourly_retention_days,
+                cancel.clone(),
+            )),
+            Ok(route) => {
+                info!(
+                    projection = "long_term",
+                    ?route,
+                    "long-term initial materializer held by serving owner route"
+                );
+                None
+            }
+            Err(error) => {
+                warn!(error = %error, projection = "long_term", "long-term initial materializer held because serving owner fence is unavailable");
+                None
+            }
+        };
         let supervisor_handle = spawn_performance(state.observability.clone(), async move {
             let pressure_gate = crate::db_pressure::global_db_pressure_gate();
             let mut pressure_eligibility_generation = pressure_gate.eligibility_generation();
@@ -698,7 +846,9 @@ pub(crate) fn spawn_long_term_projection_supervisor(
         if let Err(error) = supervisor_handle.await {
             warn!(error = %error, projection = "long_term", "long-term projection supervisor terminated unexpectedly");
         }
-        if let Err(error) = backfill_handle.await {
+        if let Some(backfill_handle) = backfill_handle
+            && let Err(error) = backfill_handle.await
+        {
             warn!(error = %error, projection = "long_term", "long-term initial materialization worker terminated unexpectedly");
         }
     })
@@ -1343,6 +1493,21 @@ pub(super) async fn flush_long_term_projection_unlocked(
     state: &AppState,
     trigger: &'static str,
 ) -> Result<LongTermProjectionFlushOutcome> {
+    let route = long_term_projection_route(state).await?;
+    if route != LongTermProjectionRoute::SqliteServing {
+        if route == LongTermProjectionRoute::SqliteRollback {
+            // Capture a fenced copy before exposing the rollback route. The copy is bounded to
+            // the current projection state and is replaced atomically on every fence change.
+            refresh_long_term_projection_rollback_copy(state).await?;
+        }
+        debug!(
+            projection = "long_term",
+            trigger,
+            ?route,
+            "long-term projection write deferred by serving owner route"
+        );
+        return Ok(defer_long_term_projection_for_route(state, route).await);
+    }
     let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
     let result = run_long_term_projection_flush_with_retry(&state.shutdown, || {
         flush_long_term_projection_inner(state, trigger)
