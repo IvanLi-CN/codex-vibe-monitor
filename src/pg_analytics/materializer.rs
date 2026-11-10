@@ -253,7 +253,7 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
              wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms,
              output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms,
              response_samples)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
+            VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
         )
         .bind(&row.stats_date)
         .bind(&row.dimension)
