@@ -4,24 +4,24 @@
 
 本主题已合并 ownership 状态、Journal fence、PG replay 状态字段和长期统计路由等基础结构，但完整 ownership cutover 尚未实现，不能把合并记录或任务 closed 状态作为可上线启用的证据。生产入口没有调用 owner CAS；PG daily/hourly、interval/read-model、repair/bucket/publication 缺少完整维护与读取链路，SQLite rollback projection 也没有在 PG serving 期间持续消费 Journal。
 
-`ANALYTICS_OWNERSHIP_V2=enabled` 目前不受支持，应保持 `disabled` 或不设置；`ANALYTICS_BACKEND` 保持现有部署值。既有 `ANALYTICS_BACKEND=postgres` 的 facts/key read replica 与 projection ownership 是两个合同，前者不应要求 source 已成为 PG owner。
+`ANALYTICS_OWNERSHIP_V2=enabled` 目前只允许进入 shadow/preparation 阶段，不能作为生产 owner 切换完成的信号；若 PG projection readiness、parity、rollback 和剩余 target gate 未全部满足，服务保持 unavailable 或 SQLite shadow serving。`ANALYTICS_BACKEND` 仍保持现有部署值。既有 `ANALYTICS_BACKEND=postgres` 的 facts/key read replica 与 projection ownership 是两个合同，前者不应要求 source 已成为 PG owner。
 
-本地修复候选恢复 disabled 模式的 PG read/replay，补全 source snapshot 字段，在就绪后持续消费 Journal，并让重启沿用已有 baseline/checkpoint。迁移按不可变的已部署 V1 和增量 V2 执行；识别已发布的错误 V1 checksum 变体但不重写其历史。候选仍须通过真实 PG fixture、审核和交付后才能用于生产。
+本地修复候选恢复 disabled 模式的 PG read/replay，补全 source snapshot 字段，在就绪后持续消费 Journal，并让重启沿用已有 baseline/checkpoint。后续切片已增加 PG daily/hourly rollup、projection state/checkpoint、SQLite shadow 快照物化、行数与 SHA-256 校验，以及 fenced PG overview/series 读取；启用仍受完整 owner parity、interval/read-model、连续 rollback 和 cleanup gate 约束。迁移按不可变的已部署 V1 和增量 V2/V3/V4 执行；识别已发布的错误 V1 checksum 变体但不重写其历史。候选仍须通过真实 PG fixture、审核和交付后才能用于生产。
 
 本地修复证据见 [runtime repair validation](assets/runtime-repair-validation.json)、[persistent-state record](assets/runtime-repair-state-record.json) 和 [version impact](assets/runtime-repair-version-impact.json)。这些证据只覆盖修复候选，不替代完整 V2 验收。
 
 ## 需求与证据状态
 
-| 需求                  | 实现状态                                           | 仍需完成的证据                                        |
-| --------------------- | -------------------------------------------------- | ----------------------------------------------------- |
-| REQ-PG18-OWN-001、010 | 阶段边界文档已定义                                 | 后续 source migration 独立交付                        |
-| REQ-PG18-OWN-002      | 开关解析与重启捕获已实现；自动切换未实现           | enabled handoff、disabled rollback 的生产入口回归     |
-| REQ-PG18-OWN-003、004 | owner/fence 与 applied/checkpoint 基础结构存在     | 完整 target mapping、统一 generation 和实际 owner CAS |
-| REQ-PG18-OWN-005      | facts/key 支持 PG snapshot；长期统计 PG 读写未完成 | 所有长期统计 endpoint 单一 PG snapshot                |
-| REQ-PG18-OWN-006      | rollback 表与 copy helper 存在；持续维护未实现     | PG serving 期间连续消费及可提升证明                   |
-| REQ-PG18-OWN-007、008 | 容量和 gate 基础结构存在                           | 一天容量实测、完整 target parity、备份和恢复证据      |
-| REQ-PG18-OWN-009      | 不完整 enabled 被拒绝；其余失败路径需实测          | 真实 handoff 中断、PG outage、rollback rebuild        |
-| REQ-PG18-OWN-011      | 手册已落盘                                         | 完整一天实际观测与执行证据                            |
+| 需求                  | 实现状态                                                              | 仍需完成的证据                                               |
+| --------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------ |
+| REQ-PG18-OWN-001、010 | 阶段边界文档已定义                                                    | 后续 source migration 独立交付                               |
+| REQ-PG18-OWN-002      | 开关解析与重启捕获已实现；自动切换未实现                              | enabled handoff、disabled rollback 的生产入口回归            |
+| REQ-PG18-OWN-003、004 | owner/fence、applied/checkpoint 和 daily/hourly shadow 基础结构存在   | interval/read-model target、统一 generation 和完整 owner CAS |
+| REQ-PG18-OWN-005      | facts/key 与 daily/hourly 支持 fenced PG snapshot；其余长期统计未完成 | 所有长期统计 endpoint 单一 PG snapshot                       |
+| REQ-PG18-OWN-006      | rollback 表、copy helper 和 serving 时镜像路径存在                    | 独立 rollback Journal consumer、可提升证明和 outage rebuild  |
+| REQ-PG18-OWN-007、008 | 容量和 gate 基础结构存在                                              | 一天容量实测、完整 target parity、备份和恢复证据             |
+| REQ-PG18-OWN-009      | 不完整 enabled 被拒绝；其余失败路径需实测                             | 真实 handoff 中断、PG outage、rollback rebuild               |
+| REQ-PG18-OWN-011      | 手册已落盘                                                            | 完整一天实际观测与执行证据                                   |
 
 ## Planned implementation coverage
 
