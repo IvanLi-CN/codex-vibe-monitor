@@ -6,6 +6,8 @@ pub(crate) const PG_ANALYTICS_REQUIRED_RELATIONS: &[&str] = &[
     "cvm_analytics.analytics_daily_rollups",
     "cvm_analytics.analytics_hourly_rollups",
     "cvm_analytics.analytics_state",
+    "cvm_analytics.analytics_projection_state",
+    "cvm_analytics.analytics_projection_checkpoints",
 ];
 
 pub(crate) const PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS: &[&str] = &[
@@ -180,6 +182,42 @@ INSERT INTO cvm_analytics.analytics_state (id, status)
 VALUES (1, 'preparing')
 ON CONFLICT (id) DO NOTHING;
 
+-- V2 long-term projection lifecycle is kept separate from the replica ownership
+-- state above.  This lets a stopped or rebuilding projection remain fail-closed
+-- without rewriting the source facts or replica checkpoint.
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_state (
+    id SMALLINT PRIMARY KEY CHECK (id = 1),
+    status TEXT NOT NULL DEFAULT 'preparing',
+    statistics_start_date DATE,
+    integrity_source_start_date DATE,
+    integrity_source_pending_start_date DATE,
+    processed_rows BIGINT NOT NULL DEFAULT 0,
+    total_rows BIGINT NOT NULL DEFAULT 0,
+    last_error_code TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO cvm_analytics.analytics_projection_state (id, status)
+VALUES (1, 'preparing')
+ON CONFLICT (id) DO NOTHING;
+
+-- A checkpoint is scoped by consumer so rollup maintenance and interval/read
+-- model consumers can advance independently while sharing the same generation.
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_checkpoints (
+    consumer TEXT PRIMARY KEY,
+    cursor_row_id BIGINT NOT NULL DEFAULT 0,
+    last_flush_at TIMESTAMPTZ,
+    last_daily_verify_at TIMESTAMPTZ,
+    daily_verify_pending BOOLEAN NOT NULL DEFAULT FALSE,
+    daily_verify_bucket_date DATE,
+    last_error_code TEXT,
+    generation BIGINT NOT NULL DEFAULT 0 CHECK (generation >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS analytics_projection_checkpoints_generation_idx
+    ON cvm_analytics.analytics_projection_checkpoints (generation, consumer);
+
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_state (
     id SMALLINT PRIMARY KEY CHECK (id = 1),
     replica_id TEXT NOT NULL UNIQUE,
@@ -272,3 +310,42 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_applied_changes (
 CREATE INDEX IF NOT EXISTS analytics_replica_applied_generation_idx
     ON cvm_analytics.analytics_replica_applied_changes (generation, change_id);
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_schema_includes_v2_long_term_projection_contract() {
+        for relation in [
+            "analytics_daily_rollups",
+            "analytics_hourly_rollups",
+            "analytics_projection_state",
+            "analytics_projection_checkpoints",
+        ] {
+            assert!(
+                PG_ANALYTICS_SCHEMA_SQL.contains(relation),
+                "missing {relation}"
+            );
+        }
+        for column in [
+            "stats_date DATE NOT NULL",
+            "bucket_start TIMESTAMPTZ NOT NULL",
+            "reasoning_effort TEXT NOT NULL DEFAULT ''",
+            "output_speed_samples BIGINT NOT NULL DEFAULT 0",
+            "response_samples BIGINT NOT NULL DEFAULT 0",
+            "integrity_source_start_date DATE",
+            "daily_verify_pending BOOLEAN NOT NULL DEFAULT FALSE",
+            "cursor_row_id BIGINT NOT NULL DEFAULT 0",
+        ] {
+            assert!(PG_ANALYTICS_SCHEMA_SQL.contains(column), "missing {column}");
+        }
+        assert!(
+            PG_ANALYTICS_REQUIRED_RELATIONS.contains(&"cvm_analytics.analytics_projection_state")
+        );
+        assert!(
+            PG_ANALYTICS_REQUIRED_RELATIONS
+                .contains(&"cvm_analytics.analytics_projection_checkpoints")
+        );
+    }
+}

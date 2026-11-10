@@ -246,6 +246,97 @@ GRANT SELECT (owner_kind, owner_epoch, serving_fence, serving_ack_change_id)
     ON cvm_analytics.analytics_replica_state TO cvm_analytics_reader;
 "#;
 
+// V3 is the first additive long-term projection slice. The rollup tables mirror
+// SQLite's long_term_usage_* shape so a future handoff can compare rows without
+// a lossy translation. Projection lifecycle state is separate from replica
+// ownership state, allowing a rebuild to remain fail-closed independently.
+const MIGRATION_V3_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_daily_rollups (
+    stats_date DATE NOT NULL,
+    dimension TEXT NOT NULL,
+    series_key TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    reasoning_effort TEXT NOT NULL DEFAULT '',
+    calls BIGINT NOT NULL DEFAULT 0,
+    token_total BIGINT NOT NULL DEFAULT 0,
+    token_samples BIGINT NOT NULL DEFAULT 0,
+    cost_total NUMERIC(20, 8) NOT NULL DEFAULT 0,
+    cost_samples BIGINT NOT NULL DEFAULT 0,
+    usage_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    usage_time_samples BIGINT NOT NULL DEFAULT 0,
+    wall_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    wall_time_samples BIGINT NOT NULL DEFAULT 0,
+    output_tokens_total BIGINT NOT NULL DEFAULT 0,
+    stream_duration_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    output_speed_samples BIGINT NOT NULL DEFAULT 0,
+    first_byte_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    first_byte_samples BIGINT NOT NULL DEFAULT 0,
+    response_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    response_samples BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (stats_date, dimension, series_key)
+);
+CREATE INDEX IF NOT EXISTS analytics_daily_rollups_dimension_date_idx
+    ON cvm_analytics.analytics_daily_rollups (dimension, stats_date);
+
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_hourly_rollups (
+    bucket_start TIMESTAMPTZ NOT NULL,
+    dimension TEXT NOT NULL,
+    series_key TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    reasoning_effort TEXT NOT NULL DEFAULT '',
+    calls BIGINT NOT NULL DEFAULT 0,
+    token_total BIGINT NOT NULL DEFAULT 0,
+    token_samples BIGINT NOT NULL DEFAULT 0,
+    cost_total NUMERIC(20, 8) NOT NULL DEFAULT 0,
+    cost_samples BIGINT NOT NULL DEFAULT 0,
+    usage_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    usage_time_samples BIGINT NOT NULL DEFAULT 0,
+    wall_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    wall_time_samples BIGINT NOT NULL DEFAULT 0,
+    output_tokens_total BIGINT NOT NULL DEFAULT 0,
+    stream_duration_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    output_speed_samples BIGINT NOT NULL DEFAULT 0,
+    first_byte_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    first_byte_samples BIGINT NOT NULL DEFAULT 0,
+    response_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    response_samples BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (bucket_start, dimension, series_key)
+);
+CREATE INDEX IF NOT EXISTS analytics_hourly_rollups_dimension_bucket_idx
+    ON cvm_analytics.analytics_hourly_rollups (dimension, bucket_start);
+
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_state (
+    id SMALLINT PRIMARY KEY CHECK (id = 1),
+    status TEXT NOT NULL DEFAULT 'preparing',
+    statistics_start_date DATE,
+    integrity_source_start_date DATE,
+    integrity_source_pending_start_date DATE,
+    processed_rows BIGINT NOT NULL DEFAULT 0,
+    total_rows BIGINT NOT NULL DEFAULT 0,
+    last_error_code TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO cvm_analytics.analytics_projection_state (id, status)
+VALUES (1, 'preparing')
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_checkpoints (
+    consumer TEXT PRIMARY KEY,
+    cursor_row_id BIGINT NOT NULL DEFAULT 0,
+    last_flush_at TIMESTAMPTZ,
+    last_daily_verify_at TIMESTAMPTZ,
+    daily_verify_pending BOOLEAN NOT NULL DEFAULT FALSE,
+    daily_verify_bucket_date DATE,
+    last_error_code TEXT,
+    generation BIGINT NOT NULL DEFAULT 0 CHECK (generation >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS analytics_projection_checkpoints_generation_idx
+    ON cvm_analytics.analytics_projection_checkpoints (generation, consumer);
+"#;
+
 fn checksum(sql: &str) -> String {
     format!("{:x}", Sha256::digest(sql.as_bytes()))
 }
@@ -274,10 +365,14 @@ pub(super) async fn apply_ordered_migrations(
     )
     .fetch_all(&mut *tx)
     .await?;
-    let migrations = [(1_i64, MIGRATION_V1_SQL), (2, MIGRATION_V2_SQL)];
+    let migrations = [
+        (1_i64, MIGRATION_V1_SQL),
+        (2, MIGRATION_V2_SQL),
+        (3, MIGRATION_V3_SQL),
+    ];
     for (version, recorded_checksum, state, min_reader) in &recorded {
         anyhow::ensure!(
-            state == "applied" && *min_reader <= 2,
+            state == "applied" && *min_reader <= 3,
             "PostgreSQL analytics migration is incomplete or requires a newer reader at version {version}"
         );
         let sql = migrations
@@ -329,6 +424,48 @@ pub(super) async fn apply_ordered_migrations(
 mod tests {
     use super::*;
 
+    #[test]
+    fn v3_adds_shape_compatible_rollups_and_projection_progress() {
+        for table in [
+            "analytics_daily_rollups",
+            "analytics_hourly_rollups",
+            "analytics_projection_state",
+            "analytics_projection_checkpoints",
+        ] {
+            assert!(
+                MIGRATION_V3_SQL.contains(table),
+                "V3 must provision {table}"
+            );
+        }
+        for column in [
+            "calls BIGINT NOT NULL DEFAULT 0",
+            "token_total BIGINT NOT NULL DEFAULT 0",
+            "token_samples BIGINT NOT NULL DEFAULT 0",
+            "cost_total NUMERIC(20, 8) NOT NULL DEFAULT 0",
+            "usage_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "wall_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "output_tokens_total BIGINT NOT NULL DEFAULT 0",
+            "stream_duration_ms DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "first_byte_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "response_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0",
+        ] {
+            assert!(
+                MIGRATION_V3_SQL.contains(column),
+                "missing rollup column {column}"
+            );
+        }
+        assert!(MIGRATION_V3_SQL.contains("ON CONFLICT (id) DO NOTHING"));
+        assert!(MIGRATION_V3_SQL.contains("generation BIGINT NOT NULL DEFAULT 0"));
+        assert!(!MIGRATION_V3_SQL.contains("DROP TABLE"));
+    }
+
+    #[test]
+    fn migration_checksums_are_distinct_and_v3_is_additive() {
+        assert_ne!(checksum(MIGRATION_V1_SQL), checksum(MIGRATION_V2_SQL));
+        assert_ne!(checksum(MIGRATION_V2_SQL), checksum(MIGRATION_V3_SQL));
+        assert!(MIGRATION_V3_SQL.trim_start().starts_with("CREATE TABLE"));
+    }
+
     #[tokio::test]
     #[ignore = "requires an isolated PostgreSQL *_fixture database and explicit schema reset authorization"]
     async fn postgres_ordered_migrations_upgrade_and_reentry() -> Result<()> {
@@ -360,13 +497,18 @@ mod tests {
                         requires_bootstrap BOOLEAN NOT NULL DEFAULT FALSE, error_code TEXT,
                         applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(component, version))")
                         .execute(&mut connection).await?;
+                    let recorded_checksum = if source == "stopped_ownership_v1" {
+                        STOPPED_OWNERSHIP_V1_CHECKSUM.to_string()
+                    } else {
+                        checksum(source_sql)
+                    };
                     sqlx::query("INSERT INTO cvm_analytics.schema_migrations(component,version,checksum,state) VALUES ('pg-analytics',1,$1,'applied')")
-                        .bind(checksum(source_sql)).execute(&mut connection).await?;
+                        .bind(recorded_checksum).execute(&mut connection).await?;
                 }
                 apply_ordered_migrations(&mut connection).await?;
                 let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM cvm_analytics.schema_migrations ORDER BY version")
                     .fetch_all(&mut connection).await?;
-                assert_eq!(versions, [1, 2], "source={source}");
+                assert_eq!(versions, [1, 2, 3], "source={source}");
                 sqlx::query("UPDATE cvm_analytics.analytics_replica_state SET status='caught_up', consumer_checkpoint=17, source_acknowledged_through=17, serving_ack_change_id=17 WHERE id=1")
                     .execute(&mut connection).await?;
                 let before: serde_json::Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM cvm_analytics.analytics_replica_state s WHERE id=1")

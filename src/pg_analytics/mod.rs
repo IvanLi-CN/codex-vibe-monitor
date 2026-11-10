@@ -28,6 +28,7 @@ const ANALYTICS_REPLICA_MAX_SOURCE_PAYLOAD_BYTES: i64 = 4 * 1024 * 1024;
 const ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN: usize = 4096;
 const ANALYTICS_BOOTSTRAP_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const ANALYTICS_BOOTSTRAP_RETRY_MAX: Duration = Duration::from_secs(60);
+const ANALYTICS_OWNER_WRITER_ID: &str = "pg-analytics-startup";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -342,6 +343,7 @@ impl PgAnalyticsPool {
 #[derive(Debug)]
 pub(crate) struct PgAnalyticsRuntime {
     backend: AnalyticsBackend,
+    ownership: AnalyticsOwnershipV2,
     pool: Option<PgAnalyticsPool>,
     maintenance_pool: Option<PgAnalyticsPool>,
     unavailable: Option<AnalyticsUnavailable>,
@@ -352,6 +354,7 @@ impl PgAnalyticsRuntime {
     pub(crate) fn disabled() -> Self {
         Self {
             backend: AnalyticsBackend::Sqlite,
+            ownership: AnalyticsOwnershipV2::Disabled,
             pool: None,
             maintenance_pool: None,
             unavailable: None,
@@ -370,7 +373,10 @@ impl PgAnalyticsRuntime {
             // The V2 storage primitives are not a completed handoff implementation.
             // Never interpret the switch as permission to bypass target parity or
             // claim an owner before all serving projections can actually be read.
-            validate_ownership_runtime_admission(config.analytics_ownership)?;
+            validate_ownership_runtime_admission_for_backend(
+                config.analytics_backend,
+                config.analytics_ownership,
+            )?;
             migrate_postgres_schema(config).await?;
             let pool = PgAnalyticsPool::connect(config).await?;
             let maintenance_pool = PgAnalyticsPool::connect_maintenance(config).await?;
@@ -380,6 +386,7 @@ impl PgAnalyticsRuntime {
         match result {
             Ok((pool, maintenance_pool)) => Self {
                 backend: config.analytics_backend,
+                ownership: config.analytics_ownership,
                 pool: Some(pool),
                 maintenance_pool: Some(maintenance_pool),
                 unavailable: Some(AnalyticsUnavailable::new(
@@ -398,6 +405,7 @@ impl PgAnalyticsRuntime {
                 );
                 Self {
                     backend: config.analytics_backend,
+                    ownership: config.analytics_ownership,
                     pool: None,
                     maintenance_pool: None,
                     unavailable: Some(AnalyticsUnavailable::new(config.analytics_backend, reason)),
@@ -501,10 +509,12 @@ impl PgAnalyticsRuntime {
             .as_ref()
             .context("PostgreSQL analytics maintenance pool is unavailable")?;
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-        anyhow::ensure!(
-            source.state.owner_kind == "sqlite",
-            "durable PostgreSQL ownership requires the unimplemented controlled rollback lifecycle"
-        );
+        if self.ownership == AnalyticsOwnershipV2::Disabled && source.state.owner_kind == "postgres"
+        {
+            self.rollback_durable_owner(source_pool, &source).await?;
+            self.ready.store(false, Ordering::Release);
+            return Ok(());
+        }
         let state = load_replica_state(target.inner()).await?;
         if state.status == "paused" {
             self.ready.store(false, Ordering::Release);
@@ -533,8 +543,9 @@ impl PgAnalyticsRuntime {
                     refreshed.rows_affected() == 1,
                     "replica changed during heartbeat"
                 );
-                self.ready.store(true, Ordering::Release);
-                return Ok(());
+                return self
+                    .coordinate_owner_transition(source_pool, target.inner())
+                    .await;
             }
         }
         let _control_guard = acquire_replica_control_lock(target.inner()).await?;
@@ -559,8 +570,94 @@ impl PgAnalyticsRuntime {
             report.service_eligible,
             "PostgreSQL analytics replica completed without becoming service eligible"
         );
-        self.ready.store(true, Ordering::Release);
+        self.coordinate_owner_transition(source_pool, target.inner())
+            .await
+    }
+
+    async fn rollback_durable_owner(
+        &self,
+        source_pool: &Pool<Sqlite>,
+        source: &SourceContext,
+    ) -> Result<()> {
+        let Some(writer_id) = source.state.writer_id.as_deref() else {
+            // A durable postgres owner without a writer lease is already fenced. Keep it
+            // unavailable rather than guessing an owner identity for a rollback CAS.
+            return Ok(());
+        };
+        crate::analytics_changes::release_analytics_owner(
+            source_pool,
+            writer_id,
+            source.state.owner_epoch,
+            source.state.serving_fence,
+        )
+        .await
+        .context("failed to release the durable PostgreSQL analytics owner during rollback")?;
         Ok(())
+    }
+
+    async fn coordinate_owner_transition(
+        &self,
+        source_pool: &Pool<Sqlite>,
+        target: &sqlx::PgPool,
+    ) -> Result<()> {
+        let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+        let state = load_replica_state(target).await?;
+        let projection_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM cvm_analytics.analytics_projection_state WHERE id = 1",
+        )
+        .fetch_optional(target)
+        .await
+        .context("failed to load PostgreSQL long-term projection readiness")?;
+        let readiness = AnalyticsOwnershipReadiness {
+            replica_facts_caught_up: state.status == "caught_up"
+                && state.consumer_checkpoint == source.latest_change_id
+                && replica_service_eligible_for_source(&state, &source),
+            long_term_projection_ready: projection_status.as_deref() == Some("ready"),
+            // The projection writer must provide an explicit parity callback/result. Until that
+            // callback is wired, a ready status alone never authorizes durable ownership.
+            long_term_projection_parity: false,
+        };
+        match admit_analytics_ownership_transition(
+            self.backend,
+            self.ownership,
+            &source.state.owner_kind,
+            readiness,
+        )? {
+            AnalyticsOwnershipTransition::StayUnavailable => {
+                self.ready.store(false, Ordering::Release);
+                bail!(
+                    "analytics ownership handoff readiness gate is closed (replica_caught_up={}, long_term_projection_ready={}, long_term_projection_parity={})",
+                    readiness.replica_facts_caught_up,
+                    readiness.long_term_projection_ready,
+                    readiness.long_term_projection_parity,
+                )
+            }
+            AnalyticsOwnershipTransition::LegacyReplicaReady => {
+                self.ready.store(true, Ordering::Release);
+                Ok(())
+            }
+            AnalyticsOwnershipTransition::ClaimPostgres => {
+                crate::analytics_changes::claim_analytics_owner(
+                    source_pool,
+                    "postgres",
+                    ANALYTICS_OWNER_WRITER_ID,
+                    source.state.owner_epoch,
+                    source.state.serving_fence,
+                )
+                .await
+                .context("failed to claim the durable PostgreSQL analytics owner")?;
+                self.ready.store(false, Ordering::Release);
+                bail!("analytics ownership handoff committed; awaiting serving-fence convergence")
+            }
+            AnalyticsOwnershipTransition::AlreadyPostgres => {
+                anyhow::ensure!(
+                    source.state.writer_id.as_deref() == Some(ANALYTICS_OWNER_WRITER_ID),
+                    "durable PostgreSQL analytics owner lease is not held by this runtime"
+                );
+                self.ready.store(true, Ordering::Release);
+                Ok(())
+            }
+        }
     }
 
     pub(crate) async fn require_read_transaction(
@@ -642,11 +739,76 @@ impl PgAnalyticsRuntime {
 }
 
 fn validate_ownership_runtime_admission(ownership: AnalyticsOwnershipV2) -> Result<()> {
+    validate_ownership_runtime_admission_for_backend(AnalyticsBackend::Postgres, ownership)
+}
+
+fn validate_ownership_runtime_admission_for_backend(
+    backend: AnalyticsBackend,
+    ownership: AnalyticsOwnershipV2,
+) -> Result<()> {
     anyhow::ensure!(
-        ownership == AnalyticsOwnershipV2::Disabled,
-        "ANALYTICS_OWNERSHIP_V2=enabled is not deployable: complete projection handoff, parity and rollback lifecycle are not implemented; retain disabled and the existing ANALYTICS_BACKEND"
+        ownership == AnalyticsOwnershipV2::Disabled || backend == AnalyticsBackend::Postgres,
+        "ANALYTICS_OWNERSHIP_V2=enabled requires ANALYTICS_BACKEND=postgres"
     );
     Ok(())
+}
+
+/// Readiness facts required before the durable source owner may move to PostgreSQL.
+///
+/// The long-term projection and parity values are deliberately supplied by a callback-shaped
+/// value. Until the projection writer publishes those facts, the startup coordinator keeps the
+/// source unavailable instead of inferring readiness from replica catch-up alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AnalyticsOwnershipReadiness {
+    pub(crate) replica_facts_caught_up: bool,
+    pub(crate) long_term_projection_ready: bool,
+    pub(crate) long_term_projection_parity: bool,
+}
+
+impl AnalyticsOwnershipReadiness {
+    fn admits_handoff(self) -> bool {
+        self.replica_facts_caught_up
+            && self.long_term_projection_ready
+            && self.long_term_projection_parity
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnalyticsOwnershipTransition {
+    StayUnavailable,
+    LegacyReplicaReady,
+    ClaimPostgres,
+    AlreadyPostgres,
+}
+
+fn admit_analytics_ownership_transition(
+    backend: AnalyticsBackend,
+    ownership: AnalyticsOwnershipV2,
+    durable_owner: &str,
+    readiness: AnalyticsOwnershipReadiness,
+) -> Result<AnalyticsOwnershipTransition> {
+    validate_ownership_runtime_admission_for_backend(backend, ownership)?;
+    if ownership == AnalyticsOwnershipV2::Disabled {
+        return Ok(
+            if durable_owner == "sqlite" && readiness.replica_facts_caught_up {
+                AnalyticsOwnershipTransition::LegacyReplicaReady
+            } else {
+                AnalyticsOwnershipTransition::StayUnavailable
+            },
+        );
+    }
+    anyhow::ensure!(
+        matches!(durable_owner, "sqlite" | "postgres"),
+        "analytics durable owner is invalid: {durable_owner}"
+    );
+    if !readiness.admits_handoff() {
+        return Ok(AnalyticsOwnershipTransition::StayUnavailable);
+    }
+    Ok(match durable_owner {
+        "sqlite" => AnalyticsOwnershipTransition::ClaimPostgres,
+        "postgres" => AnalyticsOwnershipTransition::AlreadyPostgres,
+        _ => unreachable!("durable owner was validated above"),
+    })
 }
 
 async fn migrate_postgres_schema(config: &AppConfig) -> Result<()> {
@@ -1011,6 +1173,7 @@ struct SourceChangeState {
     owner_kind: String,
     owner_epoch: i64,
     serving_fence: i64,
+    writer_id: Option<String>,
     serving_ack_change_id: i64,
     journal_backpressure: i64,
     analytics_unavailable: i64,
@@ -1701,7 +1864,7 @@ async fn load_source_context(
         r#"
         SELECT generation, coverage_revision, retained_from_change_id, capacity,
                invalidation_pending, historical_replay_required, historical_history_unknown,
-               owner_kind, owner_epoch, serving_fence, serving_ack_change_id,
+               owner_kind, owner_epoch, serving_fence, writer_id, serving_ack_change_id,
                journal_backpressure, analytics_unavailable, handoff_state
         FROM analytics_change_state
         WHERE id = 1
@@ -4104,11 +4267,73 @@ mod tests {
     }
 
     #[test]
-    fn ownership_runtime_does_not_claim_an_unimplemented_cutover() {
+    fn ownership_runtime_requires_postgres_for_enabled_cutover() {
         assert!(validate_ownership_runtime_admission(AnalyticsOwnershipV2::Disabled).is_ok());
-        let error = validate_ownership_runtime_admission(AnalyticsOwnershipV2::Enabled)
-            .expect_err("enabling storage primitives must not advertise a working cutover");
-        assert!(error.to_string().contains("parity and rollback lifecycle"));
+        assert!(validate_ownership_runtime_admission(AnalyticsOwnershipV2::Enabled).is_ok());
+        let error = validate_ownership_runtime_admission_for_backend(
+            AnalyticsBackend::Sqlite,
+            AnalyticsOwnershipV2::Enabled,
+        )
+        .expect_err("enabled ownership must require the PostgreSQL backend");
+        assert!(
+            error
+                .to_string()
+                .contains("requires ANALYTICS_BACKEND=postgres")
+        );
+    }
+
+    #[test]
+    fn ownership_handoff_admission_requires_all_readiness_facts() {
+        let ready = AnalyticsOwnershipReadiness {
+            replica_facts_caught_up: true,
+            long_term_projection_ready: true,
+            long_term_projection_parity: true,
+        };
+        assert_eq!(
+            admit_analytics_ownership_transition(
+                AnalyticsBackend::Postgres,
+                AnalyticsOwnershipV2::Enabled,
+                "sqlite",
+                ready,
+            )
+            .expect("ready handoff admission"),
+            AnalyticsOwnershipTransition::ClaimPostgres
+        );
+        for readiness in [
+            AnalyticsOwnershipReadiness {
+                replica_facts_caught_up: false,
+                ..ready
+            },
+            AnalyticsOwnershipReadiness {
+                long_term_projection_ready: false,
+                ..ready
+            },
+            AnalyticsOwnershipReadiness {
+                long_term_projection_parity: false,
+                ..ready
+            },
+        ] {
+            assert_eq!(
+                admit_analytics_ownership_transition(
+                    AnalyticsBackend::Postgres,
+                    AnalyticsOwnershipV2::Enabled,
+                    "sqlite",
+                    readiness,
+                )
+                .expect("closed handoff admission"),
+                AnalyticsOwnershipTransition::StayUnavailable
+            );
+        }
+        assert_eq!(
+            admit_analytics_ownership_transition(
+                AnalyticsBackend::Postgres,
+                AnalyticsOwnershipV2::Disabled,
+                "postgres",
+                ready,
+            )
+            .expect("disabled rollback admission"),
+            AnalyticsOwnershipTransition::StayUnavailable
+        );
     }
 
     #[tokio::test]
@@ -4123,7 +4348,10 @@ mod tests {
                 AnalyticsAvailability::Unavailable
             );
             assert!(runtime.pool.is_none());
-            assert!(runtime.status().reason.unwrap().contains("not deployable"));
+            let reason = runtime.status().reason.unwrap();
+            if backend == AnalyticsBackend::Sqlite {
+                assert!(reason.contains("requires ANALYTICS_BACKEND=postgres"));
+            }
         }
     }
 
@@ -4183,6 +4411,7 @@ mod tests {
             crate::schema::ensure_schema(&source).await?;
             let make_runtime = || Arc::new(PgAnalyticsRuntime {
                 backend: AnalyticsBackend::Postgres,
+                ownership: AnalyticsOwnershipV2::Disabled,
                 pool: Some(PgAnalyticsPool { pool: target.clone() }),
                 maintenance_pool: Some(PgAnalyticsPool { pool: target.clone() }),
                 unavailable: None,
@@ -4295,6 +4524,7 @@ mod tests {
     async fn selected_postgres_without_a_ready_replica_fails_closed_for_usage_reads() {
         let runtime = PgAnalyticsRuntime {
             backend: AnalyticsBackend::Postgres,
+            ownership: AnalyticsOwnershipV2::Disabled,
             pool: None,
             maintenance_pool: None,
             unavailable: None,
@@ -4382,6 +4612,7 @@ mod tests {
                 owner_kind: "postgres".to_string(),
                 owner_epoch: 1,
                 serving_fence: 1,
+                writer_id: None,
                 serving_ack_change_id: 100,
                 journal_backpressure: 0,
                 analytics_unavailable: 0,
@@ -4452,6 +4683,7 @@ mod tests {
                 owner_kind: "postgres".to_string(),
                 owner_epoch: 1,
                 serving_fence: 1,
+                writer_id: None,
                 serving_ack_change_id: 100,
                 journal_backpressure: 0,
                 analytics_unavailable: 0,
@@ -4530,6 +4762,7 @@ mod tests {
                 owner_kind: "postgres".to_string(),
                 owner_epoch: 1,
                 serving_fence: 1,
+                writer_id: None,
                 serving_ack_change_id: 100,
                 journal_backpressure: 0,
                 analytics_unavailable: 0,
@@ -4957,6 +5190,7 @@ mod tests {
             );
             let app_runtime = PgAnalyticsRuntime {
                 backend: AnalyticsBackend::Postgres,
+                ownership: AnalyticsOwnershipV2::Disabled,
                 pool: Some(PgAnalyticsPool {
                     pool: app_pool.clone(),
                 }),
