@@ -1,6 +1,7 @@
 use super::*;
 use percent_encoding::percent_decode_str;
 
+mod materializer;
 mod migrations;
 mod schema;
 pub(crate) use schema::*;
@@ -608,6 +609,16 @@ impl PgAnalyticsRuntime {
         .fetch_optional(target)
         .await
         .context("failed to load PostgreSQL long-term projection readiness")?;
+        if self.ownership == AnalyticsOwnershipV2::Enabled
+            && source.state.owner_kind == "sqlite"
+            && state.status == "caught_up"
+            && projection_status.as_deref() != Some("ready")
+        {
+            // Build the PG shadow before evaluating the handoff gate. The materializer
+            // verifies row count and canonical digest atomically; continuous Journal
+            // maintenance is a separate gate and therefore parity remains closed here.
+            self.materialize_long_term_projection(source_pool).await?;
+        }
         let readiness = AnalyticsOwnershipReadiness {
             replica_facts_caught_up: state.status == "caught_up"
                 && state.consumer_checkpoint == source.latest_change_id

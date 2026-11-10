@@ -49,27 +49,22 @@ pub(crate) async fn long_term_projection_route(
     state: &AppState,
 ) -> Result<LongTermProjectionRoute> {
     let ownership = state.config.analytics_ownership_v2()?;
-    // Until the complete ownership lifecycle is installed, enabling V2 must not
-    // silently leave this endpoint on SQLite or advertise an unreadable PG owner.
-    if ownership == AnalyticsOwnershipV2::Enabled {
-        return Ok(LongTermProjectionRoute::Unavailable);
-    }
     let fence = match load_analytics_serving_fence(&state.pool).await {
         Ok(fence) => fence,
         // Older databases can reach this helper before the additive ownership migration has
         // completed. Preserve the pre-V2 SQLite behavior while the feature is disabled, but fail
         // closed when the owner contract was explicitly enabled.
         Err(error) if error.to_string().contains("no such table") => {
-            return Ok(match ownership {
-                AnalyticsOwnershipV2::Disabled => LongTermProjectionRoute::SqliteServing,
-                AnalyticsOwnershipV2::Enabled => LongTermProjectionRoute::Unavailable,
-            });
+            return Ok(LongTermProjectionRoute::SqliteServing);
         }
         Err(error) => return Err(error),
     };
     if fence.unavailable {
         return Ok(LongTermProjectionRoute::Unavailable);
     }
+    // Enabled starts in a shadow phase while the durable owner is still SQLite. The
+    // startup coordinator keeps the fence there until PG projection readiness and parity
+    // are proven; only then can the owner become PostgreSQL.
     Ok(match (ownership, fence.owner_kind) {
         (AnalyticsOwnershipV2::Disabled, "sqlite") => LongTermProjectionRoute::SqliteServing,
         // A frozen legacy copy is not a proved rollback projection.

@@ -337,6 +337,19 @@ CREATE INDEX IF NOT EXISTS analytics_projection_checkpoints_generation_idx
     ON cvm_analytics.analytics_projection_checkpoints (generation, consumer);
 "#;
 
+// V4 records the source snapshot identity beside the projection lifecycle.  A ready
+// projection is only serviceable after both row count and digest have been verified.
+const MIGRATION_V4_SQL: &str = r#"
+ALTER TABLE cvm_analytics.analytics_projection_state
+    ADD COLUMN IF NOT EXISTS source_row_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE cvm_analytics.analytics_projection_state
+    ADD COLUMN IF NOT EXISTS source_digest TEXT;
+ALTER TABLE cvm_analytics.analytics_projection_state
+    ADD COLUMN IF NOT EXISTS verified_row_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE cvm_analytics.analytics_projection_state
+    ADD COLUMN IF NOT EXISTS verified_digest TEXT;
+"#;
+
 fn checksum(sql: &str) -> String {
     format!("{:x}", Sha256::digest(sql.as_bytes()))
 }
@@ -369,10 +382,11 @@ pub(super) async fn apply_ordered_migrations(
         (1_i64, MIGRATION_V1_SQL),
         (2, MIGRATION_V2_SQL),
         (3, MIGRATION_V3_SQL),
+        (4, MIGRATION_V4_SQL),
     ];
     for (version, recorded_checksum, state, min_reader) in &recorded {
         anyhow::ensure!(
-            state == "applied" && *min_reader <= 3,
+            state == "applied" && *min_reader <= 4,
             "PostgreSQL analytics migration is incomplete or requires a newer reader at version {version}"
         );
         let sql = migrations
@@ -464,6 +478,19 @@ mod tests {
         assert_ne!(checksum(MIGRATION_V1_SQL), checksum(MIGRATION_V2_SQL));
         assert_ne!(checksum(MIGRATION_V2_SQL), checksum(MIGRATION_V3_SQL));
         assert!(MIGRATION_V3_SQL.trim_start().starts_with("CREATE TABLE"));
+    }
+
+    #[test]
+    fn v4_adds_projection_verification_metadata() {
+        for column in [
+            "source_row_count BIGINT NOT NULL DEFAULT 0",
+            "source_digest TEXT",
+            "verified_row_count BIGINT NOT NULL DEFAULT 0",
+            "verified_digest TEXT",
+        ] {
+            assert!(MIGRATION_V4_SQL.contains(column), "missing {column}");
+        }
+        assert!(!MIGRATION_V4_SQL.contains("DROP TABLE"));
     }
 
     #[tokio::test]

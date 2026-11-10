@@ -193,6 +193,10 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_state (
     integrity_source_pending_start_date DATE,
     processed_rows BIGINT NOT NULL DEFAULT 0,
     total_rows BIGINT NOT NULL DEFAULT 0,
+    source_row_count BIGINT NOT NULL DEFAULT 0,
+    source_digest TEXT,
+    verified_row_count BIGINT NOT NULL DEFAULT 0,
+    verified_digest TEXT,
     last_error_code TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
