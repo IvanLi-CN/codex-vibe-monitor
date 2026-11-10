@@ -1004,18 +1004,65 @@ pub(crate) async fn fetch_long_term_overview(
     let route = long_term_projection_route(&state)
         .await
         .map_err(internal_error_tuple)?;
-    if matches!(
-        route,
-        LongTermProjectionRoute::PostgresServing | LongTermProjectionRoute::Unavailable
-    ) || (route == LongTermProjectionRoute::SqliteRollback
-        && !long_term_projection_rollback_ready(&state.pool)
-            .await
-            .map_err(internal_error_tuple)?)
+    if matches!(route, LongTermProjectionRoute::Unavailable)
+        || (route == LongTermProjectionRoute::SqliteRollback
+            && !long_term_projection_rollback_ready(&state.pool)
+                .await
+                .map_err(internal_error_tuple)?)
     {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             format!("long-term analytics serving route is unavailable ({route:?})"),
         ));
+    }
+    if route == LongTermProjectionRoute::PostgresServing {
+        let (requested_start, requested_end) = long_term_date_window(range, None);
+        let read = state
+            .pg_analytics
+            .query_long_term_overview(&requested_start, &requested_end)
+            .await
+            .map_err(long_term_analytics_read_error_tuple)?;
+        let status = normalize_long_term_response_status(&read.state.status);
+        let (start_date, end_date) =
+            long_term_date_window(range, read.state.statistics_start_date.as_deref());
+        let overall = postgres_rollup_rows(read.overall)
+            .into_iter()
+            .filter(|row| row.bucket_or_date >= start_date && row.bucket_or_date <= end_date)
+            .collect::<Vec<_>>();
+        let models = postgres_rollup_rows(read.models)
+            .into_iter()
+            .filter(|row| row.bucket_or_date >= start_date && row.bucket_or_date <= end_date)
+            .collect::<Vec<_>>();
+        let upstreams = postgres_rollup_rows(read.upstreams)
+            .into_iter()
+            .filter(|row| row.bucket_or_date >= start_date && row.bucket_or_date <= end_date)
+            .collect::<Vec<_>>();
+        if status != LONG_TERM_STATUS_READY {
+            return Ok(Json(LongTermStatsOverviewResponse {
+                status,
+                statistics_start_date: read.state.statistics_start_date,
+                processed_rows: read.state.processed_rows,
+                total_rows: read.state.total_rows,
+                timezone: LONG_TERM_TIMEZONE,
+                range: range.as_str().to_string(),
+                global: LongTermMetrics::default(),
+                daily: Vec::new(),
+                models: Vec::new(),
+                upstreams: Vec::new(),
+            }));
+        }
+        return Ok(Json(LongTermStatsOverviewResponse {
+            status,
+            statistics_start_date: read.state.statistics_start_date,
+            processed_rows: read.state.processed_rows,
+            total_rows: read.state.total_rows,
+            timezone: LONG_TERM_TIMEZONE,
+            range: range.as_str().to_string(),
+            global: aggregate_rollup_rows(&overall),
+            daily: build_daily_points(&overall, &start_date, &end_date),
+            models: build_series_summaries(&models),
+            upstreams: build_series_summaries(&upstreams),
+        }));
     }
     let rollback = route == LongTermProjectionRoute::SqliteRollback;
     let state_row = load_long_term_state(&state.pool)
@@ -1124,18 +1171,89 @@ pub(crate) async fn fetch_long_term_series(
     let route = long_term_projection_route(&state)
         .await
         .map_err(internal_error_tuple)?;
-    if matches!(
-        route,
-        LongTermProjectionRoute::PostgresServing | LongTermProjectionRoute::Unavailable
-    ) || (route == LongTermProjectionRoute::SqliteRollback
-        && !long_term_projection_rollback_ready(&state.pool)
-            .await
-            .map_err(internal_error_tuple)?)
+    if matches!(route, LongTermProjectionRoute::Unavailable)
+        || (route == LongTermProjectionRoute::SqliteRollback
+            && !long_term_projection_rollback_ready(&state.pool)
+                .await
+                .map_err(internal_error_tuple)?)
     {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             format!("long-term analytics serving route is unavailable ({route:?})"),
         ));
+    }
+    if route == LongTermProjectionRoute::PostgresServing {
+        let (requested_start, requested_end) = long_term_date_window(range, None);
+        let read = state
+            .pg_analytics
+            .query_long_term_series(dimension, &keys, &requested_start, &requested_end)
+            .await
+            .map_err(long_term_analytics_read_error_tuple)?;
+        let status = normalize_long_term_response_status(&read.state.status);
+        let (start_date, end_date) =
+            long_term_date_window(range, read.state.statistics_start_date.as_deref());
+        let available = postgres_rollup_rows(read.available)
+            .into_iter()
+            .filter(|row| row.bucket_or_date >= start_date && row.bucket_or_date <= end_date)
+            .collect::<Vec<_>>();
+        if status != LONG_TERM_STATUS_READY {
+            return Ok(Json(LongTermStatsSeriesResponse {
+                status,
+                statistics_start_date: read.state.statistics_start_date,
+                processed_rows: read.state.processed_rows,
+                total_rows: read.state.total_rows,
+                timezone: LONG_TERM_TIMEZONE,
+                range: range.as_str().to_string(),
+                dimension: dimension.to_string(),
+                series: Vec::new(),
+            }));
+        }
+        let available_keys = available
+            .iter()
+            .map(|row| row.series_key.as_str())
+            .collect::<HashSet<_>>();
+        if keys
+            .iter()
+            .any(|key| !available_keys.contains(key.as_str()))
+        {
+            return Err((StatusCode::BAD_REQUEST, "unknown series key".to_string()));
+        }
+        let all_points = postgres_rollup_rows(read.points);
+        let series = keys
+            .into_iter()
+            .map(|key| {
+                let matching = all_points
+                    .iter()
+                    .filter(|row| {
+                        row.series_key == key
+                            && row.bucket_or_date >= start_date
+                            && row.bucket_or_date <= end_date
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let summary = available.iter().find(|row| row.series_key == key);
+                LongTermSeries {
+                    series_key: key,
+                    display_name: summary
+                        .map(|row| row.display_name.clone())
+                        .unwrap_or_default(),
+                    reasoning_effort: summary.and_then(|row| {
+                        (!row.reasoning_effort.is_empty()).then_some(row.reasoning_effort.clone())
+                    }),
+                    points: build_daily_points(&matching, &start_date, &end_date),
+                }
+            })
+            .collect();
+        return Ok(Json(LongTermStatsSeriesResponse {
+            status,
+            statistics_start_date: read.state.statistics_start_date,
+            processed_rows: read.state.processed_rows,
+            total_rows: read.state.total_rows,
+            timezone: LONG_TERM_TIMEZONE,
+            range: range.as_str().to_string(),
+            dimension: dimension.to_string(),
+            series,
+        }));
     }
     let rollback = route == LongTermProjectionRoute::SqliteRollback;
     let state_row = load_long_term_state(&state.pool)
@@ -1239,6 +1357,52 @@ pub(super) fn normalize_long_term_response_status(status: &str) -> String {
         LONG_TERM_STATUS_DISABLED => LONG_TERM_STATUS_PREPARING.to_string(),
         LONG_TERM_STATUS_RUNNING => LONG_TERM_STATUS_PREPARING.to_string(),
         _ => LONG_TERM_STATUS_ERROR.to_string(),
+    }
+}
+
+fn postgres_rollup_rows(
+    rows: Vec<crate::pg_analytics::AnalyticsLongTermRollupRow>,
+) -> Vec<LongTermRollupRow> {
+    rows.into_iter()
+        .map(|row| LongTermRollupRow {
+            bucket_or_date: row.bucket_or_date,
+            dimension: row.dimension,
+            series_key: row.series_key,
+            display_name: row.display_name,
+            reasoning_effort: row.reasoning_effort,
+            calls: row.calls,
+            token_total: row.token_total,
+            token_samples: row.token_samples,
+            cost_total: row.cost_total,
+            cost_samples: row.cost_samples,
+            usage_time_ms: row.usage_time_ms,
+            usage_time_samples: row.usage_time_samples,
+            wall_time_ms: row.wall_time_ms,
+            wall_time_samples: row.wall_time_samples,
+            output_tokens_total: row.output_tokens_total,
+            stream_duration_ms: row.stream_duration_ms,
+            output_speed_samples: row.output_speed_samples,
+            first_byte_sum_ms: row.first_byte_sum_ms,
+            first_byte_samples: row.first_byte_samples,
+            response_sum_ms: row.response_sum_ms,
+            response_samples: row.response_samples,
+        })
+        .collect()
+}
+
+fn long_term_analytics_read_error_tuple(
+    error: crate::pg_analytics::AnalyticsReadError,
+) -> (StatusCode, String) {
+    match error {
+        crate::pg_analytics::AnalyticsReadError::InvalidQuery(detail) => {
+            (StatusCode::BAD_REQUEST, detail)
+        }
+        crate::pg_analytics::AnalyticsReadError::Unavailable(error) => {
+            (StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
+        crate::pg_analytics::AnalyticsReadError::Internal(error) => {
+            (StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
     }
 }
 

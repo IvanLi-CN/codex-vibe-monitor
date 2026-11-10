@@ -1,5 +1,56 @@
 use super::*;
 
+/// PostgreSQL long-term rollup row in the shape consumed by the long-term API.
+/// Keep this read model local to the analytics module so the SQL transaction can
+/// remain fenced without exposing a PostgreSQL dependency in the SQLite model.
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct AnalyticsLongTermRollupRow {
+    pub(crate) bucket_or_date: String,
+    pub(crate) dimension: String,
+    pub(crate) series_key: String,
+    pub(crate) display_name: String,
+    pub(crate) reasoning_effort: String,
+    pub(crate) calls: i64,
+    pub(crate) token_total: i64,
+    pub(crate) token_samples: i64,
+    pub(crate) cost_total: f64,
+    pub(crate) cost_samples: i64,
+    pub(crate) usage_time_ms: f64,
+    pub(crate) usage_time_samples: i64,
+    pub(crate) wall_time_ms: f64,
+    pub(crate) wall_time_samples: i64,
+    pub(crate) output_tokens_total: i64,
+    pub(crate) stream_duration_ms: f64,
+    pub(crate) output_speed_samples: i64,
+    pub(crate) first_byte_sum_ms: f64,
+    pub(crate) first_byte_samples: i64,
+    pub(crate) response_sum_ms: f64,
+    pub(crate) response_samples: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct AnalyticsLongTermProjectionState {
+    pub(crate) status: String,
+    pub(crate) statistics_start_date: Option<String>,
+    pub(crate) processed_rows: i64,
+    pub(crate) total_rows: i64,
+}
+
+#[derive(Debug)]
+pub(crate) struct AnalyticsLongTermOverviewRead {
+    pub(crate) state: AnalyticsLongTermProjectionState,
+    pub(crate) overall: Vec<AnalyticsLongTermRollupRow>,
+    pub(crate) models: Vec<AnalyticsLongTermRollupRow>,
+    pub(crate) upstreams: Vec<AnalyticsLongTermRollupRow>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AnalyticsLongTermSeriesRead {
+    pub(crate) state: AnalyticsLongTermProjectionState,
+    pub(crate) available: Vec<AnalyticsLongTermRollupRow>,
+    pub(crate) points: Vec<AnalyticsLongTermRollupRow>,
+}
+
 pub(crate) const ANALYTICS_READ_PAGE_MAX_ROWS: usize = ANALYTICS_REPLICA_MAX_FACTS_PER_BATCH;
 pub(crate) const ANALYTICS_READ_PAGE_MAX_ENCODED_BYTES: usize =
     ANALYTICS_REPLICA_MAX_ENCODED_BATCH_BYTES;
@@ -329,6 +380,182 @@ pub(crate) async fn query_bounded_facts(
             ))
         })?;
     Ok(AnalyticsFactReadSnapshot { fence, facts })
+}
+
+impl PgAnalyticsRuntime {
+    /// Read the PostgreSQL long-term projection under one repeatable-read transaction.
+    /// The replica owner/fence and projection lifecycle are checked in that same snapshot,
+    /// so a handoff or rebuild cannot mix rollup generations in one response.
+    pub(crate) async fn query_long_term_overview(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> AnalyticsReadResult<AnalyticsLongTermOverviewRead> {
+        let mut transaction = self.require_read_transaction().await?;
+        ensure_postgres_long_term_fence(&mut transaction).await?;
+        let state = load_long_term_projection_state(&mut transaction).await?;
+        let overall = load_postgres_long_term_daily_rows(
+            &mut transaction,
+            "overall",
+            None,
+            start_date,
+            end_date,
+        )
+        .await?;
+        let models =
+            load_postgres_long_term_rollups(&mut transaction, "model", start_date, end_date)
+                .await?;
+        let upstreams =
+            load_postgres_long_term_rollups(&mut transaction, "upstream", start_date, end_date)
+                .await?;
+        transaction.commit().await.map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to commit PostgreSQL long-term overview read: {error}"
+            ))
+        })?;
+        Ok(AnalyticsLongTermOverviewRead {
+            state,
+            overall,
+            models,
+            upstreams,
+        })
+    }
+
+    pub(crate) async fn query_long_term_series(
+        &self,
+        dimension: &str,
+        keys: &[String],
+        start_date: &str,
+        end_date: &str,
+    ) -> AnalyticsReadResult<AnalyticsLongTermSeriesRead> {
+        let mut transaction = self.require_read_transaction().await?;
+        ensure_postgres_long_term_fence(&mut transaction).await?;
+        let state = load_long_term_projection_state(&mut transaction).await?;
+        let available =
+            load_postgres_long_term_rollups(&mut transaction, dimension, start_date, end_date)
+                .await?;
+        let mut points = Vec::new();
+        for key in keys {
+            points.extend(
+                load_postgres_long_term_daily_rows(
+                    &mut transaction,
+                    dimension,
+                    Some(key),
+                    start_date,
+                    end_date,
+                )
+                .await?,
+            );
+        }
+        transaction.commit().await.map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to commit PostgreSQL long-term series read: {error}"
+            ))
+        })?;
+        Ok(AnalyticsLongTermSeriesRead {
+            state,
+            available,
+            points,
+        })
+    }
+}
+
+async fn ensure_postgres_long_term_fence(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> AnalyticsReadResult<()> {
+    let fence = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT owner_kind, owner_epoch, serving_fence FROM cvm_analytics.analytics_replica_state WHERE id = 1",
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to load PostgreSQL long-term serving fence: {error}"
+        ))
+    })?;
+    let Some((owner_kind, owner_epoch, serving_fence)) = fence else {
+        return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+            AnalyticsBackend::Postgres,
+            "analytics serving fence is missing",
+        )));
+    };
+    if owner_kind != "postgres" || owner_epoch <= 0 || serving_fence <= 0 {
+        return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+            AnalyticsBackend::Postgres,
+            "analytics PostgreSQL serving fence is unavailable",
+        )));
+    }
+    Ok(())
+}
+
+async fn load_long_term_projection_state(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> AnalyticsReadResult<AnalyticsLongTermProjectionState> {
+    sqlx::query_as::<_, AnalyticsLongTermProjectionState>(
+        "SELECT status, statistics_start_date::text AS statistics_start_date, processed_rows, total_rows FROM cvm_analytics.analytics_projection_state WHERE id = 1",
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to load PostgreSQL long-term projection state: {error}"
+        ))
+    })?
+    .ok_or_else(|| {
+        AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+            AnalyticsBackend::Postgres,
+            "analytics long-term projection state is missing",
+        ))
+    })
+}
+
+async fn load_postgres_long_term_rollups(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    dimension: &str,
+    start_date: &str,
+    end_date: &str,
+) -> AnalyticsReadResult<Vec<AnalyticsLongTermRollupRow>> {
+    sqlx::query_as::<_, AnalyticsLongTermRollupRow>(
+        "SELECT MAX(stats_date)::text AS bucket_or_date, dimension, series_key, MAX(display_name) AS display_name, reasoning_effort, SUM(calls) AS calls, SUM(token_total) AS token_total, SUM(token_samples) AS token_samples, SUM(cost_total)::double precision AS cost_total, SUM(cost_samples) AS cost_samples, SUM(usage_time_ms) AS usage_time_ms, SUM(usage_time_samples) AS usage_time_samples, SUM(wall_time_ms) AS wall_time_ms, SUM(wall_time_samples) AS wall_time_samples, SUM(output_tokens_total) AS output_tokens_total, SUM(stream_duration_ms) AS stream_duration_ms, SUM(output_speed_samples) AS output_speed_samples, SUM(first_byte_sum_ms) AS first_byte_sum_ms, SUM(first_byte_samples) AS first_byte_samples, SUM(response_sum_ms) AS response_sum_ms, SUM(response_samples) AS response_samples FROM cvm_analytics.analytics_daily_rollups WHERE dimension = $1 AND stats_date BETWEEN $2::date AND $3::date GROUP BY series_key, reasoning_effort ORDER BY series_key, reasoning_effort",
+    )
+    .bind(dimension)
+    .bind(start_date)
+    .bind(end_date)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to read PostgreSQL long-term rollups: {error}"
+        ))
+    })
+}
+
+async fn load_postgres_long_term_daily_rows(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    dimension: &str,
+    series_key: Option<&str>,
+    start_date: &str,
+    end_date: &str,
+) -> AnalyticsReadResult<Vec<AnalyticsLongTermRollupRow>> {
+    let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+        "SELECT stats_date::text AS bucket_or_date, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total::double precision AS cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples FROM cvm_analytics.analytics_daily_rollups WHERE dimension = ",
+    );
+    query.push_bind(dimension).push(" AND stats_date BETWEEN ");
+    query.push_bind(start_date).push("::date AND ");
+    query.push_bind(end_date).push("::date");
+    if let Some(series_key) = series_key {
+        query.push(" AND series_key = ").push_bind(series_key);
+    }
+    query.push(" ORDER BY stats_date ASC, series_key ASC");
+    query
+        .build_query_as::<AnalyticsLongTermRollupRow>()
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to read PostgreSQL long-term daily rollups: {error}"
+            ))
+        })
 }
 
 async fn load_read_replica_state(
