@@ -86,6 +86,9 @@ impl AnalyticsFactKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AnalyticsReadFenceIdentity {
+    pub(crate) owner_epoch: i64,
+    pub(crate) serving_fence: i64,
+    pub(crate) serving_ack_change_id: i64,
     pub(crate) generation: i64,
     pub(crate) baseline_generation: i64,
     pub(crate) coverage_generation: i64,
@@ -248,6 +251,9 @@ pub(crate) async fn query_bounded_facts(
         replica_id: state.replica_id,
         scope: query.scope,
         identity: AnalyticsReadFenceIdentity {
+            owner_epoch: state.owner_epoch,
+            serving_fence: state.serving_fence,
+            serving_ack_change_id: state.serving_ack_change_id,
             generation: state.generation,
             baseline_generation: state.baseline_generation,
             coverage_generation: state.coverage_generation,
@@ -1554,6 +1560,9 @@ mod tests {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             scope: AnalyticsFactScope::All,
             identity: AnalyticsReadFenceIdentity {
+                owner_epoch: 2,
+                serving_fence: 2,
+                serving_ack_change_id: 8,
                 generation: 4,
                 baseline_generation: 4,
                 coverage_generation: 4,
@@ -1569,6 +1578,13 @@ mod tests {
         changed.identity.coverage_revision += 1;
         assert!(matches!(
             changed.validate_cursor(&cursor),
+            Err(AnalyticsReadError::Unavailable(_))
+        ));
+
+        let mut owner_changed = fence;
+        owner_changed.identity.serving_fence += 1;
+        assert!(matches!(
+            owner_changed.validate_cursor(&cursor),
             Err(AnalyticsReadError::Unavailable(_))
         ));
     }
@@ -1636,6 +1652,10 @@ mod tests {
         let state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "caught_up".to_string(),
+            owner_kind: "postgres".to_string(),
+            owner_epoch: 2,
+            serving_fence: 2,
+            serving_ack_change_id: 1,
             fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 1,
             baseline_generation: 1,
@@ -1660,6 +1680,10 @@ mod tests {
         let state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "caught_up".to_string(),
+            owner_kind: "postgres".to_string(),
+            owner_epoch: 2,
+            serving_fence: 2,
+            serving_ack_change_id: 1,
             fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 1,
             baseline_generation: 1,
