@@ -2,6 +2,10 @@
 
 本手册把 [PG18 analytics ownership 设计](./pg18-analytics-write-ownership-cutover.md) 落成可执行的部署、观测、回滚和清理步骤。它只覆盖 analytics 派生 projection 的 ownership；SQLite 业务事实和 source journal 在当前阶段仍是权威来源。
 
+## 实现与启用状态
+
+本手册描述目标验收流程，当前合并基线尚未实现完整自动 handoff、PG 长期统计读写和持续 rollback projection。不得按后续示例启用 ownership，也不得把任务 closed 或 PR merged 等同于可上线。当前部署保持 `ANALYTICS_OWNERSHIP_V2=disabled`（或未设置），保留现有 `ANALYTICS_BACKEND`。启用前必须补齐 [实现状态](../specs/pg18-analytics-ownership-v2/IMPLEMENTATION.md) 中列出的缺口并取得真实端到端证据。
+
 ## 1. 部署前置条件
 
 部署必须先确认已合并 `projection-runtime` 基线和 `ownership-test-matrix` 的 closed 验收证据。没有完整 target mapping、连续 Journal coverage、统一 generation/revision、digest/parity 或 rollback capacity 证据时，不得启用 owner。

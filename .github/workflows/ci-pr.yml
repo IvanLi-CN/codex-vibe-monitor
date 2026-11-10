@@ -726,6 +726,17 @@ jobs:
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+        env:
+          POSTGRES_PASSWORD: fixture-owner
+          POSTGRES_DB: ownership_fixture
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ownership_fixture"
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - name: Verify backend test archive producer
         env:
@@ -764,6 +775,30 @@ jobs:
 
       - name: Run lightweight backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-dir "$RUNNER_TEMP/backend-test-extract"
+
+      - name: Prepare isolated PostgreSQL fixture roles
+        run: |
+          docker exec "${{ job.services.postgres.id }}" \
+            psql -U postgres -d ownership_fixture -v ON_ERROR_STOP=1 -c \
+            "CREATE ROLE cvm_analytics_reader NOLOGIN;
+             CREATE ROLE cvm_analytics_app LOGIN PASSWORD 'fixture-app' IN ROLE cvm_analytics_reader;
+             CREATE ROLE cvm_analytics_maintenance LOGIN PASSWORD 'fixture-maintenance';"
+
+      - name: Verify PostgreSQL migrations, runtime replay and role separation
+        env:
+          PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET: "1"
+          PG_ANALYTICS_TEST_OWNER_URL: postgresql://postgres:fixture-owner@127.0.0.1:5432/ownership_fixture
+          PG_ANALYTICS_TEST_APP_URL: postgresql://cvm_analytics_app:fixture-app@127.0.0.1:5432/ownership_fixture
+          PG_ANALYTICS_TEST_MAINTENANCE_URL: postgresql://cvm_analytics_maintenance:fixture-maintenance@127.0.0.1:5432/ownership_fixture
+        run: |
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          cargo-nextest nextest run \
+            --cargo-metadata "$archive_dir/target/nextest/cargo-metadata.json" \
+            --binaries-metadata "$archive_dir/target/nextest/binaries-metadata.json" \
+            --target-dir-remap "$archive_dir/target" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --run-ignored only --test-threads 1 \
+            -E 'test(=pg_analytics::migrations::tests::postgres_ordered_migrations_upgrade_and_reentry) | test(=pg_analytics::tests::postgres_runtime_continues_replay_after_ready_and_restart) | test(=pg_analytics::tests::postgres_analytics_fixture_verifies_role_separation_and_bounded_reset)'
 
   backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive

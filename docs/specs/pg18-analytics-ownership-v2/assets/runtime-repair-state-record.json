@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "修复 PG analytics 不可变迁移与 disabled read/replay 生命周期",
+    "release_unit_description": "PG analytics runtime forward repair",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "PG schema_migrations、replica baseline/checkpoint 与 owner fence",
+    "storage_implementation": "PostgreSQL 18 与 SQLite source Journal",
+    "source_compatibility_range": {
+      "from_program_versions": "v4.21.5 的已部署 V1、v4.21.6 的错误 V1 checksum 变体、全新空库",
+      "to_program_version": "当前修复候选，尚未发布",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ownership-columns",
+        "description": "先校验不可变 V1 或精确识别已发布错误 V1，再仅应用 V2 新列和 reader 列权限；事务内写入 version 2 记录",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "preserve-checkpoint",
+        "description": "重复启动不重跑 V1、不 fence 已 caught_up 的 replica，不改写原迁移 checksum",
+        "order": 2,
+        "depends_on": [
+          "ownership-columns"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "bounded-replay",
+        "description": "仅无有效 baseline 或 source coverage 失效时 bootstrap；有效 baseline 从 checkpoint 连续消费 Journal",
+        "order": 3,
+        "depends_on": [
+          "preserve-checkpoint"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "ownership-columns",
+      "preserve-checkpoint",
+      "bounded-replay"
+    ],
+    "progress_signals": [
+      "schema_migrations version/checksum",
+      "analytics_replica_state baseline/checkpoint/status/updated_at",
+      "/health/analytics"
+    ],
+    "pause_points": [
+      "迁移事务提交后、bootstrap前",
+      "显式 maintenance pause 与后台工作共用控制锁"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "旧程序看到 schema version 2 必须 fail closed；不得通过删除 version 2 记录或重写 checksum 回退。现有 ANALYTICS_BACKEND 保持不变。",
+    "faulty_release_recovery": "精确识别已发布错误 V1 checksum，前向应用 V2，不覆盖已有迁移历史",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "status": "passed-local-fixtures-remote-delivery-pending",
+    "required_test_evidence": [
+      "postgres_ordered_migrations_upgrade_and_reentry",
+      "postgres_runtime_continues_replay_after_ready_and_restart",
+      "postgres_analytics_fixture_verifies_role_separation_and_bounded_reset"
+    ],
+    "scope_limit": "不证明完整 ownership handoff、PG长期统计或持续rollback projection已实现"
+  }
+}

@@ -2,7 +2,26 @@
 
 ## Current status
 
-本主题已完成需求澄清和设计落盘，尚未修改运行时代码、数据库迁移或部署配置。实现必须先以本目录 `SPEC.md`、[ADR 0052](../../adr/0052-pg18-analytics-write-ownership.md) 和 [ownership cutover design](../../design/pg18-analytics-write-ownership-cutover.md) 为合同。
+本主题已合并 ownership 状态、Journal fence、PG replay 状态字段和长期统计路由等基础结构，但完整 ownership cutover 尚未实现，不能把合并记录或任务 closed 状态作为可上线启用的证据。生产入口没有调用 owner CAS；PG daily/hourly、interval/read-model、repair/bucket/publication 缺少完整维护与读取链路，SQLite rollback projection 也没有在 PG serving 期间持续消费 Journal。
+
+`ANALYTICS_OWNERSHIP_V2=enabled` 目前不受支持，应保持 `disabled` 或不设置；`ANALYTICS_BACKEND` 保持现有部署值。既有 `ANALYTICS_BACKEND=postgres` 的 facts/key read replica 与 projection ownership 是两个合同，前者不应要求 source 已成为 PG owner。
+
+本地修复候选恢复 disabled 模式的 PG read/replay，补全 source snapshot 字段，在就绪后持续消费 Journal，并让重启沿用已有 baseline/checkpoint。迁移按不可变的已部署 V1 和增量 V2 执行；识别已发布的错误 V1 checksum 变体但不重写其历史。候选仍须通过真实 PG fixture、审核和交付后才能用于生产。
+
+本地修复证据见 [runtime repair validation](assets/runtime-repair-validation.json)、[persistent-state record](assets/runtime-repair-state-record.json) 和 [version impact](assets/runtime-repair-version-impact.json)。这些证据只覆盖修复候选，不替代完整 V2 验收。
+
+## 需求与证据状态
+
+| 需求                  | 实现状态                                           | 仍需完成的证据                                        |
+| --------------------- | -------------------------------------------------- | ----------------------------------------------------- |
+| REQ-PG18-OWN-001、010 | 阶段边界文档已定义                                 | 后续 source migration 独立交付                        |
+| REQ-PG18-OWN-002      | 开关解析与重启捕获已实现；自动切换未实现           | enabled handoff、disabled rollback 的生产入口回归     |
+| REQ-PG18-OWN-003、004 | owner/fence 与 applied/checkpoint 基础结构存在     | 完整 target mapping、统一 generation 和实际 owner CAS |
+| REQ-PG18-OWN-005      | facts/key 支持 PG snapshot；长期统计 PG 读写未完成 | 所有长期统计 endpoint 单一 PG snapshot                |
+| REQ-PG18-OWN-006      | rollback 表与 copy helper 存在；持续维护未实现     | PG serving 期间连续消费及可提升证明                   |
+| REQ-PG18-OWN-007、008 | 容量和 gate 基础结构存在                           | 一天容量实测、完整 target parity、备份和恢复证据      |
+| REQ-PG18-OWN-009      | 不完整 enabled 被拒绝；其余失败路径需实测          | 真实 handoff 中断、PG outage、rollback rebuild        |
+| REQ-PG18-OWN-011      | 手册已落盘                                         | 完整一天实际观测与执行证据                            |
 
 ## Planned implementation coverage
 
@@ -38,4 +57,4 @@
 
 部署、观测、回滚、PG 故障恢复、容量背压、restore/replay 和 cleanup gate 的执行顺序见 [ownership cutover runbook](../../design/pg18-analytics-ownership-cutover.md)。运行手册要求 `ANALYTICS_OWNERSHIP_V2` 与现有 `ANALYTICS_BACKEND` 解耦、同一容器重启生效，并在 owner state 不一致时 fail closed。
 
-`ownership-test-matrix` closed 证据覆盖重启交接、PG 不可用、重复 replay、回滚重建、容量 warning/backpressure、无数据丢失和恢复后 checkpoint 连续性；`projection-runtime` 合并基线覆盖 serving fence 和 projection routing。cleanup gate 还必须记录完整一天 observation/rollback window、restart/restore/replay、容量/备份证据和删除目标确认。迁移确认后 SQLite rollback 快照至少保留 1 天，业务事实和 source journal 不得由本阶段清理。
+`ownership-test-matrix` 的 closed 记录不能证明这些端到端场景通过；其遗留测试文件未进入主干。`projection-runtime` 的合并只证明代码已集成，不证明完整 ownership 生命周期可用。cleanup gate 还必须记录完整一天 observation/rollback window、restart/restore/replay、容量/备份证据和删除目标确认。迁移确认后 SQLite rollback 快照至少保留 1 天，业务事实和 source journal 不得由本阶段清理。

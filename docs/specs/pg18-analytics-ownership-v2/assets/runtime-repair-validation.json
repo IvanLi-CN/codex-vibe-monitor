@@ -1,0 +1,74 @@
+{
+  "scope": "disabled legacy PG read/replay repair; incomplete V2 rejected",
+  "base_sha": "bf68a9488a4429256c5b515ff66a94a80768a22c",
+  "source_sha256": {
+    "src/config.rs": "d2c6ac998665435f094b350377f119ce4f0f39bbb82a00fe58d78dbffdc76b43",
+    "src/pg_analytics/mod.rs": "cfd88201d5d81d4b4bb5a4167154f9a282549d24ae035cbfd18a0c657f2a065c",
+    "src/pg_analytics/migrations.rs": "613f4b3f89f58d73b5f73944fc9841a7dabf7fd35b64267047240af106759013",
+    "src/long_term_stats/projection_runtime.rs": "823d5ef52e993e07c2bb6d44b830cc0d2e7834350cabc4a40ee3e491b1aff202"
+  },
+  "environment": {
+    "postgres": "18",
+    "image_digest": "sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42",
+    "database": "isolated ownership_fixture in session-owned Agent VM",
+    "production_mutated": false
+  },
+  "results": {
+    "pg_module": {
+      "passed": 45,
+      "ignored": 3,
+      "command": "cargo test pg_analytics:: -- --nocapture"
+    },
+    "configuration": {
+      "passed": 7,
+      "command": "compiled test binary: postgres_analytics_config_contracts --nocapture"
+    },
+    "postgres_fixtures": {
+      "passed": 3,
+      "ignored": 0,
+      "command": "compiled test binary: pg_analytics:: --ignored --test-threads=1 --nocapture",
+      "scenarios": [
+        "empty/deployed V1/stopped ownership V1 upgrade",
+        "restart preserves baseline/checkpoint and migration history",
+        "checksum rejection does not mutate target",
+        "separate reader/maintenance grants",
+        "continuous replay after initial ready",
+        "maintenance pause preserved by active worker",
+        "control session cancellation permits reacquisition",
+        "pool max_connections=1"
+      ]
+    },
+    "cargo_check_all_targets_all_features": "passed",
+    "clippy_all_targets_all_features": "passed-final-candidate",
+    "actionlint_ci_pr": "passed",
+    "backend_test_contract": "passed",
+    "ownership_docs_contract": "passed",
+    "published_v1_byte_identity": "passed",
+    "usage_snapshot_test_helper": {
+      "passed": 13,
+      "command": "cargo test usage_snapshot_and_oauth_callbacks -- --nocapture",
+      "change": "reuse the shared test configuration with the same three overrides; preserves explicit file line budget"
+    },
+    "cargo_fmt_all_check": "passed",
+    "staged_rust_line_budget": "passed"
+  },
+  "ci_integration": {
+    "workflow": ".github/workflows/ci-pr.yml",
+    "job": "backend-tests-lightweight",
+    "status": "configured-and-syntax-checked; not remotely executed"
+  },
+  "remaining_v2_requirements": [
+    "automatic owner handoff and controlled rollback",
+    "complete PG long-term projections and endpoints",
+    "continuous SQLite rollback projection",
+    "complete parity, capacity, backup and one-day observation evidence"
+  ],
+  "orchestration_observation": {
+    "run_id": "pg18-analytics-ownership-v2",
+    "audit_fact_was_recorded_at_revision": 238,
+    "subsequent_read": "RUN_NOT_FOUND",
+    "current_ledger_status": "unavailable; prior revision is historical evidence only"
+  },
+  "test_helper_sha256": "17d496f380eea98c68ea04e8b8b241da01333da8fadad5bcfd1227ce37377f99",
+  "temporary_vm_cleanup": "released; stopped and no effective lease or active mappings verified"
+}

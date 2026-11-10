@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "恢复既有 PG read/replay 并前向修复迁移账本",
+    "release_unit_description": "PG analytics runtime forward repair",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "API响应结构兼容；增量schema版本为2，旧版同Minor的程序会因新schema拒绝PG，因此不能声称满足patch状态兼容。",
+      "evidence": [
+        "src/pg_analytics/migrations.rs",
+        "src/pg_analytics/mod.rs",
+        "docs/specs/pg18-analytics-ownership-v2/assets/runtime-repair-state-record.json"
+      ],
+      "assessed_at": "2026-11-10T19:02:02.960291+00:00"
+    },
+    "current": {
+      "impact": "minor",
+      "reasoning": "API响应结构兼容；增量schema版本为2，旧版同Minor的程序会因新schema拒绝PG，因此不能声称满足patch状态兼容。",
+      "evidence": [
+        "src/pg_analytics/migrations.rs",
+        "src/pg_analytics/mod.rs",
+        "docs/specs/pg18-analytics-ownership-v2/assets/runtime-repair-state-record.json"
+      ],
+      "reassessed_at": "2026-11-10T19:02:02.960291+00:00",
+      "scope_drift": {
+        "detected": false,
+        "description": "同一 analytics 生命周期修复；完整ownership仍未验收"
+      }
+    },
+    "verified": {
+      "impact": "minor",
+      "reasoning": "真实PG18验证支持空库、已部署V1与已发布错误V1的前向升级及重复进入。schema2会被旧程序拒绝，因此不满足同Minor的patch状态兼容要求。",
+      "verified_at": "2026-11-10T19:16:42.038923+00:00",
+      "evidence": [
+        "src/pg_analytics/migrations.rs",
+        "docs/specs/pg18-analytics-ownership-v2/assets/runtime-repair-validation.json"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "响应结构兼容，不完整 enabled 显式 unavailable",
+      "supported_consumer_range": "现有analytics读取客户端",
+      "evidence": [
+        "src/pg_analytics/migrations.rs",
+        "src/pg_analytics/mod.rs",
+        "docs/specs/pg18-analytics-ownership-v2/assets/runtime-repair-state-record.json"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "PG迁移账本新增版本2与ownership列",
+      "source_program_compatibility_range": "v4.21.5、v4.21.6、空库；旧程序不得回写schema2",
+      "evidence": [
+        "src/pg_analytics/migrations.rs",
+        "src/pg_analytics/mod.rs",
+        "docs/specs/pg18-analytics-ownership-v2/assets/runtime-repair-state-record.json"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/pg18-analytics-ownership-v2/assets/runtime-repair-state-record.json"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "API保持兼容；持久状态要求Minor。此记录不授予发布权限，也不证明完整V2已实现。"
+    ]
+  }
+}
