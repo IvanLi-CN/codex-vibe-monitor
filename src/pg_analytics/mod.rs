@@ -514,7 +514,8 @@ impl PgAnalyticsRuntime {
             })?;
         let replica_state = sqlx::query_as::<_, AnalyticsReplicaState>(
             r#"
-            SELECT replica_id, status, generation, baseline_generation, baseline_change_id,
+            SELECT replica_id, status, owner_kind, owner_epoch, serving_fence,
+                   serving_ack_change_id, generation, baseline_generation, baseline_change_id,
                    coverage_generation, coverage_revision, coverage_watermark,
                    consumer_checkpoint, source_acknowledged_through, service_eligible,
                    fact_date_semantics_version,
@@ -949,6 +950,10 @@ pub(crate) async fn query_parallel_work_conversation_rows_on_connection(
 pub(crate) struct AnalyticsReplicaState {
     pub(crate) replica_id: String,
     pub(crate) status: String,
+    pub(crate) owner_kind: String,
+    pub(crate) owner_epoch: i64,
+    pub(crate) serving_fence: i64,
+    pub(crate) serving_ack_change_id: i64,
     pub(crate) fact_date_semantics_version: i64,
     pub(crate) generation: i64,
     pub(crate) baseline_generation: i64,
@@ -963,7 +968,7 @@ pub(crate) struct AnalyticsReplicaState {
     pub(crate) updated_at: String,
 }
 
-#[derive(Debug, Clone, Copy, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct SourceChangeState {
     generation: i64,
     coverage_revision: i64,
@@ -972,6 +977,13 @@ struct SourceChangeState {
     invalidation_pending: i64,
     historical_replay_required: i64,
     historical_history_unknown: i64,
+    owner_kind: String,
+    owner_epoch: i64,
+    serving_fence: i64,
+    serving_ack_change_id: i64,
+    journal_backpressure: i64,
+    analytics_unavailable: i64,
+    handoff_state: String,
 }
 
 #[derive(Debug, Clone, Copy, FromRow)]
@@ -1342,7 +1354,11 @@ fn replica_service_eligible(state: &AnalyticsReplicaState) -> bool {
     // Keep the shared flag false so pre-FU01 programs fail closed when they ignore the
     // additive semantic-version column. Current code derives eligibility from the v2 marker,
     // lifecycle state, and matching checkpoints instead.
-    fact_date_semantics_compatible(state)
+    state.owner_kind == "postgres"
+        && state.owner_epoch > 0
+        && state.serving_fence > 0
+        && state.serving_ack_change_id >= state.consumer_checkpoint
+        && fact_date_semantics_compatible(state)
         && state.status == "caught_up"
         && state.consumer_checkpoint == state.source_acknowledged_through
 }
@@ -1379,11 +1395,26 @@ fn source_coverage_reaches_checkpoint(
         })
 }
 
+fn source_serving_fence_ready(source: &SourceContext) -> bool {
+    source.state.owner_kind == "postgres"
+        && source.state.owner_epoch > 0
+        && source.state.serving_fence > 0
+        && source.state.journal_backpressure == 0
+        && source.state.analytics_unavailable == 0
+        && source.state.handoff_state == "stable"
+}
+
 fn replica_service_eligible_for_source(
     state: &AnalyticsReplicaState,
     source: &SourceContext,
 ) -> bool {
     replica_baseline_ready(state)
+        && source.state.owner_kind == "postgres"
+        && source.state.owner_epoch == state.owner_epoch
+        && source.state.serving_fence == state.serving_fence
+        && source.state.journal_backpressure == 0
+        && source.state.analytics_unavailable == 0
+        && source.state.handoff_state == "stable"
         && replica_service_eligible_for_latest_change(state, source.latest_change_id)
         && source_coverage_reaches_checkpoint(state, source)
 }
@@ -1604,7 +1635,8 @@ async fn verify_replica_schema_on_connection(
 async fn load_replica_state(pool: &sqlx::PgPool) -> Result<AnalyticsReplicaState> {
     sqlx::query_as::<_, AnalyticsReplicaState>(
         r#"
-        SELECT replica_id, status, generation, baseline_generation, baseline_change_id,
+        SELECT replica_id, status, owner_kind, owner_epoch, serving_fence,
+               serving_ack_change_id, generation, baseline_generation, baseline_change_id,
                coverage_generation, coverage_revision, coverage_watermark,
                consumer_checkpoint, source_acknowledged_through, service_eligible,
                fact_date_semantics_version,
@@ -1625,7 +1657,9 @@ async fn load_source_context(
     let state = sqlx::query_as::<_, SourceChangeState>(
         r#"
         SELECT generation, coverage_revision, retained_from_change_id, capacity,
-               invalidation_pending, historical_replay_required, historical_history_unknown
+               invalidation_pending, historical_replay_required, historical_history_unknown,
+               owner_kind, owner_epoch, serving_fence, serving_ack_change_id,
+               journal_backpressure, analytics_unavailable, handoff_state
         FROM analytics_change_state
         WHERE id = 1
         "#,
@@ -1870,6 +1904,31 @@ async fn set_replica_running(pool: &sqlx::PgPool) -> Result<()> {
     mark_replica_state(pool, "running", None, None, "preparing").await
 }
 
+async fn sync_replica_serving_fence(pool: &sqlx::PgPool, source: &SourceContext) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE cvm_analytics.analytics_replica_state
+        SET owner_kind = $1,
+            owner_epoch = $2,
+            serving_fence = $3,
+            serving_ack_change_id = GREATEST(serving_ack_change_id, $4),
+            service_eligible = FALSE,
+            status = CASE WHEN status = 'caught_up' THEN 'running' ELSE status END,
+            updated_at = NOW()
+        WHERE id = 1 AND generation = $5
+        "#,
+    )
+    .bind(&source.state.owner_kind)
+    .bind(source.state.owner_epoch)
+    .bind(source.state.serving_fence)
+    .bind(source.state.serving_ack_change_id)
+    .bind(source.state.generation)
+    .execute(pool)
+    .await
+    .context("failed to synchronize the PostgreSQL analytics serving fence")?;
+    Ok(())
+}
+
 async fn set_replica_acknowledged(
     pool: &sqlx::PgPool,
     through_change_id: i64,
@@ -1882,6 +1941,7 @@ async fn set_replica_acknowledged(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET source_acknowledged_through = $1,
+            serving_ack_change_id = GREATEST(serving_ack_change_id, $1),
             status = $2,
             service_eligible = FALSE,
             last_error_code = NULL,
@@ -1915,6 +1975,7 @@ async fn set_replica_acknowledged_on_connection(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET source_acknowledged_through = $1,
+            serving_ack_change_id = GREATEST(serving_ack_change_id, $1),
             status = $2,
             service_eligible = FALSE,
             last_error_code = NULL,
@@ -1973,7 +2034,8 @@ async fn clear_replica_target(
             baseline_generation = 0, baseline_change_id = 0,
             coverage_generation = 0, coverage_revision = 0,
             coverage_watermark = 0, consumer_checkpoint = 0,
-            source_acknowledged_through = 0, service_eligible = FALSE,
+            source_acknowledged_through = 0, serving_ack_change_id = 0,
+            service_eligible = FALSE,
             last_error_code = NULL, updated_at = NOW()
         WHERE id = 1
         "#,
@@ -2000,6 +2062,8 @@ async fn set_replica_baseline(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET status = 'running', generation = $1,
+            owner_kind = $5, owner_epoch = $6, serving_fence = $7,
+            serving_ack_change_id = 0,
             fact_date_semantics_version = $4,
             baseline_generation = $1, baseline_change_id = $2,
             coverage_generation = $1, coverage_revision = $3,
@@ -2013,6 +2077,9 @@ async fn set_replica_baseline(
     .bind(source.latest_change_id)
     .bind(source.state.coverage_revision)
     .bind(ANALYTICS_FACT_DATE_SEMANTICS_VERSION)
+    .bind(&source.state.owner_kind)
+    .bind(source.state.owner_epoch)
+    .bind(source.state.serving_fence)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
@@ -2702,6 +2769,9 @@ async fn apply_replica_batch(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET generation = $1,
+            owner_kind = $5,
+            owner_epoch = $6,
+            serving_fence = $7,
             coverage_generation = $1,
             coverage_revision = $2,
             coverage_watermark = $3,
@@ -2710,13 +2780,20 @@ async fn apply_replica_batch(
             service_eligible = FALSE,
             last_error_code = NULL,
             updated_at = NOW()
-        WHERE id = 1 AND consumer_checkpoint = $4
+        WHERE id = 1
+          AND consumer_checkpoint = $4
+          AND owner_kind = $5
+          AND owner_epoch = $6
+          AND serving_fence = $7
         "#,
     )
     .bind(source.state.generation)
     .bind(source.state.coverage_revision)
     .bind(last_change_id)
     .bind(state.consumer_checkpoint)
+    .bind(&source.state.owner_kind)
+    .bind(source.state.owner_epoch)
+    .bind(source.state.serving_fence)
     .execute(&mut *transaction)
     .await?;
     anyhow::ensure!(
@@ -3149,6 +3226,26 @@ async fn resume_replica(
 
     for _ in 0..ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN {
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+        if !source_serving_fence_ready(&source) {
+            let detail = format!(
+                "analytics PostgreSQL owner fence is unavailable: owner_kind={}, owner_epoch={}, serving_fence={}, journal_backpressure={}, analytics_unavailable={}, handoff_state={}",
+                source.state.owner_kind,
+                source.state.owner_epoch,
+                source.state.serving_fence,
+                source.state.journal_backpressure,
+                source.state.analytics_unavailable,
+                source.state.handoff_state,
+            );
+            mark_replica_blocked(pool, "owner_fence_unavailable", detail.clone()).await?;
+            return Err(anyhow!(detail));
+        }
+        if state.owner_kind != source.state.owner_kind
+            || state.owner_epoch != source.state.owner_epoch
+            || state.serving_fence != source.state.serving_fence
+        {
+            sync_replica_serving_fence(pool, &source).await?;
+            state = load_replica_state(pool).await?;
+        }
         if source.state.historical_history_unknown != 0 {
             let detail = "SQLite historical coverage predates the analytics source journal; inspect retained history and rerun maintenance analytics-replica bootstrap --acknowledge-unverified-history";
             mark_replica_blocked(pool, "historical_source_unavailable", detail).await?;
@@ -3819,13 +3916,16 @@ mod tests {
     fn schema_contract_is_separate_from_runtime_verification() {
         assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 5);
         assert_eq!(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.len(), 2);
-        assert_eq!(PG_ANALYTICS_REQUIRED_COLUMNS.len(), 1);
+        assert_eq!(PG_ANALYTICS_REQUIRED_COLUMNS.len(), 5);
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("CREATE SCHEMA IF NOT EXISTS cvm_analytics"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_facts"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_daily_rollups"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_hourly_rollups"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_state"));
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("analytics_parallel_work_keys"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains("owner_epoch"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains("serving_fence"));
+        assert!(PG_ANALYTICS_SCHEMA_SQL.contains("serving_ack_change_id"));
         assert!(
             PG_ANALYTICS_SCHEMA_SQL.contains("service_eligible BOOLEAN NOT NULL DEFAULT FALSE")
         );
@@ -3877,6 +3977,10 @@ mod tests {
         let mut state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "caught_up".to_string(),
+            owner_kind: "postgres".to_string(),
+            owner_epoch: 1,
+            serving_fence: 1,
+            serving_ack_change_id: 100,
             fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 4,
             baseline_generation: 4,
@@ -3893,6 +3997,10 @@ mod tests {
         assert!(fact_date_semantics_compatible(&state));
         assert!(!state.service_eligible);
         assert!(replica_service_eligible(&state));
+
+        state.owner_kind = "sqlite".to_string();
+        assert!(!replica_service_eligible(&state));
+        state.owner_kind = "postgres".to_string();
 
         state.status = "bootstrapping".to_string();
         assert!(!replica_service_eligible(&state));
@@ -4013,6 +4121,10 @@ mod tests {
         let state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "caught_up".to_string(),
+            owner_kind: "postgres".to_string(),
+            owner_epoch: 1,
+            serving_fence: 1,
+            serving_ack_change_id: 100,
             fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 3,
             baseline_generation: 3,
@@ -4035,6 +4147,13 @@ mod tests {
                 invalidation_pending: 0,
                 historical_replay_required: 0,
                 historical_history_unknown: 0,
+                owner_kind: "postgres".to_string(),
+                owner_epoch: 1,
+                serving_fence: 1,
+                serving_ack_change_id: 100,
+                journal_backpressure: 0,
+                analytics_unavailable: 0,
+                handoff_state: "stable".to_string(),
             },
             latest_change_id: 12,
             retained_bytes: 128,
@@ -4071,6 +4190,10 @@ mod tests {
         let mut state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "running".to_string(),
+            owner_kind: "postgres".to_string(),
+            owner_epoch: 1,
+            serving_fence: 1,
+            serving_ack_change_id: 100,
             fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 1,
             baseline_generation: 1,
@@ -4094,6 +4217,13 @@ mod tests {
                 invalidation_pending: 0,
                 historical_replay_required: 0,
                 historical_history_unknown: 0,
+                owner_kind: "postgres".to_string(),
+                owner_epoch: 1,
+                serving_fence: 1,
+                serving_ack_change_id: 100,
+                journal_backpressure: 0,
+                analytics_unavailable: 0,
+                handoff_state: "stable".to_string(),
             },
             latest_change_id: 7,
             retained_bytes: 128,
@@ -4137,6 +4267,10 @@ mod tests {
         let mut state = AnalyticsReplicaState {
             replica_id: ANALYTICS_REPLICA_ID.to_string(),
             status: "running".to_string(),
+            owner_kind: "postgres".to_string(),
+            owner_epoch: 1,
+            serving_fence: 1,
+            serving_ack_change_id: 100,
             fact_date_semantics_version: ANALYTICS_FACT_DATE_SEMANTICS_VERSION,
             generation: 2,
             baseline_generation: 2,
@@ -4161,6 +4295,13 @@ mod tests {
                 invalidation_pending: 0,
                 historical_replay_required: 0,
                 historical_history_unknown: 0,
+                owner_kind: "postgres".to_string(),
+                owner_epoch: 1,
+                serving_fence: 1,
+                serving_ack_change_id: 100,
+                journal_backpressure: 0,
+                analytics_unavailable: 0,
+                handoff_state: "stable".to_string(),
             },
             latest_change_id: 9,
             retained_bytes: 128,
@@ -4542,7 +4683,7 @@ mod tests {
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_reader",
                 "GRANT SELECT (fact_version, source, source_row_id, invoke_id, occurred_at, occurred_at_epoch_ms, stats_date, model, request_model, response_model, reasoning_effort, upstream_account_id, upstream_account_name, status, success_like, terminal, failure_kind, failure_class, is_actionable, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, first_token_ms, t_resp_parse_ms) ON TABLE cvm_analytics.analytics_facts TO cvm_analytics_reader",
                 "GRANT SELECT (source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id) ON TABLE cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_reader",
-                "GRANT SELECT (id, replica_id, status, generation, baseline_generation, baseline_change_id, coverage_generation, coverage_revision, coverage_watermark, consumer_checkpoint, source_acknowledged_through, service_eligible, fact_date_semantics_version, last_error_code, updated_at) ON TABLE cvm_analytics.analytics_replica_state TO cvm_analytics_reader",
+                "GRANT SELECT (id, replica_id, status, owner_kind, owner_epoch, serving_fence, serving_ack_change_id, generation, baseline_generation, baseline_change_id, coverage_generation, coverage_revision, coverage_watermark, consumer_checkpoint, source_acknowledged_through, service_eligible, fact_date_semantics_version, last_error_code, updated_at) ON TABLE cvm_analytics.analytics_replica_state TO cvm_analytics_reader",
                 "GRANT SELECT (id, status) ON TABLE cvm_analytics.analytics_state TO cvm_analytics_reader",
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
                 "GRANT INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
@@ -4736,7 +4877,9 @@ mod tests {
         sqlx::query(
             r#"
             UPDATE cvm_analytics.analytics_replica_state
-            SET status = 'caught_up', fact_date_semantics_version = 2,
+            SET status = 'caught_up', owner_kind = 'postgres', owner_epoch = 2,
+                serving_fence = 2, serving_ack_change_id = 1,
+                fact_date_semantics_version = 2,
                 generation = 1, baseline_generation = 1, baseline_change_id = 1,
                 coverage_generation = 1, coverage_revision = 1, coverage_watermark = 1,
                 consumer_checkpoint = 1, source_acknowledged_through = 1,
