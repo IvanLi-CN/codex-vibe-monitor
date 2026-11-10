@@ -49,6 +49,11 @@ pub(crate) async fn long_term_projection_route(
     state: &AppState,
 ) -> Result<LongTermProjectionRoute> {
     let ownership = state.config.analytics_ownership_v2()?;
+    // Until the complete ownership lifecycle is installed, enabling V2 must not
+    // silently leave this endpoint on SQLite or advertise an unreadable PG owner.
+    if ownership == AnalyticsOwnershipV2::Enabled {
+        return Ok(LongTermProjectionRoute::Unavailable);
+    }
     let fence = match load_analytics_serving_fence(&state.pool).await {
         Ok(fence) => fence,
         // Older databases can reach this helper before the additive ownership migration has
@@ -67,7 +72,8 @@ pub(crate) async fn long_term_projection_route(
     }
     Ok(match (ownership, fence.owner_kind) {
         (AnalyticsOwnershipV2::Disabled, "sqlite") => LongTermProjectionRoute::SqliteServing,
-        (AnalyticsOwnershipV2::Disabled, "postgres") => LongTermProjectionRoute::SqliteRollback,
+        // A frozen legacy copy is not a proved rollback projection.
+        (AnalyticsOwnershipV2::Disabled, "postgres") => LongTermProjectionRoute::Unavailable,
         (AnalyticsOwnershipV2::Enabled, "sqlite") => LongTermProjectionRoute::SqliteServing,
         (AnalyticsOwnershipV2::Enabled, "postgres") => LongTermProjectionRoute::PostgresServing,
         (_, _) => LongTermProjectionRoute::Unavailable,

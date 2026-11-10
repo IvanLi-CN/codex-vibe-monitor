@@ -83,93 +83,10 @@ fn normalize_usage_snapshot_reads_windows_and_resets() {
 
 pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> AppConfig {
     AppConfig {
-        openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
-        database_path: PathBuf::from(":memory:"),
-        analytics_backend: AnalyticsBackend::Sqlite,
-        postgres_database_url: None,
-        postgres_migration_url: None,
-        postgres_analytics_maintenance_url: None,
-        postgres_max_connections: DEFAULT_POSTGRES_MAX_CONNECTIONS as u32,
-        observability: ObservabilityConfig::default(),
-        poll_interval: Duration::from_secs(10),
         request_timeout: Duration::from_secs(5),
-        pool_upstream_responses_attempt_timeout: Duration::from_secs(
-            DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
-        ),
-        pool_upstream_responses_total_timeout: Duration::from_secs(
-            DEFAULT_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS,
-        ),
-        openai_proxy_handshake_timeout: Duration::from_secs(
-            DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
-        ),
-        openai_proxy_compact_handshake_timeout: Duration::from_secs(
-            DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS,
-        ),
-        openai_proxy_image_handshake_timeout: Duration::from_secs(
-            DEFAULT_OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS,
-        ),
-        openai_proxy_request_read_timeout: Duration::from_secs(
-            DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
-        ),
-        openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
-        openai_proxy_encrypted_session_owner_routing_enabled:
-            DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
-        proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
-        proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
-        proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
-        proxy_raw_dir: crate::tests::test_runtime_path("proxy-raw-tests"),
-        proxy_raw_compression: DEFAULT_PROXY_RAW_COMPRESSION,
-        proxy_raw_immediate_gzip_bytes: DEFAULT_PROXY_RAW_IMMEDIATE_GZIP_BYTES,
-        proxy_raw_hot_secs: DEFAULT_PROXY_RAW_HOT_SECS,
-        xray_binary: DEFAULT_XRAY_BINARY.to_string(),
-        xray_runtime_dir: crate::tests::test_runtime_path("xray-forward-tests"),
-        forward_proxy_algo: ForwardProxyAlgo::V1,
-        max_parallel_polls: 2,
-        shared_connection_parallelism: 1,
-        http_bind: "127.0.0.1:0".parse().expect("valid socket address"),
-        cors_allowed_origins: Vec::new(),
-        public_metrics_cors_allowed_origins: vec![
-            "https://ivanli.cc".to_string(),
-            "http://127.0.0.1:12620".to_string(),
-        ],
-        list_limit_max: 100,
         user_agent: user_agent.to_string(),
-        static_dir: None,
-        public_origin: None,
-        retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
-        retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
-        retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
-        retention_catchup_budget: Duration::from_secs(DEFAULT_RETENTION_CATCHUP_BUDGET_SECS),
-        archive_dir: crate::tests::test_runtime_path("archive-tests"),
-        codex_invocation_archive_layout: DEFAULT_CODEX_INVOCATION_ARCHIVE_LAYOUT,
-        codex_invocation_archive_segment_granularity:
-            DEFAULT_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY,
-        invocation_archive_codec: DEFAULT_INVOCATION_ARCHIVE_CODEC,
-        invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
-        invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
-        invocation_archive_ttl_days: DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS,
-        forward_proxy_attempts_retention_days: DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
-        pool_upstream_request_attempts_retention_days:
-            DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
-        pool_upstream_request_attempts_archive_ttl_days:
-            DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
-        quota_snapshot_full_days: DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
-        long_term_stats_hourly_retention_days: DEFAULT_LONG_TERM_STATS_HOURLY_RETENTION_DAYS,
-        upstream_accounts_oauth_client_id: DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID.to_string(),
-        upstream_accounts_oauth_issuer: Url::parse(DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER)
-            .expect("valid oauth issuer"),
         upstream_accounts_usage_base_url: Url::parse(base_url).expect("valid usage base url"),
-        upstream_accounts_login_session_ttl: Duration::from_secs(
-            DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS,
-        ),
-        upstream_accounts_sync_interval: Duration::from_secs(
-            DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
-        ),
-        upstream_accounts_refresh_lead_time: Duration::from_secs(
-            DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS,
-        ),
-        upstream_accounts_history_retention_days: DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
-        upstream_accounts_kaisoumail: None,
+        ..crate::tests::test_config()
     }
 }
 

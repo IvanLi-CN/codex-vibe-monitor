@@ -1,6 +1,7 @@
 use super::*;
 use percent_encoding::percent_decode_str;
 
+mod migrations;
 mod schema;
 pub(crate) use schema::*;
 mod read;
@@ -8,6 +9,7 @@ pub(crate) use read::*;
 
 const ANALYTICS_UNAVAILABLE_CODE: &str = "analytics_backend_unavailable";
 const POSTGRES_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+const ANALYTICS_REPLICA_CONTROL_LOCK_KEY: i64 = 0x4356_4d5f_4354_524c;
 const POSTGRES_MIGRATION_LOCK_KEY: i64 = 0x0043_564d_5f4d_4947;
 const REDACTED_SECRET: &str = "<redacted>";
 pub(crate) const ANALYTICS_REPLICA_ID: &str = "pg-analytics";
@@ -358,11 +360,17 @@ impl PgAnalyticsRuntime {
     }
 
     pub(crate) async fn initialize(config: &AppConfig) -> Self {
-        if config.analytics_backend == AnalyticsBackend::Sqlite {
+        if config.analytics_backend == AnalyticsBackend::Sqlite
+            && config.analytics_ownership == AnalyticsOwnershipV2::Disabled
+        {
             return Self::disabled();
         }
 
         let result: Result<(PgAnalyticsPool, PgAnalyticsPool)> = async {
+            // The V2 storage primitives are not a completed handoff implementation.
+            // Never interpret the switch as permission to bypass target parity or
+            // claim an owner before all serving projections can actually be read.
+            validate_ownership_runtime_admission(config.analytics_ownership)?;
             migrate_postgres_schema(config).await?;
             let pool = PgAnalyticsPool::connect(config).await?;
             let maintenance_pool = PgAnalyticsPool::connect_maintenance(config).await?;
@@ -464,17 +472,25 @@ impl PgAnalyticsRuntime {
                 if shutdown.is_cancelled() {
                     return;
                 }
-                match runtime.bootstrap_once(&source_pool).await {
-                    Ok(()) => return,
+                let result = tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    result = runtime.bootstrap_once(&source_pool) => result,
+                };
+                match result {
+                    Ok(()) => {
+                        delay = ANALYTICS_BOOTSTRAP_RETRY_INITIAL;
+                    }
                     Err(error) => {
+                        runtime.ready.store(false, Ordering::Release);
                         warn!(error = %sanitize_postgres_error(&error, None), "PostgreSQL analytics bootstrap is unavailable; retrying");
+                        delay =
+                            std::cmp::min(delay.saturating_mul(2), ANALYTICS_BOOTSTRAP_RETRY_MAX);
                     }
                 }
                 tokio::select! {
                     _ = shutdown.cancelled() => return,
                     _ = tokio::time::sleep(delay) => {}
                 }
-                delay = std::cmp::min(delay.saturating_mul(2), ANALYTICS_BOOTSTRAP_RETRY_MAX);
             }
         });
     }
@@ -484,7 +500,61 @@ impl PgAnalyticsRuntime {
             .maintenance_pool
             .as_ref()
             .context("PostgreSQL analytics maintenance pool is unavailable")?;
-        let report = bootstrap_replica(source_pool, target.inner(), false).await?;
+        let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+        anyhow::ensure!(
+            source.state.owner_kind == "sqlite",
+            "durable PostgreSQL ownership requires the unimplemented controlled rollback lifecycle"
+        );
+        let state = load_replica_state(target.inner()).await?;
+        if state.status == "paused" {
+            self.ready.store(false, Ordering::Release);
+            return Ok(());
+        }
+        if state.status == "caught_up" {
+            let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+            if replica_service_eligible_for_source(&state, &source) {
+                // Polling an idle replica must not temporarily change caught_up to
+                // running and reject readers on every tick. Preserve a concurrent
+                // pause/fence instead of overwriting it with a stale observation.
+                let refreshed = sqlx::query(
+                    "UPDATE cvm_analytics.analytics_replica_state SET updated_at = NOW()
+                     WHERE id = 1 AND status = 'caught_up' AND generation = $1
+                       AND consumer_checkpoint = $2 AND source_acknowledged_through = $2
+                       AND owner_kind = $3 AND owner_epoch = $4 AND serving_fence = $5",
+                )
+                .bind(state.generation)
+                .bind(state.consumer_checkpoint)
+                .bind(&state.owner_kind)
+                .bind(state.owner_epoch)
+                .bind(state.serving_fence)
+                .execute(target.inner())
+                .await?;
+                anyhow::ensure!(
+                    refreshed.rows_affected() == 1,
+                    "replica changed during heartbeat"
+                );
+                self.ready.store(true, Ordering::Release);
+                return Ok(());
+            }
+        }
+        let _control_guard = acquire_replica_control_lock(target.inner()).await?;
+        // Re-read under the shared maintenance lock: a pause may have committed
+        // after the optimistic no-work check above.
+        let state = load_replica_state(target.inner()).await?;
+        if state.status == "paused" {
+            self.ready.store(false, Ordering::Release);
+            return Ok(());
+        }
+        let report = if matches!(
+            state.status.as_str(),
+            "unbootstrapped" | "bootstrapping" | "invalidated"
+        ) || !fact_date_semantics_compatible(&state)
+            || !replica_baseline_ready(&state)
+        {
+            bootstrap_replica_control_locked(source_pool, target.inner(), false).await?
+        } else {
+            resume_replica_control_locked(source_pool, target.inner()).await?
+        };
         anyhow::ensure!(
             report.service_eligible,
             "PostgreSQL analytics replica completed without becoming service eligible"
@@ -539,7 +609,7 @@ impl PgAnalyticsRuntime {
             )));
         };
         validate_analytics_replica_freshness(&replica_state)?;
-        if !replica_service_eligible(&replica_state) || !replica_baseline_ready(&replica_state) {
+        if !replica_read_eligible(&replica_state) || !replica_baseline_ready(&replica_state) {
             return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
                 AnalyticsBackend::Postgres,
                 format!(
@@ -571,9 +641,18 @@ impl PgAnalyticsRuntime {
     }
 }
 
+fn validate_ownership_runtime_admission(ownership: AnalyticsOwnershipV2) -> Result<()> {
+    anyhow::ensure!(
+        ownership == AnalyticsOwnershipV2::Disabled,
+        "ANALYTICS_OWNERSHIP_V2=enabled is not deployable: complete projection handoff, parity and rollback lifecycle are not implemented; retain disabled and the existing ANALYTICS_BACKEND"
+    );
+    Ok(())
+}
+
 async fn migrate_postgres_schema(config: &AppConfig) -> Result<()> {
     let migration = PgAnalyticsPool::connect_migration(config).await?;
     let mut connection = migration.inner().acquire().await?;
+    connection.close_on_drop();
     let version: i32 = sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
         .fetch_one(&mut *connection)
         .await?;
@@ -584,55 +663,7 @@ async fn migrate_postgres_schema(config: &AppConfig) -> Result<()> {
         .bind(POSTGRES_MIGRATION_LOCK_KEY)
         .execute(&mut *connection)
         .await?;
-    let result = async {
-        sqlx::raw_sql(PG_ANALYTICS_SCHEMA_SQL)
-            .execute(&mut *connection)
-            .await?;
-        sqlx::raw_sql(
-            "CREATE TABLE IF NOT EXISTS cvm_analytics.schema_migrations ( \
-                component TEXT NOT NULL, version BIGINT NOT NULL, checksum TEXT NOT NULL, \
-                state TEXT NOT NULL CHECK (state = 'applied'), \
-                min_reader_version BIGINT NOT NULL DEFAULT 1, \
-                requires_bootstrap BOOLEAN NOT NULL DEFAULT FALSE, \
-                error_code TEXT, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
-                PRIMARY KEY (component, version) \
-            )",
-        )
-        .execute(&mut *connection)
-        .await?;
-        let checksum = format!("{:x}", Sha256::digest(PG_ANALYTICS_SCHEMA_SQL.as_bytes()));
-        let existing_checksum = sqlx::query_scalar::<_, String>(
-            "SELECT checksum FROM cvm_analytics.schema_migrations WHERE component = 'pg-analytics' AND version = 1",
-        )
-        .fetch_optional(&mut *connection)
-        .await?;
-        if let Some(existing_checksum) = existing_checksum
-            && existing_checksum != checksum
-        {
-            bail!("PostgreSQL analytics migration checksum mismatch");
-        }
-        let newer_version = sqlx::query_scalar::<_, i64>(
-            "SELECT COALESCE(MAX(version), 0) FROM cvm_analytics.schema_migrations WHERE component = 'pg-analytics'",
-        )
-        .fetch_one(&mut *connection)
-        .await?;
-        if newer_version > 1 {
-            bail!("PostgreSQL analytics schema is newer than this reader");
-        }
-        sqlx::query(
-            "INSERT INTO cvm_analytics.schema_migrations \
-             (component, version, checksum, state, requires_bootstrap) \
-             VALUES ('pg-analytics', 1, $1, 'applied', TRUE) \
-             ON CONFLICT (component, version) DO UPDATE SET \
-               checksum = EXCLUDED.checksum, state = EXCLUDED.state, \
-               requires_bootstrap = EXCLUDED.requires_bootstrap",
-        )
-        .bind(checksum)
-        .execute(&mut *connection)
-        .await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
+    let result = migrations::apply_ordered_migrations(&mut connection).await;
     let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(POSTGRES_MIGRATION_LOCK_KEY)
         .execute(&mut *connection)
@@ -1358,6 +1389,17 @@ fn replica_service_eligible(state: &AnalyticsReplicaState) -> bool {
         && state.owner_epoch > 0
         && state.serving_fence > 0
         && state.serving_ack_change_id >= state.consumer_checkpoint
+        && replica_read_eligible(state)
+}
+
+// Selecting the existing PostgreSQL read replica does not transfer projection ownership.
+// Its legacy eligibility is based on complete, current source coverage, independently of V2.
+fn replica_read_eligible(state: &AnalyticsReplicaState) -> bool {
+    matches!(state.owner_kind.as_str(), "sqlite" | "postgres")
+        && state.owner_epoch > 0
+        && state.serving_fence > 0
+        && (state.owner_kind == "sqlite"
+            || state.serving_ack_change_id >= state.consumer_checkpoint)
         && fact_date_semantics_compatible(state)
         && state.status == "caught_up"
         && state.consumer_checkpoint == state.source_acknowledged_through
@@ -1409,13 +1451,14 @@ fn replica_service_eligible_for_source(
     source: &SourceContext,
 ) -> bool {
     replica_baseline_ready(state)
-        && source.state.owner_kind == "postgres"
+        && replica_read_eligible(state)
+        && state.consumer_checkpoint == source.latest_change_id
+        && source.state.owner_kind == state.owner_kind
         && source.state.owner_epoch == state.owner_epoch
         && source.state.serving_fence == state.serving_fence
         && source.state.journal_backpressure == 0
         && source.state.analytics_unavailable == 0
         && source.state.handoff_state == "stable"
-        && replica_service_eligible_for_latest_change(state, source.latest_change_id)
         && source_coverage_reaches_checkpoint(state, source)
 }
 
@@ -3031,7 +3074,7 @@ async fn load_source_context_transaction(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
 ) -> Result<SourceContext> {
     let state = sqlx::query_as::<_, SourceChangeState>(
-        "SELECT generation, coverage_revision, retained_from_change_id, capacity, invalidation_pending, historical_replay_required, historical_history_unknown FROM analytics_change_state WHERE id = 1",
+        "SELECT generation, coverage_revision, retained_from_change_id, capacity, invalidation_pending, historical_replay_required, historical_history_unknown, owner_kind, owner_epoch, serving_fence, serving_ack_change_id, journal_backpressure, analytics_unavailable, handoff_state FROM analytics_change_state WHERE id = 1",
     )
     .fetch_one(&mut **transaction)
     .await
@@ -3073,7 +3116,34 @@ async fn acknowledge_unverified_legacy_history(source_pool: &Pool<Sqlite>) -> Re
     Ok(())
 }
 
+// Use a dedicated, short-lived session for control serialization. Holding a
+// pooled connection while the operation uses that same pool deadlocks at pool
+// size one. At most one additional session is needed per control operation;
+// dropping it on cancellation releases its session advisory lock.
+async fn acquire_replica_control_lock(pool: &sqlx::PgPool) -> Result<sqlx::postgres::PgConnection> {
+    tokio::time::timeout(POSTGRES_CONNECTION_TIMEOUT, async {
+        let mut guard =
+            sqlx::postgres::PgConnection::connect_with(pool.connect_options().as_ref()).await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(ANALYTICS_REPLICA_CONTROL_LOCK_KEY)
+            .execute(&mut guard)
+            .await?;
+        Ok::<_, anyhow::Error>(guard)
+    })
+    .await
+    .context("analytics replica control operation is busy")?
+}
+
 async fn bootstrap_replica(
+    source_pool: &Pool<Sqlite>,
+    pool: &sqlx::PgPool,
+    acknowledge_unverified_history: bool,
+) -> Result<AnalyticsReplicaStatusReport> {
+    let _control_guard = acquire_replica_control_lock(pool).await?;
+    bootstrap_replica_control_locked(source_pool, pool, acknowledge_unverified_history).await
+}
+
+async fn bootstrap_replica_control_locked(
     source_pool: &Pool<Sqlite>,
     pool: &sqlx::PgPool,
     acknowledge_unverified_history: bool,
@@ -3126,7 +3196,7 @@ async fn bootstrap_replica(
     }
     drop(connection);
     result?;
-    let report = resume_replica(source_pool, pool).await?;
+    let report = resume_replica_control_locked(source_pool, pool).await?;
     Ok(report)
 }
 
@@ -3188,6 +3258,14 @@ async fn resume_replica(
     source_pool: &Pool<Sqlite>,
     pool: &sqlx::PgPool,
 ) -> Result<AnalyticsReplicaStatusReport> {
+    let _control_guard = acquire_replica_control_lock(pool).await?;
+    resume_replica_control_locked(source_pool, pool).await
+}
+
+async fn resume_replica_control_locked(
+    source_pool: &Pool<Sqlite>,
+    pool: &sqlx::PgPool,
+) -> Result<AnalyticsReplicaStatusReport> {
     verify_replica_schema(pool).await?;
     let mut state = load_replica_state(pool).await?;
     state = ensure_fact_date_semantics_compatible(pool, &state).await?;
@@ -3212,7 +3290,10 @@ async fn resume_replica(
     } else if state.status == "blocked"
         && !matches!(
             state.last_error_code.as_deref(),
-            Some("source_ack_failed") | Some("target_apply_failed") | Some("worker_batch_limit")
+            Some("source_ack_failed")
+                | Some("target_apply_failed")
+                | Some("worker_batch_limit")
+                | Some("owner_fence_unavailable")
         )
     {
         bail!(
@@ -3226,7 +3307,13 @@ async fn resume_replica(
 
     for _ in 0..ANALYTICS_REPLICA_MAX_BATCHES_PER_RUN {
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
-        if !source_serving_fence_ready(&source) {
+        // A SQLite-owned source is valid for the pre-V2 PostgreSQL read replica. A
+        // PostgreSQL-owned source must additionally prove its durable serving fence.
+        if (source.state.owner_kind == "postgres" && !source_serving_fence_ready(&source))
+            || source.state.analytics_unavailable != 0
+            || source.state.journal_backpressure != 0
+            || source.state.handoff_state != "stable"
+        {
             let detail = format!(
                 "analytics PostgreSQL owner fence is unavailable: owner_kind={}, owner_epoch={}, serving_fence={}, journal_backpressure={}, analytics_unavailable={}, handoff_state={}",
                 source.state.owner_kind,
@@ -3424,6 +3511,7 @@ async fn pause_replica(
     source_pool: &Pool<Sqlite>,
     pool: &sqlx::PgPool,
 ) -> Result<AnalyticsReplicaStatusReport> {
+    let _control_guard = acquire_replica_control_lock(pool).await?;
     verify_replica_schema(pool).await?;
     let state = load_replica_state(pool).await?;
     let state = ensure_fact_date_semantics_compatible(pool, &state).await?;
@@ -3999,8 +4087,12 @@ mod tests {
         assert!(replica_service_eligible(&state));
 
         state.owner_kind = "sqlite".to_string();
+        state.serving_ack_change_id = 0;
         assert!(!replica_service_eligible(&state));
+        assert!(replica_read_eligible(&state));
         state.owner_kind = "postgres".to_string();
+        assert!(!replica_read_eligible(&state));
+        state.serving_ack_change_id = state.consumer_checkpoint;
 
         state.status = "bootstrapping".to_string();
         assert!(!replica_service_eligible(&state));
@@ -4009,6 +4101,146 @@ mod tests {
         assert!(!fact_date_semantics_compatible(&state));
         assert!(!replica_service_eligible(&state));
         assert!(fact_date_semantics_mismatch_detail(&state).contains("run explicit bootstrap"));
+    }
+
+    #[test]
+    fn ownership_runtime_does_not_claim_an_unimplemented_cutover() {
+        assert!(validate_ownership_runtime_admission(AnalyticsOwnershipV2::Disabled).is_ok());
+        let error = validate_ownership_runtime_admission(AnalyticsOwnershipV2::Enabled)
+            .expect_err("enabling storage primitives must not advertise a working cutover");
+        assert!(error.to_string().contains("parity and rollback lifecycle"));
+    }
+
+    #[tokio::test]
+    async fn enabled_ownership_is_unavailable_for_both_backend_selections() {
+        for backend in [AnalyticsBackend::Sqlite, AnalyticsBackend::Postgres] {
+            let mut config = crate::tests::test_config();
+            config.analytics_backend = backend;
+            config.analytics_ownership = AnalyticsOwnershipV2::Enabled;
+            let runtime = PgAnalyticsRuntime::initialize(&config).await;
+            assert_eq!(
+                runtime.status().availability,
+                AnalyticsAvailability::Unavailable
+            );
+            assert!(runtime.pool.is_none());
+            assert!(runtime.status().reason.unwrap().contains("not deployable"));
+        }
+    }
+
+    #[tokio::test]
+    async fn source_snapshot_loads_the_complete_ownership_state() -> Result<()> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        crate::analytics_changes::ensure_analytics_changes_schema(&pool).await?;
+        let mut tx = pool.begin().await?;
+        let source = load_source_context_transaction(&mut tx).await?;
+        assert_eq!(source.state.owner_kind, "sqlite");
+        assert_eq!(source.state.owner_epoch, 1);
+        assert_eq!(source.state.serving_fence, 1);
+        assert_eq!(source.state.handoff_state, "stable");
+        tx.rollback().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated PostgreSQL *_fixture database and explicit schema reset authorization"]
+    async fn postgres_runtime_continues_replay_after_ready_and_restart() -> Result<()> {
+        anyhow::ensure!(
+            env::var("PG_ANALYTICS_TEST_ALLOW_SCHEMA_RESET").as_deref() == Ok("1"),
+            "fixture reset authorization required"
+        );
+        let target = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&env::var("PG_ANALYTICS_TEST_OWNER_URL")?)
+            .await?;
+        let database: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&target)
+            .await?;
+        anyhow::ensure!(
+            database.ends_with("_fixture"),
+            "isolated fixture database required"
+        );
+        sqlx::raw_sql("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
+            .execute(&target)
+            .await?;
+        let result = async {
+            {
+                let mut connection = target.acquire().await?;
+                migrations::apply_ordered_migrations(&mut connection).await?;
+            }
+            let guard = acquire_replica_control_lock(&target).await?;
+            let holding = tokio::spawn(async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            });
+            holding.abort();
+            let _ = holding.await;
+            drop(acquire_replica_control_lock(&target).await?);
+            let source = SqlitePoolOptions::new().max_connections(1)
+                .connect("sqlite::memory:").await?;
+            crate::schema::ensure_schema(&source).await?;
+            let make_runtime = || Arc::new(PgAnalyticsRuntime {
+                backend: AnalyticsBackend::Postgres,
+                pool: Some(PgAnalyticsPool { pool: target.clone() }),
+                maintenance_pool: Some(PgAnalyticsPool { pool: target.clone() }),
+                unavailable: None,
+                ready: Arc::new(AtomicBool::new(false)),
+            });
+            let runtime = make_runtime();
+            runtime.bootstrap_once(&source).await?;
+            assert!(runtime.ready.load(Ordering::Acquire));
+            let baseline = load_replica_state(&target).await?;
+            let stop = CancellationToken::new();
+            runtime.spawn_bootstrap_lifecycle(source.clone(), stop.clone());
+            for index in 1..=2 {
+                let mut tx = source.begin().await?;
+                let row_id = sqlx::query("INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response) VALUES (?1, '2026-10-30 12:00:00', 'proxy', 'success', 7, 0.07, '{}', '{}')")
+                    .bind(format!("lifecycle-{index}")).execute(&mut *tx).await?.last_insert_rowid();
+                crate::analytics_changes::append_invocation_upsert_for_row_tx(tx.as_mut(), row_id).await?;
+                tx.commit().await?;
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    loop {
+                        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM cvm_analytics.analytics_facts")
+                            .fetch_one(&target).await?;
+                        let state = load_replica_state(&target).await?;
+                        if count == index && replica_read_eligible(&state) {
+                            assert_eq!(state.baseline_change_id, baseline.baseline_change_id, "replay must not rebuild the baseline");
+                            break Ok::<(), anyhow::Error>(());
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }).await??;
+            }
+            pause_replica(&source, &target).await?;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            assert_eq!(load_replica_state(&target).await?.status, "paused", "the active worker must preserve a maintenance pause");
+            assert!(!runtime.ready.load(Ordering::Acquire));
+            stop.cancel();
+            // Cancellation must also end an idle worker; the next process resumes the same baseline.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let checkpoint = load_replica_state(&target).await?.consumer_checkpoint;
+            resume_replica(&source, &target).await?;
+            let restarted = make_runtime();
+            restarted.bootstrap_once(&source).await?;
+            let resumed = load_replica_state(&target).await?;
+            assert_eq!(resumed.consumer_checkpoint, checkpoint);
+            assert_eq!(resumed.baseline_change_id, baseline.baseline_change_id);
+            sqlx::query("UPDATE cvm_analytics.analytics_replica_state SET status='paused' WHERE id=1").execute(&target).await?;
+            restarted.bootstrap_once(&source).await?;
+            assert!(!restarted.ready.load(Ordering::Acquire));
+            assert_eq!(load_replica_state(&target).await?.status, "paused");
+            source.close().await;
+            Ok::<(), anyhow::Error>(())
+        }.await;
+        let cleanup = sqlx::raw_sql("DROP SCHEMA IF EXISTS cvm_analytics CASCADE")
+            .execute(&target)
+            .await;
+        target.close().await;
+        result?;
+        cleanup?;
+        Ok(())
     }
 
     #[test]
@@ -4626,16 +4858,11 @@ mod tests {
         context: &str,
     ) -> Result<()> {
         let mut transaction = owner.begin().await?;
-        for statement in PG_ANALYTICS_SCHEMA_SQL
-            .split(';')
-            .map(str::trim)
-            .filter(|statement| !statement.is_empty())
-        {
-            sqlx::query(statement)
-                .execute(&mut *transaction)
-                .await
-                .with_context(|| format!("{context}: {statement}"))?;
-        }
+        // Semicolons inside SQL comments are not statement delimiters.
+        sqlx::raw_sql(PG_ANALYTICS_SCHEMA_SQL)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| context.to_string())?;
         transaction
             .commit()
             .await

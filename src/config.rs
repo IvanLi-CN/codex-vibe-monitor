@@ -375,6 +375,7 @@ pub(crate) struct AppConfig {
     pub(crate) openai_upstream_base_url: Url,
     pub(crate) database_path: PathBuf,
     pub(crate) analytics_backend: AnalyticsBackend,
+    pub(crate) analytics_ownership: AnalyticsOwnershipV2,
     pub(crate) postgres_database_url: Option<PostgresDatabaseUrl>,
     pub(crate) postgres_migration_url: Option<PostgresDatabaseUrl>,
     pub(crate) postgres_analytics_maintenance_url: Option<PostgresDatabaseUrl>,
@@ -490,6 +491,7 @@ impl AppConfig {
             .map(|raw| AnalyticsBackend::from_str(&raw))
             .transpose()?
             .unwrap_or_default();
+        let analytics_ownership = analytics_ownership_v2_from_env()?;
         let postgres_database_url = env::var(ENV_POSTGRES_DATABASE_URL)
             .ok()
             .map(|raw| PostgresDatabaseUrl::parse_for(&raw, ENV_POSTGRES_DATABASE_URL))
@@ -872,6 +874,7 @@ impl AppConfig {
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
             database_path,
             analytics_backend,
+            analytics_ownership,
             postgres_database_url,
             postgres_migration_url,
             postgres_analytics_maintenance_url,
@@ -969,7 +972,7 @@ impl AppConfig {
     /// The switch is intentionally read at process startup rather than stored in the
     /// persisted SQLite state; owner epoch and serving fence remain durable in the journal.
     pub(crate) fn analytics_ownership_v2(&self) -> Result<AnalyticsOwnershipV2> {
-        analytics_ownership_v2_from_env()
+        Ok(self.analytics_ownership)
     }
 }
 

@@ -2,6 +2,16 @@
 
 > This is owner-authorized runbook work. Reading this document does not authorize or execute any command, configuration change, bootstrap, pause/resume, 101 operation, service deployment, production-data copy, or load/stress/pressure test. Each operational action requires a separate owner-approved change window. This documentation task performs none of them.
 
+## Ownership 开关
+
+`ANALYTICS_BACKEND=postgres` 选择已有的 PG facts/key read replica；它不代表长期统计 projection 的 ownership 已转移。`ANALYTICS_OWNERSHIP_V2` 是另一个启动配置，完整自动 handoff 和回滚生命周期尚未实现，目前必须保持 `disabled` 或未设置。不要为更新版本而将现有 `ANALYTICS_BACKEND` 改为 `sqlite`。
+
+## 修复候选的重启与连接行为
+
+有序迁移只在版本尚未应用时执行 SQL。已应用 V1 的 checksum 必须与已发布内容一致；ownership 发布曾错误使用 V1 的精确变体只做兼容识别，不覆盖原账本。重复启动保留有效 baseline/checkpoint，不因重跑 schema SQL 而反复重建。checksum 不匹配、迁移历史有缺口或 schema 超出 reader 范围时，事务回滚并保持 analytics unavailable。
+
+后台在成功后继续消费 Journal，空闲时仅刷新有效状态；显式 pause 与 bootstrap/resume 共享 PG 控制锁。每个在途控制调用额外使用一个短生命周期 PG 会话（包括等待控制锁的调用），不占用 reader/maintenance pool 的连接槽，以支持 pool size 为 1 的配置。该会话取消或结束后关闭，不会携带 session lock 归还连接池。
+
 ## Current Boundary
 
 SQLite remains the default analytics backend and the existing state source. `ANALYTICS_BACKEND` accepts `sqlite` or `postgres`; the default is `sqlite`. Selecting `postgres` requires `POSTGRES_DATABASE_URL`. `POSTGRES_MAX_CONNECTIONS` defaults to `5` and must be positive. The connection URL is redacted from configuration debug and serialization output and from PostgreSQL failure diagnostics.

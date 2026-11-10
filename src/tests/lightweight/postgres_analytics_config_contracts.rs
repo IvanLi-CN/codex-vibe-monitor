@@ -172,3 +172,21 @@ fn app_config_rejects_shared_postgres_login_roles_from_user_query_override() {
     assert!(!error.to_string().contains("secret"));
     assert!(!error.to_string().contains("other-secret"));
 }
+
+#[test]
+fn analytics_ownership_switch_is_captured_at_process_configuration() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[(ENV_ANALYTICS_OWNERSHIP_V2, Some("disabled"))]);
+    let config = AppConfig::from_sources(&CliArgs::default()).expect("parse startup configuration");
+    let _changed = EnvVarGuard::set(&[(ENV_ANALYTICS_OWNERSHIP_V2, Some("enabled"))]);
+    assert_eq!(
+        config.analytics_ownership_v2().expect("captured switch"),
+        AnalyticsOwnershipV2::Disabled
+    );
+    let restarted =
+        AppConfig::from_sources(&CliArgs::default()).expect("parse restart configuration");
+    assert_eq!(
+        restarted.analytics_ownership_v2().expect("restart switch"),
+        AnalyticsOwnershipV2::Enabled
+    );
+}
