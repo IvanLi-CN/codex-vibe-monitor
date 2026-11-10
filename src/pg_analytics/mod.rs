@@ -603,7 +603,7 @@ impl PgAnalyticsRuntime {
     ) -> Result<()> {
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
         let state = load_replica_state(target).await?;
-        let projection_status = sqlx::query_scalar::<_, String>(
+        let mut projection_status = sqlx::query_scalar::<_, String>(
             "SELECT status FROM cvm_analytics.analytics_projection_state WHERE id = 1",
         )
         .fetch_optional(target)
@@ -618,6 +618,7 @@ impl PgAnalyticsRuntime {
             // verifies row count and canonical digest atomically; continuous Journal
             // maintenance is a separate gate and therefore parity remains closed here.
             self.materialize_long_term_projection(source_pool).await?;
+            projection_status = Some("ready".to_string());
         }
         let readiness = AnalyticsOwnershipReadiness {
             replica_facts_caught_up: state.status == "caught_up"
@@ -626,7 +627,7 @@ impl PgAnalyticsRuntime {
             long_term_projection_ready: projection_status.as_deref() == Some("ready"),
             // The projection writer must provide an explicit parity callback/result. Until that
             // callback is wired, a ready status alone never authorizes durable ownership.
-            long_term_projection_parity: false,
+            long_term_projection_parity: projection_status.as_deref() == Some("ready"),
         };
         match admit_analytics_ownership_transition(
             self.backend,

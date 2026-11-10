@@ -1495,6 +1495,22 @@ pub(super) async fn flush_long_term_projection_unlocked(
     trigger: &'static str,
 ) -> Result<LongTermProjectionFlushOutcome> {
     let route = long_term_projection_route(state).await?;
+    if route == LongTermProjectionRoute::PostgresServing {
+        // Keep the SQLite projection current as the one-day rollback source while PG
+        // serves reads. The same bounded Journal consumer advances it, then the PG
+        // materializer mirrors the committed snapshot and refreshes the rollback copy.
+        let result = run_long_term_projection_flush_with_retry(&state.shutdown, || {
+            flush_long_term_projection_inner(state, trigger)
+        })
+        .await?;
+        let _ = result;
+        refresh_long_term_projection_rollback_copy(state).await?;
+        state
+            .pg_analytics
+            .materialize_long_term_projection(&state.pool)
+            .await?;
+        return Ok(LongTermProjectionFlushOutcome::Completed);
+    }
     if route != LongTermProjectionRoute::SqliteServing {
         if route == LongTermProjectionRoute::SqliteRollback {
             // Capture a fenced copy before exposing the rollback route. The copy is bounded to
