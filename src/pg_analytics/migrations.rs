@@ -234,6 +234,44 @@ CREATE INDEX IF NOT EXISTS analytics_replica_applied_generation_idx
     ON cvm_analytics.analytics_replica_applied_changes (generation, change_id);
 "#;
 
+// V6 creates the interval/read-model and repair/publication destinations required
+// by the ownership contract. They remain fail-closed until replay verifies them.
+const MIGRATION_V6_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_intervals (
+    bucket_kind TEXT NOT NULL, bucket_date DATE NOT NULL, bucket_key TEXT NOT NULL,
+    dimension TEXT NOT NULL, series_key TEXT NOT NULL, invocation_row_id BIGINT NOT NULL,
+    interval_start_ms BIGINT NOT NULL, interval_end_ms BIGINT NOT NULL,
+    PRIMARY KEY (bucket_kind, bucket_key, dimension, series_key, invocation_row_id, interval_start_ms, interval_end_ms)
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_interval_state (
+    invocation_row_id BIGINT PRIMARY KEY, model_series_key TEXT NOT NULL,
+    upstream_series_key TEXT NOT NULL, interval_start_ms BIGINT NOT NULL, interval_end_ms BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_interval_suppressions (
+    invocation_row_id BIGINT NOT NULL, bucket_date DATE NOT NULL,
+    PRIMARY KEY (invocation_row_id, bucket_date)
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_rebuild_members (
+    rebuild_token TEXT NOT NULL, invocation_row_id BIGINT NOT NULL,
+    PRIMARY KEY (rebuild_token, invocation_row_id)
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_dirty_buckets (
+    bucket_date DATE PRIMARY KEY, repair_reason TEXT NOT NULL, generation BIGINT NOT NULL DEFAULT 1,
+    queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), next_attempt_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_bucket_state (
+    bucket_date DATE PRIMARY KEY, interval_baseline_ready BOOLEAN NOT NULL DEFAULT FALSE,
+    active_daily_backup_token TEXT, publication_token TEXT, publication_generation BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_date_publications (
+    publication_token TEXT PRIMARY KEY, published BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_daily_backup_claims (
+    bucket_date DATE PRIMARY KEY, rebuild_token TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"#;
+
 const STOPPED_OWNERSHIP_V1_CHECKSUM: &str =
     "6336709fdec97a29130a6a8cf655c4d19bf882b9f53164e7a4cf9b515251d7af";
 
@@ -427,10 +465,11 @@ pub(super) async fn apply_ordered_migrations(
         (3, MIGRATION_V3_SQL),
         (4, MIGRATION_V4_SQL),
         (5, MIGRATION_V5_SQL),
+        (6, MIGRATION_V6_SQL),
     ];
     for (version, recorded_checksum, state, min_reader) in &recorded {
         anyhow::ensure!(
-            state == "applied" && *min_reader <= 5,
+            state == "applied" && *min_reader <= 6,
             "PostgreSQL analytics migration is incomplete or requires a newer reader at version {version}"
         );
         let sql = migrations

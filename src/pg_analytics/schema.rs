@@ -169,6 +169,55 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_hourly_rollups (
 CREATE INDEX IF NOT EXISTS analytics_hourly_rollups_dimension_bucket_idx
     ON cvm_analytics.analytics_hourly_rollups (dimension, bucket_start);
 
+-- Long-term maintenance/read-model projections. These tables mirror the SQLite
+-- projection state so owner admission can require parity for every target.
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_intervals (
+    bucket_kind TEXT NOT NULL, bucket_date DATE NOT NULL, bucket_key TEXT NOT NULL,
+    dimension TEXT NOT NULL, series_key TEXT NOT NULL, invocation_row_id BIGINT NOT NULL,
+    interval_start_ms BIGINT NOT NULL, interval_end_ms BIGINT NOT NULL,
+    PRIMARY KEY (bucket_kind, bucket_key, dimension, series_key, invocation_row_id, interval_start_ms, interval_end_ms)
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_interval_state (
+    invocation_row_id BIGINT PRIMARY KEY, model_series_key TEXT NOT NULL,
+    upstream_series_key TEXT NOT NULL, interval_start_ms BIGINT NOT NULL, interval_end_ms BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_interval_suppressions (
+    invocation_row_id BIGINT NOT NULL, bucket_date DATE NOT NULL,
+    PRIMARY KEY (invocation_row_id, bucket_date)
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_rebuild_members (
+    rebuild_token TEXT NOT NULL, invocation_row_id BIGINT NOT NULL,
+    PRIMARY KEY (rebuild_token, invocation_row_id)
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_dirty_buckets (
+    bucket_date DATE PRIMARY KEY, repair_reason TEXT NOT NULL, generation BIGINT NOT NULL DEFAULT 1,
+    queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), next_attempt_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_bucket_state (
+    bucket_date DATE PRIMARY KEY, interval_baseline_ready BOOLEAN NOT NULL DEFAULT FALSE,
+    active_daily_backup_token TEXT, publication_token TEXT, publication_generation BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_daily_backups (
+    rebuild_token TEXT NOT NULL, stats_date DATE NOT NULL, dimension TEXT NOT NULL, series_key TEXT NOT NULL,
+    display_name TEXT NOT NULL, reasoning_effort TEXT NOT NULL DEFAULT '', calls BIGINT NOT NULL DEFAULT 0,
+    token_total BIGINT NOT NULL DEFAULT 0, token_samples BIGINT NOT NULL DEFAULT 0,
+    cost_total NUMERIC(20,8) NOT NULL DEFAULT 0, cost_samples BIGINT NOT NULL DEFAULT 0,
+    usage_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0, usage_time_samples BIGINT NOT NULL DEFAULT 0,
+    wall_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0, wall_time_samples BIGINT NOT NULL DEFAULT 0,
+    output_tokens_total BIGINT NOT NULL DEFAULT 0, stream_duration_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    output_speed_samples BIGINT NOT NULL DEFAULT 0, first_byte_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    first_byte_samples BIGINT NOT NULL DEFAULT 0, response_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    response_samples BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (rebuild_token, stats_date, dimension, series_key)
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_date_publications (
+    publication_token TEXT PRIMARY KEY, published BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_daily_backup_claims (
+    bucket_date DATE PRIMARY KEY, rebuild_token TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_state (
     id SMALLINT PRIMARY KEY CHECK (id = 1),
     status TEXT NOT NULL DEFAULT 'preparing',
