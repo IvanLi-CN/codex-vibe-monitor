@@ -1565,9 +1565,11 @@ pub(super) async fn flush_long_term_projection_unlocked(
 ) -> Result<LongTermProjectionFlushOutcome> {
     let route = long_term_projection_route(state).await?;
     if route == LongTermProjectionRoute::PostgresServing {
-        // PostgreSQL ownership freezes the legacy SQLite serving projection. The rollback
-        // consumer writes only the dedicated rollback tables in one transaction; it never
-        // invokes the canonical SQLite projection writer while PG owns the serving fence.
+        // Keep consuming the source Journal while PostgreSQL serves. The canonical SQLite
+        // projection remains the durable replay cursor; the dedicated rollback copy is refreshed
+        // atomically from that cursor before PostgreSQL materialization. This prevents events
+        // acknowledged during PG ownership from being stranded outside both recovery paths.
+        flush_long_term_projection_inner(state, trigger).await?;
         refresh_long_term_projection_rollback_copy(state).await?;
         state
             .pg_analytics
