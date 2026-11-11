@@ -812,24 +812,6 @@ pub(super) async fn load_long_term_rollups(
         .await?)
 }
 
-async fn load_long_term_rollups_from_table(
-    pool: &Pool<Sqlite>,
-    table: &str,
-    dimension: &str,
-    start_date: &str,
-    end_date: &str,
-) -> Result<Vec<LongTermRollupRow>> {
-    let sql = format!(
-        "SELECT MAX(stats_date) AS bucket_or_date, dimension, series_key, MAX(display_name) AS display_name, reasoning_effort, SUM(calls) AS calls, SUM(token_total) AS token_total, SUM(token_samples) AS token_samples, SUM(cost_total) AS cost_total, SUM(cost_samples) AS cost_samples, SUM(usage_time_ms) AS usage_time_ms, SUM(usage_time_samples) AS usage_time_samples, SUM(wall_time_ms) AS wall_time_ms, SUM(wall_time_samples) AS wall_time_samples, SUM(output_tokens_total) AS output_tokens_total, SUM(stream_duration_ms) AS stream_duration_ms, SUM(output_speed_samples) AS output_speed_samples, SUM(first_byte_sum_ms) AS first_byte_sum_ms, SUM(first_byte_samples) AS first_byte_samples, SUM(response_sum_ms) AS response_sum_ms, SUM(response_samples) AS response_samples FROM {table} WHERE dimension = ?1 AND stats_date BETWEEN ?2 AND ?3 GROUP BY series_key, reasoning_effort"
-    );
-    Ok(sqlx::query_as::<_, LongTermRollupRow>(&sql)
-        .bind(dimension)
-        .bind(start_date)
-        .bind(end_date)
-        .fetch_all(pool)
-        .await?)
-}
-
 pub(super) async fn load_long_term_daily_rows(
     pool: &Pool<Sqlite>,
     dimension: &str,
@@ -840,31 +822,6 @@ pub(super) async fn load_long_term_daily_rows(
     let mut sql = format!(
         "{} SELECT stats_date AS bucket_or_date, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples FROM active_daily WHERE dimension = ?1 AND stats_date BETWEEN ?2 AND ?3",
         long_term_projection_active_daily_cte(),
-    );
-    if series_key.is_some() {
-        sql.push_str(" AND series_key = ?4");
-    }
-    sql.push_str(" ORDER BY stats_date ASC, series_key ASC");
-    let mut query = sqlx::query_as::<_, LongTermRollupRow>(&sql)
-        .bind(dimension)
-        .bind(start_date)
-        .bind(end_date);
-    if let Some(series_key) = series_key {
-        query = query.bind(series_key);
-    }
-    Ok(query.fetch_all(pool).await?)
-}
-
-async fn load_long_term_daily_rows_from_table(
-    pool: &Pool<Sqlite>,
-    table: &str,
-    dimension: &str,
-    series_key: Option<&str>,
-    start_date: &str,
-    end_date: &str,
-) -> Result<Vec<LongTermRollupRow>> {
-    let mut sql = format!(
-        "SELECT stats_date AS bucket_or_date, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples FROM {table} WHERE dimension = ?1 AND stats_date BETWEEN ?2 AND ?3"
     );
     if series_key.is_some() {
         sql.push_str(" AND series_key = ?4");
@@ -1001,23 +958,6 @@ pub(crate) async fn fetch_long_term_overview(
 ) -> Result<Json<LongTermStatsOverviewResponse>, (StatusCode, String)> {
     let range = LongTermRange::parse(query.range.as_deref())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "invalid range".to_string()))?;
-    let route = long_term_projection_route(&state)
-        .await
-        .map_err(internal_error_tuple)?;
-    if matches!(
-        route,
-        LongTermProjectionRoute::PostgresServing | LongTermProjectionRoute::Unavailable
-    ) || (route == LongTermProjectionRoute::SqliteRollback
-        && !long_term_projection_rollback_ready(&state.pool)
-            .await
-            .map_err(internal_error_tuple)?)
-    {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("long-term analytics serving route is unavailable ({route:?})"),
-        ));
-    }
-    let rollback = route == LongTermProjectionRoute::SqliteRollback;
     let state_row = load_long_term_state(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -1038,51 +978,21 @@ pub(crate) async fn fetch_long_term_overview(
     }
     let (start_date, end_date) =
         long_term_date_window(range, state_row.statistics_start_date.as_deref());
-    let daily_rows = if rollback {
-        load_long_term_daily_rows_from_table(
-            &state.pool,
-            "long_term_usage_daily_rollback",
-            "overall",
-            None,
-            &start_date,
-            &end_date,
-        )
-        .await
-    } else {
-        load_long_term_daily_rows(&state.pool, "overall", None, &start_date, &end_date).await
-    }
-    .map_err(internal_error_tuple)?;
+    let daily_rows =
+        load_long_term_daily_rows(&state.pool, "overall", None, &start_date, &end_date)
+            .await
+            .map_err(internal_error_tuple)?;
     let global = aggregate_rollup_rows(&daily_rows);
     let daily = build_daily_points(&daily_rows, &start_date, &end_date);
     let models = build_series_summaries(
-        &if rollback {
-            load_long_term_rollups_from_table(
-                &state.pool,
-                "long_term_usage_daily_rollback",
-                "model",
-                &start_date,
-                &end_date,
-            )
+        &load_long_term_rollups(&state.pool, range, "model", &start_date, &end_date)
             .await
-        } else {
-            load_long_term_rollups(&state.pool, range, "model", &start_date, &end_date).await
-        }
-        .map_err(internal_error_tuple)?,
+            .map_err(internal_error_tuple)?,
     );
     let upstreams = build_series_summaries(
-        &if rollback {
-            load_long_term_rollups_from_table(
-                &state.pool,
-                "long_term_usage_daily_rollback",
-                "upstream",
-                &start_date,
-                &end_date,
-            )
+        &load_long_term_rollups(&state.pool, range, "upstream", &start_date, &end_date)
             .await
-        } else {
-            load_long_term_rollups(&state.pool, range, "upstream", &start_date, &end_date).await
-        }
-        .map_err(internal_error_tuple)?,
+            .map_err(internal_error_tuple)?,
     );
     Ok(Json(LongTermStatsOverviewResponse {
         status,
@@ -1121,23 +1031,6 @@ pub(crate) async fn fetch_long_term_series(
             "key must contain 1 to 8 series keys".to_string(),
         ));
     }
-    let route = long_term_projection_route(&state)
-        .await
-        .map_err(internal_error_tuple)?;
-    if matches!(
-        route,
-        LongTermProjectionRoute::PostgresServing | LongTermProjectionRoute::Unavailable
-    ) || (route == LongTermProjectionRoute::SqliteRollback
-        && !long_term_projection_rollback_ready(&state.pool)
-            .await
-            .map_err(internal_error_tuple)?)
-    {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("long-term analytics serving route is unavailable ({route:?})"),
-        ));
-    }
-    let rollback = route == LongTermProjectionRoute::SqliteRollback;
     let state_row = load_long_term_state(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -1156,19 +1049,9 @@ pub(crate) async fn fetch_long_term_series(
     }
     let (start_date, end_date) =
         long_term_date_window(range, state_row.statistics_start_date.as_deref());
-    let available = if rollback {
-        load_long_term_rollups_from_table(
-            &state.pool,
-            "long_term_usage_daily_rollback",
-            dimension,
-            &start_date,
-            &end_date,
-        )
+    let available = load_long_term_rollups(&state.pool, range, dimension, &start_date, &end_date)
         .await
-    } else {
-        load_long_term_rollups(&state.pool, range, dimension, &start_date, &end_date).await
-    }
-    .map_err(internal_error_tuple)?;
+        .map_err(internal_error_tuple)?;
     let available_keys = available
         .iter()
         .map(|row| row.series_key.as_str())
@@ -1181,21 +1064,10 @@ pub(crate) async fn fetch_long_term_series(
     }
     let mut series = Vec::with_capacity(keys.len());
     for key in keys {
-        let matching = if rollback {
-            load_long_term_daily_rows_from_table(
-                &state.pool,
-                "long_term_usage_daily_rollback",
-                dimension,
-                Some(&key),
-                &start_date,
-                &end_date,
-            )
-            .await
-        } else {
+        let matching =
             load_long_term_daily_rows(&state.pool, dimension, Some(&key), &start_date, &end_date)
                 .await
-        }
-        .map_err(internal_error_tuple)?;
+                .map_err(internal_error_tuple)?;
         let summary = available
             .iter()
             .find(|row| row.series_key.as_str() == key.as_str());

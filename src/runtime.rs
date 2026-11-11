@@ -2954,36 +2954,16 @@ async fn run_managed_task_once_with_scoped_observation(
                 }
                 crate::long_term_stats::LongTermProjectionFlushOutcome::DeferredByPressure {
                     retry_at,
-                } => {
-                    let route = crate::long_term_stats::long_term_projection_route(state.as_ref())
-                        .await
-                        .unwrap_or(crate::long_term_stats::LongTermProjectionRoute::Unavailable);
-                    let (wait_reason, detail) = match route {
-                        crate::long_term_stats::LongTermProjectionRoute::SqliteServing => {
-                            ("writer_pressure", "写入压力下保留已提交进度")
-                        }
-                        crate::long_term_stats::LongTermProjectionRoute::PostgresServing => {
-                            ("owner_postgres", "PostgreSQL 持有长期统计 serving fence")
-                        }
-                        crate::long_term_stats::LongTermProjectionRoute::SqliteRollback => (
-                            "rollback_projection",
-                            "等待回滚副本完成并保持 serving fence",
-                        ),
-                        crate::long_term_stats::LongTermProjectionRoute::Unavailable => {
-                            ("serving_fence_unavailable", "长期统计 serving fence 不可用")
-                        }
-                    };
-                    ManagedTaskExecution {
-                        summary: "长期统计投影已延后".to_string(),
-                        detail: Some(detail.to_string()),
-                        completion: Some("deferred".to_string()),
-                        core_completion: None,
-                        details: Some(json!({
-                            "waitReason": wait_reason,
-                            "retryAt": retry_at.map(|at| format!("{:?}", at)),
-                        })),
-                    }
-                }
+                } => ManagedTaskExecution {
+                    summary: "长期统计投影已延后".to_string(),
+                    detail: Some("写入压力下保留已提交进度".to_string()),
+                    completion: Some("deferred".to_string()),
+                    core_completion: None,
+                    details: Some(json!({
+                        "waitReason": "writer_pressure",
+                        "retryAt": retry_at.map(|at| format!("{:?}", at)),
+                    })),
+                },
             },
         );
     }

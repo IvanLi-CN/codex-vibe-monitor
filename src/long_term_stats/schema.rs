@@ -185,82 +185,9 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
             .context("failed to add archive file identity to replay markers")?;
     }
     ensure_long_term_projection_schema(pool).await?;
-    ensure_long_term_projection_rollback_schema(pool).await?;
     ensure_long_term_projection_source_indexes(pool).await?;
     ensure_long_term_projection_correction_trigger(pool).await?;
     ensure_long_term_projection_archive_trigger(pool).await?;
-    Ok(())
-}
-
-/// Durable metadata for the one-day SQLite rollback projection used while PostgreSQL owns the
-/// serving fence.  The rollback copy is deliberately separate from the legacy serving tables so
-/// an owner transition can never make a PG-owned writer mutate the old read path.
-pub(super) async fn ensure_long_term_projection_rollback_schema(pool: &Pool<Sqlite>) -> Result<()> {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS long_term_projection_rollback_state (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            owner_epoch INTEGER NOT NULL DEFAULT 0,
-            serving_fence INTEGER NOT NULL DEFAULT 0,
-            generation INTEGER NOT NULL DEFAULT 0,
-            source_cursor_row_id INTEGER NOT NULL DEFAULT 0,
-            rollback_window_days INTEGER NOT NULL DEFAULT 1,
-            state TEXT NOT NULL DEFAULT 'unavailable',
-            last_rebuilt_at TEXT,
-            last_error TEXT,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure long-term projection rollback state table")?;
-    sqlx::query(
-        "INSERT OR IGNORE INTO long_term_projection_rollback_state (id, rollback_window_days) VALUES (1, 1)",
-    )
-    .execute(pool)
-    .await
-    .context("failed to seed long-term projection rollback state")?;
-
-    // Keep the rollback tables schema-compatible with the serving rollups.  A `CREATE TABLE AS`
-    // copy is safe for upgrades because the source tables are created before this helper and the
-    // rollback tables are private implementation details with their own indexes below.
-    for (rollback, source) in [
-        ("long_term_usage_hourly_rollback", "long_term_usage_hourly"),
-        ("long_term_usage_daily_rollback", "long_term_usage_daily"),
-    ] {
-        sqlx::query(&format!(
-            "CREATE TABLE IF NOT EXISTS {rollback} AS SELECT * FROM {source} WHERE 0"
-        ))
-        .execute(pool)
-        .await
-        .with_context(|| format!("failed to ensure {rollback} table"))?;
-    }
-    sqlx::query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_long_term_usage_hourly_rollback_key ON long_term_usage_hourly_rollback (bucket_start_epoch, dimension, series_key)",
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure long-term hourly rollback key index")?;
-    sqlx::query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_long_term_usage_daily_rollback_key ON long_term_usage_daily_rollback (stats_date, dimension, series_key)",
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure long-term daily rollback key index")?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS long_term_projection_interval_state_rollback AS SELECT * FROM long_term_projection_interval_state WHERE 0",
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure long-term interval rollback state table")?;
-    sqlx::query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_long_term_projection_interval_state_rollback_key ON long_term_projection_interval_state_rollback (invocation_row_id)",
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure long-term interval rollback key index")?;
     Ok(())
 }
 
