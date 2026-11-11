@@ -59,10 +59,20 @@ struct HourlyRow {
     response_samples: i64,
 }
 
+#[derive(Debug, FromRow)]
+struct IntervalStateRow {
+    invocation_row_id: i64,
+    model_series_key: String,
+    upstream_series_key: String,
+    interval_start_ms: i64,
+    interval_end_ms: i64,
+}
+
 #[derive(Debug)]
 struct SourceSnapshot {
     daily: Vec<DailyRow>,
     hourly: Vec<HourlyRow>,
+    interval_state: Vec<IntervalStateRow>,
     cursor_row_id: i64,
     digest: [u8; 32],
     row_count: i64,
@@ -314,6 +324,12 @@ async fn load_source_snapshot(source_pool: &Pool<Sqlite>) -> Result<SourceSnapsh
     )
     .fetch_all(&mut *tx)
     .await?;
+    let interval_state = sqlx::query_as::<_, IntervalStateRow>(
+        "SELECT invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms
+         FROM long_term_projection_interval_state ORDER BY invocation_row_id",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     let mut digest = DigestBuilder::new();
     for row in &daily {
@@ -326,6 +342,7 @@ async fn load_source_snapshot(source_pool: &Pool<Sqlite>) -> Result<SourceSnapsh
         row_count: (daily.len() + hourly.len()) as i64,
         daily,
         hourly,
+        interval_state,
         cursor_row_id,
         digest: digest.finish(),
         owner_kind,
@@ -342,6 +359,9 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM cvm_analytics.analytics_hourly_rollups")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM cvm_analytics.analytics_projection_interval_state")
         .execute(&mut *tx)
         .await?;
     for row in &snapshot.daily {
@@ -398,6 +418,20 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
             .bind(row.output_speed_samples).bind(row.first_byte_sum_ms).bind(row.first_byte_samples)
             .bind(row.response_sum_ms).bind(row.response_samples)
             .execute(&mut *tx).await?;
+    }
+    for row in &snapshot.interval_state {
+        sqlx::query(
+            "INSERT INTO cvm_analytics.analytics_projection_interval_state
+             (invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(row.invocation_row_id)
+        .bind(&row.model_series_key)
+        .bind(&row.upstream_series_key)
+        .bind(row.interval_start_ms)
+        .bind(row.interval_end_ms)
+        .execute(&mut *tx)
+        .await?;
     }
     let daily_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM cvm_analytics.analytics_daily_rollups")
