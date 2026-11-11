@@ -99,7 +99,7 @@ impl DigestBuilder {
         self.i64(row.calls);
         self.i64(row.token_total);
         self.i64(row.token_samples);
-        self.f64(row.cost_total);
+        self.f64((row.cost_total * 100_000_000.0).round() / 100_000_000.0);
         self.i64(row.cost_samples);
         self.f64(row.usage_time_ms);
         self.i64(row.usage_time_samples);
@@ -124,7 +124,7 @@ impl DigestBuilder {
         self.i64(row.calls);
         self.i64(row.token_total);
         self.i64(row.token_samples);
-        self.f64(row.cost_total);
+        self.f64((row.cost_total * 100_000_000.0).round() / 100_000_000.0);
         self.i64(row.cost_samples);
         self.f64(row.usage_time_ms);
         self.i64(row.usage_time_samples);
@@ -385,7 +385,7 @@ async fn load_target_digest(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> R
         first_byte_samples, response_sum_ms, response_samples FROM cvm_analytics.analytics_daily_rollups
         ORDER BY stats_date, dimension, series_key").fetch_all(&mut **tx).await?;
     let hourly = sqlx::query_as::<_, HourlyRow>(
-        "SELECT EXTRACT(EPOCH FROM bucket_start)::bigint,
+        "SELECT EXTRACT(EPOCH FROM bucket_start)::bigint AS bucket_start_epoch,
         dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples,
         cost_total::double precision, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms,
         wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples,

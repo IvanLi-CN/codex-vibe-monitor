@@ -2165,11 +2165,12 @@ async fn set_replica_acknowledged(
     pool: &sqlx::PgPool,
     through_change_id: i64,
     caught_up: bool,
+    expected_generation: i64,
 ) -> Result<()> {
     let status = if caught_up { "caught_up" } else { "running" };
     let projection_status = if caught_up { "ready" } else { "preparing" };
     let mut transaction = pool.begin().await?;
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET source_acknowledged_through = $1,
@@ -2178,13 +2179,18 @@ async fn set_replica_acknowledged(
             service_eligible = FALSE,
             last_error_code = NULL,
             updated_at = NOW()
-        WHERE id = 1
+        WHERE id = 1 AND generation = $3
         "#,
     )
     .bind(through_change_id)
     .bind(status)
+    .bind(expected_generation)
     .execute(&mut *transaction)
     .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "PostgreSQL analytics replica acknowledgement fence is stale"
+    );
     sqlx::query(
         "UPDATE cvm_analytics.analytics_state SET status = $1, last_error_code = NULL, updated_at = NOW() WHERE id = 1",
     )
@@ -2199,11 +2205,12 @@ async fn set_replica_acknowledged_on_connection(
     connection: &mut sqlx::postgres::PgConnection,
     through_change_id: i64,
     caught_up: bool,
+    expected_generation: i64,
 ) -> Result<()> {
     let status = if caught_up { "caught_up" } else { "running" };
     let projection_status = if caught_up { "ready" } else { "preparing" };
     let mut transaction = connection.begin().await?;
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET source_acknowledged_through = $1,
@@ -2212,13 +2219,18 @@ async fn set_replica_acknowledged_on_connection(
             service_eligible = FALSE,
             last_error_code = NULL,
             updated_at = NOW()
-        WHERE id = 1
+        WHERE id = 1 AND generation = $3
         "#,
     )
     .bind(through_change_id)
     .bind(status)
+    .bind(expected_generation)
     .execute(&mut *transaction)
     .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "PostgreSQL analytics replica acknowledgement fence is stale"
+    );
     sqlx::query(
         "UPDATE cvm_analytics.analytics_state SET status = $1, last_error_code = NULL, updated_at = NOW() WHERE id = 1",
     )
@@ -3438,8 +3450,13 @@ async fn bootstrap_replica_locked(
     );
     // The snapshot is valid for its captured watermark. Leave the replica running and let the
     // bounded Journal catch-up apply changes committed while archive replay ran.
-    set_replica_acknowledged_on_connection(connection, snapshot_source.latest_change_id, false)
-        .await?;
+    set_replica_acknowledged_on_connection(
+        connection,
+        snapshot_source.latest_change_id,
+        false,
+        snapshot_source.state.generation,
+    )
+    .await?;
     Ok(())
 }
 
@@ -3550,6 +3567,7 @@ async fn resume_replica_control_locked(
                         pool,
                         state.consumer_checkpoint,
                         state.consumer_checkpoint >= source.latest_change_id,
+                        state.generation,
                     )
                     .await
                     .context(
@@ -3573,11 +3591,16 @@ async fn resume_replica_control_locked(
                     mark_replica_blocked(pool, "source_ack_failed", detail.clone()).await?;
                     return Err(anyhow!(detail));
                 }
-                set_replica_acknowledged(pool, source.latest_change_id, true)
-                    .await
-                    .context(
-                        "failed to persist the recovered analytics replica generation acknowledgement",
-                    )?;
+                set_replica_acknowledged(
+                    pool,
+                    source.latest_change_id,
+                    true,
+                    source.state.generation,
+                )
+                .await
+                .context(
+                    "failed to persist the recovered analytics replica generation acknowledgement",
+                )?;
                 state = load_replica_state(pool).await?;
                 continue;
             }
@@ -3601,6 +3624,7 @@ async fn resume_replica_control_locked(
                     pool,
                     through_change_id,
                     through_change_id >= source.latest_change_id,
+                    source.state.generation,
                 )
                 .await
                 .context("failed to persist recovered analytics replica source acknowledgement")?;
@@ -3631,7 +3655,8 @@ async fn resume_replica_control_locked(
                 mark_replica_blocked(pool, "source_ack_failed", detail.clone()).await?;
                 return Err(anyhow!(detail));
             }
-            set_replica_acknowledged(pool, source.latest_change_id, true).await?;
+            set_replica_acknowledged(pool, source.latest_change_id, true, source.state.generation)
+                .await?;
             return load_status_report(pool, source_pool).await;
         }
         if rows[0].change_id != from_change_id {
@@ -3682,7 +3707,7 @@ async fn resume_replica_control_locked(
             return Err(anyhow!(detail));
         }
         let caught_up = last_change_id >= source.latest_change_id;
-        set_replica_acknowledged(pool, last_change_id, caught_up).await?;
+        set_replica_acknowledged(pool, last_change_id, caught_up, state.generation).await?;
         state = load_replica_state(pool).await?;
         if caught_up {
             return load_status_report(pool, source_pool).await;
@@ -4191,7 +4216,7 @@ mod tests {
 
     #[test]
     fn schema_contract_is_separate_from_runtime_verification() {
-        assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 7);
+        assert_eq!(PG_ANALYTICS_REQUIRED_RELATIONS.len(), 8);
         assert_eq!(PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS.len(), 2);
         assert_eq!(PG_ANALYTICS_REQUIRED_COLUMNS.len(), 5);
         assert!(PG_ANALYTICS_SCHEMA_SQL.contains("CREATE SCHEMA IF NOT EXISTS cvm_analytics"));
@@ -5250,9 +5275,14 @@ mod tests {
         .execute(&mut *maintenance)
         .await;
         anyhow::ensure!(
-            maintenance_rollup_dml.is_err(),
-            "maintenance role unexpectedly retained unrelated rollup DML privilege"
+            maintenance_rollup_dml.is_ok(),
+            "maintenance role could not write the owned long-term rollup target"
         );
+        sqlx::query(
+            "DELETE FROM cvm_analytics.analytics_daily_rollups WHERE stats_date = '1970-01-01' AND dimension = 'overall' AND series_key = 'fixture'",
+        )
+        .execute(&mut *maintenance)
+        .await?;
         let maintenance_fact_read =
             sqlx::query("SELECT invoke_id FROM cvm_analytics.analytics_facts LIMIT 1")
                 .execute(&mut *maintenance)

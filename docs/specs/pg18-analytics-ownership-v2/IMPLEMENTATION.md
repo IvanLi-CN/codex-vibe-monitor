@@ -2,7 +2,7 @@
 
 ## Current status
 
-本主题已合并 ownership 状态、Journal fence、PG replay 状态字段和长期统计路由等基础结构，但完整 ownership cutover 尚未实现，不能把合并记录或任务 closed 状态作为可上线启用的证据。生产入口没有调用 owner CAS；PG daily/hourly、interval/read-model、repair/bucket/publication 缺少完整维护与读取链路，SQLite rollback projection 也没有在 PG serving 期间持续消费 Journal。
+本主题已合并 ownership 状态、Journal fence、PG replay 状态字段和长期统计路由等基础结构，并已接入受 parity gate 保护的 owner CAS、PG daily/hourly shadow/serving 和 rollback 镜像；完整 ownership cutover 尚未实现，不能把合并记录或任务 closed 状态作为可上线启用的证据。interval/read-model、repair/bucket/publication 仍缺少完整维护与读取链路，SQLite rollback projection 仍未形成独立的连续 Journal consumer。
 
 `ANALYTICS_OWNERSHIP_V2=enabled` 目前只允许进入 shadow/preparation 阶段，不能作为生产 owner 切换完成的信号；若 PG projection readiness、parity、rollback 和剩余 target gate 未全部满足，服务保持 unavailable 或 SQLite shadow serving。`ANALYTICS_BACKEND` 仍保持现有部署值。既有 `ANALYTICS_BACKEND=postgres` 的 facts/key read replica 与 projection ownership 是两个合同，前者不应要求 source 已成为 PG owner。
 

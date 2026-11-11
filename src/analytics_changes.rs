@@ -951,12 +951,13 @@ pub(crate) async fn claim_analytics_owner(
         .serving_fence
         .checked_add(1)
         .context("analytics serving fence overflow")?;
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE analytics_change_state
         SET owner_kind = ?1,
             owner_epoch = ?2,
             serving_fence = ?3,
+            generation = generation + 1,
             writer_id = ?4,
             writer_lease_expires_at = NULL,
             handoff_state = 'stable',
@@ -974,6 +975,10 @@ pub(crate) async fn claim_analytics_owner(
     .bind(expected_serving_fence)
     .execute(tx.as_mut())
     .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "analytics owner claim fence is stale"
+    );
     tx.commit().await?;
     load_analytics_serving_fence(pool).await
 }
@@ -993,6 +998,7 @@ pub(crate) async fn release_analytics_owner(
             handoff_state = 'unavailable',
             analytics_unavailable = 1,
             serving_fence = serving_fence + 1,
+            generation = generation + 1,
             updated_at = datetime('now')
         WHERE id = 1 AND writer_id = ?1 AND owner_epoch = ?2 AND serving_fence = ?3
         "#,

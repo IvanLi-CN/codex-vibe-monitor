@@ -70,5 +70,9 @@
     "current_ledger_status": "unavailable; prior revision is historical evidence only"
   },
   "test_helper_sha256": "17d496f380eea98c68ea04e8b8b241da01333da8fadad5bcfd1227ce37377f99",
-  "temporary_vm_cleanup": "released; stopped and no effective lease or active mappings verified"
+  "temporary_vm_cleanup": "released; stopped and no effective lease or active mappings verified",
+  "evidence_binding": "historical repair evidence; not current V2 PR acceptance evidence",
+  "historical_candidate_sha": "01a1c66bc3b32486def5eb1fc77b6ba5d558932f",
+  "current_v2_candidate_sha": "e87781f3ecc5dbdce08a346c9bb7be519233d756",
+  "current_v2_validation": "tracked separately by PR #1333 formal review and CI; this asset must not be used as current-head proof"
 }
