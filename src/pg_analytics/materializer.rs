@@ -1,5 +1,4 @@
 use super::*;
-use crate::analytics_changes::load_analytics_serving_fence;
 
 const PROJECTION_CONSUMER: &str = "long_term_v1";
 
