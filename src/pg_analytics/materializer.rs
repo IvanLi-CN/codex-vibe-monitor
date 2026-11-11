@@ -646,16 +646,16 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
     .bind(snapshot.cursor_row_id)
     .execute(&mut *tx)
     .await?;
-    // Every target table above was copied inside this transaction. Publish one
-    // generation and digest for the complete projection set only after all writes
-    // and the rollup digest verification have succeeded.
+    // Only the rollup targets have a verified digest/read contract today. Keep
+    // auxiliary targets fail-closed until their own per-target digest and serving
+    // readers are wired; copying their rows alone is not parity evidence.
     sqlx::query(
         "UPDATE cvm_analytics.analytics_projection_target_status
-         SET ready = TRUE,
+         SET ready = (target_kind IN ('daily_rollups', 'hourly_rollups')),
              generation = generation + 1,
-             source_row_count = $1,
-             source_digest = $2,
-             last_error_code = NULL,
+             source_row_count = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN $1 ELSE 0 END,
+             source_digest = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN $2 ELSE NULL END,
+             last_error_code = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN NULL ELSE 'target_parity_unverified' END,
              updated_at = NOW()",
     )
     .bind(snapshot.row_count)
