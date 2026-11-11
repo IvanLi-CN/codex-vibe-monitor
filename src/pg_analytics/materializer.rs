@@ -227,18 +227,27 @@ impl PgAnalyticsRuntime {
             .await;
             return Err(error);
         }
+        let current_source = sqlx::query_as::<_, (String, i64, i64, i64, i64)>(
+            "SELECT owner_kind, owner_epoch, serving_fence, generation, serving_ack_change_id
+             FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(source_pool)
+        .await;
         let (
             current_owner_kind,
             current_owner_epoch,
             current_serving_fence,
             current_generation,
             current_serving_ack_change_id,
-        ): (String, i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT owner_kind, owner_epoch, serving_fence, generation, serving_ack_change_id
-             FROM analytics_change_state WHERE id = 1",
-        )
-        .fetch_one(source_pool)
-        .await?;
+        ) = match current_source {
+            Ok(value) => value,
+            Err(error) => {
+                self.invalidate_long_term_projection_for_refresh()
+                    .await
+                    .context("failed to fail-closed after source freshness read failure")?;
+                return Err(error.into());
+            }
+        };
         if current_owner_kind != source_fence.0
             || current_owner_epoch != source_fence.1
             || current_serving_fence != source_fence.2
@@ -248,7 +257,9 @@ impl PgAnalyticsRuntime {
             // The copy has already committed, so force the target into a fail-closed
             // state before returning the freshness error. This path must not depend on
             // the source-side fence transaction succeeding again.
-            let _ = self.invalidate_long_term_projection_for_refresh().await;
+            self.invalidate_long_term_projection_for_refresh()
+                .await
+                .context("failed to fail-closed stale PostgreSQL analytics projection")?;
             bail!("analytics source owner fence changed during PostgreSQL materialization");
         }
         Ok(LongTermProjectionMaterializationReport {
