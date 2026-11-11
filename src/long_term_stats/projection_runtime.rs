@@ -97,6 +97,7 @@ pub(crate) async fn long_term_projection_rollback_ready(pool: &Pool<Sqlite>) -> 
               AND rollback.owner_epoch = source.owner_epoch
               AND rollback.serving_fence = source.serving_fence
               AND rollback.generation = source.generation
+              AND rollback.source_cursor_row_id >= source.serving_ack_change_id
               AND rollback.source_cursor_row_id = COALESCE(
                   (SELECT cursor_row_id FROM long_term_projection_state WHERE consumer = 'long_term_v1'),
                   0

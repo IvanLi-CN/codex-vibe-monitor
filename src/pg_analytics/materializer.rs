@@ -67,6 +67,11 @@ struct SourceSnapshot {
     cursor_row_id: i64,
     digest: [u8; 32],
     row_count: i64,
+    owner_kind: String,
+    owner_epoch: i64,
+    serving_fence: i64,
+    generation: i64,
+    serving_ack_change_id: i64,
 }
 
 #[derive(Debug)]
@@ -180,7 +185,18 @@ impl PgAnalyticsRuntime {
             .as_ref()
             .context("PostgreSQL analytics maintenance pool is unavailable")?;
         let snapshot = load_source_snapshot(source_pool).await?;
-        let source_fence = load_analytics_serving_fence(source_pool).await?;
+        let source_fence = (
+            snapshot.owner_kind.clone(),
+            snapshot.owner_epoch,
+            snapshot.serving_fence,
+            snapshot.generation,
+        );
+        if snapshot.owner_kind == "postgres" {
+            anyhow::ensure!(
+                snapshot.cursor_row_id >= snapshot.serving_ack_change_id,
+                "SQLite rollback projection cursor does not cover the PostgreSQL serving acknowledgement"
+            );
+        }
         sqlx::query(
             "UPDATE cvm_analytics.analytics_projection_state
              SET status = 'preparing', last_error_code = 'snapshot_copy_in_progress', updated_at = NOW()
@@ -213,10 +229,10 @@ impl PgAnalyticsRuntime {
             return Err(error);
         }
         let current_fence = load_analytics_serving_fence(source_pool).await?;
-        if current_fence.owner_kind != source_fence.owner_kind
-            || current_fence.owner_epoch != source_fence.owner_epoch
-            || current_fence.serving_fence != source_fence.serving_fence
-            || current_fence.generation != source_fence.generation
+        if current_fence.owner_kind != source_fence.0
+            || current_fence.owner_epoch != source_fence.1
+            || current_fence.serving_fence != source_fence.2
+            || current_fence.generation != source_fence.3
         {
             self.invalidate_long_term_projection_for_refresh().await?;
             bail!("analytics source owner fence changed during PostgreSQL materialization");
@@ -231,6 +247,13 @@ impl PgAnalyticsRuntime {
 
 async fn load_source_snapshot(source_pool: &Pool<Sqlite>) -> Result<SourceSnapshot> {
     let mut tx = source_pool.begin().await?;
+    let (owner_kind, owner_epoch, serving_fence, generation, serving_ack_change_id):
+        (String, i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT owner_kind, owner_epoch, serving_fence, generation, serving_ack_change_id FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
     let status =
         sqlx::query_scalar::<_, String>("SELECT status FROM long_term_stats_state WHERE id = 1")
             .fetch_one(&mut *tx)
@@ -280,6 +303,11 @@ async fn load_source_snapshot(source_pool: &Pool<Sqlite>) -> Result<SourceSnapsh
         hourly,
         cursor_row_id,
         digest: digest.finish(),
+        owner_kind,
+        owner_epoch,
+        serving_fence,
+        generation,
+        serving_ack_change_id,
     })
 }
 
