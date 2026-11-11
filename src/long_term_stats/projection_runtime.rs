@@ -150,12 +150,51 @@ async fn refresh_long_term_projection_rollback_copy(state: &AppState) -> Result<
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query("DELETE FROM long_term_projection_interval_state_rollback")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("INSERT INTO long_term_projection_interval_state_rollback SELECT * FROM long_term_projection_interval_state")
-        .execute(&mut *tx)
-        .await?;
+    for (rollback, source) in [
+        (
+            "long_term_projection_interval_state_rollback",
+            "long_term_projection_interval_state",
+        ),
+        (
+            "long_term_projection_intervals_rollback",
+            "long_term_projection_intervals",
+        ),
+        (
+            "long_term_projection_interval_suppressions_rollback",
+            "long_term_projection_interval_suppressions",
+        ),
+        (
+            "long_term_projection_rebuild_members_rollback",
+            "long_term_projection_rebuild_members",
+        ),
+        (
+            "long_term_projection_dirty_buckets_rollback",
+            "long_term_projection_dirty_buckets",
+        ),
+        (
+            "long_term_projection_bucket_state_rollback",
+            "long_term_projection_bucket_state",
+        ),
+        (
+            "long_term_projection_daily_backups_rollback",
+            "long_term_projection_daily_backups",
+        ),
+        (
+            "long_term_projection_date_publications_rollback",
+            "long_term_projection_date_publications",
+        ),
+        (
+            "long_term_projection_daily_backup_claims_rollback",
+            "long_term_projection_daily_backup_claims",
+        ),
+    ] {
+        sqlx::query(&format!("DELETE FROM {rollback}"))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&format!("INSERT INTO {rollback} SELECT * FROM {source}"))
+            .execute(&mut *tx)
+            .await?;
+    }
     let cursor = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(cursor_row_id, 0) FROM long_term_projection_state WHERE consumer = ?1",
     )
@@ -1525,18 +1564,9 @@ pub(super) async fn flush_long_term_projection_unlocked(
 ) -> Result<LongTermProjectionFlushOutcome> {
     let route = long_term_projection_route(state).await?;
     if route == LongTermProjectionRoute::PostgresServing {
-        // Keep the SQLite projection current as the one-day rollback source while PG
-        // serves reads. The same bounded Journal consumer advances it, then the PG
-        // materializer mirrors the committed snapshot and refreshes the rollback copy.
-        state
-            .pg_analytics
-            .invalidate_long_term_projection_for_refresh()
-            .await?;
-        let result = run_long_term_projection_flush_with_retry(&state.shutdown, || {
-            flush_long_term_projection_inner(state, trigger)
-        })
-        .await?;
-        let _ = result;
+        // PostgreSQL ownership freezes the legacy SQLite serving projection. The rollback
+        // consumer writes only the dedicated rollback tables in one transaction; it never
+        // invokes the canonical SQLite projection writer while PG owns the serving fence.
         refresh_long_term_projection_rollback_copy(state).await?;
         state
             .pg_analytics

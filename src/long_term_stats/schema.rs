@@ -249,12 +249,51 @@ pub(super) async fn ensure_long_term_projection_rollback_schema(pool: &Pool<Sqli
     .await
     .context("failed to ensure long-term daily rollback key index")?;
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS long_term_projection_interval_state_rollback AS SELECT * FROM long_term_projection_interval_state WHERE 0",
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure long-term interval rollback state table")?;
+    for (rollback, source) in [
+        (
+            "long_term_projection_interval_state_rollback",
+            "long_term_projection_interval_state",
+        ),
+        (
+            "long_term_projection_intervals_rollback",
+            "long_term_projection_intervals",
+        ),
+        (
+            "long_term_projection_interval_suppressions_rollback",
+            "long_term_projection_interval_suppressions",
+        ),
+        (
+            "long_term_projection_rebuild_members_rollback",
+            "long_term_projection_rebuild_members",
+        ),
+        (
+            "long_term_projection_dirty_buckets_rollback",
+            "long_term_projection_dirty_buckets",
+        ),
+        (
+            "long_term_projection_bucket_state_rollback",
+            "long_term_projection_bucket_state",
+        ),
+        (
+            "long_term_projection_daily_backups_rollback",
+            "long_term_projection_daily_backups",
+        ),
+        (
+            "long_term_projection_date_publications_rollback",
+            "long_term_projection_date_publications",
+        ),
+        (
+            "long_term_projection_daily_backup_claims_rollback",
+            "long_term_projection_daily_backup_claims",
+        ),
+    ] {
+        sqlx::query(&format!(
+            "CREATE TABLE IF NOT EXISTS {rollback} AS SELECT * FROM {source} WHERE 0"
+        ))
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to ensure {rollback} table"))?;
+    }
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_long_term_projection_interval_state_rollback_key ON long_term_projection_interval_state_rollback (invocation_row_id)",
     )
