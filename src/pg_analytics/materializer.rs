@@ -308,19 +308,29 @@ impl PgAnalyticsRuntime {
 
         let result = copy_snapshot(target.inner(), &snapshot).await;
         if let Err(error) = result {
-            let _ = sqlx::query(
+            let state_cleanup = sqlx::query(
                 "UPDATE cvm_analytics.analytics_projection_state
                  SET status = 'error', last_error_code = 'snapshot_copy_failed', updated_at = NOW()
                  WHERE id = 1",
             )
             .execute(target.inner())
             .await;
-            let _ = sqlx::query(
+            let target_cleanup = sqlx::query(
                 "UPDATE cvm_analytics.analytics_projection_target_status
                  SET ready = FALSE, last_error_code = 'snapshot_copy_failed', updated_at = NOW()",
             )
             .execute(target.inner())
             .await;
+            if let Err(cleanup_error) = state_cleanup {
+                return Err(error.context(format!(
+                    "projection copy failed and state fail-closed cleanup failed: {cleanup_error}"
+                )));
+            }
+            if let Err(cleanup_error) = target_cleanup {
+                return Err(error.context(format!(
+                    "projection copy failed and target fail-closed cleanup failed: {cleanup_error}"
+                )));
+            }
             return Err(error);
         }
         let current_source = sqlx::query_as::<_, (String, i64, i64, i64, i64)>(
