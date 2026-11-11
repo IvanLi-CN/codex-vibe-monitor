@@ -13,19 +13,10 @@ pub(crate) const PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS: &[&str] = &[
     "cvm_analytics.analytics_replica_applied_changes",
 ];
 
-pub(crate) const PG_ANALYTICS_REQUIRED_COLUMNS: &[(&str, &str)] = &[
-    (
-        "cvm_analytics.analytics_replica_state",
-        "fact_date_semantics_version",
-    ),
-    ("cvm_analytics.analytics_replica_state", "owner_kind"),
-    ("cvm_analytics.analytics_replica_state", "owner_epoch"),
-    ("cvm_analytics.analytics_replica_state", "serving_fence"),
-    (
-        "cvm_analytics.analytics_replica_state",
-        "serving_ack_change_id",
-    ),
-];
+pub(crate) const PG_ANALYTICS_REQUIRED_COLUMNS: &[(&str, &str)] = &[(
+    "cvm_analytics.analytics_replica_state",
+    "fact_date_semantics_version",
+)];
 
 // Provisioning is intentionally separate from application startup. The runtime only verifies
 // these relations and never creates or mutates the analytics schema implicitly.
@@ -187,10 +178,6 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_state (
         'unbootstrapped', 'bootstrapping', 'running', 'paused',
         'caught_up', 'invalidated', 'blocked', 'error'
     )),
-    owner_kind TEXT NOT NULL DEFAULT 'sqlite' CHECK (owner_kind IN ('sqlite', 'postgres')),
-    owner_epoch BIGINT NOT NULL DEFAULT 1 CHECK (owner_epoch > 0),
-    serving_fence BIGINT NOT NULL DEFAULT 1 CHECK (serving_fence > 0),
-    serving_ack_change_id BIGINT NOT NULL DEFAULT 0 CHECK (serving_ack_change_id >= 0),
     fact_date_semantics_version BIGINT NOT NULL DEFAULT 2,
     generation BIGINT NOT NULL DEFAULT 0,
     baseline_generation BIGINT NOT NULL DEFAULT 0,
@@ -210,14 +197,6 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_state (
 -- Existing replica state is legacy until an explicit bootstrap rebuilds its facts.
 ALTER TABLE cvm_analytics.analytics_replica_state
     ADD COLUMN IF NOT EXISTS fact_date_semantics_version BIGINT NOT NULL DEFAULT 1;
-ALTER TABLE cvm_analytics.analytics_replica_state
-    ADD COLUMN IF NOT EXISTS owner_kind TEXT NOT NULL DEFAULT 'sqlite';
-ALTER TABLE cvm_analytics.analytics_replica_state
-    ADD COLUMN IF NOT EXISTS owner_epoch BIGINT NOT NULL DEFAULT 1;
-ALTER TABLE cvm_analytics.analytics_replica_state
-    ADD COLUMN IF NOT EXISTS serving_fence BIGINT NOT NULL DEFAULT 1;
-ALTER TABLE cvm_analytics.analytics_replica_state
-    ADD COLUMN IF NOT EXISTS serving_ack_change_id BIGINT NOT NULL DEFAULT 0;
 
 -- Older schemas may have accepted diagnostic bodies. Clear them and enforce the
 -- current bounded-error-code contract before the replica can be used.

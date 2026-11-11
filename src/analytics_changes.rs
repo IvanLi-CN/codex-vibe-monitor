@@ -3,10 +3,6 @@ use super::*;
 pub(crate) const ANALYTICS_SOURCE_EVENT_VERSION: i64 = 1;
 pub(crate) const ANALYTICS_SOURCE_FACT_DATE_SEMANTICS_VERSION: i64 = 2;
 const ANALYTICS_CHANGE_CAPACITY_DEFAULT: i64 = 10_000;
-const ANALYTICS_CHANGE_BYTES_CAPACITY_DEFAULT: i64 = 64 * 1024 * 1024;
-const ANALYTICS_CHANGE_CAPACITY_SAFETY_MARGIN_PERCENT: i64 = 25;
-const ANALYTICS_CHANGE_WARNING_PERCENT: i64 = 80;
-const ANALYTICS_CHANGE_ROLLBACK_WINDOW_SECS: i64 = 24 * 60 * 60;
 const ANALYTICS_CHANGE_FACT_MAX_BYTES: usize = 64 * 1024;
 const ANALYTICS_CHANGE_ENTITY_KEY_MAX_BYTES: usize = 512;
 const ANALYTICS_CHANGE_TEXT_MAX_CHARS: usize = 256;
@@ -69,7 +65,7 @@ const LEGACY_ANALYTICS_HISTORY_STATE_CHECKS: &[(&str, &str)] = &[
     ("summary_source_change_cursor", "cursor > 0"),
 ];
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, Copy, FromRow)]
 struct AnalyticsChangeStateRow {
     generation: i64,
     coverage_revision: i64,
@@ -77,61 +73,6 @@ struct AnalyticsChangeStateRow {
     capacity: i64,
     invalidation_pending: i64,
     historical_replay_required: i64,
-    owner_kind: String,
-    owner_epoch: i64,
-    serving_fence: i64,
-    writer_id: Option<String>,
-    writer_lease_expires_at: Option<String>,
-    serving_ack_change_id: i64,
-    retention_floor_change_id: i64,
-    journal_event_capacity: i64,
-    journal_byte_capacity: i64,
-    journal_peak_events: i64,
-    journal_peak_bytes: i64,
-    journal_warning: i64,
-    journal_backpressure: i64,
-    analytics_unavailable: i64,
-    handoff_state: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) struct AnalyticsServingFence {
-    pub(crate) owner_kind: &'static str,
-    pub(crate) owner_epoch: i64,
-    pub(crate) serving_fence: i64,
-    pub(crate) generation: i64,
-    pub(crate) serving_ack_change_id: i64,
-    pub(crate) retention_floor_change_id: i64,
-    pub(crate) unavailable: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) struct AnalyticsJournalCapacity {
-    pub(crate) event_capacity: i64,
-    pub(crate) byte_capacity: i64,
-    pub(crate) peak_events: i64,
-    pub(crate) peak_bytes: i64,
-    pub(crate) warning: bool,
-    pub(crate) backpressure: bool,
-}
-
-pub(crate) fn calculate_analytics_journal_capacity(
-    peak_events: i64,
-    peak_bytes: i64,
-) -> AnalyticsJournalCapacity {
-    let margin = 100 + ANALYTICS_CHANGE_CAPACITY_SAFETY_MARGIN_PERCENT;
-    let event_capacity = peak_events.max(1).saturating_mul(margin).saturating_add(99) / 100;
-    let byte_capacity = peak_bytes.max(1).saturating_mul(margin).saturating_add(99) / 100;
-    AnalyticsJournalCapacity {
-        event_capacity: event_capacity.max(ANALYTICS_CHANGE_CAPACITY_DEFAULT),
-        byte_capacity: byte_capacity.max(ANALYTICS_CHANGE_BYTES_CAPACITY_DEFAULT),
-        peak_events,
-        peak_bytes,
-        warning: false,
-        backpressure: false,
-    }
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -289,21 +230,6 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
             historical_replay_required INTEGER NOT NULL DEFAULT 0 CHECK(historical_replay_required IN (0, 1)),
             historical_history_unknown INTEGER NOT NULL DEFAULT 0 CHECK(historical_history_unknown IN (0, 1)),
             historical_history_initialized INTEGER NOT NULL DEFAULT 0 CHECK(historical_history_initialized IN (0, 1)),
-            owner_kind TEXT NOT NULL DEFAULT 'sqlite' CHECK(owner_kind IN ('sqlite', 'postgres')),
-            owner_epoch INTEGER NOT NULL DEFAULT 1 CHECK(owner_epoch > 0),
-            serving_fence INTEGER NOT NULL DEFAULT 1 CHECK(serving_fence > 0),
-            writer_id TEXT,
-            writer_lease_expires_at TEXT,
-            serving_ack_change_id INTEGER NOT NULL DEFAULT 0 CHECK(serving_ack_change_id >= 0),
-            retention_floor_change_id INTEGER NOT NULL DEFAULT 1 CHECK(retention_floor_change_id >= 1),
-            journal_event_capacity INTEGER NOT NULL DEFAULT 10000 CHECK(journal_event_capacity > 0),
-            journal_byte_capacity INTEGER NOT NULL DEFAULT 67108864 CHECK(journal_byte_capacity > 0),
-            journal_peak_events INTEGER NOT NULL DEFAULT 0 CHECK(journal_peak_events >= 0),
-            journal_peak_bytes INTEGER NOT NULL DEFAULT 0 CHECK(journal_peak_bytes >= 0),
-            journal_warning INTEGER NOT NULL DEFAULT 0 CHECK(journal_warning IN (0, 1)),
-            journal_backpressure INTEGER NOT NULL DEFAULT 0 CHECK(journal_backpressure IN (0, 1)),
-            analytics_unavailable INTEGER NOT NULL DEFAULT 0 CHECK(analytics_unavailable IN (0, 1)),
-            handoff_state TEXT NOT NULL DEFAULT 'stable' CHECK(handoff_state IN ('stable', 'handoff', 'rollback', 'unavailable')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -359,42 +285,6 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
         .context("failed to add analytics history migration state")?;
     }
 
-    // These columns were added after the first source-journal release. Keep the migration
-    // additive so older SQLite databases can restart safely before the new control plane is used.
-    for (name, definition) in [
-        ("owner_kind", "TEXT NOT NULL DEFAULT 'sqlite'"),
-        ("owner_epoch", "INTEGER NOT NULL DEFAULT 1"),
-        ("serving_fence", "INTEGER NOT NULL DEFAULT 1"),
-        ("writer_id", "TEXT"),
-        ("writer_lease_expires_at", "TEXT"),
-        ("serving_ack_change_id", "INTEGER NOT NULL DEFAULT 0"),
-        ("retention_floor_change_id", "INTEGER NOT NULL DEFAULT 1"),
-        ("journal_event_capacity", "INTEGER NOT NULL DEFAULT 10000"),
-        ("journal_byte_capacity", "INTEGER NOT NULL DEFAULT 67108864"),
-        ("journal_peak_events", "INTEGER NOT NULL DEFAULT 0"),
-        ("journal_peak_bytes", "INTEGER NOT NULL DEFAULT 0"),
-        ("journal_warning", "INTEGER NOT NULL DEFAULT 0"),
-        ("journal_backpressure", "INTEGER NOT NULL DEFAULT 0"),
-        ("analytics_unavailable", "INTEGER NOT NULL DEFAULT 0"),
-        ("handoff_state", "TEXT NOT NULL DEFAULT 'stable'"),
-    ] {
-        let exists = sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('analytics_change_state') WHERE name = '{name}')"
-        ))
-        .fetch_one(pool)
-        .await
-        .with_context(|| format!("failed to inspect analytics ownership column {name}"))?
-            != 0;
-        if !exists {
-            sqlx::query(&format!(
-                "ALTER TABLE analytics_change_state ADD COLUMN {name} {definition}"
-            ))
-            .execute(pool)
-            .await
-            .with_context(|| format!("failed to add analytics ownership column {name}"))?;
-        }
-    }
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS analytics_change_coverage (
@@ -412,20 +302,6 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS analytics_change_consumption (
-            replica_id TEXT PRIMARY KEY,
-            generation INTEGER NOT NULL,
-            consumed_through_change_id INTEGER NOT NULL DEFAULT 0 CHECK(consumed_through_change_id >= 0),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure analytics change consumption table")?;
-
-    sqlx::query(
-        r#"
         INSERT INTO analytics_change_state (id, capacity)
         VALUES (1, ?1)
         ON CONFLICT(id) DO NOTHING
@@ -435,21 +311,6 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to seed analytics change state")?;
-
-    sqlx::query(
-        r#"
-        UPDATE analytics_change_state
-        SET journal_event_capacity = CASE WHEN journal_event_capacity > 0 THEN journal_event_capacity ELSE ?1 END,
-            journal_byte_capacity = CASE WHEN journal_byte_capacity > 0 THEN journal_byte_capacity ELSE ?2 END,
-            retention_floor_change_id = CASE WHEN retention_floor_change_id > 0 THEN retention_floor_change_id ELSE 1 END
-        WHERE id = 1
-        "#,
-    )
-    .bind(ANALYTICS_CHANGE_CAPACITY_DEFAULT)
-    .bind(ANALYTICS_CHANGE_BYTES_CAPACITY_DEFAULT)
-    .execute(pool)
-    .await
-    .context("failed to seed analytics ownership capacity")?;
 
     let historical_history_initialized: i64 = sqlx::query_scalar(
         "SELECT historical_history_initialized FROM analytics_change_state WHERE id = 1",
@@ -596,7 +457,6 @@ pub(crate) async fn ensure_analytics_changes_schema(pool: &Pool<Sqlite>) -> Resu
         "CREATE INDEX IF NOT EXISTS idx_analytics_change_events_generation_cursor ON analytics_change_events (generation, change_id)",
         "CREATE INDEX IF NOT EXISTS idx_analytics_change_events_entity_cursor ON analytics_change_events (entity_kind, source_row_id, change_id)",
         "CREATE INDEX IF NOT EXISTS idx_analytics_change_coverage_generation ON analytics_change_coverage (generation, covered_through_change_id)",
-        "CREATE INDEX IF NOT EXISTS idx_analytics_change_consumption_generation ON analytics_change_consumption (generation, consumed_through_change_id)",
     ] {
         sqlx::query(statement)
             .execute(pool)
@@ -739,13 +599,7 @@ async fn load_analytics_change_state(tx: &mut SqliteConnection) -> Result<Analyt
     sqlx::query_as::<_, AnalyticsChangeStateRow>(
         r#"
         SELECT generation, coverage_revision, retained_from_change_id, capacity,
-               invalidation_pending, historical_replay_required,
-               owner_kind, owner_epoch, serving_fence, writer_id,
-               writer_lease_expires_at, serving_ack_change_id,
-               retention_floor_change_id, journal_event_capacity,
-               journal_byte_capacity, journal_peak_events, journal_peak_bytes,
-               journal_warning, journal_backpressure, analytics_unavailable,
-               handoff_state
+               invalidation_pending, historical_replay_required
         FROM analytics_change_state
         WHERE id = 1
         "#,
@@ -753,349 +607,6 @@ async fn load_analytics_change_state(tx: &mut SqliteConnection) -> Result<Analyt
     .fetch_one(&mut *tx)
     .await
     .context("analytics change state is not initialized")
-}
-
-async fn refresh_analytics_journal_pressure_tx(
-    tx: &mut SqliteConnection,
-    state: &AnalyticsChangeStateRow,
-) -> Result<AnalyticsJournalCapacity> {
-    let event_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM analytics_change_events")
-        .fetch_one(&mut *tx)
-        .await?;
-    let byte_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(SUM(length(CAST(fact_json AS BLOB))), 0) FROM analytics_change_events",
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-    let warning = event_count.saturating_mul(100)
-        >= state
-            .journal_event_capacity
-            .saturating_mul(ANALYTICS_CHANGE_WARNING_PERCENT)
-        || byte_count.saturating_mul(100)
-            >= state
-                .journal_byte_capacity
-                .saturating_mul(ANALYTICS_CHANGE_WARNING_PERCENT);
-    let backpressure =
-        event_count > state.journal_event_capacity || byte_count > state.journal_byte_capacity;
-    sqlx::query(
-        r#"
-        UPDATE analytics_change_state
-        SET journal_peak_events = MAX(journal_peak_events, ?1),
-            journal_peak_bytes = MAX(journal_peak_bytes, ?2),
-            journal_warning = ?3,
-            journal_backpressure = ?4,
-            analytics_unavailable = CASE WHEN ?4 <> 0 THEN 1 ELSE analytics_unavailable END,
-            updated_at = datetime('now')
-        WHERE id = 1
-        "#,
-    )
-    .bind(event_count)
-    .bind(byte_count)
-    .bind(i64::from(warning))
-    .bind(i64::from(backpressure))
-    .execute(&mut *tx)
-    .await?;
-    Ok(AnalyticsJournalCapacity {
-        event_capacity: state.journal_event_capacity,
-        byte_capacity: state.journal_byte_capacity,
-        peak_events: event_count,
-        peak_bytes: byte_count,
-        warning,
-        backpressure,
-    })
-}
-
-async fn enforce_analytics_journal_capacity_tx(
-    tx: &mut SqliteConnection,
-    state: &AnalyticsChangeStateRow,
-    next_fact_bytes: i64,
-) -> Result<()> {
-    let event_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM analytics_change_events")
-        .fetch_one(&mut *tx)
-        .await?;
-    let byte_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(SUM(length(CAST(fact_json AS BLOB))), 0) FROM analytics_change_events",
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-    if event_count.saturating_add(1) <= state.journal_event_capacity
-        && byte_count.saturating_add(next_fact_bytes) <= state.journal_byte_capacity
-    {
-        return Ok(());
-    }
-    let consumed_floor = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COALESCE(
-            MIN(consumed_through_change_id),
-            (SELECT MIN(covered_through_change_id)
-             FROM analytics_change_coverage WHERE generation = ?1),
-            0
-        )
-        FROM analytics_change_consumption WHERE generation = ?1
-        "#,
-    )
-    .bind(state.generation)
-    .fetch_one(&mut *tx)
-    .await?;
-    if consumed_floor < 1 {
-        sqlx::query(
-            "UPDATE analytics_change_state SET journal_warning = 1, journal_backpressure = 1, analytics_unavailable = 1, updated_at = datetime('now') WHERE id = 1",
-        )
-        .execute(&mut *tx)
-        .await?;
-        bail!("analytics source journal capacity exhausted; backpressure active");
-    }
-    let evictable_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM analytics_change_events WHERE change_id <= ?1",
-    )
-    .bind(consumed_floor)
-    .fetch_one(&mut *tx)
-    .await?;
-    let evictable_bytes = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(SUM(length(CAST(fact_json AS BLOB))), 0) FROM analytics_change_events WHERE change_id <= ?1",
-    )
-    .bind(consumed_floor)
-    .fetch_one(&mut *tx)
-    .await?;
-    if event_count
-        .saturating_sub(evictable_count)
-        .saturating_add(1)
-        > state.journal_event_capacity
-        || byte_count
-            .saturating_sub(evictable_bytes)
-            .saturating_add(next_fact_bytes)
-            > state.journal_byte_capacity
-    {
-        sqlx::query(
-            "UPDATE analytics_change_state SET journal_warning = 1, journal_backpressure = 1, analytics_unavailable = 1, updated_at = datetime('now') WHERE id = 1",
-        )
-        .execute(&mut *tx)
-        .await?;
-        bail!("analytics source journal capacity exhausted; backpressure active");
-    }
-    sqlx::query("DELETE FROM analytics_change_events WHERE change_id <= ?1")
-        .bind(consumed_floor)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "UPDATE analytics_change_state SET retained_from_change_id = MAX(retained_from_change_id, ?1), retention_floor_change_id = MAX(retention_floor_change_id, ?1), updated_at = datetime('now') WHERE id = 1",
-    )
-    .bind(consumed_floor.saturating_add(1))
-    .execute(&mut *tx)
-    .await?;
-    Ok(())
-}
-
-pub(crate) async fn load_analytics_serving_fence(
-    pool: &Pool<Sqlite>,
-) -> Result<AnalyticsServingFence> {
-    let state = sqlx::query_as::<_, AnalyticsChangeStateRow>(
-        r#"
-        SELECT generation, coverage_revision, retained_from_change_id, capacity,
-               invalidation_pending, historical_replay_required,
-               owner_kind, owner_epoch, serving_fence, writer_id,
-               writer_lease_expires_at, serving_ack_change_id,
-               retention_floor_change_id, journal_event_capacity,
-               journal_byte_capacity, journal_peak_events, journal_peak_bytes,
-               journal_warning, journal_backpressure, analytics_unavailable,
-               handoff_state
-        FROM analytics_change_state WHERE id = 1
-        "#,
-    )
-    .fetch_one(pool)
-    .await
-    .context("analytics serving fence is not initialized")?;
-    Ok(AnalyticsServingFence {
-        owner_kind: match state.owner_kind.as_str() {
-            "postgres" => "postgres",
-            _ => "sqlite",
-        },
-        owner_epoch: state.owner_epoch,
-        serving_fence: state.serving_fence,
-        generation: state.generation,
-        serving_ack_change_id: state.serving_ack_change_id,
-        retention_floor_change_id: state.retention_floor_change_id,
-        unavailable: state.analytics_unavailable != 0
-            || state.journal_backpressure != 0
-            || state.handoff_state == "unavailable",
-    })
-}
-
-pub(crate) async fn claim_analytics_owner(
-    pool: &Pool<Sqlite>,
-    owner_kind: &str,
-    writer_id: &str,
-    expected_owner_epoch: i64,
-    expected_serving_fence: i64,
-) -> Result<AnalyticsServingFence> {
-    if !matches!(owner_kind, "sqlite" | "postgres") {
-        bail!("unsupported analytics owner: {owner_kind}");
-    }
-    let writer_id = bounded_required_text(writer_id, "analytics writer id")?;
-    let mut tx = pool.begin().await?;
-    let state = load_analytics_change_state(tx.as_mut()).await?;
-    if state.owner_epoch != expected_owner_epoch {
-        bail!("analytics owner epoch is stale");
-    }
-    if state.serving_fence != expected_serving_fence {
-        bail!("analytics serving fence is stale");
-    }
-    if state.writer_id.as_deref().is_some_and(|id| id != writer_id) {
-        bail!("analytics writer is already owned");
-    }
-    let next_epoch = state
-        .owner_epoch
-        .checked_add(1)
-        .context("analytics owner epoch overflow")?;
-    let next_fence = state
-        .serving_fence
-        .checked_add(1)
-        .context("analytics serving fence overflow")?;
-    sqlx::query(
-        r#"
-        UPDATE analytics_change_state
-        SET owner_kind = ?1,
-            owner_epoch = ?2,
-            serving_fence = ?3,
-            writer_id = ?4,
-            writer_lease_expires_at = NULL,
-            handoff_state = 'stable',
-            analytics_unavailable = 0,
-            journal_backpressure = 0,
-            updated_at = datetime('now')
-        WHERE id = 1 AND owner_epoch = ?5 AND serving_fence = ?6
-        "#,
-    )
-    .bind(owner_kind)
-    .bind(next_epoch)
-    .bind(next_fence)
-    .bind(&writer_id)
-    .bind(expected_owner_epoch)
-    .bind(expected_serving_fence)
-    .execute(tx.as_mut())
-    .await?;
-    tx.commit().await?;
-    load_analytics_serving_fence(pool).await
-}
-
-pub(crate) async fn release_analytics_owner(
-    pool: &Pool<Sqlite>,
-    writer_id: &str,
-    expected_owner_epoch: i64,
-    expected_serving_fence: i64,
-) -> Result<AnalyticsServingFence> {
-    let writer_id = bounded_required_text(writer_id, "analytics writer id")?;
-    let result = sqlx::query(
-        r#"
-        UPDATE analytics_change_state
-        SET writer_id = NULL,
-            writer_lease_expires_at = NULL,
-            handoff_state = 'unavailable',
-            analytics_unavailable = 1,
-            serving_fence = serving_fence + 1,
-            updated_at = datetime('now')
-        WHERE id = 1 AND writer_id = ?1 AND owner_epoch = ?2 AND serving_fence = ?3
-        "#,
-    )
-    .bind(&writer_id)
-    .bind(expected_owner_epoch)
-    .bind(expected_serving_fence)
-    .execute(pool)
-    .await?;
-    if result.rows_affected() != 1 {
-        bail!("analytics owner release fence is stale");
-    }
-    load_analytics_serving_fence(pool).await
-}
-
-pub(crate) async fn acknowledge_analytics_journal_consumption(
-    pool: &Pool<Sqlite>,
-    replica_id: &str,
-    generation: i64,
-    consumed_through_change_id: i64,
-) -> Result<AnalyticsServingFence> {
-    let replica_id = bounded_required_text(replica_id, "replica id")?;
-    let mut tx = pool.begin().await?;
-    let state = load_analytics_change_state(tx.as_mut()).await?;
-    if state.generation != generation {
-        bail!("analytics journal consumption generation is stale");
-    }
-    let latest = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(MAX(change_id), 0) FROM analytics_change_events",
-    )
-    .fetch_one(tx.as_mut())
-    .await?;
-    if consumed_through_change_id < 0 || consumed_through_change_id > latest {
-        bail!("analytics journal consumption is outside the source journal");
-    }
-    sqlx::query(
-        r#"
-        INSERT INTO analytics_change_consumption (replica_id, generation, consumed_through_change_id)
-        VALUES (?1, ?2, ?3)
-        ON CONFLICT(replica_id) DO UPDATE SET
-            generation = excluded.generation,
-            consumed_through_change_id = MAX(analytics_change_consumption.consumed_through_change_id, excluded.consumed_through_change_id),
-            updated_at = datetime('now')
-        "#,
-    )
-    .bind(&replica_id)
-    .bind(generation)
-    .bind(consumed_through_change_id)
-    .execute(tx.as_mut())
-    .await?;
-    sqlx::query(
-        r#"
-        UPDATE analytics_change_state
-        SET serving_ack_change_id = MAX(serving_ack_change_id, ?1),
-            retention_floor_change_id = MAX(retention_floor_change_id, ?1),
-            updated_at = datetime('now')
-        WHERE id = 1 AND generation = ?2
-        "#,
-    )
-    .bind(consumed_through_change_id)
-    .bind(generation)
-    .execute(tx.as_mut())
-    .await?;
-    tx.commit().await?;
-    load_analytics_serving_fence(pool).await
-}
-
-pub(crate) async fn refresh_analytics_journal_capacity(
-    pool: &Pool<Sqlite>,
-) -> Result<AnalyticsJournalCapacity> {
-    let mut tx = pool.begin().await?;
-    let event_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM analytics_change_events WHERE created_at >= datetime('now', '-1 day')",
-    )
-    .fetch_one(tx.as_mut())
-    .await?;
-    let byte_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(SUM(length(CAST(fact_json AS BLOB))), 0) FROM analytics_change_events WHERE created_at >= datetime('now', '-1 day')",
-    )
-    .fetch_one(tx.as_mut())
-    .await?;
-    let mut capacity = calculate_analytics_journal_capacity(event_count, byte_count);
-    capacity.warning = false;
-    capacity.backpressure = false;
-    sqlx::query(
-        r#"
-        UPDATE analytics_change_state
-        SET journal_event_capacity = MAX(journal_event_capacity, ?1),
-            journal_byte_capacity = MAX(journal_byte_capacity, ?2),
-            journal_peak_events = MAX(journal_peak_events, ?3),
-            journal_peak_bytes = MAX(journal_peak_bytes, ?4),
-            updated_at = datetime('now')
-        WHERE id = 1
-        "#,
-    )
-    .bind(capacity.event_capacity)
-    .bind(capacity.byte_capacity)
-    .bind(event_count)
-    .bind(byte_count)
-    .execute(tx.as_mut())
-    .await?;
-    tx.commit().await?;
-    Ok(capacity)
 }
 
 struct AnalyticsChangeInput<'a> {
@@ -1166,9 +677,6 @@ async fn append_analytics_change_tx(
     }
 
     let state = load_analytics_change_state(tx).await?;
-    if state.owner_kind == "postgres" {
-        enforce_analytics_journal_capacity_tx(tx, &state, fact_json.len() as i64).await?;
-    }
     let coverage_revision = state
         .coverage_revision
         .checked_add(1)
@@ -1289,10 +797,6 @@ async fn append_analytics_change_tx(
         state.generation
     };
 
-    let pressure = refresh_analytics_journal_pressure_tx(tx, &state).await?;
-    if pressure.backpressure && state.owner_kind == "postgres" {
-        bail!("analytics source journal capacity exhausted; backpressure active");
-    }
     Ok(AnalyticsChangeReceipt {
         change_id,
         generation,
@@ -1798,27 +1302,6 @@ pub(crate) async fn claim_analytics_change_coverage(
     .bind(state.generation)
     .bind(covered_through_change_id)
     .bind(state.coverage_revision)
-    .execute(tx.as_mut())
-    .await?;
-    sqlx::query(
-        r#"
-        INSERT INTO analytics_change_consumption (replica_id, generation, consumed_through_change_id)
-        VALUES (?1, ?2, ?3)
-        ON CONFLICT(replica_id) DO UPDATE SET
-            generation = excluded.generation,
-            consumed_through_change_id = MAX(analytics_change_consumption.consumed_through_change_id, excluded.consumed_through_change_id),
-            updated_at = datetime('now')
-        "#,
-    )
-    .bind(&replica_id)
-    .bind(state.generation)
-    .bind(covered_through_change_id)
-    .execute(tx.as_mut())
-    .await?;
-    sqlx::query(
-        "UPDATE analytics_change_state SET serving_ack_change_id = MAX(serving_ack_change_id, ?1), retention_floor_change_id = MAX(retention_floor_change_id, ?1), updated_at = datetime('now') WHERE id = 1",
-    )
-    .bind(covered_through_change_id)
     .execute(tx.as_mut())
     .await?;
     tx.commit().await?;
@@ -2869,93 +2352,5 @@ mod tests {
         assert_eq!(generation_after_ack, generation);
         assert_eq!(pending_after_ack, 0);
         assert_eq!(retained_after_ack, 3);
-    }
-
-    #[tokio::test]
-    async fn ownership_claim_uses_epoch_and_serving_fence_cas() {
-        let pool = test_pool().await;
-        let initial = load_analytics_serving_fence(&pool)
-            .await
-            .expect("load initial serving fence");
-        assert_eq!(initial.owner_kind, "sqlite");
-        let claimed = claim_analytics_owner(&pool, "postgres", "writer-a", 1, 1)
-            .await
-            .expect("claim postgres ownership");
-        assert_eq!(claimed.owner_kind, "postgres");
-        assert_eq!(claimed.owner_epoch, 2);
-        assert_eq!(claimed.serving_fence, 2);
-        assert!(
-            claim_analytics_owner(&pool, "postgres", "writer-b", 1, 1)
-                .await
-                .is_err()
-        );
-        let released = release_analytics_owner(&pool, "writer-a", 2, 2)
-            .await
-            .expect("release ownership");
-        assert!(released.unavailable);
-    }
-
-    #[tokio::test]
-    async fn postgres_owner_rejects_unconsumed_journal_at_hard_capacity() {
-        let pool = test_pool().await;
-        sqlx::query(
-            "UPDATE analytics_change_state SET journal_event_capacity = 1, journal_byte_capacity = 1024 WHERE id = 1",
-        )
-        .execute(&pool)
-        .await
-        .expect("set bounded ownership capacity");
-        claim_analytics_owner(&pool, "postgres", "writer-a", 1, 1)
-            .await
-            .expect("claim postgres ownership");
-
-        for index in 0..2 {
-            let mut tx = pool
-                .begin()
-                .await
-                .expect("begin ownership source transaction");
-            let result = append_analytics_change_tx(
-                tx.as_mut(),
-                AnalyticsChangeInput {
-                    event_kind: "upsert",
-                    entity_kind: "test",
-                    source: "test",
-                    source_row_id: Some(index),
-                    entity_key: &format!("test:{index}"),
-                    occurred_at: "2026-10-30 12:00:00",
-                    fact_json: "{}",
-                },
-            )
-            .await;
-            if index == 0 {
-                result.expect("first journal event fits capacity");
-                tx.commit().await.expect("commit first journal event");
-            } else {
-                assert!(
-                    result.is_err(),
-                    "unconsumed journal must apply backpressure"
-                );
-                tx.rollback()
-                    .await
-                    .expect("rollback rejected journal event");
-            }
-        }
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM analytics_change_events")
-            .fetch_one(&pool)
-            .await
-            .expect("count retained journal events");
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn journal_capacity_adds_safety_margin_and_minimums() {
-        let capacity = calculate_analytics_journal_capacity(100, 1_000);
-        assert_eq!(capacity.event_capacity, ANALYTICS_CHANGE_CAPACITY_DEFAULT);
-        assert_eq!(
-            capacity.byte_capacity,
-            ANALYTICS_CHANGE_BYTES_CAPACITY_DEFAULT
-        );
-        let capacity = calculate_analytics_journal_capacity(20_000, 100_000_000);
-        assert_eq!(capacity.event_capacity, 25_000);
-        assert_eq!(capacity.byte_capacity, 125_000_000);
     }
 }

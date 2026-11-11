@@ -1,39 +1,5 @@
 use super::*;
 
-pub(crate) const ENV_ANALYTICS_OWNERSHIP_V2: &str = "ANALYTICS_OWNERSHIP_V2";
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum AnalyticsOwnershipV2 {
-    #[default]
-    Disabled,
-    Enabled,
-}
-
-impl FromStr for AnalyticsOwnershipV2 {
-    type Err = anyhow::Error;
-
-    fn from_str(raw: &str) -> Result<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "disabled" => Ok(Self::Disabled),
-            "enabled" => Ok(Self::Enabled),
-            _ => bail!("invalid {ENV_ANALYTICS_OWNERSHIP_V2} value: {raw}"),
-        }
-    }
-}
-
-pub(crate) fn resolve_analytics_ownership_v2_config(
-    raw: Option<&str>,
-) -> Result<AnalyticsOwnershipV2> {
-    raw.map(AnalyticsOwnershipV2::from_str)
-        .transpose()
-        .map(|value| value.unwrap_or_default())
-}
-
-pub(crate) fn analytics_ownership_v2_from_env() -> Result<AnalyticsOwnershipV2> {
-    resolve_analytics_ownership_v2_config(env::var(ENV_ANALYTICS_OWNERSHIP_V2).ok().as_deref())
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ForwardProxyAlgo {
@@ -962,14 +928,6 @@ impl AppConfig {
         (self.proxy_raw_compression != RawCompressionCodec::None)
             .then_some(self.proxy_raw_immediate_gzip_bytes)
             .flatten()
-    }
-
-    /// Resolve the ownership switch independently from `ANALYTICS_BACKEND`.
-    ///
-    /// The switch is intentionally read at process startup rather than stored in the
-    /// persisted SQLite state; owner epoch and serving fence remain durable in the journal.
-    pub(crate) fn analytics_ownership_v2(&self) -> Result<AnalyticsOwnershipV2> {
-        analytics_ownership_v2_from_env()
     }
 }
 
