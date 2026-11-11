@@ -493,27 +493,40 @@ async fn ensure_postgres_long_term_fence(
 async fn ensure_postgres_long_term_target_parity(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> AnalyticsReadResult<()> {
-    let (target_count, ready_target_count) = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*)::bigint,
-                COUNT(*) FILTER (WHERE ready)::bigint
-         FROM cvm_analytics.analytics_projection_target_status
-         WHERE target_kind IN (
-             'daily_rollups', 'hourly_rollups', 'interval_state',
-             'read_model', 'repair_state', 'bucket_publication'
-         )",
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|error| {
-        AnalyticsReadError::Internal(anyhow!(
-            "failed to read PostgreSQL projection target parity: {error}"
-        ))
-    })?;
-    if target_count != 6 || ready_target_count != target_count {
+    let (target_count, ready_target_count, matching_target_count) =
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT COUNT(*)::bigint,
+                COUNT(*) FILTER (WHERE targets.ready)::bigint,
+                COUNT(*) FILTER (
+                    WHERE targets.ready
+                      AND targets.generation = checkpoints.generation
+                      AND targets.source_digest IS NOT NULL
+                      AND targets.source_digest = projection.verified_digest
+                )::bigint
+         FROM cvm_analytics.analytics_projection_target_status AS targets
+         CROSS JOIN cvm_analytics.analytics_projection_state AS projection
+         CROSS JOIN cvm_analytics.analytics_projection_checkpoints AS checkpoints
+         WHERE projection.id = 1 AND checkpoints.consumer = 'long_term_v1'
+           AND targets.target_kind IN (
+               'daily_rollups', 'hourly_rollups', 'interval_state',
+               'read_model', 'repair_state', 'bucket_publication'
+           )",
+        )
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|error| {
+            AnalyticsReadError::Internal(anyhow!(
+                "failed to read PostgreSQL projection target parity: {error}"
+            ))
+        })?;
+    if target_count != 6
+        || ready_target_count != target_count
+        || matching_target_count != target_count
+    {
         return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
             AnalyticsBackend::Postgres,
             format!(
-                "analytics long-term projection target parity is unavailable ({ready_target_count}/{target_count} targets ready)"
+                "analytics long-term projection target parity is unavailable ({ready_target_count}/{target_count} targets ready, {matching_target_count}/{target_count} generation/digest matched)"
             ),
         )));
     }

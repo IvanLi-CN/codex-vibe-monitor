@@ -1014,6 +1014,37 @@ pub(crate) async fn release_analytics_owner(
     load_analytics_serving_fence(pool).await
 }
 
+pub(crate) async fn restore_analytics_owner_to_sqlite(
+    pool: &Pool<Sqlite>,
+    expected_owner_epoch: i64,
+    expected_serving_fence: i64,
+) -> Result<AnalyticsServingFence> {
+    let result = sqlx::query(
+        r#"
+        UPDATE analytics_change_state
+        SET owner_kind = 'sqlite',
+            writer_id = NULL,
+            writer_lease_expires_at = NULL,
+            handoff_state = 'stable',
+            analytics_unavailable = 0,
+            journal_backpressure = 0,
+            serving_fence = serving_fence + 1,
+            generation = generation + 1,
+            updated_at = datetime('now')
+        WHERE id = 1 AND owner_kind = 'postgres' AND owner_epoch = ?1 AND serving_fence = ?2
+        "#,
+    )
+    .bind(expected_owner_epoch)
+    .bind(expected_serving_fence)
+    .execute(pool)
+    .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "analytics owner rollback fence is stale"
+    );
+    load_analytics_serving_fence(pool).await
+}
+
 pub(crate) async fn acknowledge_analytics_journal_consumption(
     pool: &Pool<Sqlite>,
     replica_id: &str,
@@ -2899,6 +2930,12 @@ mod tests {
             .await
             .expect("release ownership");
         assert!(released.unavailable);
+        let restored =
+            restore_analytics_owner_to_sqlite(&pool, released.owner_epoch, released.serving_fence)
+                .await
+                .expect("restore SQLite ownership");
+        assert_eq!(restored.owner_kind, "sqlite");
+        assert!(!restored.unavailable);
     }
 
     #[tokio::test]

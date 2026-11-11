@@ -145,6 +145,29 @@ impl DigestBuilder {
 }
 
 impl PgAnalyticsRuntime {
+    pub(crate) async fn invalidate_long_term_projection_for_refresh(&self) -> Result<()> {
+        let target = self
+            .maintenance_pool
+            .as_ref()
+            .context("PostgreSQL analytics maintenance pool is unavailable")?;
+        let mut tx = target.inner().begin().await?;
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_projection_state
+             SET status = 'preparing', last_error_code = 'source_refresh_in_progress', updated_at = NOW()
+             WHERE id = 1",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_projection_target_status
+             SET ready = FALSE, last_error_code = 'source_refresh_in_progress', updated_at = NOW()",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Copy the complete SQLite long-term projection into PostgreSQL atomically.
     /// The target remains fail-closed until row count and digest verification pass.
     pub(crate) async fn materialize_long_term_projection(

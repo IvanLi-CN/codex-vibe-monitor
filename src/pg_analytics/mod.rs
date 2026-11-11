@@ -580,14 +580,8 @@ impl PgAnalyticsRuntime {
         source_pool: &Pool<Sqlite>,
         source: &SourceContext,
     ) -> Result<()> {
-        let Some(writer_id) = source.state.writer_id.as_deref() else {
-            // A durable postgres owner without a writer lease is already fenced. Keep it
-            // unavailable rather than guessing an owner identity for a rollback CAS.
-            return Ok(());
-        };
-        crate::analytics_changes::release_analytics_owner(
+        crate::analytics_changes::restore_analytics_owner_to_sqlite(
             source_pool,
-            writer_id,
             source.state.owner_epoch,
             source.state.serving_fence,
         )
@@ -609,19 +603,31 @@ impl PgAnalyticsRuntime {
         .fetch_optional(target)
         .await
         .context("failed to load PostgreSQL long-term projection readiness")?;
-        let (target_count, ready_target_count) = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT COUNT(*)::bigint,
-                    COUNT(*) FILTER (WHERE ready)::bigint
-             FROM cvm_analytics.analytics_projection_target_status
-             WHERE target_kind IN (
-                 'daily_rollups', 'hourly_rollups', 'interval_state',
-                 'read_model', 'repair_state', 'bucket_publication'
-             )",
-        )
-        .fetch_one(target)
-        .await
-        .context("failed to load PostgreSQL projection target parity")?;
-        let target_parity_ready = target_count == 6 && ready_target_count == target_count;
+        let (target_count, ready_target_count, matching_target_count) =
+            sqlx::query_as::<_, (i64, i64, i64)>(
+                "SELECT COUNT(*)::bigint,
+                    COUNT(*) FILTER (WHERE targets.ready)::bigint,
+                    COUNT(*) FILTER (
+                        WHERE targets.ready
+                          AND targets.generation = checkpoints.generation
+                          AND targets.source_digest IS NOT NULL
+                          AND targets.source_digest = projection.verified_digest
+                    )::bigint
+             FROM cvm_analytics.analytics_projection_target_status AS targets
+             CROSS JOIN cvm_analytics.analytics_projection_state AS projection
+             CROSS JOIN cvm_analytics.analytics_projection_checkpoints AS checkpoints
+             WHERE projection.id = 1 AND checkpoints.consumer = 'long_term_v1'
+               AND targets.target_kind IN (
+                   'daily_rollups', 'hourly_rollups', 'interval_state',
+                   'read_model', 'repair_state', 'bucket_publication'
+               )",
+            )
+            .fetch_one(target)
+            .await
+            .context("failed to load PostgreSQL projection target parity")?;
+        let target_parity_ready = target_count == 6
+            && ready_target_count == target_count
+            && matching_target_count == target_count;
         if self.ownership == AnalyticsOwnershipV2::Enabled
             && source.state.owner_kind == "sqlite"
             && state.status == "caught_up"
@@ -2137,17 +2143,18 @@ async fn set_replica_running(pool: &sqlx::PgPool) -> Result<()> {
 }
 
 async fn sync_replica_serving_fence(pool: &sqlx::PgPool, source: &SourceContext) -> Result<()> {
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE cvm_analytics.analytics_replica_state
         SET owner_kind = $1,
             owner_epoch = $2,
             serving_fence = $3,
             serving_ack_change_id = GREATEST(serving_ack_change_id, $4),
+            generation = $5,
             service_eligible = FALSE,
             status = CASE WHEN status = 'caught_up' THEN 'running' ELSE status END,
             updated_at = NOW()
-        WHERE id = 1 AND generation = $5
+        WHERE id = 1 AND generation <= $5
         "#,
     )
     .bind(&source.state.owner_kind)
@@ -2158,6 +2165,10 @@ async fn sync_replica_serving_fence(pool: &sqlx::PgPool, source: &SourceContext)
     .execute(pool)
     .await
     .context("failed to synchronize the PostgreSQL analytics serving fence")?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "PostgreSQL analytics serving fence generation is stale"
+    );
     Ok(())
 }
 

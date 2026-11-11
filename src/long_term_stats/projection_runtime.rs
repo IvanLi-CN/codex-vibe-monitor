@@ -55,7 +55,10 @@ pub(crate) async fn long_term_projection_route(
         // completed. Preserve the pre-V2 SQLite behavior while the feature is disabled, but fail
         // closed when the owner contract was explicitly enabled.
         Err(error) if error.to_string().contains("no such table") => {
-            return Ok(LongTermProjectionRoute::SqliteServing);
+            return Ok(match ownership {
+                AnalyticsOwnershipV2::Disabled => LongTermProjectionRoute::SqliteServing,
+                AnalyticsOwnershipV2::Enabled => LongTermProjectionRoute::Unavailable,
+            });
         }
         Err(error) => return Err(error),
     };
@@ -68,7 +71,13 @@ pub(crate) async fn long_term_projection_route(
     Ok(match (ownership, fence.owner_kind) {
         (AnalyticsOwnershipV2::Disabled, "sqlite") => LongTermProjectionRoute::SqliteServing,
         // A frozen legacy copy is not a proved rollback projection.
-        (AnalyticsOwnershipV2::Disabled, "postgres") => LongTermProjectionRoute::Unavailable,
+        (AnalyticsOwnershipV2::Disabled, "postgres") => {
+            if long_term_projection_rollback_ready(&state.pool).await? {
+                LongTermProjectionRoute::SqliteRollback
+            } else {
+                LongTermProjectionRoute::Unavailable
+            }
+        }
         (AnalyticsOwnershipV2::Enabled, "sqlite") => LongTermProjectionRoute::SqliteServing,
         (AnalyticsOwnershipV2::Enabled, "postgres") => LongTermProjectionRoute::PostgresServing,
         (_, _) => LongTermProjectionRoute::Unavailable,
@@ -77,7 +86,18 @@ pub(crate) async fn long_term_projection_route(
 
 pub(super) async fn long_term_projection_rollback_ready(pool: &Pool<Sqlite>) -> Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM long_term_projection_rollback_state WHERE id = 1 AND state = 'ready')",
+        "SELECT EXISTS(
+            SELECT 1
+            FROM long_term_projection_rollback_state AS rollback
+            JOIN analytics_change_state AS source ON source.id = 1
+            WHERE rollback.id = 1
+              AND rollback.state = 'ready'
+              AND source.owner_kind = 'postgres'
+              AND source.analytics_unavailable = 0
+              AND rollback.owner_epoch = source.owner_epoch
+              AND rollback.serving_fence = source.serving_fence
+              AND rollback.generation = source.generation
+        )",
     )
     .fetch_one(pool)
     .await?
@@ -85,17 +105,22 @@ pub(super) async fn long_term_projection_rollback_ready(pool: &Pool<Sqlite>) -> 
 }
 
 async fn refresh_long_term_projection_rollback_copy(state: &AppState) -> Result<()> {
-    let fence = load_analytics_serving_fence(&state.pool).await?;
     let mut tx = state.pool.begin().await?;
+    let fence = sqlx::query_as::<_, (String, i64, i64, i64, i64, i64)>(
+        "SELECT owner_kind, owner_epoch, serving_fence, generation, analytics_unavailable, journal_backpressure FROM analytics_change_state WHERE id = 1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    anyhow::ensure!(
+        fence.0 == "postgres" && fence.4 == 0 && fence.5 == 0,
+        "analytics owner fence is not available for rollback snapshot"
+    );
     let current = sqlx::query_as::<_, (i64, i64, i64, String)>(
         "SELECT owner_epoch, serving_fence, generation, state FROM long_term_projection_rollback_state WHERE id = 1",
     )
     .fetch_one(&mut *tx)
     .await?;
-    if current.0 == fence.owner_epoch
-        && current.1 == fence.serving_fence
-        && current.2 == fence.generation
-        && current.3 == "ready"
+    if current.0 == fence.1 && current.1 == fence.2 && current.2 == fence.3 && current.3 == "ready"
     {
         tx.commit().await?;
         return Ok(());
@@ -137,9 +162,9 @@ async fn refresh_long_term_projection_rollback_copy(state: &AppState) -> Result<
     sqlx::query(
         "UPDATE long_term_projection_rollback_state SET owner_epoch = ?1, serving_fence = ?2, generation = ?3, source_cursor_row_id = ?4, state = 'ready', last_rebuilt_at = datetime('now'), last_error = NULL, updated_at = datetime('now') WHERE id = 1",
     )
-    .bind(fence.owner_epoch)
-    .bind(fence.serving_fence)
-    .bind(fence.generation)
+    .bind(fence.1)
+    .bind(fence.2)
+    .bind(fence.3)
     .bind(cursor)
     .execute(&mut *tx)
     .await?;
@@ -1499,6 +1524,10 @@ pub(super) async fn flush_long_term_projection_unlocked(
         // Keep the SQLite projection current as the one-day rollback source while PG
         // serves reads. The same bounded Journal consumer advances it, then the PG
         // materializer mirrors the committed snapshot and refreshes the rollback copy.
+        state
+            .pg_analytics
+            .invalidate_long_term_projection_for_refresh()
+            .await?;
         let result = run_long_term_projection_flush_with_retry(&state.shutdown, || {
             flush_long_term_projection_inner(state, trigger)
         })
