@@ -393,6 +393,7 @@ impl PgAnalyticsRuntime {
     ) -> AnalyticsReadResult<AnalyticsLongTermOverviewRead> {
         let mut transaction = self.require_read_transaction().await?;
         ensure_postgres_long_term_fence(&mut transaction).await?;
+        ensure_postgres_long_term_target_parity(&mut transaction).await?;
         let state = load_long_term_projection_state(&mut transaction).await?;
         let overall = load_postgres_long_term_daily_rows(
             &mut transaction,
@@ -430,6 +431,7 @@ impl PgAnalyticsRuntime {
     ) -> AnalyticsReadResult<AnalyticsLongTermSeriesRead> {
         let mut transaction = self.require_read_transaction().await?;
         ensure_postgres_long_term_fence(&mut transaction).await?;
+        ensure_postgres_long_term_target_parity(&mut transaction).await?;
         let state = load_long_term_projection_state(&mut transaction).await?;
         let available =
             load_postgres_long_term_rollups(&mut transaction, dimension, start_date, end_date)
@@ -483,6 +485,36 @@ async fn ensure_postgres_long_term_fence(
         return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
             AnalyticsBackend::Postgres,
             "analytics PostgreSQL serving fence is unavailable",
+        )));
+    }
+    Ok(())
+}
+
+async fn ensure_postgres_long_term_target_parity(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> AnalyticsReadResult<()> {
+    let (target_count, ready_target_count) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*)::bigint,
+                COUNT(*) FILTER (WHERE ready)::bigint
+         FROM cvm_analytics.analytics_projection_target_status
+         WHERE target_kind IN (
+             'daily_rollups', 'hourly_rollups', 'interval_state',
+             'read_model', 'repair_state', 'bucket_publication'
+         )",
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| {
+        AnalyticsReadError::Internal(anyhow!(
+            "failed to read PostgreSQL projection target parity: {error}"
+        ))
+    })?;
+    if target_count != 6 || ready_target_count != target_count {
+        return Err(AnalyticsReadError::Unavailable(AnalyticsUnavailable::new(
+            AnalyticsBackend::Postgres,
+            format!(
+                "analytics long-term projection target parity is unavailable ({ready_target_count}/{target_count} targets ready)"
+            ),
         )));
     }
     Ok(())

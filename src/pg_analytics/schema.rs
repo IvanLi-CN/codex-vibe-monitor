@@ -8,6 +8,7 @@ pub(crate) const PG_ANALYTICS_REQUIRED_RELATIONS: &[&str] = &[
     "cvm_analytics.analytics_state",
     "cvm_analytics.analytics_projection_state",
     "cvm_analytics.analytics_projection_checkpoints",
+    "cvm_analytics.analytics_projection_target_status",
 ];
 
 pub(crate) const PG_ANALYTICS_REPLICA_REQUIRED_RELATIONS: &[&str] = &[
@@ -222,6 +223,26 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_checkpoints (
 CREATE INDEX IF NOT EXISTS analytics_projection_checkpoints_generation_idx
     ON cvm_analytics.analytics_projection_checkpoints (generation, consumer);
 
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_target_status (
+    target_kind TEXT PRIMARY KEY,
+    ready BOOLEAN NOT NULL DEFAULT FALSE,
+    generation BIGINT NOT NULL DEFAULT 0 CHECK (generation >= 0),
+    source_row_count BIGINT NOT NULL DEFAULT 0,
+    source_digest TEXT,
+    last_error_code TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO cvm_analytics.analytics_projection_target_status (target_kind)
+VALUES
+    ('daily_rollups'),
+    ('hourly_rollups'),
+    ('interval_state'),
+    ('read_model'),
+    ('repair_state'),
+    ('bucket_publication')
+ON CONFLICT (target_kind) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_replica_state (
     id SMALLINT PRIMARY KEY CHECK (id = 1),
     replica_id TEXT NOT NULL UNIQUE,
@@ -341,6 +362,9 @@ mod tests {
             "integrity_source_start_date DATE",
             "daily_verify_pending BOOLEAN NOT NULL DEFAULT FALSE",
             "cursor_row_id BIGINT NOT NULL DEFAULT 0",
+            "analytics_projection_target_status",
+            "interval_state",
+            "bucket_publication",
         ] {
             assert!(PG_ANALYTICS_SCHEMA_SQL.contains(column), "missing {column}");
         }

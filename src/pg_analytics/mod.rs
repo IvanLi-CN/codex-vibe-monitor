@@ -609,6 +609,19 @@ impl PgAnalyticsRuntime {
         .fetch_optional(target)
         .await
         .context("failed to load PostgreSQL long-term projection readiness")?;
+        let (target_count, ready_target_count) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT COUNT(*)::bigint,
+                    COUNT(*) FILTER (WHERE ready)::bigint
+             FROM cvm_analytics.analytics_projection_target_status
+             WHERE target_kind IN (
+                 'daily_rollups', 'hourly_rollups', 'interval_state',
+                 'read_model', 'repair_state', 'bucket_publication'
+             )",
+        )
+        .fetch_one(target)
+        .await
+        .context("failed to load PostgreSQL projection target parity")?;
+        let target_parity_ready = target_count == 6 && ready_target_count == target_count;
         if self.ownership == AnalyticsOwnershipV2::Enabled
             && source.state.owner_kind == "sqlite"
             && state.status == "caught_up"
@@ -625,9 +638,10 @@ impl PgAnalyticsRuntime {
                 && state.consumer_checkpoint == source.latest_change_id
                 && replica_service_eligible_for_source(&state, &source),
             long_term_projection_ready: projection_status.as_deref() == Some("ready"),
-            // The projection writer must provide an explicit parity callback/result. Until that
-            // callback is wired, a ready status alone never authorizes durable ownership.
-            long_term_projection_parity: projection_status.as_deref() == Some("ready"),
+            // A ready rollup snapshot is insufficient for ownership. Every serving target,
+            // including interval/read-model and repair/bucket state, must publish parity.
+            long_term_projection_parity: projection_status.as_deref() == Some("ready")
+                && target_parity_ready,
         };
         match admit_analytics_ownership_transition(
             self.backend,
@@ -5157,10 +5171,12 @@ mod tests {
                 "GRANT SELECT (source, source_row_id, occurred_at_epoch_ms, key_digest, upstream_account_id) ON TABLE cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_reader",
                 "GRANT SELECT (id, replica_id, status, owner_kind, owner_epoch, serving_fence, serving_ack_change_id, generation, baseline_generation, baseline_change_id, coverage_generation, coverage_revision, coverage_watermark, consumer_checkpoint, source_acknowledged_through, service_eligible, fact_date_semantics_version, last_error_code, updated_at) ON TABLE cvm_analytics.analytics_replica_state TO cvm_analytics_reader",
                 "GRANT SELECT (id, status) ON TABLE cvm_analytics.analytics_state TO cvm_analytics_reader",
+                "GRANT SELECT ON TABLE cvm_analytics.analytics_daily_rollups, cvm_analytics.analytics_hourly_rollups, cvm_analytics.analytics_projection_state, cvm_analytics.analytics_projection_checkpoints, cvm_analytics.analytics_projection_target_status TO cvm_analytics_reader",
                 "GRANT USAGE ON SCHEMA cvm_analytics TO cvm_analytics_maintenance",
                 "GRANT INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
                 "GRANT SELECT (source, source_row_id) ON TABLE cvm_analytics.analytics_facts, cvm_analytics.analytics_parallel_work_keys TO cvm_analytics_maintenance",
                 "GRANT SELECT, UPDATE ON TABLE cvm_analytics.analytics_replica_state, cvm_analytics.analytics_state TO cvm_analytics_maintenance",
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE cvm_analytics.analytics_daily_rollups, cvm_analytics.analytics_hourly_rollups, cvm_analytics.analytics_projection_state, cvm_analytics.analytics_projection_checkpoints, cvm_analytics.analytics_projection_target_status TO cvm_analytics_maintenance",
                 "GRANT INSERT, DELETE ON TABLE cvm_analytics.analytics_replica_applied_changes TO cvm_analytics_maintenance",
                 "GRANT SELECT (change_id) ON TABLE cvm_analytics.analytics_replica_applied_changes TO cvm_analytics_maintenance",
                 "GRANT USAGE ON SEQUENCE cvm_analytics.analytics_facts_fact_id_seq TO cvm_analytics_maintenance",

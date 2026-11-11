@@ -350,6 +350,49 @@ ALTER TABLE cvm_analytics.analytics_projection_state
     ADD COLUMN IF NOT EXISTS verified_digest TEXT;
 "#;
 
+// V5 records parity independently for every serving projection target.  Rollups are
+// currently materialized by the shadow copier; interval/read-model and repair targets
+// stay fenced until their own writers publish a verified result.
+const MIGRATION_V5_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_target_status (
+    target_kind TEXT PRIMARY KEY,
+    ready BOOLEAN NOT NULL DEFAULT FALSE,
+    generation BIGINT NOT NULL DEFAULT 0 CHECK (generation >= 0),
+    source_row_count BIGINT NOT NULL DEFAULT 0,
+    source_digest TEXT,
+    last_error_code TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO cvm_analytics.analytics_projection_target_status (target_kind)
+VALUES
+    ('daily_rollups'),
+    ('hourly_rollups'),
+    ('interval_state'),
+    ('read_model'),
+    ('repair_state'),
+    ('bucket_publication')
+ON CONFLICT (target_kind) DO NOTHING;
+
+GRANT SELECT (target_kind, ready, generation, source_row_count, source_digest,
+              last_error_code, updated_at)
+    ON cvm_analytics.analytics_projection_target_status TO cvm_analytics_reader;
+GRANT SELECT, UPDATE
+    ON cvm_analytics.analytics_projection_target_status TO cvm_analytics_maintenance;
+GRANT SELECT
+    ON cvm_analytics.analytics_daily_rollups,
+       cvm_analytics.analytics_hourly_rollups,
+       cvm_analytics.analytics_projection_state,
+       cvm_analytics.analytics_projection_checkpoints
+    TO cvm_analytics_reader;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON cvm_analytics.analytics_daily_rollups,
+       cvm_analytics.analytics_hourly_rollups,
+       cvm_analytics.analytics_projection_state,
+       cvm_analytics.analytics_projection_checkpoints
+    TO cvm_analytics_maintenance;
+"#;
+
 fn checksum(sql: &str) -> String {
     format!("{:x}", Sha256::digest(sql.as_bytes()))
 }
@@ -383,10 +426,11 @@ pub(super) async fn apply_ordered_migrations(
         (2, MIGRATION_V2_SQL),
         (3, MIGRATION_V3_SQL),
         (4, MIGRATION_V4_SQL),
+        (5, MIGRATION_V5_SQL),
     ];
     for (version, recorded_checksum, state, min_reader) in &recorded {
         anyhow::ensure!(
-            state == "applied" && *min_reader <= 4,
+            state == "applied" && *min_reader <= 5,
             "PostgreSQL analytics migration is incomplete or requires a newer reader at version {version}"
         );
         let sql = migrations
@@ -493,6 +537,22 @@ mod tests {
         assert!(!MIGRATION_V4_SQL.contains("DROP TABLE"));
     }
 
+    #[test]
+    fn v5_adds_explicit_projection_target_parity() {
+        for target in [
+            "daily_rollups",
+            "hourly_rollups",
+            "interval_state",
+            "read_model",
+            "repair_state",
+            "bucket_publication",
+        ] {
+            assert!(MIGRATION_V5_SQL.contains(target), "missing target {target}");
+        }
+        assert!(MIGRATION_V5_SQL.contains("ready BOOLEAN NOT NULL DEFAULT FALSE"));
+        assert!(!MIGRATION_V5_SQL.contains("DROP TABLE"));
+    }
+
     #[tokio::test]
     #[ignore = "requires an isolated PostgreSQL *_fixture database and explicit schema reset authorization"]
     async fn postgres_ordered_migrations_upgrade_and_reentry() -> Result<()> {
@@ -535,7 +595,7 @@ mod tests {
                 apply_ordered_migrations(&mut connection).await?;
                 let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM cvm_analytics.schema_migrations ORDER BY version")
                     .fetch_all(&mut connection).await?;
-                assert_eq!(versions, [1, 2, 3], "source={source}");
+                assert_eq!(versions, [1, 2, 3, 4, 5], "source={source}");
                 sqlx::query("UPDATE cvm_analytics.analytics_replica_state SET status='caught_up', consumer_checkpoint=17, source_acknowledged_through=17, serving_ack_change_id=17 WHERE id=1")
                     .execute(&mut connection).await?;
                 let before: serde_json::Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM cvm_analytics.analytics_replica_state s WHERE id=1")

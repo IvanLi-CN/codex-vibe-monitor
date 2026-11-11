@@ -163,6 +163,12 @@ impl PgAnalyticsRuntime {
         )
         .execute(target.inner())
         .await?;
+        sqlx::query(
+            "UPDATE cvm_analytics.analytics_projection_target_status
+             SET ready = FALSE, last_error_code = 'snapshot_copy_in_progress', updated_at = NOW()",
+        )
+        .execute(target.inner())
+        .await?;
 
         let result = copy_snapshot(target.inner(), &snapshot).await;
         if let Err(error) = result {
@@ -170,6 +176,12 @@ impl PgAnalyticsRuntime {
                 "UPDATE cvm_analytics.analytics_projection_state
                  SET status = 'error', last_error_code = 'snapshot_copy_failed', updated_at = NOW()
                  WHERE id = 1",
+            )
+            .execute(target.inner())
+            .await;
+            let _ = sqlx::query(
+                "UPDATE cvm_analytics.analytics_projection_target_status
+                 SET ready = FALSE, last_error_code = 'snapshot_copy_failed', updated_at = NOW()",
             )
             .execute(target.inner())
             .await;
@@ -343,6 +355,22 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
     )
     .bind(PROJECTION_CONSUMER)
     .bind(snapshot.cursor_row_id)
+    .execute(&mut *tx)
+    .await?;
+    // The snapshot proves only the two rollup targets copied above.  Keep the
+    // interval/read-model and repair/bucket targets explicitly fenced until their
+    // independent PG writers and parity checks are implemented.
+    sqlx::query(
+        "UPDATE cvm_analytics.analytics_projection_target_status
+         SET ready = (target_kind IN ('daily_rollups', 'hourly_rollups')),
+             generation = generation + 1,
+             source_row_count = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN $1 ELSE 0 END,
+             source_digest = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN $2 ELSE NULL END,
+             last_error_code = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN NULL ELSE 'target_not_materialized' END,
+             updated_at = NOW()",
+    )
+    .bind(snapshot.row_count)
+    .bind(&digest_hex)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
