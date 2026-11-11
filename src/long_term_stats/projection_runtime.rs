@@ -97,6 +97,10 @@ pub(crate) async fn long_term_projection_rollback_ready(pool: &Pool<Sqlite>) -> 
               AND rollback.owner_epoch = source.owner_epoch
               AND rollback.serving_fence = source.serving_fence
               AND rollback.generation = source.generation
+              AND rollback.source_cursor_row_id = COALESCE(
+                  (SELECT cursor_row_id FROM long_term_projection_state WHERE consumer = 'long_term_v1'),
+                  0
+              )
         )",
     )
     .fetch_one(pool)
@@ -1574,7 +1578,19 @@ pub(super) async fn flush_long_term_projection_unlocked(
         )
         .await;
     match result {
-        Ok(_) => Ok(LongTermProjectionFlushOutcome::Completed),
+        Ok(_) => {
+            let final_route = long_term_projection_route(state).await?;
+            if final_route != LongTermProjectionRoute::SqliteServing {
+                if final_route == LongTermProjectionRoute::PostgresServing {
+                    state
+                        .pg_analytics
+                        .invalidate_long_term_projection_for_refresh()
+                        .await?;
+                }
+                bail!("analytics owner changed during SQLite projection flush");
+            }
+            Ok(LongTermProjectionFlushOutcome::Completed)
+        }
         Err(error) if long_term_projection_write_is_pressure_deferred(&error) => {
             let mut runtime = state.long_term_projection_runtime.lock().await;
             runtime.state = "deferred".to_string();

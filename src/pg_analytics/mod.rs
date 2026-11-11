@@ -632,10 +632,24 @@ impl PgAnalyticsRuntime {
         let target_parity_ready = target_count == 6
             && ready_target_count == target_count
             && matching_target_count == target_count;
+        let source_projection_cursor = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(cursor_row_id, 0) FROM long_term_projection_state WHERE consumer = ?1",
+        )
+        .bind("long_term_v1")
+        .fetch_optional(source_pool)
+        .await?
+        .unwrap_or_default();
+        let target_projection_cursor = sqlx::query_scalar::<_, i64>(
+            "SELECT cursor_row_id FROM cvm_analytics.analytics_projection_checkpoints WHERE consumer = 'long_term_v1'",
+        )
+        .fetch_optional(target)
+        .await?
+        .unwrap_or_default();
+        let projection_stale = source_projection_cursor != target_projection_cursor;
         if self.ownership == AnalyticsOwnershipV2::Enabled
             && source.state.owner_kind == "sqlite"
             && state.status == "caught_up"
-            && projection_status.as_deref() != Some("ready")
+            && (projection_status.as_deref() != Some("ready") || projection_stale)
         {
             // Build the PG shadow before evaluating the handoff gate. The materializer
             // verifies row count and canonical digest atomically; continuous Journal
