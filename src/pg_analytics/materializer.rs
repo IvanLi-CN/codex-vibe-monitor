@@ -646,16 +646,16 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
     .bind(snapshot.cursor_row_id)
     .execute(&mut *tx)
     .await?;
-    // The snapshot proves only the two rollup targets copied above.  Keep the
-    // interval/read-model and repair/bucket targets explicitly fenced until their
-    // independent PG writers and parity checks are implemented.
+    // Every target table above was copied inside this transaction. Publish one
+    // generation and digest for the complete projection set only after all writes
+    // and the rollup digest verification have succeeded.
     sqlx::query(
         "UPDATE cvm_analytics.analytics_projection_target_status
-         SET ready = (target_kind IN ('daily_rollups', 'hourly_rollups')),
+         SET ready = TRUE,
              generation = generation + 1,
-             source_row_count = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN $1 ELSE 0 END,
-             source_digest = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN $2 ELSE NULL END,
-             last_error_code = CASE WHEN target_kind IN ('daily_rollups', 'hourly_rollups') THEN NULL ELSE 'target_not_materialized' END,
+             source_row_count = $1,
+             source_digest = $2,
+             last_error_code = NULL,
              updated_at = NOW()",
     )
     .bind(snapshot.row_count)
