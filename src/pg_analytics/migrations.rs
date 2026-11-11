@@ -264,6 +264,19 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_bucket_state (
     active_daily_backup_token TEXT, publication_token TEXT, publication_generation BIGINT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_daily_backups (
+    rebuild_token TEXT NOT NULL, stats_date DATE NOT NULL, dimension TEXT NOT NULL, series_key TEXT NOT NULL,
+    display_name TEXT NOT NULL, reasoning_effort TEXT NOT NULL DEFAULT '', calls BIGINT NOT NULL DEFAULT 0,
+    token_total BIGINT NOT NULL DEFAULT 0, token_samples BIGINT NOT NULL DEFAULT 0,
+    cost_total NUMERIC(20,8) NOT NULL DEFAULT 0, cost_samples BIGINT NOT NULL DEFAULT 0,
+    usage_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0, usage_time_samples BIGINT NOT NULL DEFAULT 0,
+    wall_time_ms DOUBLE PRECISION NOT NULL DEFAULT 0, wall_time_samples BIGINT NOT NULL DEFAULT 0,
+    output_tokens_total BIGINT NOT NULL DEFAULT 0, stream_duration_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    output_speed_samples BIGINT NOT NULL DEFAULT 0, first_byte_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    first_byte_samples BIGINT NOT NULL DEFAULT 0, response_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    response_samples BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (rebuild_token, stats_date, dimension, series_key)
+);
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_date_publications (
     publication_token TEXT PRIMARY KEY, published BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
