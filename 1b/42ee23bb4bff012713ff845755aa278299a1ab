@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.21.7",
+  "base_stable_version": "4.21.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-11-11T17:22:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.21.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "42766acfd2e97e02a4432c1883f61a19c607bcd5",
+  "pr_number": 1334,
+  "pr_title": "revert(analytics): remove PG18 ownership cutover",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.21.7",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.21.7",
+  "target_sha": "1b42ee23bb4bff012713ff845755aa278299a1ab",
+  "type_label": "type:patch"
+}
