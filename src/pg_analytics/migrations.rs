@@ -669,7 +669,7 @@ mod tests {
                 apply_ordered_migrations(&mut connection).await?;
                 let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM cvm_analytics.schema_migrations ORDER BY version")
                     .fetch_all(&mut connection).await?;
-                assert_eq!(versions, [1, 2, 3, 4, 5], "source={source}");
+                assert_eq!(versions, [1, 2, 3, 4, 5, 6], "source={source}");
                 sqlx::query("UPDATE cvm_analytics.analytics_replica_state SET status='caught_up', consumer_checkpoint=17, source_acknowledged_through=17, serving_ack_change_id=17 WHERE id=1")
                     .execute(&mut connection).await?;
                 let before: serde_json::Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM cvm_analytics.analytics_replica_state s WHERE id=1")
