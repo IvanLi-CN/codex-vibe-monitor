@@ -1131,6 +1131,16 @@ pub(crate) async fn fetch_long_term_overview(
         }
         .map_err(internal_error_tuple)?,
     );
+    if rollback
+        && !long_term_projection_rollback_ready(&state.pool)
+            .await
+            .map_err(internal_error_tuple)?
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "long-term analytics rollback fence changed during read".to_string(),
+        ));
+    }
     Ok(Json(LongTermStatsOverviewResponse {
         status,
         statistics_start_date: state_row.statistics_start_date,
@@ -1327,6 +1337,16 @@ pub(crate) async fn fetch_long_term_series(
             }),
             points: build_daily_points(&matching, &start_date, &end_date),
         });
+    }
+    if rollback
+        && !long_term_projection_rollback_ready(&state.pool)
+            .await
+            .map_err(internal_error_tuple)?
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "long-term analytics rollback fence changed during read".to_string(),
+        ));
     }
     Ok(Json(LongTermStatsSeriesResponse {
         status,
