@@ -283,6 +283,28 @@ CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_date_publications 
 CREATE TABLE IF NOT EXISTS cvm_analytics.analytics_projection_daily_backup_claims (
     bucket_date DATE PRIMARY KEY, rebuild_token TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+    cvm_analytics.analytics_projection_intervals,
+    cvm_analytics.analytics_projection_interval_state,
+    cvm_analytics.analytics_projection_interval_suppressions,
+    cvm_analytics.analytics_projection_rebuild_members,
+    cvm_analytics.analytics_projection_dirty_buckets,
+    cvm_analytics.analytics_projection_bucket_state,
+    cvm_analytics.analytics_projection_daily_backups,
+    cvm_analytics.analytics_projection_date_publications,
+    cvm_analytics.analytics_projection_daily_backup_claims
+    TO cvm_analytics_maintenance;
+GRANT SELECT ON TABLE
+    cvm_analytics.analytics_projection_intervals,
+    cvm_analytics.analytics_projection_interval_state,
+    cvm_analytics.analytics_projection_interval_suppressions,
+    cvm_analytics.analytics_projection_rebuild_members,
+    cvm_analytics.analytics_projection_dirty_buckets,
+    cvm_analytics.analytics_projection_bucket_state,
+    cvm_analytics.analytics_projection_daily_backups,
+    cvm_analytics.analytics_projection_date_publications,
+    cvm_analytics.analytics_projection_daily_backup_claims
+    TO cvm_analytics_reader;
 "#;
 
 const STOPPED_OWNERSHIP_V1_CHECKSUM: &str =
