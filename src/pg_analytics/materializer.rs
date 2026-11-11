@@ -68,11 +68,24 @@ struct IntervalStateRow {
     interval_end_ms: i64,
 }
 
+#[derive(Debug, FromRow)]
+struct IntervalRow {
+    bucket_kind: String,
+    bucket_date: String,
+    bucket_key: String,
+    dimension: String,
+    series_key: String,
+    invocation_row_id: i64,
+    interval_start_ms: i64,
+    interval_end_ms: i64,
+}
+
 #[derive(Debug)]
 struct SourceSnapshot {
     daily: Vec<DailyRow>,
     hourly: Vec<HourlyRow>,
     interval_state: Vec<IntervalStateRow>,
+    intervals: Vec<IntervalRow>,
     cursor_row_id: i64,
     digest: [u8; 32],
     row_count: i64,
@@ -330,6 +343,12 @@ async fn load_source_snapshot(source_pool: &Pool<Sqlite>) -> Result<SourceSnapsh
     )
     .fetch_all(&mut *tx)
     .await?;
+    let intervals = sqlx::query_as::<_, IntervalRow>(
+        "SELECT bucket_kind, bucket_date, bucket_key, dimension, series_key, invocation_row_id, interval_start_ms, interval_end_ms
+         FROM long_term_projection_intervals ORDER BY bucket_kind, bucket_key, dimension, series_key, invocation_row_id",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     let mut digest = DigestBuilder::new();
     for row in &daily {
@@ -343,6 +362,7 @@ async fn load_source_snapshot(source_pool: &Pool<Sqlite>) -> Result<SourceSnapsh
         daily,
         hourly,
         interval_state,
+        intervals,
         cursor_row_id,
         digest: digest.finish(),
         owner_kind,
@@ -362,6 +382,9 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM cvm_analytics.analytics_projection_interval_state")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM cvm_analytics.analytics_projection_intervals")
         .execute(&mut *tx)
         .await?;
     for row in &snapshot.daily {
@@ -428,6 +451,23 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
         .bind(row.invocation_row_id)
         .bind(&row.model_series_key)
         .bind(&row.upstream_series_key)
+        .bind(row.interval_start_ms)
+        .bind(row.interval_end_ms)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for row in &snapshot.intervals {
+        sqlx::query(
+            "INSERT INTO cvm_analytics.analytics_projection_intervals
+             (bucket_kind, bucket_date, bucket_key, dimension, series_key, invocation_row_id, interval_start_ms, interval_end_ms)
+             VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(&row.bucket_kind)
+        .bind(&row.bucket_date)
+        .bind(&row.bucket_key)
+        .bind(&row.dimension)
+        .bind(&row.series_key)
+        .bind(row.invocation_row_id)
         .bind(row.interval_start_ms)
         .bind(row.interval_end_ms)
         .execute(&mut *tx)
