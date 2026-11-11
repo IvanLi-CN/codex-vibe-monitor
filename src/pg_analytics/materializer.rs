@@ -108,6 +108,43 @@ struct BucketStateRow {
     publication_generation: Option<i64>,
     updated_at: String,
 }
+#[derive(Debug, FromRow)]
+struct DailyBackupRow {
+    rebuild_token: String,
+    stats_date: String,
+    dimension: String,
+    series_key: String,
+    display_name: String,
+    reasoning_effort: String,
+    calls: i64,
+    token_total: i64,
+    token_samples: i64,
+    cost_total: f64,
+    cost_samples: i64,
+    usage_time_ms: f64,
+    usage_time_samples: i64,
+    wall_time_ms: f64,
+    wall_time_samples: i64,
+    output_tokens_total: i64,
+    stream_duration_ms: f64,
+    output_speed_samples: i64,
+    first_byte_sum_ms: f64,
+    first_byte_samples: i64,
+    response_sum_ms: f64,
+    response_samples: i64,
+}
+#[derive(Debug, FromRow)]
+struct DatePublicationRow {
+    publication_token: String,
+    published: i64,
+    updated_at: String,
+}
+#[derive(Debug, FromRow)]
+struct BackupClaimRow {
+    bucket_date: String,
+    rebuild_token: String,
+    updated_at: String,
+}
 
 #[derive(Debug)]
 struct SourceSnapshot {
@@ -119,6 +156,9 @@ struct SourceSnapshot {
     rebuild_members: Vec<RebuildMemberRow>,
     dirty_buckets: Vec<DirtyBucketRow>,
     bucket_state: Vec<BucketStateRow>,
+    daily_backups: Vec<DailyBackupRow>,
+    date_publications: Vec<DatePublicationRow>,
+    backup_claims: Vec<BackupClaimRow>,
     cursor_row_id: i64,
     digest: [u8; 32],
     row_count: i64,
@@ -386,6 +426,9 @@ async fn load_source_snapshot(source_pool: &Pool<Sqlite>) -> Result<SourceSnapsh
     let rebuild_members = sqlx::query_as::<_, RebuildMemberRow>("SELECT rebuild_token, invocation_row_id FROM long_term_projection_rebuild_members ORDER BY rebuild_token, invocation_row_id").fetch_all(&mut *tx).await?;
     let dirty_buckets = sqlx::query_as::<_, DirtyBucketRow>("SELECT bucket_date, repair_reason, generation, queued_at, next_attempt_at, updated_at FROM long_term_projection_dirty_buckets ORDER BY bucket_date").fetch_all(&mut *tx).await?;
     let bucket_state = sqlx::query_as::<_, BucketStateRow>("SELECT bucket_date, interval_baseline_ready, active_daily_backup_token, publication_token, publication_generation, updated_at FROM long_term_projection_bucket_state ORDER BY bucket_date").fetch_all(&mut *tx).await?;
+    let daily_backups = sqlx::query_as::<_, DailyBackupRow>("SELECT rebuild_token, stats_date, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples FROM long_term_projection_daily_backups ORDER BY rebuild_token, stats_date, dimension, series_key").fetch_all(&mut *tx).await?;
+    let date_publications = sqlx::query_as::<_, DatePublicationRow>("SELECT publication_token, published, updated_at FROM long_term_projection_date_publications ORDER BY publication_token").fetch_all(&mut *tx).await?;
+    let backup_claims = sqlx::query_as::<_, BackupClaimRow>("SELECT bucket_date, rebuild_token, updated_at FROM long_term_projection_daily_backup_claims ORDER BY bucket_date").fetch_all(&mut *tx).await?;
     tx.commit().await?;
     let mut digest = DigestBuilder::new();
     for row in &daily {
@@ -404,6 +447,9 @@ async fn load_source_snapshot(source_pool: &Pool<Sqlite>) -> Result<SourceSnapsh
         rebuild_members,
         dirty_buckets,
         bucket_state,
+        daily_backups,
+        date_publications,
+        backup_claims,
         cursor_row_id,
         digest: digest.finish(),
         owner_kind,
@@ -433,6 +479,9 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
         "analytics_projection_rebuild_members",
         "analytics_projection_dirty_buckets",
         "analytics_projection_bucket_state",
+        "analytics_projection_daily_backups",
+        "analytics_projection_date_publications",
+        "analytics_projection_daily_backup_claims",
     ] {
         sqlx::query(&format!("DELETE FROM cvm_analytics.{table}"))
             .execute(&mut *tx)
@@ -539,6 +588,18 @@ async fn copy_snapshot(target: &sqlx::PgPool, snapshot: &SourceSnapshot) -> Resu
     for row in &snapshot.bucket_state {
         sqlx::query("INSERT INTO cvm_analytics.analytics_projection_bucket_state (bucket_date, interval_baseline_ready, active_daily_backup_token, publication_token, publication_generation, updated_at) VALUES ($1::date, $2, $3, $4, $5, $6::timestamptz)")
             .bind(&row.bucket_date).bind(row.interval_baseline_ready != 0).bind(&row.active_daily_backup_token).bind(&row.publication_token).bind(row.publication_generation).bind(&row.updated_at).execute(&mut *tx).await?;
+    }
+    for row in &snapshot.daily_backups {
+        sqlx::query("INSERT INTO cvm_analytics.analytics_projection_daily_backups (rebuild_token, stats_date, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples) VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)")
+            .bind(&row.rebuild_token).bind(&row.stats_date).bind(&row.dimension).bind(&row.series_key).bind(&row.display_name).bind(&row.reasoning_effort).bind(row.calls).bind(row.token_total).bind(row.token_samples).bind(row.cost_total).bind(row.cost_samples).bind(row.usage_time_ms).bind(row.usage_time_samples).bind(row.wall_time_ms).bind(row.wall_time_samples).bind(row.output_tokens_total).bind(row.stream_duration_ms).bind(row.output_speed_samples).bind(row.first_byte_sum_ms).bind(row.first_byte_samples).bind(row.response_sum_ms).bind(row.response_samples).execute(&mut *tx).await?;
+    }
+    for row in &snapshot.date_publications {
+        sqlx::query("INSERT INTO cvm_analytics.analytics_projection_date_publications (publication_token, published, updated_at) VALUES ($1,$2,$3::timestamptz)")
+            .bind(&row.publication_token).bind(row.published != 0).bind(&row.updated_at).execute(&mut *tx).await?;
+    }
+    for row in &snapshot.backup_claims {
+        sqlx::query("INSERT INTO cvm_analytics.analytics_projection_daily_backup_claims (bucket_date, rebuild_token, updated_at) VALUES ($1::date,$2,$3::timestamptz)")
+            .bind(&row.bucket_date).bind(&row.rebuild_token).bind(&row.updated_at).execute(&mut *tx).await?;
     }
     let daily_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM cvm_analytics.analytics_daily_rollups")
