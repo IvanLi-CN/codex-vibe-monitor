@@ -228,13 +228,28 @@ impl PgAnalyticsRuntime {
             .await;
             return Err(error);
         }
-        let current_fence = load_analytics_serving_fence(source_pool).await?;
-        if current_fence.owner_kind != source_fence.0
-            || current_fence.owner_epoch != source_fence.1
-            || current_fence.serving_fence != source_fence.2
-            || current_fence.generation != source_fence.3
+        let (
+            current_owner_kind,
+            current_owner_epoch,
+            current_serving_fence,
+            current_generation,
+            current_serving_ack_change_id,
+        ): (String, i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT owner_kind, owner_epoch, serving_fence, generation, serving_ack_change_id
+             FROM analytics_change_state WHERE id = 1",
+        )
+        .fetch_one(source_pool)
+        .await?;
+        if current_owner_kind != source_fence.0
+            || current_owner_epoch != source_fence.1
+            || current_serving_fence != source_fence.2
+            || current_generation != source_fence.3
+            || current_serving_ack_change_id > snapshot.cursor_row_id
         {
-            self.invalidate_long_term_projection_for_refresh().await?;
+            // The copy has already committed, so force the target into a fail-closed
+            // state before returning the freshness error. This path must not depend on
+            // the source-side fence transaction succeeding again.
+            let _ = self.invalidate_long_term_projection_for_refresh().await;
             bail!("analytics source owner fence changed during PostgreSQL materialization");
         }
         Ok(LongTermProjectionMaterializationReport {
