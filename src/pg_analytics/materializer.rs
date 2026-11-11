@@ -1,4 +1,5 @@
 use super::*;
+use crate::analytics_changes::load_analytics_serving_fence;
 
 const PROJECTION_CONSUMER: &str = "long_term_v1";
 
@@ -179,6 +180,7 @@ impl PgAnalyticsRuntime {
             .as_ref()
             .context("PostgreSQL analytics maintenance pool is unavailable")?;
         let snapshot = load_source_snapshot(source_pool).await?;
+        let source_fence = load_analytics_serving_fence(source_pool).await?;
         sqlx::query(
             "UPDATE cvm_analytics.analytics_projection_state
              SET status = 'preparing', last_error_code = 'snapshot_copy_in_progress', updated_at = NOW()
@@ -209,6 +211,15 @@ impl PgAnalyticsRuntime {
             .execute(target.inner())
             .await;
             return Err(error);
+        }
+        let current_fence = load_analytics_serving_fence(source_pool).await?;
+        if current_fence.owner_kind != source_fence.owner_kind
+            || current_fence.owner_epoch != source_fence.owner_epoch
+            || current_fence.serving_fence != source_fence.serving_fence
+            || current_fence.generation != source_fence.generation
+        {
+            self.invalidate_long_term_projection_for_refresh().await?;
+            bail!("analytics source owner fence changed during PostgreSQL materialization");
         }
         Ok(LongTermProjectionMaterializationReport {
             row_count: snapshot.row_count,

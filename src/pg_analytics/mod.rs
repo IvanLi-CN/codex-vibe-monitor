@@ -505,10 +505,6 @@ impl PgAnalyticsRuntime {
     }
 
     async fn bootstrap_once(&self, source_pool: &Pool<Sqlite>) -> Result<()> {
-        let target = self
-            .maintenance_pool
-            .as_ref()
-            .context("PostgreSQL analytics maintenance pool is unavailable")?;
         let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
         if self.ownership == AnalyticsOwnershipV2::Disabled && source.state.owner_kind == "postgres"
         {
@@ -516,6 +512,10 @@ impl PgAnalyticsRuntime {
             self.ready.store(false, Ordering::Release);
             return Ok(());
         }
+        let target = self
+            .maintenance_pool
+            .as_ref()
+            .context("PostgreSQL analytics maintenance pool is unavailable")?;
         let state = load_replica_state(target.inner()).await?;
         if state.status == "paused" {
             self.ready.store(false, Ordering::Release);
@@ -580,6 +580,10 @@ impl PgAnalyticsRuntime {
         source_pool: &Pool<Sqlite>,
         source: &SourceContext,
     ) -> Result<()> {
+        anyhow::ensure!(
+            crate::long_term_projection_rollback_ready(source_pool).await?,
+            "SQLite rollback projection is not ready"
+        );
         crate::analytics_changes::restore_analytics_owner_to_sqlite(
             source_pool,
             source.state.owner_epoch,
@@ -595,7 +599,7 @@ impl PgAnalyticsRuntime {
         source_pool: &Pool<Sqlite>,
         target: &sqlx::PgPool,
     ) -> Result<()> {
-        let source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+        let mut source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
         let state = load_replica_state(target).await?;
         let mut projection_status = sqlx::query_scalar::<_, String>(
             "SELECT status FROM cvm_analytics.analytics_projection_state WHERE id = 1",
@@ -637,6 +641,18 @@ impl PgAnalyticsRuntime {
             // verifies row count and canonical digest atomically; continuous Journal
             // maintenance is a separate gate and therefore parity remains closed here.
             self.materialize_long_term_projection(source_pool).await?;
+            let refreshed_source = load_source_context(source_pool, ANALYTICS_REPLICA_ID).await?;
+            anyhow::ensure!(
+                refreshed_source.latest_change_id == source.latest_change_id
+                    && refreshed_source.state.owner_kind == source.state.owner_kind
+                    && refreshed_source.state.owner_epoch == source.state.owner_epoch
+                    && refreshed_source.state.serving_fence == source.state.serving_fence
+                    && refreshed_source.state.generation == source.state.generation
+                    && refreshed_source.state.analytics_unavailable == 0
+                    && refreshed_source.state.journal_backpressure == 0,
+                "analytics source changed during PostgreSQL projection materialization"
+            );
+            source = refreshed_source;
             projection_status = Some("ready".to_string());
         }
         let readiness = AnalyticsOwnershipReadiness {
@@ -2151,6 +2167,7 @@ async fn sync_replica_serving_fence(pool: &sqlx::PgPool, source: &SourceContext)
             serving_fence = $3,
             serving_ack_change_id = GREATEST(serving_ack_change_id, $4),
             generation = $5,
+            baseline_generation = $5,
             service_eligible = FALSE,
             status = CASE WHEN status = 'caught_up' THEN 'running' ELSE status END,
             updated_at = NOW()

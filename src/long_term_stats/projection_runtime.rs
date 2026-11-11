@@ -78,13 +78,13 @@ pub(crate) async fn long_term_projection_route(
                 LongTermProjectionRoute::Unavailable
             }
         }
-        (AnalyticsOwnershipV2::Enabled, "sqlite") => LongTermProjectionRoute::SqliteServing,
+        (AnalyticsOwnershipV2::Enabled, "sqlite") => LongTermProjectionRoute::Unavailable,
         (AnalyticsOwnershipV2::Enabled, "postgres") => LongTermProjectionRoute::PostgresServing,
         (_, _) => LongTermProjectionRoute::Unavailable,
     })
 }
 
-pub(super) async fn long_term_projection_rollback_ready(pool: &Pool<Sqlite>) -> Result<bool> {
+pub(crate) async fn long_term_projection_rollback_ready(pool: &Pool<Sqlite>) -> Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(
             SELECT 1
