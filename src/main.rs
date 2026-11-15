@@ -71,7 +71,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{
-    Connection, FromRow, Pool, QueryBuilder, Row, Sqlite, SqliteConnection,
+    Column, Connection, FromRow, Pool, QueryBuilder, Row, Sqlite, SqliteConnection,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::fs;
@@ -107,6 +107,7 @@ mod long_term_stats;
 mod maintenance;
 mod maintenance_store;
 mod memory_diagnostics;
+mod migration;
 mod models_dev_sync_memory;
 #[expect(
     clippy::too_many_arguments,
@@ -115,7 +116,11 @@ mod models_dev_sync_memory;
 mod oauth_bridge;
 mod observability;
 mod pg_analytics;
+mod pg_runtime;
 mod pricing;
+mod primary_db;
+mod primary_maintenance;
+mod primary_store;
 mod prompt_cache_conversations;
 mod proxy;
 mod proxy_sqlite_write_coordinator;
@@ -184,6 +189,12 @@ const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED: bool = false;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_POSTGRES_MAX_CONNECTIONS: usize = 5;
+const ENV_PRIMARY_DATABASE_BACKEND: &str = "PRIMARY_DATABASE_BACKEND";
+const ENV_POSTGRES_PRIMARY_DATABASE_URL: &str = "POSTGRES_PRIMARY_DATABASE_URL";
+const ENV_POSTGRES_PRIMARY_MIGRATION_URL: &str = "POSTGRES_PRIMARY_MIGRATION_URL";
+const ENV_POSTGRES_PRIMARY_MAX_CONNECTIONS: &str = "POSTGRES_PRIMARY_MAX_CONNECTIONS";
+const ENV_POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS: &str =
+    "POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS";
 const CVM_INVOKE_ID_HEADER: &str = "x-cvm-invoke-id";
 const BACKFILL_BATCH_SIZE: i64 = 200;
 const BACKFILL_ACCOUNT_BIND_BATCH_SIZE: usize = 400;
@@ -619,8 +630,21 @@ fn main() -> Result<()> {
     // Resolve local overrides before hotpath or Tokio starts any worker threads.
     dotenvy::from_filename(".env.local").ok();
     let config = ObservabilityConfig::from_env()?;
-    prepare_hotpath(&config);
-    let _profiler = config.enabled.then(|| {
+    // One-shot CLI commands must keep stdout machine-readable. The profiler writes its
+    // summary to stdout on shutdown, so disable it for migration/maintenance invocations.
+    let one_shot_cli = std::env::args()
+        .nth(1)
+        .is_some_and(|argument| argument == "migrate" || argument == "maintenance");
+    let profiler_config = if one_shot_cli {
+        ObservabilityConfig {
+            enabled: false,
+            ..config.clone()
+        }
+    } else {
+        config.clone()
+    };
+    prepare_hotpath(&profiler_config);
+    let _profiler = profiler_config.enabled.then(|| {
         hotpath::HotpathGuardBuilder::new("codex-vibe-monitor")
             .functions_time_sampling_rate(0.1)
             .mutexes_time_sampling_rate(1.0)

@@ -22,6 +22,58 @@ fn app_config_defaults_to_sqlite_analytics_without_new_environment() {
 }
 
 #[test]
+fn app_config_requires_distinct_primary_roles_and_keeps_pool_limits_independent() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (ENV_PRIMARY_DATABASE_BACKEND, Some("postgres")),
+        (
+            ENV_POSTGRES_PRIMARY_DATABASE_URL,
+            Some("postgresql://primary:secret@example.test/codex"),
+        ),
+        (
+            ENV_POSTGRES_PRIMARY_MIGRATION_URL,
+            Some("postgresql://migration:migration-secret@example.test/codex"),
+        ),
+        (ENV_POSTGRES_PRIMARY_MAX_CONNECTIONS, Some("9")),
+        (ENV_POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS, Some("3")),
+    ]);
+    let config = AppConfig::from_sources(&CliArgs::default()).expect("primary PG config parses");
+    assert_eq!(
+        config.primary_database_backend,
+        PrimaryDatabaseBackend::Postgres
+    );
+    assert_eq!(config.postgres_primary_max_connections, 9);
+    assert_eq!(config.postgres_primary_migration_max_connections, 3);
+    let debug = format!("{config:?}");
+    assert!(!debug.contains("secret"));
+    assert!(!debug.contains("migration-secret"));
+}
+
+#[test]
+fn app_config_rejects_shared_primary_login_roles() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (ENV_PRIMARY_DATABASE_BACKEND, Some("postgres")),
+        (
+            ENV_POSTGRES_PRIMARY_DATABASE_URL,
+            Some("postgresql://primary:secret@example.test/codex"),
+        ),
+        (
+            ENV_POSTGRES_PRIMARY_MIGRATION_URL,
+            Some("postgresql://migration:migration-secret@example.test/codex?user=primary"),
+        ),
+    ]);
+    let error = AppConfig::from_sources(&CliArgs::default())
+        .expect_err("shared primary roles should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains(ENV_POSTGRES_PRIMARY_MIGRATION_URL)
+    );
+    assert!(!error.to_string().contains("secret"));
+}
+
+#[test]
 fn app_config_accepts_postgres_settings_without_leaking_credentials() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let _env = EnvVarGuard::set(&[

@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ModelsDevSyncMemoryState {
     pub(crate) catalog_baseline_initialized: bool,
@@ -31,6 +31,141 @@ pub(crate) struct ModelSelectionChange {
 pub(crate) struct QuoteProviderChoiceChange {
     pub(crate) model: String,
     pub(crate) provider_id: String,
+}
+
+const PRIMARY_MODELS_DEV_SYNC_MEMORY_KEY: &str = "core.models_dev_sync_memory.v1";
+const PRIMARY_MODELS_DEV_DISCOVERED_KEY: &str = "core.models_dev_sync_memory.discovered.v1";
+
+pub(crate) async fn load_primary_models_dev_sync_memory(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+) -> Result<ModelsDevSyncMemoryState> {
+    let Some(value) = store.get_json(PRIMARY_MODELS_DEV_SYNC_MEMORY_KEY).await? else {
+        return Ok(ModelsDevSyncMemoryState::default());
+    };
+    serde_json::from_value(value).context("invalid primary models.dev sync-memory state")
+}
+
+pub(crate) async fn patch_primary_models_dev_sync_memory(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+    patch: crate::api::ModelsDevSyncMemoryPatch,
+) -> Result<ModelsDevSyncMemoryState> {
+    validate_patch_keys(&patch)?;
+    let mut state = load_primary_models_dev_sync_memory(store).await?;
+    for change in patch.provider_selections {
+        if let Some(existing) = state
+            .provider_selections
+            .iter_mut()
+            .find(|item| item.provider_id == change.provider_id)
+        {
+            existing.selected = change.selected;
+        } else {
+            state.provider_selections.push(change);
+        }
+    }
+    for change in patch.model_selections {
+        if let Some(existing) = state
+            .model_selections
+            .iter_mut()
+            .find(|item| item.model == change.model && item.provider_id == change.provider_id)
+        {
+            existing.selected = change.selected;
+        } else {
+            state.model_selections.push(change);
+        }
+    }
+    for change in patch.quote_provider_choices {
+        if let Some(existing) = state
+            .quote_provider_choices
+            .iter_mut()
+            .find(|item| item.model == change.model)
+        {
+            existing.provider_id = change.provider_id;
+        } else {
+            state.quote_provider_choices.push(change);
+        }
+    }
+    state
+        .unviewed_model_ids
+        .retain(|model| !patch.viewed_model_ids.iter().any(|viewed| viewed == model));
+    state
+        .provider_selections
+        .sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
+    state.model_selections.sort_by(|a, b| {
+        a.model
+            .cmp(&b.model)
+            .then_with(|| a.provider_id.cmp(&b.provider_id))
+    });
+    state
+        .quote_provider_choices
+        .sort_by(|a, b| a.model.cmp(&b.model));
+    store
+        .put_json(
+            PRIMARY_MODELS_DEV_SYNC_MEMORY_KEY,
+            &serde_json::to_value(&state)?,
+        )
+        .await
+        .context("failed to persist primary models.dev sync-memory state")?;
+    Ok(state)
+}
+
+pub(crate) async fn record_primary_catalog_success(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+    providers: &[crate::api::ModelsDevSyncProvider],
+    candidates: &[crate::api::ModelsDevPriceCandidate],
+) -> Result<ModelsDevSyncMemoryState> {
+    let mut state = load_primary_models_dev_sync_memory(store).await?;
+    let mut discovered: Vec<String> = store
+        .get_json(PRIMARY_MODELS_DEV_DISCOVERED_KEY)
+        .await?
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or_default();
+    if !state.catalog_baseline_initialized {
+        state.catalog_baseline_initialized = true;
+        discovered = candidates
+            .iter()
+            .map(|candidate| candidate.model.clone())
+            .collect();
+    } else {
+        for model in candidates.iter().map(|candidate| &candidate.model) {
+            if !discovered.iter().any(|seen| seen == model) {
+                state.unviewed_model_ids.push(model.clone());
+                discovered.push(model.clone());
+            }
+        }
+        state.unviewed_model_ids.sort();
+        state.unviewed_model_ids.dedup();
+    }
+    if !state.provider_selection_initialized {
+        state.provider_selection_initialized = true;
+        state.provider_selections = providers
+            .iter()
+            .map(|provider| ProviderSelectionChange {
+                provider_id: provider.id.clone(),
+                selected: true,
+            })
+            .collect();
+        state
+            .provider_selections
+            .sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
+    }
+    discovered.sort();
+    discovered.dedup();
+    store
+        .put_json(
+            PRIMARY_MODELS_DEV_SYNC_MEMORY_KEY,
+            &serde_json::to_value(&state)?,
+        )
+        .await
+        .context("failed to persist primary models.dev catalog state")?;
+    store
+        .put_json(
+            PRIMARY_MODELS_DEV_DISCOVERED_KEY,
+            &serde_json::to_value(&discovered)?,
+        )
+        .await
+        .context("failed to persist primary models.dev discovery state")?;
+    Ok(state)
 }
 
 pub(crate) async fn ensure_models_dev_sync_memory(pool: &Pool<Sqlite>) -> Result<()> {
@@ -306,4 +441,83 @@ fn validate_key_values<'a>(values: impl IntoIterator<Item = &'a str>) -> Result<
         anyhow::bail!("sync memory keys must be non-empty and at most 512 bytes")
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod primary_store_tests {
+    use super::*;
+    use crate::api::ModelsDevSyncMemoryPatch;
+    use crate::primary_store::SqlitePrimaryStateStore;
+
+    #[tokio::test]
+    async fn primary_models_dev_sync_memory_round_trips_and_applies_patches() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = SqlitePrimaryStateStore::new(pool);
+        store.ensure_schema().await.unwrap();
+        let state = patch_primary_models_dev_sync_memory(
+            &store,
+            ModelsDevSyncMemoryPatch {
+                provider_selections: vec![ProviderSelectionChange {
+                    provider_id: "openai".to_owned(),
+                    selected: true,
+                }],
+                model_selections: vec![ModelSelectionChange {
+                    model: "gpt-test".to_owned(),
+                    provider_id: "openai".to_owned(),
+                    selected: true,
+                }],
+                quote_provider_choices: vec![QuoteProviderChoiceChange {
+                    model: "gpt-test".to_owned(),
+                    provider_id: "openai".to_owned(),
+                }],
+                viewed_model_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(state.provider_selections.len(), 1);
+        assert_eq!(
+            load_primary_models_dev_sync_memory(&store).await.unwrap(),
+            state
+        );
+    }
+
+    #[tokio::test]
+    async fn primary_catalog_success_initializes_providers_and_tracks_new_models() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = SqlitePrimaryStateStore::new(pool);
+        store.ensure_schema().await.unwrap();
+        let providers = vec![crate::api::ModelsDevSyncProvider {
+            id: "openai".to_owned(),
+            name: "OpenAI".to_owned(),
+            doc_url: None,
+        }];
+        let candidates = vec![crate::api::ModelsDevPriceCandidate {
+            model: "gpt-test".to_owned(),
+            name: "GPT Test".to_owned(),
+            provider_id: "openai".to_owned(),
+            provider_name: "OpenAI".to_owned(),
+            doc_url: None,
+            status: None,
+            deprecation_date: None,
+            input_per_1m: Some(1.0),
+            output_per_1m: Some(2.0),
+            cache_read_per_1m: None,
+            cache_write_per_1m: None,
+            reasoning_per_1m: None,
+            unsupported_dimensions: Vec::new(),
+            importable: true,
+        }];
+        let first = record_primary_catalog_success(&store, &providers, &candidates)
+            .await
+            .unwrap();
+        assert!(first.catalog_baseline_initialized);
+        assert!(first.unviewed_model_ids.is_empty());
+        let mut next_candidates = candidates.clone();
+        next_candidates[0].model = "gpt-new".to_owned();
+        let second = record_primary_catalog_success(&store, &providers, &next_candidates)
+            .await
+            .unwrap();
+        assert_eq!(second.unviewed_model_ids, vec!["gpt-new"]);
+    }
 }

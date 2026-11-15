@@ -10,6 +10,11 @@ pub(crate) fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
+        primary_database_backend: PrimaryDatabaseBackend::Sqlite,
+        postgres_primary_database_url: None,
+        postgres_primary_migration_url: None,
+        postgres_primary_max_connections: DEFAULT_POSTGRES_MAX_CONNECTIONS as u32,
+        postgres_primary_migration_max_connections: DEFAULT_POSTGRES_MAX_CONNECTIONS as u32,
         analytics_backend: AnalyticsBackend::Sqlite,
         postgres_database_url: None,
         postgres_migration_url: None,

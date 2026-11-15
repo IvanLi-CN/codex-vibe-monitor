@@ -161,6 +161,31 @@ pub(crate) fn validate_postgres_migration_role_separation(
     Ok(())
 }
 
+pub(crate) fn validate_postgres_primary_migration_role_separation(
+    migration_url: Option<&PostgresDatabaseUrl>,
+    primary_url: Option<&PostgresDatabaseUrl>,
+) -> Result<()> {
+    let Some(migration_url) = migration_url else {
+        return Ok(());
+    };
+    let Some(primary_url) = primary_url else {
+        return Ok(());
+    };
+    let migration_role = migration_url.effective_username()?;
+    let primary_role = primary_url.effective_username()?;
+    if migration_url.as_str() == primary_url.as_str() || migration_role == primary_role {
+        bail!(
+            "{ENV_POSTGRES_PRIMARY_MIGRATION_URL} must use a distinct login role from {ENV_POSTGRES_PRIMARY_DATABASE_URL}"
+        );
+    }
+    if migration_role.is_empty() || primary_role.is_empty() {
+        bail!(
+            "{ENV_POSTGRES_PRIMARY_MIGRATION_URL} and {ENV_POSTGRES_PRIMARY_DATABASE_URL} must specify distinct PostgreSQL login roles"
+        );
+    }
+    Ok(())
+}
+
 impl fmt::Debug for PostgresDatabaseUrl {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -3769,6 +3794,31 @@ mod tests {
                 Some(&maintenance),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn primary_migration_role_must_be_distinct_from_runtime_role() {
+        let migration = PostgresDatabaseUrl::parse_for(
+            "postgres://migration@db.example/codex",
+            ENV_POSTGRES_PRIMARY_MIGRATION_URL,
+        )
+        .unwrap();
+        let primary = PostgresDatabaseUrl::parse_for(
+            "postgres://primary@db.example/codex",
+            ENV_POSTGRES_PRIMARY_DATABASE_URL,
+        )
+        .unwrap();
+        validate_postgres_primary_migration_role_separation(Some(&migration), Some(&primary))
+            .unwrap();
+        let duplicate = PostgresDatabaseUrl::parse_for(
+            "postgres://primary@other.example/codex",
+            ENV_POSTGRES_PRIMARY_MIGRATION_URL,
+        )
+        .unwrap();
+        assert!(
+            validate_postgres_primary_migration_role_separation(Some(&duplicate), Some(&primary))
+                .is_err()
         );
     }
 

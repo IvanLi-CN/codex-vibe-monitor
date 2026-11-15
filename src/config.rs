@@ -1,5 +1,24 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PrimaryDatabaseBackend {
+    #[default]
+    Sqlite,
+    Postgres,
+}
+
+impl FromStr for PrimaryDatabaseBackend {
+    type Err = anyhow::Error;
+    fn from_str(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "sqlite" => Ok(Self::Sqlite),
+            "postgres" | "postgresql" => Ok(Self::Postgres),
+            _ => bail!("invalid {ENV_PRIMARY_DATABASE_BACKEND}; expected sqlite or postgres"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ForwardProxyAlgo {
@@ -252,7 +271,87 @@ pub(crate) fn should_recover_pending_pool_attempts_on_startup(cli: &CliArgs) -> 
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CliCommand {
+    /// Operate the PostgreSQL primary migration workflow.
+    Migrate(MigrationCliArgs),
     Maintenance(MaintenanceCliArgs),
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct MigrationCliArgs {
+    #[command(subcommand)]
+    pub(crate) command: MigrationCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum MigrationCommand {
+    InspectSource {
+        #[arg(long, value_name = "PATH")]
+        source_root: PathBuf,
+        #[arg(long, value_name = "PATH")]
+        manifest_out: Option<PathBuf>,
+    },
+    Prepare {
+        #[arg(long, value_name = "NAME")]
+        target_profile: String,
+        #[arg(long, value_name = "ID")]
+        run_id: String,
+        #[arg(long, value_name = "PATH")]
+        source_manifest: PathBuf,
+    },
+    Seed {
+        #[arg(long, value_name = "NAME")]
+        target_profile: String,
+        #[arg(long, value_name = "ID")]
+        run_id: String,
+        #[arg(long, value_name = "PATH")]
+        source_root: PathBuf,
+        #[arg(long, default_value_t = 5_000, value_parser = clap::value_parser!(u64).range(1..))]
+        batch_rows: u64,
+    },
+    MarkSourceStopped {
+        #[arg(long)]
+        target_profile: String,
+        #[arg(long)]
+        run_id: String,
+    },
+    CatchUp {
+        #[arg(long)]
+        target_profile: String,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        source_root: PathBuf,
+        #[arg(long, default_value_t = 5_000, value_parser = clap::value_parser!(u64).range(1..))]
+        batch_rows: u64,
+    },
+    Verify {
+        #[arg(long)]
+        target_profile: String,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, default_value_t = false)]
+        strict: bool,
+    },
+    Status {
+        #[arg(long)]
+        target_profile: String,
+        #[arg(long)]
+        run_id: String,
+    },
+    Resume {
+        #[arg(long)]
+        target_profile: String,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, default_value_t = 5_000, value_parser = clap::value_parser!(u64).range(1..))]
+        batch_rows: u64,
+    },
+    Finalize {
+        #[arg(long)]
+        target_profile: String,
+        #[arg(long)]
+        run_id: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -340,6 +439,11 @@ pub(crate) struct PerformanceIndexPreparationArgs {
 pub(crate) struct AppConfig {
     pub(crate) openai_upstream_base_url: Url,
     pub(crate) database_path: PathBuf,
+    pub(crate) primary_database_backend: PrimaryDatabaseBackend,
+    pub(crate) postgres_primary_database_url: Option<PostgresDatabaseUrl>,
+    pub(crate) postgres_primary_migration_url: Option<PostgresDatabaseUrl>,
+    pub(crate) postgres_primary_max_connections: u32,
+    pub(crate) postgres_primary_migration_max_connections: u32,
     pub(crate) analytics_backend: AnalyticsBackend,
     pub(crate) postgres_database_url: Option<PostgresDatabaseUrl>,
     pub(crate) postgres_migration_url: Option<PostgresDatabaseUrl>,
@@ -451,6 +555,61 @@ impl AppConfig {
             .clone()
             .or_else(|| env::var(ENV_DATABASE_PATH).ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("codex_vibe_monitor.db"));
+        let primary_database_backend = env::var(ENV_PRIMARY_DATABASE_BACKEND)
+            .ok()
+            .map(|raw| PrimaryDatabaseBackend::from_str(&raw))
+            .transpose()?
+            .unwrap_or_default();
+        let postgres_primary_database_url = env::var(ENV_POSTGRES_PRIMARY_DATABASE_URL)
+            .ok()
+            .map(|raw| PostgresDatabaseUrl::parse_for(&raw, ENV_POSTGRES_PRIMARY_DATABASE_URL))
+            .transpose()?;
+        let postgres_primary_migration_url = env::var(ENV_POSTGRES_PRIMARY_MIGRATION_URL)
+            .ok()
+            .map(|raw| PostgresDatabaseUrl::parse_for(&raw, ENV_POSTGRES_PRIMARY_MIGRATION_URL))
+            .transpose()?;
+        validate_postgres_primary_migration_role_separation(
+            postgres_primary_migration_url.as_ref(),
+            postgres_primary_database_url.as_ref(),
+        )?;
+        let postgres_primary_max_connections = u32::try_from(parse_usize_env_var(
+            ENV_POSTGRES_PRIMARY_MAX_CONNECTIONS,
+            DEFAULT_POSTGRES_MAX_CONNECTIONS,
+        )?)
+        .context("POSTGRES_PRIMARY_MAX_CONNECTIONS exceeds the supported range")?;
+        let postgres_primary_migration_max_connections = u32::try_from(parse_usize_env_var(
+            ENV_POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS,
+            DEFAULT_POSTGRES_MAX_CONNECTIONS,
+        )?)
+        .context("POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS exceeds the supported range")?;
+        if postgres_primary_max_connections == 0 {
+            bail!("{ENV_POSTGRES_PRIMARY_MAX_CONNECTIONS} must be greater than 0");
+        }
+        if postgres_primary_migration_max_connections == 0 {
+            bail!("{ENV_POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS} must be greater than 0");
+        }
+        let inspect_source_only = matches!(
+            overrides.command.as_ref(),
+            Some(CliCommand::Migrate(MigrationCliArgs {
+                command: MigrationCommand::InspectSource { .. }
+            }))
+        );
+        if !inspect_source_only
+            && primary_database_backend == PrimaryDatabaseBackend::Postgres
+            && postgres_primary_database_url.is_none()
+        {
+            bail!(
+                "{ENV_POSTGRES_PRIMARY_DATABASE_URL} is required when {ENV_PRIMARY_DATABASE_BACKEND}=postgres"
+            );
+        }
+        if !inspect_source_only
+            && primary_database_backend == PrimaryDatabaseBackend::Postgres
+            && postgres_primary_migration_url.is_none()
+        {
+            bail!(
+                "{ENV_POSTGRES_PRIMARY_MIGRATION_URL} is required when {ENV_PRIMARY_DATABASE_BACKEND}=postgres"
+            );
+        }
         let analytics_backend = env::var(ENV_ANALYTICS_BACKEND)
             .ok()
             .map(|raw| AnalyticsBackend::from_str(&raw))
@@ -837,6 +996,11 @@ impl AppConfig {
             openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
             database_path,
+            primary_database_backend,
+            postgres_primary_database_url,
+            postgres_primary_migration_url,
+            postgres_primary_max_connections,
+            postgres_primary_migration_max_connections,
             analytics_backend,
             postgres_database_url,
             postgres_migration_url,

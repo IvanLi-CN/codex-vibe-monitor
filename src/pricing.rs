@@ -1,5 +1,90 @@
 use super::*;
 
+pub(crate) const PRIMARY_PRICING_STATE_KEY: &str = "core.pricing_catalog.v1";
+pub(crate) const PRIMARY_PRICING_QUOTES_STATE_KEY: &str = "core.pricing_quotes.v1";
+pub(crate) const PRIMARY_PROXY_MODEL_SETTINGS_KEY: &str = "core.proxy_model_settings.v1";
+
+pub(crate) async fn load_primary_pricing_catalog(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+) -> Result<PricingCatalog> {
+    let Some(value) = store.get_json(PRIMARY_PRICING_STATE_KEY).await? else {
+        return Ok(default_pricing_catalog());
+    };
+    serde_json::from_value(value).context("failed to decode primary pricing catalog state")
+}
+
+pub(crate) async fn save_primary_pricing_catalog(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+    catalog: &PricingCatalog,
+) -> Result<()> {
+    let value = serde_json::to_value(catalog)?;
+    store
+        .put_json(PRIMARY_PRICING_STATE_KEY, &value)
+        .await
+        .context("failed to persist primary pricing catalog state")
+}
+
+pub(crate) async fn load_primary_pricing_quotes(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+) -> Result<Vec<PricingQuote>> {
+    let Some(value) = store.get_json(PRIMARY_PRICING_QUOTES_STATE_KEY).await? else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_value(value).context("failed to decode primary pricing quotes")
+}
+
+pub(crate) async fn save_primary_pricing_quotes(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+    quotes: &[PricingQuote],
+) -> Result<()> {
+    let value = serde_json::to_value(quotes)?;
+    store
+        .put_json(PRIMARY_PRICING_QUOTES_STATE_KEY, &value)
+        .await
+        .context("failed to persist primary pricing quotes")
+}
+
+pub(crate) async fn load_primary_proxy_model_settings(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+) -> Result<ProxyModelSettings> {
+    let Some(value) = store.get_json(PRIMARY_PROXY_MODEL_SETTINGS_KEY).await? else {
+        return Ok(ProxyModelSettings::default());
+    };
+    serde_json::from_value(value).context("failed to decode primary proxy model settings")
+}
+
+pub(crate) async fn save_primary_proxy_model_settings(
+    store: &dyn crate::primary_store::PrimaryStateStore,
+    settings: &ProxyModelSettings,
+) -> Result<()> {
+    let value = serde_json::to_value(settings.clone().normalized())?;
+    store
+        .put_json(PRIMARY_PROXY_MODEL_SETTINGS_KEY, &value)
+        .await
+        .context("failed to persist primary proxy model settings")
+}
+
+pub(crate) fn merge_primary_pricing_entries(
+    mut catalog: PricingCatalog,
+    version: &str,
+    entries: &[PricingEntry],
+) -> PricingCatalog {
+    catalog.version = version.to_owned();
+    for entry in entries {
+        let pricing = ModelPricing {
+            input_per_1m: entry.input_per_1m,
+            output_per_1m: entry.output_per_1m,
+            cache_input_per_1m: entry.cache_input_per_1m,
+            cache_read_per_1m: entry.cache_read_per_1m,
+            cache_write_per_1m: entry.cache_write_per_1m,
+            reasoning_per_1m: entry.reasoning_per_1m,
+            source: entry.source.clone(),
+        };
+        catalog.models.insert(entry.model.clone(), pricing);
+    }
+    catalog
+}
+
 pub(crate) async fn ensure_managed_model_catalog(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
@@ -1616,5 +1701,98 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
     PricingCatalog {
         version: DEFAULT_PRICING_CATALOG_VERSION.to_string(),
         models,
+    }
+}
+
+#[cfg(test)]
+mod primary_state_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn primary_pricing_catalog_round_trips_through_state_store() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = crate::primary_store::SqlitePrimaryStateStore::new(pool);
+        store.ensure_schema().await.unwrap();
+        let mut catalog = PricingCatalog {
+            version: "test-v1".to_owned(),
+            ..PricingCatalog::default()
+        };
+        catalog.models.insert(
+            "example".to_owned(),
+            ModelPricing {
+                input_per_1m: 1.0,
+                output_per_1m: 2.0,
+                cache_input_per_1m: None,
+                cache_read_per_1m: Some(0.1),
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "test".to_owned(),
+            },
+        );
+        save_primary_pricing_catalog(&store, &catalog)
+            .await
+            .unwrap();
+        assert_eq!(load_primary_pricing_catalog(&store).await.unwrap(), catalog);
+    }
+
+    #[test]
+    fn primary_pricing_entries_merge_without_sqlite_side_effects() {
+        let entries = [PricingEntry {
+            model: "example".to_owned(),
+            input_per_1m: 1.0,
+            output_per_1m: 2.0,
+            cache_input_per_1m: Some(0.1),
+            cache_read_per_1m: Some(0.1),
+            cache_write_per_1m: None,
+            reasoning_per_1m: None,
+            source: "litellm".to_owned(),
+        }];
+        let catalog = merge_primary_pricing_entries(PricingCatalog::default(), "litellm", &entries);
+        assert_eq!(catalog.version, "litellm");
+        assert_eq!(catalog.models["example"].output_per_1m, 2.0);
+    }
+
+    #[tokio::test]
+    async fn primary_proxy_settings_round_trip_through_state_store() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = crate::primary_store::SqlitePrimaryStateStore::new(pool);
+        store.ensure_schema().await.unwrap();
+        let settings = ProxyModelSettings {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            upstream_429_max_retries: 2,
+            request_body_logging_enabled: false,
+            response_body_logging_enabled: true,
+            encrypted_session_owner_routing_enabled: false,
+            enabled_preset_models: vec!["example".to_owned()],
+        };
+        save_primary_proxy_model_settings(&store, &settings)
+            .await
+            .unwrap();
+        assert_eq!(
+            load_primary_proxy_model_settings(&store).await.unwrap(),
+            settings
+        );
+    }
+
+    #[tokio::test]
+    async fn primary_pricing_quotes_round_trip_through_state_store() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = crate::primary_store::SqlitePrimaryStateStore::new(pool);
+        store.ensure_schema().await.unwrap();
+        let quotes = vec![PricingQuote {
+            model: "example".to_owned(),
+            provider_id: "provider".to_owned(),
+            provider_name: "Provider".to_owned(),
+            source: "litellm".to_owned(),
+            source_version: "test".to_owned(),
+            fetched_at: "2026-01-01T00:00:00Z".to_owned(),
+            status: None,
+            deprecation_date: None,
+            source_url: None,
+            rates: Vec::new(),
+        }];
+        save_primary_pricing_quotes(&store, &quotes).await.unwrap();
+        assert_eq!(load_primary_pricing_quotes(&store).await.unwrap(), quotes);
     }
 }

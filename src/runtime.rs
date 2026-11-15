@@ -1038,6 +1038,17 @@ pub(crate) async fn run() -> Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::from_sources(&cli)?;
+    if let Some(CliCommand::Migrate(args)) = &cli.command {
+        return crate::migration::run(&config, &args.command).await;
+    }
+    if config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        if cli.command.is_some() {
+            bail!(
+                "PostgreSQL primary mode only supports the migrate CLI commands; service commands are run without a subcommand"
+            );
+        }
+        return crate::pg_runtime::run(&config).await;
+    }
     if let Some(command) = selected_analytics_replica_command(&cli) {
         return run_analytics_replica_cli(&config, command).await;
     }
@@ -1087,6 +1098,8 @@ pub(crate) async fn run() -> Result<()> {
 
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
+        let primary_state_store =
+            crate::primary_store::open_runtime_store(&config, Some(pool.clone())).await?;
         let pg_analytics = Arc::new(PgAnalyticsRuntime::initialize(&config).await);
         if let Some(unavailable) = pg_analytics.unavailable_reason() {
             warn!(backend = %unavailable.backend, reason = %unavailable.reason, "analytics backend is unavailable; preserving unavailable semantics");
@@ -1170,9 +1183,20 @@ pub(crate) async fn run() -> Result<()> {
             runtime_lock.publish_role("service:ownership-v1:ready")?;
         }
 
-        let pricing_catalog = load_pricing_catalog(&pool).await?;
+        let pricing_catalog = if config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+            crate::pricing::load_primary_pricing_catalog(primary_state_store.as_ref()).await?
+        } else {
+            load_pricing_catalog(&pool).await?
+        };
         ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config).await?;
-        let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
+        let proxy_model_settings = Arc::new(RwLock::new(
+            if config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+                crate::pricing::load_primary_proxy_model_settings(primary_state_store.as_ref())
+                    .await?
+            } else {
+                load_proxy_model_settings(&pool).await?
+            },
+        ));
         let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
         let forward_proxy_subscription_snapshot = load_forward_proxy_subscription_snapshot(
             &pool,
@@ -1261,6 +1285,7 @@ pub(crate) async fn run() -> Result<()> {
             config: config.clone(),
             pg_analytics: pg_analytics.clone(),
             pool: pool.clone(),
+            primary_state_store,
             process_started_at_utc,
             observability,
             sqlite_batch_writer,
