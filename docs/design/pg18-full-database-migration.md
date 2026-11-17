@@ -70,7 +70,7 @@ cvm_migration  迁移运行、批次、断点、校验和错误状态
 | `source_stopped` | 旧服务已停止，允许执行最终追平                   |
 | `catching_up`    | 正在读取停止后的最终源状态并修正目标             |
 | `verified`       | 最终追平和全部验收检查完成                       |
-| `finalized`      | 新服务已被标记为唯一目标服务                     |
+| `finalized`      | 迁移完成已确认，运行账本已标记完成               |
 | `paused`         | 当前批次停止，允许使用同一 `run_id` 继续         |
 | `failed`         | 当前批次不可继续，必须修复后重试或重建该目标运行 |
 
@@ -142,7 +142,7 @@ codex-vibe-monitor migrate catch-up \
 
 `cvm_migration.object_columns` 保存源列顺序、声明类型和主键位置，`object_targets` 保存对象到领域表的映射。业务表保留原业务列，业务主键及索引不附带运行标识；一个 PG 数据库只允许一个迁移运行。断点由批次元数据保存，运行时按原业务主键读写。包含旧 `imported_rows` 的试验库保持原样并明确拒绝混用，应从同一源快照重新导入新数据库，见 [直接导入设计](../adr/0056-pg18-direct-import.md)。
 
-每个对象在合并后还会 materialize 到六个目标 domain schema 之一，并在 `cvm_migration.object_targets` 保存源对象到目标 schema/table 的映射。当前 materialized 表保留 `run_id`、`source_key` 和 JSONB payload，作为领域表替换完成前的 PG 原生目标承载层。
+每个对象直接写入六个目标 domain schema 之一，`cvm_migration.object_targets` 仅保存源对象到目标 schema/table 的映射。业务表保留源列和业务键，不保存 `run_id`、`source_key` 或整行 JSONB 副本。
 
 ### 校验、状态和续跑
 
@@ -193,7 +193,7 @@ sequenceDiagram
     Old-->>Old: 不再承担生产写入
 ```
 
-首次导入阶段允许旧服务继续运行；最终追平阶段要求旧服务已经停止。新服务只在目标库达到 `verified` 后启动为 PG-only 服务。两个服务之间没有双向写入，也没有目标库向旧服务回写的路径。
+首次导入阶段允许旧服务继续运行；最终追平阶段要求旧服务已经停止。PG-only 运行时可以读取 `seeded`、`verified` 或 `finalized` 的目标库，支持首次迁入后的隔离验证。`catch-up` 以停止后的源快照为同步依据，不提供双向写入或目标库向旧服务回写。CLI 状态不替代实际服务的启停操作。
 
 ## 校验门禁
 
