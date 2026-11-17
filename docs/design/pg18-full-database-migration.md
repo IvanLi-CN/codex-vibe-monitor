@@ -52,7 +52,7 @@ cvm_assets     文件资产索引、摘要、引用和生命周期
 cvm_migration  迁移运行、批次、断点、校验和错误状态
 ```
 
-目标 schema 的每次结构变更都必须有迁移编号、checksum、兼容范围和可重入行为；当前代码已将 domain materialization、source key、target profile、源列声明类型、外键、唯一索引、外部资产清单、source root、资产索引、批次 source cursor 和失败后的恢复阶段记录为 migration schema version 11，并保留旧版本历史记录。目标库的业务角色不得执行 schema DDL；DDL 由一次性的迁移角色执行，导入角色只获得目标表所需的写权限。两个连接 URL 必须指向同一个 PostgreSQL 数据库，避免迁移 ledger 与导入数据分离。
+目标 schema 的每次结构变更都必须有迁移编号、checksum、兼容范围和可重入行为；当前 migration schema version 为 12，保存 `nul-escape-v1` 文本布局、target profile、源列声明类型、外键、唯一索引、外部资产清单、source root、资产索引、批次 source cursor 和失败后的恢复阶段。旧试验布局保持原样并明确拒绝混用，须从同一源快照导入新的目标数据库。目标库的业务角色不得执行 schema DDL；DDL 由一次性的迁移角色执行，导入角色只获得目标表所需的写权限。两个连接 URL 必须指向同一个 PostgreSQL 数据库，避免迁移 ledger 与导入数据分离。
 
 业务连接池和迁移连接池分别由 `POSTGRES_PRIMARY_MAX_CONNECTIONS` 与 `POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS` 限制，两个值都必须为正整数。
 
