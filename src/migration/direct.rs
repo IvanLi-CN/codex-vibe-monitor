@@ -318,6 +318,9 @@ pub(super) async fn verify_direct_payloads(
             let actual: Vec<sqlx::types::Json<serde_json::Value>> = sqlx::query_scalar(&format!(
                 "SELECT to_jsonb(decoded) FROM ({selection}) decoded"
             ))
+            // Temporary keys change every batch. A cached first-batch merge plan
+            // otherwise rescans the business index from its start for later keys.
+            .persistent(false)
             .fetch_all(&mut *tx)
             .await?;
             let mut actual = actual
