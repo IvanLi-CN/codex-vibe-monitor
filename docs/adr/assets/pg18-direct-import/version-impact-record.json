@@ -45,7 +45,7 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "PG18 native columns and ledger v11",
+      "state_description": "PG18 native columns and ledger v12 with lossless text codec",
       "source_program_compatibility_range": "Current SQLite source; legacy PG copy layout requires fresh reimport",
       "evidence": []
     }

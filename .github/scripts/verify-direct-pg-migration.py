@@ -35,15 +35,22 @@ def main():
             CREATE TABLE composite(tenant TEXT, id INTEGER, value TEXT, PRIMARY KEY(id,tenant)) WITHOUT ROWID;
             CREATE TABLE unkeyed(value TEXT, count INTEGER);
             CREATE TABLE nullable_key(id TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE nullable_key_deleted(id TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE escaped_key(id TEXT PRIMARY KEY, value TEXT, payload BLOB);
+            CREATE TABLE numeric_exact(id INTEGER PRIMARY KEY, value NUMERIC);
             CREATE TABLE empty(id INTEGER PRIMARY KEY);
             CREATE TABLE pool_upstream_accounts(id INTEGER PRIMARY KEY,kind TEXT,display_name TEXT,enabled INTEGER,group_name TEXT,deleted_at TEXT);
             INSERT INTO pool_upstream_accounts VALUES(1,'oauth','fixture-account',1,NULL,NULL);
         """)
         connection.executemany("INSERT INTO parent VALUES(?,?,?,?)", [(i, f"label-{i}", bytes([0, 255, i]), i/10) for i in range(1,8)])
         connection.execute("INSERT INTO child VALUES(1,1)")
+        connection.execute("INSERT INTO numeric_exact VALUES(1,?)", (2**60+1,))
+        text_keys = ["a\0", "a\0suffix", "a\x01", "a\x02", "z"]
+        connection.executemany("INSERT INTO escaped_key VALUES(?,?,?)", [(key,"original\0literal\x01\x01",bytes(range(256))) for key in text_keys])
         connection.executemany("INSERT INTO composite VALUES(?,?,?)", [("a'b",1,'comma,quote"\n'),('z',1,''),('a',2,None)])
-        connection.executemany("INSERT INTO unkeyed VALUES(?,?)", [('same',1),('same',1),(None,2),('',3)])
+        connection.executemany("INSERT INTO unkeyed VALUES(?,?)", [('same',1),('same',1),(None,2),('',3),('nul\0escape\x01',4)])
         connection.executemany("INSERT INTO nullable_key VALUES(?,?)", [(None,'null-key'),('key','value')])
+        connection.executemany("INSERT INTO nullable_key_deleted VALUES(?,?)", [(None,'removed-null'),('key','kept')])
         connection.commit()
         env = os.environ.copy()
         env.update(PRIMARY_DATABASE_BACKEND="postgres", MIGRATION_SNAPSHOT_PATH=str(database), MIGRATION_SKIP_SOURCE_COUNTS="1")
@@ -70,6 +77,14 @@ def main():
         assert sql("SELECT count(*) FROM information_schema.columns WHERE table_schema LIKE 'cvm_%' AND column_name IN ('_cvm_payload','_cvm_source_key','_cvm_run_id')") == "0"
         assert sql("SELECT to_regclass('cvm_migration.imported_rows') IS NULL AND to_regclass('cvm_migration.row_staging') IS NULL") == "t"
         assert sql("SELECT encode(payload,'hex') FROM cvm_core.parent WHERE id=1") == "00ff01"
+        assert sql("SELECT value FROM cvm_core.numeric_exact WHERE id=1") == str(2**60+1)
+        assert sql("SELECT count(*) FROM cvm_core.escaped_key WHERE strpos(value,chr(1)||chr(1))>0") == "5"
+        # A content change that the former shared encoder hid must now fail.
+        sql("UPDATE cvm_core.escaped_key SET value=replace(value,chr(1)||chr(1),chr(65533)) WHERE id='z'")
+        sql("UPDATE cvm_migration.runs SET state='verified' WHERE run_id='test'")
+        cli("verify",*profile,"--strict",ok=False)
+        sql("UPDATE cvm_core.escaped_key SET value='original'||chr(1)||chr(1)||'literal'||chr(1)||chr(2)||chr(1)||chr(2) WHERE id='z'")
+        sql("UPDATE cvm_migration.runs SET state='seeded' WHERE run_id='test'")
         # Interrupt after committed batches, then resume without duplicating rows.
         sql("UPDATE cvm_migration.runs SET state='seeding' WHERE run_id='test'")
         cli("resume",*profile,"--batch-rows","2")
@@ -79,24 +94,33 @@ def main():
         cli("verify",*profile,"--strict",ok=False)
         sql("UPDATE cvm_core.parent SET label='label-2' WHERE id=2")
         sql("UPDATE cvm_migration.runs SET state='seeded' WHERE run_id='test'")
-        unchanged_ctid = sql("SELECT ctid::text FROM cvm_core.parent WHERE id=1")
+        unchanged_ctid = sql("SELECT ctid::text FROM cvm_core.parent WHERE id=4")
         cli("mark-source-stopped",*profile)
         # Deletes in the middle and tail, new keys before and after the old range,
         # changed value at equal row count, composite keys and unkeyed duplicates.
         connection.execute("DELETE FROM parent WHERE id IN (3,7)")
-        connection.execute("UPDATE parent SET label='changed' WHERE id=2")
-        connection.executemany("INSERT INTO parent VALUES(?,?,?,?)", [(0,'before',b'\x80',None),(9,'after',b'',0)])
+        connection.execute("DELETE FROM escaped_key WHERE id=?", ("a\0suffix",))
+        connection.execute("UPDATE escaped_key SET value=? WHERE id=?", ("updated\0\x01", "a\0"))
+        connection.execute("UPDATE parent SET label='temporary' WHERE id=2")
+        connection.execute("UPDATE parent SET label='label-2' WHERE id=6")
+        connection.execute("UPDATE parent SET label='label-6' WHERE id=2")
+        connection.executemany("INSERT INTO parent VALUES(?,?,?,?)", [(0,'label-3',b'\x80',None),(9,'after',b'',0)])
         connection.execute("DELETE FROM composite WHERE tenant='z'")
         connection.execute("UPDATE composite SET value='updated' WHERE id=2")
         connection.execute("DELETE FROM unkeyed WHERE count=3")
-        connection.execute("UPDATE nullable_key SET value='changed-null' WHERE id IS NULL")
+        connection.execute("UPDATE nullable_key SET id='moved',value='changed-null' WHERE id IS NULL")
+        connection.execute("DELETE FROM nullable_key_deleted WHERE id IS NULL")
         connection.commit()
         cli("catch-up",*profile,"--source-root",directory,"--batch-rows","2")
         cli("verify",*profile,"--strict")
-        assert sql("SELECT ctid::text FROM cvm_core.parent WHERE id=1") == unchanged_ctid, "unchanged rows must not be rewritten"
+        assert sql("SELECT ctid::text FROM cvm_core.parent WHERE id=4") == unchanged_ctid, "unchanged rows must not be rewritten"
         assert sql("SELECT string_agg(id::text,',' ORDER BY id) FROM cvm_core.parent") == "0,1,2,4,5,6,9"
-        assert sql("SELECT label FROM cvm_core.parent WHERE id=2") == "changed"
-        assert sql("SELECT value FROM cvm_core.nullable_key WHERE id IS NULL") == "changed-null"
+        assert sql("SELECT label FROM cvm_core.parent WHERE id=2") == "label-6"
+        assert sql("SELECT label FROM cvm_core.parent WHERE id=6") == "label-2"
+        assert sql("SELECT label FROM cvm_core.parent WHERE id=0") == "label-3"
+        assert sql("SELECT value FROM cvm_core.nullable_key WHERE id='moved'") == "changed-null"
+        assert sql("SELECT count(*) FROM cvm_core.nullable_key WHERE id IS NULL") == "0"
+        assert sql("SELECT count(*) FROM cvm_core.nullable_key_deleted") == "1"
         cli("finalize",*profile)
         cli("verify",*profile,"--strict")
         env["MIGRATION_MAX_TARGET_BYTES"]="1"
@@ -130,11 +154,18 @@ def main():
                             body=response.read()
                             return json.loads(body) if body else None
                     account=http('/api/pool/upstream-accounts/1')
-                    assert account['displayName']==('fixture-account' if restart==0 else 'persisted-name')
+                    assert account['displayName']==('fixture-account' if restart==0 else 'persisted\0literal\x01name')
                     if restart==0:
-                        http('/api/pool/upstream-accounts/1','PATCH',{'displayName':'persisted-name'})
+                        http('/api/pool/upstream-accounts/1','PATCH',{'displayName':'persisted\0literal\x01name'})
                         http('/api/pool/upstream-accounts/1','PATCH',{'enabled':False})
                         assert sql('SELECT enabled FROM cvm_core.pool_upstream_accounts WHERE id=1')=='0'
+                    settings_payload = {'availableModels':['model\0literal\x01'], 'reserveFallbackModelPolicy':{'mode':'disabled','patterns':[], 'fixture\0key':'state\0value\x01'}}
+                    if restart==0:
+                        settings=http('/api/pool/routing-settings','PUT',settings_payload)
+                    else:
+                        settings=http('/api/pool/routing-settings')
+                    for key,value in settings_payload.items():
+                        assert settings[key]==value, 'JSON primary state must round trip special values and keys'
                     assert not (root/'must-not-open.sqlite').exists()
                 finally:
                     process.terminate()

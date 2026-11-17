@@ -27,7 +27,7 @@ pub(super) fn append_typed_csv(
                 }
                 hex
             }
-            serde_json::Value::String(value) => value.clone(),
+            serde_json::Value::String(value) => value_codec::encode_text(value).into_owned(),
             value => value.to_string(),
         };
         copy_csv_field(&text, output);
@@ -69,6 +69,26 @@ pub(super) async fn reset_direct_import(pool: &sqlx::PgPool, run_id: &str) -> Re
             .await?;
         }
     }
+    // A valid final snapshot can transfer a unique value between different PK
+    // ranges. Defer only metadata-owned secondary uniqueness until all ranges
+    // have converged; the PK indexes used by ON CONFLICT remain in place.
+    let unique_indexes: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT DISTINCT t.target_schema,u.object_name,u.index_name FROM cvm_migration.object_unique_indexes u JOIN cvm_migration.object_targets t USING(run_id,object_name) WHERE u.run_id=$1",
+    )
+    .bind(run_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (schema, object, index) in unique_indexes {
+        let digest = Sha256::digest(format!("{run_id}:{object}:{index}").as_bytes());
+        let name = format!("cvm_uq_v2_{:x}", digest)[..31].to_owned();
+        sqlx::query(&format!(
+            "DROP INDEX IF EXISTS {}.{}",
+            quote_identifier(&schema),
+            quote_identifier(&name)
+        ))
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query("DELETE FROM cvm_migration.batches WHERE run_id=$1")
         .bind(run_id)
         .execute(&mut *tx)
@@ -82,6 +102,71 @@ pub(super) async fn reset_direct_import(pool: &sqlx::PgPool, run_id: &str) -> Re
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+// This reader deliberately does not use encode_row or COPY payload encoding.
+// It compares original SQLite values with runtime-decoded PostgreSQL values.
+fn source_verification_row(
+    row: &sqlx::sqlite::SqliteRow,
+    table: &SourceTable,
+) -> Result<serde_json::Value> {
+    let mut values = serde_json::Map::new();
+    for column in &table.columns {
+        let name = column.name.as_str();
+        let value = match postgres_type_for_source_column(&column.declared_type) {
+            "BYTEA" => row.try_get::<Option<Vec<u8>>, _>(name)?.map(|bytes| {
+                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(bytes))
+            }),
+            "BIGINT" => row
+                .try_get::<Option<i64>, _>(name)?
+                .map(serde_json::Value::from),
+            "DOUBLE PRECISION" => row
+                .try_get::<Option<f64>, _>(name)?
+                .map(serde_json::Value::from),
+            "NUMERIC" => {
+                if let Ok(value) = row.try_get::<Option<i64>, _>(name) {
+                    value.map(serde_json::Value::from)
+                } else {
+                    row.try_get::<Option<f64>, _>(name)?
+                        .map(serde_json::Value::from)
+                }
+            }
+            _ => row
+                .try_get::<Option<String>, _>(name)?
+                .map(serde_json::Value::String),
+        };
+        values.insert(
+            column.name.clone(),
+            value.unwrap_or(serde_json::Value::Null),
+        );
+    }
+    Ok(serde_json::Value::Object(values))
+}
+
+fn canonical_verification_row(mut value: serde_json::Value, table: &SourceTable) -> Result<String> {
+    for column in &table.columns {
+        let item = &mut value[&column.name];
+        if item.is_null() {
+            continue;
+        }
+        match postgres_type_for_source_column(&column.declared_type) {
+            "DOUBLE PRECISION" => {
+                let number = item.as_f64().context("invalid verification REAL")?;
+                *item = serde_json::Value::from(if number == 0.0 { 0.0 } else { number });
+            }
+            "NUMERIC" => {
+                if let Some(number) = item.as_i64() {
+                    *item = serde_json::Value::from(number);
+                } else {
+                    *item = serde_json::Value::from(
+                        item.as_f64().context("invalid verification NUMERIC")?,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(serde_json::to_string(&value)?)
 }
 
 pub(super) async fn verify_direct_payloads(
@@ -108,23 +193,9 @@ pub(super) async fn verify_direct_payloads(
         let columns = table
             .columns
             .iter()
-            .map(|c| quote_identifier(&c.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let target_columns = table
-            .columns
-            .iter()
-            .map(|c| format!("actual.{}", quote_identifier(&c.name)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut tx = pool.begin().await?;
-        sqlx::query(&format!(
-            "CREATE TEMP TABLE cvm_verify_batch (LIKE {qualified}) ON COMMIT DROP"
-        ))
-        .execute(&mut *tx)
-        .await?;
-        let mut offset = 0_i64;
-        let mut cursor = None;
+            .map(|c| (c.name.clone(), c.declared_type.clone()))
+            .collect::<Vec<_>>();
+        let projection = value_codec::projection(&columns, "stored");
         let keyed = if table.primary_key.is_empty() {
             false
         } else {
@@ -141,114 +212,123 @@ pub(super) async fn verify_direct_payloads(
             .fetch_one(&source)
             .await?
         };
-        let mut rowid = keyed;
+        let mut keys = table.clone();
+        keys.columns.retain(|c| table.primary_key.contains(&c.name));
+        let mut tx = pool.begin().await?;
+        if keyed {
+            let definitions = keys
+                .columns
+                .iter()
+                .map(|c| {
+                    let kind = postgres_type_for_source_column(&c.declared_type);
+                    format!(
+                        "{} {kind}{}",
+                        quote_identifier(&c.name),
+                        if kind == "TEXT" { " COLLATE \"C\"" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            sqlx::query(&format!(
+                "CREATE TEMP TABLE cvm_verify_keys ({definitions}) ON COMMIT DROP"
+            ))
+            .execute(&mut *tx)
+            .await?;
+        }
+        let mut offset = 0_i64;
+        let mut cursor: Option<String> = None;
         loop {
-            let query = if rowid {
-                let predicate = cursor
-                    .map(|c: i64| format!("WHERE rowid>{c}"))
-                    .unwrap_or_default();
-                format!(
-                    "SELECT rowid AS _cvm_rowid, * FROM {} {predicate} ORDER BY rowid LIMIT 20000",
-                    quote_identifier(&table.name)
-                )
+            let predicate = if keyed {
+                cursor
+                    .as_deref()
+                    .map(|key| sqlite_key_after(table, key))
+                    .transpose()?
+                    .map(|p| format!("WHERE {p}"))
+                    .unwrap_or_default()
             } else {
-                format!(
-                    "SELECT * FROM {} ORDER BY {} LIMIT 20000 OFFSET {offset}",
-                    quote_identifier(&table.name),
-                    if !keyed {
-                        table
-                            .columns
-                            .iter()
-                            .map(|c| quote_identifier(&c.name))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    } else {
-                        source_order_by(table)
-                    }
-                )
+                String::new()
             };
-            let rows = match sqlx::query(&query).fetch_all(&source).await {
-                Ok(rows) => rows,
-                Err(error) if rowid && error.to_string().contains("no such column: rowid") => {
-                    rowid = false;
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
+            let source_order = if keyed {
+                source_order_by(table)
+            } else {
+                table
+                    .columns
+                    .iter()
+                    .map(|c| quote_identifier(&c.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             };
+            let pagination = if keyed {
+                String::new()
+            } else {
+                format!("OFFSET {offset}")
+            };
+            let rows = sqlx::query(&format!(
+                "SELECT * FROM {} {predicate} ORDER BY {source_order} LIMIT 2000 {pagination}",
+                quote_identifier(&table.name)
+            ))
+            .fetch_all(&source)
+            .await?;
             if rows.is_empty() {
                 break;
             }
+            let mut expected = Vec::with_capacity(rows.len());
             let mut data = String::new();
-            let mut null_key = false;
             for row in &rows {
-                let payload = encode_row(row, table).await?;
-                null_key |= table.primary_key.iter().any(|key| payload[key].is_null());
-                append_typed_csv(&payload, table, &mut data)?;
+                let value = source_verification_row(row, table)?;
+                if keyed {
+                    cursor = Some(source_key(&value, table, offset)?);
+                    append_typed_csv(&value, &keys, &mut data)?;
+                }
+                expected.push(canonical_verification_row(value, table)?);
             }
-            if rowid {
-                cursor = rows
-                    .last()
-                    .and_then(|r| r.try_get::<i64, _>("_cvm_rowid").ok());
-            }
-            sqlx::query("TRUNCATE cvm_verify_batch")
-                .execute(&mut *tx)
-                .await?;
-            let mut copy = tx
-                .as_mut()
-                .copy_in_raw(&format!(
-                    "COPY cvm_verify_batch ({columns}) FROM STDIN WITH (FORMAT csv)"
-                ))
-                .await?;
-            copy.send(data.as_bytes()).await?;
-            copy.finish().await?;
-            sqlx::query("ANALYZE cvm_verify_batch")
-                .execute(&mut *tx)
-                .await?;
-            let selection = if !keyed {
-                // No source key exists. Compare a deterministic, bounded multiset slice.
-                let order = table
+            let selection = if keyed {
+                sqlx::query("TRUNCATE cvm_verify_keys")
+                    .execute(&mut *tx)
+                    .await?;
+                let mut copy = tx
+                    .as_mut()
+                    .copy_in_raw("COPY cvm_verify_keys FROM STDIN WITH (FORMAT csv)")
+                    .await?;
+                copy.send(data.as_bytes()).await?;
+                copy.finish().await?;
+                sqlx::query("ANALYZE cvm_verify_keys")
+                    .execute(&mut *tx)
+                    .await?;
+                let predicate = keys
                     .columns
                     .iter()
-                    .map(|c| {
-                        let column = quote_identifier(&c.name);
-                        if postgres_type_for_source_column(&c.declared_type) == "TEXT" {
-                            format!("{column} COLLATE \"C\" NULLS FIRST")
-                        } else {
-                            format!("{column} NULLS FIRST")
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "SELECT {columns} FROM {qualified} ORDER BY {order} LIMIT 20000 OFFSET {offset}"
-                )
-            } else {
-                let predicate = table
-                    .primary_key
-                    .iter()
-                    .map(|c| {
-                        format!(
-                            "actual.{0} {1} expected.{0}",
-                            quote_identifier(c),
-                            if null_key {
-                                "IS NOT DISTINCT FROM"
-                            } else {
-                                "="
-                            }
-                        )
-                    })
+                    .map(|c| format!("stored.{0}=expected.{0}", quote_identifier(&c.name)))
                     .collect::<Vec<_>>()
                     .join(" AND ");
                 format!(
-                    "SELECT {target_columns} FROM {qualified} actual WHERE EXISTS (SELECT 1 FROM cvm_verify_batch expected WHERE {predicate})"
+                    "SELECT {projection} FROM {qualified} stored WHERE EXISTS(SELECT 1 FROM cvm_verify_keys expected WHERE {predicate})"
+                )
+            } else {
+                let order = table
+                    .columns
+                    .iter()
+                    .map(|c| format!("stored.{} NULLS FIRST", quote_identifier(&c.name)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "SELECT {projection} FROM {qualified} stored ORDER BY {order} LIMIT 2000 OFFSET {offset}"
                 )
             };
-            let mismatch: bool = sqlx::query_scalar(&format!(
-                "WITH actual AS ({selection}), expected AS (SELECT {columns} FROM cvm_verify_batch) SELECT EXISTS((TABLE expected EXCEPT ALL TABLE actual) UNION ALL (TABLE actual EXCEPT ALL TABLE expected))"
-            )).fetch_one(&mut *tx).await?;
-            if mismatch {
+            let actual: Vec<sqlx::types::Json<serde_json::Value>> = sqlx::query_scalar(&format!(
+                "SELECT to_jsonb(decoded) FROM ({selection}) decoded"
+            ))
+            .fetch_all(&mut *tx)
+            .await?;
+            let mut actual = actual
+                .into_iter()
+                .map(|row| canonical_verification_row(value_codec::decode_row(row.0)?, table))
+                .collect::<Result<Vec<_>>>()?;
+            expected.sort_unstable();
+            actual.sort_unstable();
+            if expected != actual {
                 bail!(
-                    "direct payload verification failed for {} at row {offset}",
+                    "independent direct payload verification failed for {} at row {offset}",
                     table.name
                 );
             }
@@ -339,6 +419,20 @@ pub(super) async fn import_snapshot(
         };
         if catch_up && !keyed && offset == 0 {
             sqlx::query(&format!("TRUNCATE TABLE {qualified}"))
+                .execute(pool)
+                .await?;
+        }
+        if catch_up && keyed {
+            // The immutable final source has no NULL key. Any old target NULL
+            // key is therefore absent from it, and ordinary cursor comparisons
+            // cannot match that row. This cleanup is idempotent across resume.
+            let nulls = table
+                .primary_key
+                .iter()
+                .map(|c| format!("{} IS NULL", quote_identifier(c)))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            sqlx::query(&format!("DELETE FROM {qualified} WHERE {nulls}"))
                 .execute(pool)
                 .await?;
         }
@@ -519,6 +613,16 @@ fn sqlite_key_after(table: &SourceTable, key: &str) -> Result<String> {
                         bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
                     ));
                 }
+                if value.contains('\0') {
+                    return Ok(format!(
+                        "CAST(X'{}' AS TEXT)",
+                        value
+                            .as_bytes()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    ));
+                }
                 Ok(quote_literal(value))
             } else {
                 Ok(value.to_string())
@@ -562,6 +666,11 @@ fn pg_key_bound(table: &SourceTable, key: &str, alias: &str, operator: &str) -> 
             if pg_type == "BYTEA" {
                 Ok(format!("decode({},'base64')", quote_literal(&text)))
             } else {
+                let text = if pg_type == "TEXT" {
+                    value_codec::encode_text(&text)
+                } else {
+                    std::borrow::Cow::Borrowed(text.as_str())
+                };
                 Ok(format!("{}::{pg_type}", quote_literal(&text)))
             }
         })

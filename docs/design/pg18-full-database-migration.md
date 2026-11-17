@@ -166,7 +166,7 @@ codex-vibe-monitor migrate finalize \
   --run-id <run-id>
 ```
 
-`verify --strict` 检查行数、源快照身份、逐批原生列内容、外键、唯一索引、文件资产和 sequence。内容比较使用一批临时原生列与实际业务数据的双向 `EXCEPT ALL`，不依赖全量 JSON 副本或空 staging。新服务 API 重启读写和备份恢复是独立验收项。`finalize` 只接受 `verified`，不修改源端。
+`verify --strict` 检查行数、源快照身份、逐批原生列内容、外键、唯一索引、文件资产和 sequence。内容比较使用独立 SQLite 读取器，对照运行时解码后的 PostgreSQL 原生列；每批最多 2,000 行，临时表仅存本批主键，不复制完整期望行。文本采用可逆零字符编码，BLOB 按原始二进制保存并在 JSON 读取时转为 base64。不依赖全量 JSON 副本或空 staging。新服务 API 重启读写和备份恢复是独立验收项。`finalize` 只接受 `verified`，不修改源端。
 
 `resume` 接受 `paused`、`failed` 及进程中断留下的 `seeding`、`catching_up`，根据原阶段继续首次导入或追平。每批写入与业务主键游标原子提交，恢复使用同一不可变快照，跳过已提交批次。无主键表按确定性排序和行数断点重放。旧全量 JSON ledger 不自动续接到新布局。
 

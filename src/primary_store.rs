@@ -307,8 +307,8 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
                 "INSERT INTO cvm_core.state_kv(state_key,state_value) VALUES($1,$2) \
                  ON CONFLICT(state_key) DO UPDATE SET state_value=EXCLUDED.state_value,updated_at=now()",
             )
-            .bind(*key)
-            .bind(sqlx::types::Json(value))
+            .bind(crate::migration::value_codec::encode_text(key).into_owned())
+            .bind(sqlx::types::Json(crate::migration::value_codec::encoded_json(value)))
             .execute(&mut *tx)
             .await
             .context("failed to write PostgreSQL primary JSON state batch")?;
@@ -334,13 +334,15 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         let existing: Option<sqlx::types::Json<serde_json::Value>> = sqlx::query_scalar(
             "SELECT state_value FROM cvm_core.state_kv WHERE state_key=$1 FOR UPDATE",
         )
-        .bind(key)
+        .bind(crate::migration::value_codec::encode_text(key).into_owned())
         .fetch_optional(&mut *tx)
         .await
         .context("failed to lock PostgreSQL primary JSON array")?;
-        let mut values = existing
-            .and_then(|encoded| encoded.0.as_array().cloned())
-            .unwrap_or_default();
+        let mut decoded = existing
+            .map(|value| value.0)
+            .unwrap_or(serde_json::Value::Null);
+        crate::migration::value_codec::decode_json(&mut decoded)?;
+        let mut values = decoded.as_array().cloned().unwrap_or_default();
         values.push(value);
         if values.len() > max_len {
             values.drain(0..values.len() - max_len);
@@ -348,8 +350,8 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         sqlx::query(
             "INSERT INTO cvm_core.state_kv(state_key,state_value) VALUES($1,$2) ON CONFLICT(state_key) DO UPDATE SET state_value=EXCLUDED.state_value,updated_at=now()",
         )
-        .bind(key)
-        .bind(sqlx::types::Json(serde_json::Value::Array(values)))
+        .bind(crate::migration::value_codec::encode_text(key).into_owned())
+        .bind(sqlx::types::Json(crate::migration::value_codec::encoded_json(&serde_json::Value::Array(values))))
         .execute(&mut *tx)
         .await
         .context("failed to write PostgreSQL primary JSON array")?;
@@ -366,7 +368,10 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             .fetch_all(self.database.pool())
             .await
             .context("failed to read PostgreSQL primary proxy requests")?;
-            return Ok(rows.into_iter().map(|row| row.0).collect());
+            return rows
+                .into_iter()
+                .map(|row| crate::migration::value_codec::decode_row(row.0))
+                .collect();
         }
         let run_id: Option<String> = sqlx::query_scalar(
             "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
@@ -401,13 +406,17 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             ".",
             quote_identifier(&table)
         );
+        let columns: Vec<(String,String)> = sqlx::query_as("SELECT column_name,declared_type FROM cvm_migration.object_columns WHERE run_id=$1 AND object_name=$2 ORDER BY ordinal").bind(&run_id).bind(object_name).fetch_all(self.database.pool()).await?;
+        let projection = crate::migration::value_codec::projection(&columns, "stored");
         let rows: Vec<sqlx::types::Json<serde_json::Value>> = sqlx::query_scalar(&format!(
-            "SELECT to_jsonb(materialized_row) FROM {qualified} AS materialized_row"
+            "SELECT to_jsonb(materialized_row) FROM (SELECT {projection} FROM {qualified} stored) AS materialized_row"
         ))
         .fetch_all(self.database.pool())
         .await
         .with_context(|| format!("failed to read materialized PostgreSQL object {object_name}"))?;
-        Ok(rows.into_iter().map(|row| row.0).collect())
+        rows.into_iter()
+            .map(|row| crate::migration::value_codec::decode_row(row.0))
+            .collect()
     }
 
     async fn delete_materialized_rows_by_source_keys(
@@ -438,8 +447,12 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         let qualified = format!("{}.{}", quote_identifier(&schema), quote_identifier(&table));
         let keys = source_keys
             .iter()
-            .map(|key| serde_json::from_str::<serde_json::Value>(key))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .map(|key| -> Result<serde_json::Value> {
+                Ok(serde_json::from_str(
+                    &crate::migration::value_codec::encoded_key(key)?,
+                )?)
+            })
+            .collect::<Result<Vec<_>>>()?;
         let columns: Vec<(String,String)> = sqlx::query_as("SELECT column_name,declared_type FROM cvm_migration.object_columns WHERE run_id=$1 AND object_name=$2 AND primary_key_position>0 ORDER BY primary_key_position").bind(&run_id).bind(object_name).fetch_all(pool).await?;
         if columns.is_empty() {
             bail!("business key is unavailable for {object_name}");
@@ -512,9 +525,11 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         let statement = format!(
             "UPDATE {qualified} SET {assignments} WHERE $1::text IS NOT NULL AND {predicate}"
         );
-        let mut query = sqlx::query(&statement).bind(&run_id).bind(source_key);
+        let mut query = sqlx::query(&statement)
+            .bind(&run_id)
+            .bind(crate::migration::value_codec::encoded_key(source_key)?);
         for (_, value) in fields {
-            query = query.bind(*value);
+            query = query.bind(crate::migration::value_codec::encode_text(value).into_owned());
         }
         query
             .execute(pool)
@@ -558,7 +573,9 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         let statement = format!(
             "UPDATE {qualified} SET {assignments} WHERE $1::text IS NOT NULL AND {predicate}"
         );
-        let mut query = sqlx::query(&statement).bind(&run_id).bind(source_key);
+        let mut query = sqlx::query(&statement)
+            .bind(&run_id)
+            .bind(crate::migration::value_codec::encoded_key(source_key)?);
         for (_, value) in fields {
             query = query.bind(*value);
         }
@@ -601,7 +618,9 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         let statement = format!(
             "UPDATE {qualified} SET {assignments} WHERE $1::text IS NOT NULL AND {predicate}"
         );
-        let mut query = sqlx::query(&statement).bind(&run_id).bind(source_key);
+        let mut query = sqlx::query(&statement)
+            .bind(&run_id)
+            .bind(crate::migration::value_codec::encoded_key(source_key)?);
         for (_, value) in fields {
             query = query.bind(*value);
         }
@@ -661,13 +680,15 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             .bind(&run_id)
             .bind(account_id);
         if let Some(group_name) = bind_group {
-            request = request.bind(group_name);
+            request =
+                request.bind(crate::migration::value_codec::encode_text(group_name).into_owned());
         }
         let row = request
             .fetch_optional(pool)
             .await
             .with_context(|| format!("failed to apply materialized account action {action}"))?;
-        Ok(row.map(|value| value.0))
+        row.map(|value| crate::migration::value_codec::decode_row(value.0))
+            .transpose()
     }
 
     async fn update_materialized_account(
@@ -759,13 +780,18 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         let patch_json = serde_json::Value::Object(patch.clone());
         let mut request = sqlx::query_scalar::<_, sqlx::types::Json<serde_json::Value>>(&query)
             .bind(&run_id)
-            .bind(sqlx::types::Json(patch_json))
+            .bind(sqlx::types::Json(
+                crate::migration::value_codec::encoded_json(&patch_json),
+            ))
             .bind(account_id);
         for value in values {
-            request = request.bind(sqlx::types::Json(serde_json::json!({"value": value})));
+            request = request.bind(sqlx::types::Json(
+                crate::migration::value_codec::encoded_json(&serde_json::json!({"value": value})),
+            ));
         }
         let row = request.fetch_optional(pool).await?;
-        Ok(row.map(|value| value.0))
+        row.map(|value| crate::migration::value_codec::decode_row(value.0))
+            .transpose()
     }
 
     async fn create_materialized_account(
@@ -848,25 +874,27 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         );
         let payload = serde_json::Value::Object(full_payload);
         let row = sqlx::query_scalar::<_, sqlx::types::Json<serde_json::Value>>(&query)
-            .bind(sqlx::types::Json(payload))
+            .bind(sqlx::types::Json(
+                crate::migration::value_codec::encoded_json(&payload),
+            ))
             .fetch_one(pool)
             .await
             .context("failed to insert PostgreSQL primary upstream account")?;
-        Ok(Some(row.0))
+        Ok(Some(crate::migration::value_codec::decode_row(row.0)?))
     }
 
     async fn record_proxy_request(&self, record: ProxyRequestRecord) -> Result<()> {
         sqlx::query(
             "INSERT INTO cvm_activity.proxy_requests(invoke_id,method,request_path,status_code,request_bytes,response_bytes,duration_ms,error) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(invoke_id) DO NOTHING",
         )
-        .bind(record.invoke_id)
-        .bind(record.method)
-        .bind(record.request_path)
+        .bind(crate::migration::value_codec::encode_text(&record.invoke_id).into_owned())
+        .bind(crate::migration::value_codec::encode_text(&record.method).into_owned())
+        .bind(crate::migration::value_codec::encode_text(&record.request_path).into_owned())
         .bind(record.status_code.map(i32::from))
         .bind(record.request_bytes as i64)
         .bind(record.response_bytes as i64)
         .bind(record.duration_ms)
-        .bind(record.error)
+        .bind(record.error.as_deref().map(|value| crate::migration::value_codec::encode_text(value).into_owned()))
         .execute(self.database.pool())
         .await
         .context("failed to persist PostgreSQL primary proxy request")?;

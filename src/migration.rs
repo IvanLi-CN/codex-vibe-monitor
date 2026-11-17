@@ -1,6 +1,7 @@
 use super::*;
 use crate::primary_db::PrimaryDatabase;
 mod direct;
+pub(crate) mod value_codec;
 use direct::{reset_direct_import, verify_direct_payloads};
 
 const MIGRATION_SCHEMA_SQL: &str = r#"
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS cvm_migration.runs (
     last_error_code TEXT,
     needs_reset BOOLEAN NOT NULL DEFAULT FALSE,
     snapshot_sha256 TEXT,
+    text_codec TEXT NOT NULL DEFAULT 'nul-escape-v1' CHECK (text_codec='nul-escape-v1'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -101,7 +103,7 @@ CREATE TABLE IF NOT EXISTS cvm_migration.batches (
     PRIMARY KEY (run_id, object_name, batch_no)
 );
 "#;
-pub(crate) const MIGRATION_SCHEMA_VERSION: i64 = 11;
+pub(crate) const MIGRATION_SCHEMA_VERSION: i64 = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SourceManifest {
@@ -200,6 +202,19 @@ async fn ensure_target_schema(config: &AppConfig, pool: &sqlx::PgPool) -> Result
         bail!(
             "legacy JSON-copy migration layout detected; preserve this database and import the source into a fresh PostgreSQL database with the direct importer"
         );
+    }
+    let ledger_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('cvm_migration.schema_migrations') IS NOT NULL")
+            .fetch_one(ddl_pool)
+            .await?;
+    if ledger_exists {
+        let old: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cvm_migration.schema_migrations WHERE component='migration-ledger' AND version<>$1)")
+            .bind(MIGRATION_SCHEMA_VERSION).fetch_one(ddl_pool).await?;
+        if old {
+            bail!(
+                "legacy primary text layout detected; preserve this database and reimport into a fresh target with the lossless text codec"
+            );
+        }
     }
     sqlx::raw_sql(MIGRATION_SCHEMA_SQL)
         .execute(ddl_pool)
@@ -747,7 +762,9 @@ async fn encode_row(
             row.try_get::<Option<f64>, _>(index)
                 .map(|value| value.map_or(serde_json::Value::Null, serde_json::Value::from))?
         } else if declared_type.contains("NUM") || declared_type.contains("DEC") {
-            if let Ok(value) = row.try_get::<Option<String>, _>(index) {
+            if let Ok(value) = row.try_get::<Option<i64>, _>(index) {
+                value.map_or(serde_json::Value::Null, serde_json::Value::from)
+            } else if let Ok(value) = row.try_get::<Option<String>, _>(index) {
                 value.map_or(serde_json::Value::Null, serde_json::Value::String)
             } else if let Ok(value) = row.try_get::<Option<f64>, _>(index) {
                 value.map_or(serde_json::Value::Null, serde_json::Value::from)
@@ -763,20 +780,20 @@ async fn encode_row(
                 row.try_get::<Option<String>, _>(index)
                     .map(|value| value.map_or(serde_json::Value::Null, serde_json::Value::String))?
             }
-        } else if let Ok(value) = row.try_get::<Option<String>, _>(index) {
-            value.map_or(serde_json::Value::Null, serde_json::Value::String)
-        } else if let Ok(value) = row.try_get::<Option<Vec<u8>>, _>(index) {
-            value.map_or(serde_json::Value::Null, |bytes| {
-                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(bytes))
-            })
         } else {
-            serde_json::Value::Null
+            row.try_get::<Option<String>, _>(index)
+                .with_context(|| {
+                    format!(
+                        "source text is not valid UTF-8 in {}.{}",
+                        table.name,
+                        column.name()
+                    )
+                })?
+                .map_or(serde_json::Value::Null, serde_json::Value::String)
         };
         object.insert(column.name().to_string(), value);
     }
-    let mut payload = serde_json::Value::Object(object);
-    sanitize_postgres_json(&mut payload);
-    Ok(payload)
+    Ok(serde_json::Value::Object(object))
 }
 
 fn source_key(payload: &serde_json::Value, table: &SourceTable, row_number: i64) -> Result<String> {
@@ -794,27 +811,6 @@ fn source_key(payload: &serde_json::Value, table: &SourceTable, row_number: i64)
         key.insert(column.clone(), value.clone());
     }
     Ok(serde_json::to_string(&key)?)
-}
-
-fn sanitize_postgres_json(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) => {
-            if text.contains('\0') {
-                *text = text.replace('\0', "\u{FFFD}");
-            }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                sanitize_postgres_json(value);
-            }
-        }
-        serde_json::Value::Object(values) => {
-            for value in values.values_mut() {
-                sanitize_postgres_json(value);
-            }
-        }
-        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
-    }
 }
 
 fn target_schema_for_object(object_name: &str) -> &'static str {
@@ -1091,15 +1087,21 @@ async fn ensure_domain_tables(pool: &sqlx::PgPool, run_id: &str) -> Result<()> {
                 );
             }
             let pg_type = postgres_type_for_source_column(declared_type);
+            let collation = if pg_type == "TEXT" {
+                " COLLATE \"C\""
+            } else {
+                ""
+            };
             let identity = if *primary_key_position > 0 && pg_type == "BIGINT" {
                 " GENERATED BY DEFAULT AS IDENTITY"
             } else {
                 ""
             };
             definitions.push(format!(
-                "{} {}{}",
+                "{} {}{}{}",
                 quote_identifier(column_name),
                 pg_type,
+                collation,
                 identity
             ));
         }
@@ -1112,9 +1114,14 @@ async fn ensure_domain_tables(pool: &sqlx::PgPool, run_id: &str) -> Result<()> {
         .with_context(|| format!("failed to create target table {target_schema}.{target_table}"))?;
         for (column_name, declared_type, _) in &columns {
             sqlx::query(&format!(
-                "ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {} {}",
+                "ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {} {}{}",
                 quote_identifier(column_name),
-                postgres_type_for_source_column(declared_type)
+                postgres_type_for_source_column(declared_type),
+                if postgres_type_for_source_column(declared_type) == "TEXT" {
+                    " COLLATE \"C\""
+                } else {
+                    ""
+                }
             ))
             .execute(pool)
             .await?;
@@ -2264,6 +2271,24 @@ mod tests {
         assert_eq!(payload["text_col"], json!("alpha"));
         assert_eq!(payload["blob_col"], json!("AP8="));
         assert_eq!(payload["int_col"], json!(7));
+        let row = sqlx::query("SELECT ? AS text_col, x'00FF' AS blob_col, 7 AS int_col")
+            .bind("private\0content")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            encode_row(&row, &table).await.unwrap()["text_col"],
+            json!("private\0content")
+        );
+        let row = sqlx::query("SELECT ? AS text_col, x'00FF' AS blob_col, 7 AS int_col")
+            .bind("alpha\u{FFFD}beta")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            encode_row(&row, &table).await.unwrap()["text_col"],
+            json!("alpha\u{FFFD}beta")
+        );
         pool.close().await;
     }
 

@@ -7,7 +7,7 @@
     "version_impact": "minor"
   },
   "durable_state": {
-    "description": "SQLite source is read-only; PG migration ledger version 11 and business tables persist",
+    "description": "SQLite source is read-only; PG migration ledger version 12 and business tables persist",
     "storage_implementation": "SQLite online backup source; PostgreSQL 18 native COPY target",
     "source_compatibility_range": {
       "from_program_versions": "Current SQLite source schema; legacy PG JSON-copy targets are rejected and preserved",
@@ -83,6 +83,8 @@
       "Failed COPY atomicity and resume",
       "Interrupted phase recovery",
       "BLOB, NULL, composite and keyless rows",
+      "Lossless TEXT NUL and literal escape round trip, independent source reader, exact numeric integers and BLOB runtime projection",
+      "Cross-batch unique-value transfers and removal of obsolete NULL keys",
       "Same-count corruption rejection",
       "Final catch-up insert/update/delete",
       "PG-only API read/write and restart",

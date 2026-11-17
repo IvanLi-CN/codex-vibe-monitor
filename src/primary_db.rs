@@ -323,11 +323,17 @@ impl PrimaryDatabase {
     pub(crate) async fn get_json_state(&self, key: &str) -> Result<Option<serde_json::Value>> {
         let value: Option<sqlx::types::Json<serde_json::Value>> =
             sqlx::query_scalar("SELECT state_value FROM cvm_core.state_kv WHERE state_key=$1")
-                .bind(key)
+                .bind(crate::migration::value_codec::encode_text(key).into_owned())
                 .fetch_optional(&self.pool)
                 .await
                 .context("failed to read PostgreSQL primary JSON state")?;
-        Ok(value.map(|value| value.0))
+        value
+            .map(|value| {
+                let mut value = value.0;
+                crate::migration::value_codec::decode_json(&mut value)?;
+                Ok(value)
+            })
+            .transpose()
     }
 
     pub(crate) async fn put_json_state(&self, key: &str, value: &serde_json::Value) -> Result<()> {
@@ -335,8 +341,8 @@ impl PrimaryDatabase {
             "INSERT INTO cvm_core.state_kv(state_key,state_value) VALUES($1,$2) \
              ON CONFLICT(state_key) DO UPDATE SET state_value=EXCLUDED.state_value,updated_at=now()",
         )
-        .bind(key)
-        .bind(sqlx::types::Json(value))
+        .bind(crate::migration::value_codec::encode_text(key).into_owned())
+        .bind(sqlx::types::Json(crate::migration::value_codec::encoded_json(value)))
         .execute(&self.pool)
         .await
         .context("failed to write PostgreSQL primary JSON state")?;
