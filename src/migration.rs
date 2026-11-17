@@ -1,5 +1,7 @@
 use super::*;
 use crate::primary_db::PrimaryDatabase;
+mod direct;
+use direct::{reset_direct_import, verify_direct_payloads};
 
 const MIGRATION_SCHEMA_SQL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS cvm_core;
@@ -16,6 +18,8 @@ CREATE TABLE IF NOT EXISTS cvm_migration.runs (
     state TEXT NOT NULL CHECK (state IN ('prepared','seeding','seeded','source_stopped','catching_up','verified','finalized','paused','failed')),
     resume_state TEXT CHECK (resume_state IN ('prepared','source_stopped')),
     last_error_code TEXT,
+    needs_reset BOOLEAN NOT NULL DEFAULT FALSE,
+    snapshot_sha256 TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -57,6 +61,7 @@ CREATE TABLE IF NOT EXISTS cvm_migration.object_unique_indexes (
     index_name TEXT NOT NULL,
     sequence_no BIGINT NOT NULL,
     column_name TEXT NOT NULL,
+    predicate TEXT,
     PRIMARY KEY (run_id, object_name, index_name, sequence_no)
 );
 CREATE TABLE IF NOT EXISTS cvm_migration.object_targets (
@@ -95,27 +100,8 @@ CREATE TABLE IF NOT EXISTS cvm_migration.batches (
     committed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (run_id, object_name, batch_no)
 );
-CREATE TABLE IF NOT EXISTS cvm_migration.row_staging (
-    run_id TEXT NOT NULL REFERENCES cvm_migration.runs(run_id) ON DELETE CASCADE,
-    object_name TEXT NOT NULL,
-    source_row_number BIGINT NOT NULL,
-    source_key TEXT NOT NULL,
-    payload JSONB NOT NULL,
-    PRIMARY KEY (run_id, object_name, source_row_number),
-    UNIQUE (run_id, object_name, source_key)
-);
-CREATE TABLE IF NOT EXISTS cvm_migration.imported_rows (
-    run_id TEXT NOT NULL REFERENCES cvm_migration.runs(run_id) ON DELETE CASCADE,
-    object_name TEXT NOT NULL,
-    source_row_number BIGINT NOT NULL,
-    source_key TEXT NOT NULL,
-    payload JSONB NOT NULL,
-    imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (run_id, object_name, source_row_number),
-    UNIQUE (run_id, object_name, source_key)
-);
 "#;
-const MIGRATION_SCHEMA_VERSION: i64 = 10;
+pub(crate) const MIGRATION_SCHEMA_VERSION: i64 = 11;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SourceManifest {
@@ -147,6 +133,8 @@ struct SourceUniqueIndex {
     table: String,
     name: String,
     columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    predicate: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +192,15 @@ async fn ensure_target_schema(config: &AppConfig, pool: &sqlx::PgPool) -> Result
     }
     ddl_database.ensure_schema().await?;
     let ddl_pool = ddl_database.pool();
+    let legacy: bool =
+        sqlx::query_scalar("SELECT to_regclass('cvm_migration.imported_rows') IS NOT NULL")
+            .fetch_one(ddl_pool)
+            .await?;
+    if legacy {
+        bail!(
+            "legacy JSON-copy migration layout detected; preserve this database and import the source into a fresh PostgreSQL database with the direct importer"
+        );
+    }
     sqlx::raw_sql(MIGRATION_SCHEMA_SQL)
         .execute(ddl_pool)
         .await
@@ -235,14 +232,9 @@ async fn ensure_target_schema(config: &AppConfig, pool: &sqlx::PgPool) -> Result
             "ALTER TABLE cvm_migration.object_foreign_keys ADD COLUMN IF NOT EXISTS constraint_id BIGINT",
             "ALTER TABLE cvm_migration.object_foreign_keys ADD COLUMN IF NOT EXISTS sequence_no BIGINT",
             "CREATE TABLE IF NOT EXISTS cvm_migration.object_unique_indexes (run_id TEXT NOT NULL REFERENCES cvm_migration.runs(run_id) ON DELETE CASCADE, object_name TEXT NOT NULL, index_name TEXT NOT NULL, sequence_no BIGINT, column_name TEXT NOT NULL, PRIMARY KEY (run_id, object_name, index_name, sequence_no))",
-            "ALTER TABLE cvm_migration.row_staging ADD COLUMN IF NOT EXISTS source_key TEXT",
-            "ALTER TABLE cvm_migration.imported_rows ADD COLUMN IF NOT EXISTS source_key TEXT",
-            "UPDATE cvm_migration.row_staging SET source_key = 'row:' || source_row_number::text WHERE source_key IS NULL",
-            "UPDATE cvm_migration.imported_rows SET source_key = 'row:' || source_row_number::text WHERE source_key IS NULL",
-            "ALTER TABLE cvm_migration.row_staging ALTER COLUMN source_key SET NOT NULL",
-            "ALTER TABLE cvm_migration.imported_rows ALTER COLUMN source_key SET NOT NULL",
-            "CREATE UNIQUE INDEX IF NOT EXISTS row_staging_source_key_idx ON cvm_migration.row_staging(run_id, object_name, source_key)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS imported_rows_source_key_idx ON cvm_migration.imported_rows(run_id, object_name, source_key)",
+            "ALTER TABLE cvm_migration.runs ADD COLUMN IF NOT EXISTS needs_reset BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE cvm_migration.runs ADD COLUMN IF NOT EXISTS snapshot_sha256 TEXT",
+            "ALTER TABLE cvm_migration.object_unique_indexes ADD COLUMN IF NOT EXISTS predicate TEXT",
         ] {
             sqlx::query(statement)
                 .execute(ddl_pool)
@@ -543,6 +535,7 @@ async fn inspect_source_database(
     let mut tables = Vec::with_capacity(rows.len());
     let mut foreign_keys = Vec::new();
     let mut unique_indexes = Vec::new();
+    let partial_predicate_pattern = regex::Regex::new(r"(?i)\bWHERE\b")?;
     for row in rows {
         let name: String = row.try_get("name")?;
         let escaped = name.replace('"', "\"\"");
@@ -605,17 +598,20 @@ async fn inspect_source_database(
                 continue;
             }
             let is_partial: i64 = index.try_get("partial").unwrap_or(0);
-            if is_partial != 0 {
-                if env::var_os("MIGRATION_ALLOW_PARTIAL_UNIQUE_INDEXES").is_none() {
-                    bail!(
-                        "source unique index {name}.{index_name} is partial and cannot be materialized safely; set MIGRATION_ALLOW_PARTIAL_UNIQUE_INDEXES=1 only when the target schema supplies the equivalent predicate",
-                    );
-                }
-                eprintln!(
-                    "warning: skipping partial unique index {name}.{index_name}; target schema must provide its predicate"
-                );
-                continue;
-            }
+            let predicate = if is_partial != 0 {
+                let sql: String = sqlx::query_scalar(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                )
+                .bind(&index_name)
+                .fetch_one(pool)
+                .await?;
+                let position = partial_predicate_pattern
+                    .find(&sql)
+                    .context("partial unique index has no WHERE predicate")?;
+                Some(sql[position.end()..].trim().to_owned())
+            } else {
+                None
+            };
             let mut index_columns: Vec<(i64, String)> = Vec::new();
             for index_column in sqlx::query(&format!(
                 "PRAGMA index_info(\"{}\")",
@@ -641,6 +637,7 @@ async fn inspect_source_database(
                     .into_iter()
                     .map(|(_, column)| column)
                     .collect(),
+                predicate,
             });
         }
         let kind = classify_source_object(&name);
@@ -907,18 +904,6 @@ fn copy_csv_field(value: &str, output: &mut String) {
     output.push('"');
 }
 
-async fn stage_source_rows(
-    pool: &sqlx::PgPool,
-    run_id: &str,
-    source_root: &Path,
-    batch_rows: u64,
-) -> Result<()> {
-    let (snapshot, cleanup) = migration_snapshot(source_root).await?;
-    let _snapshot_guard = SnapshotGuard::new(snapshot.clone(), cleanup);
-    let manifest = inspect_source_snapshot(&snapshot, source_root).await?;
-    stage_source_rows_from_snapshot(pool, run_id, &manifest.tables, batch_rows, &snapshot).await
-}
-
 async fn stage_source_rows_from_snapshot(
     pool: &sqlx::PgPool,
     run_id: &str,
@@ -926,255 +911,7 @@ async fn stage_source_rows_from_snapshot(
     batch_rows: u64,
     snapshot: &Path,
 ) -> Result<()> {
-    let source = source_pool(snapshot).await?;
-    for table in tables {
-        let escaped = table.name.replace('"', "\"\"");
-        let (committed_rows, next_batch_no, committed_cursor): (i64, i64, Option<String>) =
-            sqlx::query_as(
-                "SELECT COALESCE(SUM(row_count), 0)::bigint, COALESCE(MAX(batch_no) + 1, 0)::bigint, (SELECT source_cursor FROM cvm_migration.batches WHERE run_id=$1 AND object_name=$2 ORDER BY batch_no DESC LIMIT 1) FROM cvm_migration.batches WHERE run_id=$1 AND object_name=$2",
-            )
-            .bind(run_id)
-            .bind(&table.name)
-            .fetch_one(pool)
-            .await?;
-        sqlx::query(
-            "UPDATE cvm_migration.objects SET source_rows=$3,updated_at=now() WHERE run_id=$1 AND object_name=$2",
-        )
-        .bind(run_id)
-        .bind(&table.name)
-        .bind(table.row_count)
-        .execute(pool)
-        .await
-        .with_context(|| format!("failed to record snapshot row count for {}", table.name))?;
-        let mut offset = committed_rows;
-        let mut last_rowid: Option<i64> = committed_cursor
-            .as_deref()
-            .and_then(|value| value.parse::<i64>().ok());
-        let mut use_rowid_cursor = env::var_os("MIGRATION_DISABLE_ROWID_CURSOR").is_none();
-        if committed_rows > 0 && last_rowid.is_none() {
-            // Batches written by pre-cursor versions can still be resumed safely, but
-            // must use OFFSET pagination because their durable rowid checkpoint is absent.
-            use_rowid_cursor = false;
-        }
-        let mut batch_no = next_batch_no;
-        loop {
-            let query = if use_rowid_cursor {
-                if let Some(last_rowid) = last_rowid {
-                    format!(
-                        "SELECT rowid AS _cvm_rowid, * FROM \"{escaped}\" WHERE rowid > {last_rowid} ORDER BY rowid LIMIT {batch_rows}"
-                    )
-                } else {
-                    format!(
-                        "SELECT rowid AS _cvm_rowid, * FROM \"{escaped}\" ORDER BY rowid LIMIT {batch_rows}"
-                    )
-                }
-            } else {
-                format!(
-                    "SELECT * FROM \"{escaped}\" ORDER BY {} LIMIT {} OFFSET {}",
-                    source_order_by(table),
-                    batch_rows,
-                    offset
-                )
-            };
-            let rows = match sqlx::query(&query).fetch_all(&source).await {
-                Ok(rows) => rows,
-                Err(error)
-                    if use_rowid_cursor && error.to_string().contains("no such column: rowid") =>
-                {
-                    use_rowid_cursor = false;
-                    sqlx::query(&format!(
-                        "SELECT * FROM \"{escaped}\" ORDER BY {} LIMIT {} OFFSET {}",
-                        source_order_by(table),
-                        batch_rows,
-                        offset
-                    ))
-                    .fetch_all(&source)
-                    .await?
-                }
-                Err(error) => return Err(error.into()),
-            };
-            if rows.is_empty() {
-                break;
-            }
-            let mut tx = pool.begin().await?;
-            let mut batch_hasher = Sha256::new();
-            let mut copy_data = String::new();
-            let mut first_key = None;
-            let mut last_key = None;
-            for (index, row) in rows.iter().enumerate() {
-                let payload = encode_row(row, table).await?;
-                let row_number = offset + index as i64;
-                let source_key = source_key(&payload, table, row_number)?;
-                let payload_json = serde_json::to_string(&payload)?;
-                batch_hasher.update(payload_json.as_bytes());
-                first_key.get_or_insert_with(|| source_key.clone());
-                last_key = Some(source_key.clone());
-                if use_rowid_cursor {
-                    last_rowid = row.try_get("_cvm_rowid").ok();
-                }
-                copy_csv_field(run_id, &mut copy_data);
-                copy_data.push(',');
-                copy_csv_field(&table.name, &mut copy_data);
-                copy_data.push(',');
-                copy_csv_field(&row_number.to_string(), &mut copy_data);
-                copy_data.push(',');
-                copy_csv_field(&source_key, &mut copy_data);
-                copy_data.push(',');
-                copy_csv_field(&payload_json, &mut copy_data);
-                copy_data.push('\n');
-            }
-            let batch_checksum = format!("{:x}", batch_hasher.finalize());
-            let existing_batch: Option<(i64, String)> = sqlx::query_as(
-                "SELECT row_count, checksum FROM cvm_migration.batches WHERE run_id=$1 AND object_name=$2 AND batch_no=$3",
-            )
-            .bind(run_id)
-            .bind(&table.name)
-            .bind(batch_no)
-            .fetch_optional(&mut *tx)
-            .await?;
-            if existing_batch
-                .as_ref()
-                .is_some_and(|(row_count, checksum)| {
-                    *row_count == rows.len() as i64 && checksum == &batch_checksum
-                })
-            {
-                tx.commit().await?;
-                offset += rows.len() as i64;
-                batch_no += 1;
-                continue;
-            }
-            // Replace only this batch. This makes a failed seed/catch-up resumable while
-            // still allowing changed rows to reconcile against the same source key.
-            sqlx::query(
-                "DELETE FROM cvm_migration.row_staging WHERE run_id=$1 AND object_name=$2 AND source_row_number >= $3 AND source_row_number < $4",
-            )
-            .bind(run_id)
-            .bind(&table.name)
-            .bind(offset)
-            .bind(offset + rows.len() as i64)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "DELETE FROM cvm_migration.batches WHERE run_id=$1 AND object_name=$2 AND batch_no=$3",
-            )
-            .bind(run_id)
-            .bind(&table.name)
-            .bind(batch_no)
-            .execute(&mut *tx)
-            .await?;
-            let mut copy = tx
-                .as_mut()
-                .copy_in_raw(
-                    "COPY cvm_migration.row_staging(run_id,object_name,source_row_number,source_key,payload) FROM STDIN WITH (FORMAT csv)",
-                )
-                .await
-                .context("failed to start PostgreSQL staging COPY")?;
-            copy.send(copy_data.as_bytes())
-                .await
-                .context("failed to stream PostgreSQL staging COPY")?;
-            copy.finish()
-                .await
-                .context("failed to finish PostgreSQL staging COPY")?;
-            sqlx::query("INSERT INTO cvm_migration.batches(run_id,object_name,batch_no,first_key,last_key,row_count,checksum,source_cursor) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-                .bind(run_id).bind(&table.name).bind(batch_no)
-                .bind(first_key)
-                .bind(last_key)
-                .bind(rows.len() as i64)
-                .bind(batch_checksum)
-                .bind(last_rowid.map(|value| value.to_string()))
-                .execute(&mut *tx).await?;
-            tx.commit().await?;
-            offset += rows.len() as i64;
-            batch_no += 1;
-        }
-        sqlx::query(
-            "DELETE FROM cvm_migration.row_staging WHERE run_id=$1 AND object_name=$2 AND source_row_number >= $3",
-        )
-        .bind(run_id)
-        .bind(&table.name)
-        .bind(offset)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "DELETE FROM cvm_migration.batches WHERE run_id=$1 AND object_name=$2 AND batch_no >= $3",
-        )
-        .bind(run_id)
-        .bind(&table.name)
-        .bind(batch_no)
-        .execute(pool)
-        .await?;
-        sqlx::query("UPDATE cvm_migration.objects SET source_rows=$3,imported_rows=$3,checkpoint=$4,updated_at=now() WHERE run_id=$1 AND object_name=$2")
-            .bind(run_id).bind(&table.name).bind(offset).bind(offset.to_string())
-            .execute(pool).await?;
-        let has_staged_rows: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM cvm_migration.row_staging WHERE run_id=$1 AND object_name=$2)",
-        )
-        .bind(run_id)
-        .bind(&table.name)
-        .fetch_one(pool)
-        .await?;
-        if has_staged_rows {
-            merge_staged_object(pool, run_id, &table.name).await?;
-        }
-    }
-    source.close().await;
-    Ok(())
-}
-
-async fn merge_staged_object(pool: &sqlx::PgPool, run_id: &str, object_name: &str) -> Result<()> {
-    let has_existing_rows: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM cvm_migration.imported_rows WHERE run_id=$1 AND object_name=$2)",
-    )
-    .bind(run_id)
-    .bind(object_name)
-    .fetch_one(pool)
-    .await?;
-    if has_existing_rows {
-        sqlx::query(
-            "DELETE FROM cvm_migration.imported_rows AS imported
-             WHERE imported.run_id=$1 AND imported.object_name=$2
-               AND NOT EXISTS (
-                 SELECT 1 FROM cvm_migration.row_staging AS staged
-                 WHERE staged.run_id=imported.run_id AND staged.object_name=imported.object_name
-                   AND staged.source_key=imported.source_key
-               )",
-        )
-        .bind(run_id)
-        .bind(object_name)
-        .execute(pool)
-        .await
-        .with_context(|| format!("failed to reconcile deleted rows for {object_name}"))?;
-        sqlx::query(
-            "INSERT INTO cvm_migration.imported_rows(run_id,object_name,source_row_number,source_key,payload)
-             SELECT run_id,object_name,source_row_number,source_key,payload
-             FROM cvm_migration.row_staging WHERE run_id=$1 AND object_name=$2
-             ON CONFLICT(run_id,object_name,source_key) DO UPDATE
-             SET source_row_number=EXCLUDED.source_row_number,payload=EXCLUDED.payload,imported_at=now()",
-        )
-        .bind(run_id)
-        .bind(object_name)
-        .execute(pool)
-        .await
-        .with_context(|| format!("failed to merge staged rows for {object_name}"))?;
-    } else {
-        sqlx::query(
-            "INSERT INTO cvm_migration.imported_rows(run_id,object_name,source_row_number,source_key,payload)
-             SELECT run_id,object_name,source_row_number,source_key,payload
-             FROM cvm_migration.row_staging WHERE run_id=$1 AND object_name=$2",
-        )
-        .bind(run_id)
-        .bind(object_name)
-        .execute(pool)
-        .await
-        .with_context(|| format!("failed to load staged rows for {object_name}"))?;
-    }
-    sqlx::query("DELETE FROM cvm_migration.row_staging WHERE run_id=$1 AND object_name=$2")
-        .bind(run_id)
-        .bind(object_name)
-        .execute(pool)
-        .await
-        .with_context(|| format!("failed to clear staging rows for {object_name}"))?;
-    Ok(())
+    direct::import_snapshot(pool, run_id, tables, batch_rows, snapshot).await
 }
 
 async fn transition(
@@ -1205,6 +942,12 @@ fn is_valid_transition(state: &str, expected: &[&str]) -> bool {
 }
 
 fn resumable_state(state: &str, resume_state: Option<&str>) -> Result<String> {
+    if state == "seeding" {
+        return Ok("prepared".to_owned());
+    }
+    if state == "catching_up" {
+        return Ok("source_stopped".to_owned());
+    }
     if !matches!(state, "paused" | "failed") {
         bail!("migration run is not resumable: {state}");
     }
@@ -1229,84 +972,7 @@ async fn ensure_run_profile(pool: &sqlx::PgPool, run_id: &str, target_profile: &
 }
 
 async fn merge_staged_rows(pool: &sqlx::PgPool, run_id: &str) -> Result<()> {
-    let has_staging: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM cvm_migration.row_staging WHERE run_id=$1)",
-    )
-    .bind(run_id)
-    .fetch_one(pool)
-    .await?;
-    if !has_staging {
-        materialize_domain_rows(pool, run_id).await?;
-        return Ok(());
-    }
-    let has_existing_rows: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM cvm_migration.imported_rows WHERE run_id=$1)",
-    )
-    .bind(run_id)
-    .fetch_one(pool)
-    .await?;
-    if has_existing_rows {
-        sqlx::query(
-            "DELETE FROM cvm_migration.imported_rows AS imported \
-             WHERE imported.run_id=$1 AND NOT EXISTS (SELECT 1 FROM cvm_migration.row_staging AS staged WHERE staged.run_id=imported.run_id AND staged.object_name=imported.object_name AND staged.source_key=imported.source_key)",
-        )
-        .bind(run_id)
-        .execute(pool)
-        .await
-        .context("failed to remove deleted migration rows")?;
-        sqlx::query(
-            "INSERT INTO cvm_migration.imported_rows(run_id,object_name,source_row_number,source_key,payload) \
-             SELECT run_id,object_name,source_row_number,source_key,payload FROM cvm_migration.row_staging \
-             WHERE run_id=$1 \
-             ON CONFLICT(run_id,object_name,source_key) DO UPDATE SET source_row_number=EXCLUDED.source_row_number,payload=EXCLUDED.payload, imported_at=now()",
-        )
-        .bind(run_id)
-        .execute(pool)
-        .await
-        .context("failed to merge staged migration rows")?;
-    } else {
-        sqlx::query(
-            "INSERT INTO cvm_migration.imported_rows(run_id,object_name,source_row_number,source_key,payload) \
-             SELECT run_id,object_name,source_row_number,source_key,payload FROM cvm_migration.row_staging \
-             WHERE run_id=$1",
-        )
-        .bind(run_id)
-        .execute(pool)
-        .await
-        .context("failed to insert staged migration rows")?;
-    }
-    sqlx::query(
-        "WITH summary AS ( \
-             SELECT object_name, COUNT(*)::bigint AS imported_rows, MAX(source_row_number)::text AS checkpoint, md5(string_agg(md5(payload::text), '' ORDER BY source_row_number)) AS checksum \
-             FROM cvm_migration.imported_rows WHERE run_id=$1 GROUP BY object_name \
-         ) \
-         UPDATE cvm_migration.objects AS target \
-         SET imported_rows=summary.imported_rows, checkpoint=summary.checkpoint, checksum=summary.checksum, updated_at=now() \
-         FROM summary WHERE target.run_id=$1 AND target.object_name=summary.object_name",
-    )
-    .bind(run_id)
-    .execute(pool)
-    .await
-    .context("failed to update migration object checkpoints")?;
-    sqlx::query(
-        "UPDATE cvm_migration.objects AS target \
-         SET imported_rows=0, checkpoint=NULL, checksum=NULL, updated_at=now() \
-         WHERE target.run_id=$1 AND NOT EXISTS (SELECT 1 FROM cvm_migration.imported_rows AS imported WHERE imported.run_id=$1 AND imported.object_name=target.object_name)",
-    )
-    .bind(run_id)
-    .execute(pool)
-    .await
-    .context("failed to clear empty migration object checkpoints")?;
-    materialize_domain_rows(pool, run_id).await?;
-    // row_staging is a resumable import buffer. Once imported_rows and the
-    // materialized domain rows are committed, retaining the duplicate payload
-    // only inflates the target database and can exhaust migration storage.
-    sqlx::query("DELETE FROM cvm_migration.row_staging WHERE run_id=$1")
-        .bind(run_id)
-        .execute(pool)
-        .await
-        .context("failed to clear completed migration staging rows")?;
-    Ok(())
+    finish_domain_tables(pool, run_id).await
 }
 
 async fn clear_missing_source_objects(
@@ -1336,8 +1002,7 @@ async fn clear_missing_source_objects(
                 quote_identifier(&target_schema),
                 quote_identifier(&target_table)
             );
-            sqlx::query(&format!("DELETE FROM {qualified} WHERE _cvm_run_id=$1"))
-                .bind(run_id)
+            sqlx::query(&format!("TRUNCATE TABLE {qualified}"))
                 .execute(pool)
                 .await
                 .with_context(|| {
@@ -1346,16 +1011,6 @@ async fn clear_missing_source_objects(
                     )
                 })?;
         }
-        sqlx::query("DELETE FROM cvm_migration.row_staging WHERE run_id=$1 AND object_name=$2")
-            .bind(run_id)
-            .bind(&object_name)
-            .execute(pool)
-            .await?;
-        sqlx::query("DELETE FROM cvm_migration.imported_rows WHERE run_id=$1 AND object_name=$2")
-            .bind(run_id)
-            .bind(&object_name)
-            .execute(pool)
-            .await?;
         for table in [
             "cvm_migration.object_columns",
             "cvm_migration.object_foreign_keys",
@@ -1403,7 +1058,7 @@ async fn drop_legacy_generated_indexes(
     Ok(())
 }
 
-async fn materialize_domain_rows(pool: &sqlx::PgPool, run_id: &str) -> Result<()> {
+async fn ensure_domain_tables(pool: &sqlx::PgPool, run_id: &str) -> Result<()> {
     let objects: Vec<String> = sqlx::query_scalar(
         "SELECT object_name FROM cvm_migration.objects WHERE run_id=$1 ORDER BY object_name",
     )
@@ -1425,11 +1080,7 @@ async fn materialize_domain_rows(pool: &sqlx::PgPool, run_id: &str) -> Result<()
         .bind(&object_name)
         .fetch_all(pool)
         .await?;
-        let mut definitions = vec![
-            "_cvm_run_id TEXT NOT NULL".to_owned(),
-            "_cvm_source_key TEXT NOT NULL".to_owned(),
-            "_cvm_payload JSONB NOT NULL".to_owned(),
-        ];
+        let mut definitions = Vec::new();
         for (column_name, declared_type, primary_key_position) in &columns {
             if matches!(
                 column_name.as_str(),
@@ -1452,7 +1103,6 @@ async fn materialize_domain_rows(pool: &sqlx::PgPool, run_id: &str) -> Result<()
                 identity
             ));
         }
-        definitions.push("PRIMARY KEY (_cvm_run_id, _cvm_source_key)".to_owned());
         sqlx::raw_sql(&format!(
             "CREATE TABLE IF NOT EXISTS {qualified} ({})",
             definitions.join(", ")
@@ -1470,86 +1120,49 @@ async fn materialize_domain_rows(pool: &sqlx::PgPool, run_id: &str) -> Result<()
             .await?;
         }
         drop_legacy_generated_indexes(pool, target_schema, &target_table).await?;
-        let expected_rows: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM cvm_migration.imported_rows WHERE run_id=$1 AND object_name=$2",
-        )
-        .bind(run_id)
-        .bind(&object_name)
-        .fetch_one(pool)
-        .await?;
-        let existing_rows: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {qualified} WHERE _cvm_run_id=$1"
-        ))
-        .bind(run_id)
-        .fetch_one(pool)
-        .await?;
-        let needs_rows = existing_rows != expected_rows;
-        if needs_rows {
-            sqlx::query(&format!("DELETE FROM {qualified} WHERE _cvm_run_id=$1"))
-                .bind(run_id)
-                .execute(pool)
-                .await?;
-        }
-        let mut target_columns = vec![
-            "_cvm_run_id".to_owned(),
-            "_cvm_source_key".to_owned(),
-            "_cvm_payload".to_owned(),
-        ];
-        let mut expressions = vec![
-            "source.run_id".to_owned(),
-            "source.source_key".to_owned(),
-            "source.payload".to_owned(),
-        ];
-        let record_definitions = columns
-            .iter()
-            .map(|(column_name, declared_type, _)| {
-                let pg_type = postgres_type_for_source_column(declared_type);
-                let record_type = if pg_type == "BYTEA" { "TEXT" } else { pg_type };
-                format!("{} {}", quote_identifier(column_name), record_type)
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        for (column_name, declared_type, _) in &columns {
-            let field = format!("decoded.{}", quote_identifier(column_name));
-            let pg_type = postgres_type_for_source_column(declared_type);
-            let expression = match pg_type {
-                "BYTEA" => format!("decode({field}, 'base64')"),
-                _ => field,
-            };
-            target_columns.push(quote_identifier(column_name));
-            expressions.push(expression);
-        }
-        if needs_rows {
-            sqlx::query(&format!(
-            "INSERT INTO {qualified}({}) SELECT {} FROM cvm_migration.imported_rows AS source CROSS JOIN LATERAL jsonb_to_record(source.payload) AS decoded({record_definitions}) WHERE source.run_id=$1 AND source.object_name=$2",
-            target_columns.join(", "),
-            expressions.join(", "),
-            ))
+        sqlx::query("INSERT INTO cvm_migration.object_targets(run_id,object_name,target_schema,target_table) VALUES($1,$2,$3,$4) ON CONFLICT(run_id,object_name) DO UPDATE SET target_schema=EXCLUDED.target_schema,target_table=EXCLUDED.target_table")
             .bind(run_id)
             .bind(&object_name)
+            .bind(target_schema)
+            .bind(&target_table)
             .execute(pool)
             .await?;
-        }
-        let primary_key_columns: Vec<String> = columns
+    }
+    Ok(())
+}
+
+async fn finish_domain_tables(pool: &sqlx::PgPool, run_id: &str) -> Result<()> {
+    let targets: Vec<(String,String,String)> = sqlx::query_as("SELECT object_name,target_schema,target_table FROM cvm_migration.object_targets WHERE run_id=$1").bind(run_id).fetch_all(pool).await?;
+    for (object_name, target_schema, target_table) in targets {
+        let qualified = format!(
+            "{}.{}",
+            quote_identifier(&target_schema),
+            quote_identifier(&target_table)
+        );
+        let columns: Vec<(String,String,i64)> = sqlx::query_as("SELECT column_name,declared_type,primary_key_position FROM cvm_migration.object_columns WHERE run_id=$1 AND object_name=$2 ORDER BY ordinal").bind(run_id).bind(&object_name).fetch_all(pool).await?;
+        let mut key_columns = columns
             .iter()
             .filter(|(_, _, position)| *position > 0)
+            .collect::<Vec<_>>();
+        key_columns.sort_by_key(|(_, _, position)| *position);
+        let primary_key_columns = key_columns
+            .iter()
             .map(|(name, _, _)| quote_identifier(name))
-            .collect();
+            .collect::<Vec<_>>();
         if !primary_key_columns.is_empty() {
             let index_digest = format!("{:x}", Sha256::digest(object_name.as_bytes()));
             let legacy_index_name = format!("cvm_pk_{}", &index_digest[..24]);
             let index_name = format!("cvm_pk_v2_{}", &index_digest[..22]);
             sqlx::raw_sql(&format!(
                 "DROP INDEX IF EXISTS {}.{}",
-                quote_identifier(target_schema),
+                quote_identifier(&target_schema),
                 quote_identifier(&legacy_index_name)
             ))
             .execute(pool)
             .await?;
             sqlx::raw_sql(&format!(
-                "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {qualified} ({}, {})",
+                "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {qualified} ({})",
                 quote_identifier(&index_name),
-                quote_identifier("_cvm_run_id"),
                 primary_key_columns.join(", ")
             ))
             .execute(pool)
@@ -1583,13 +1196,6 @@ async fn materialize_domain_rows(pool: &sqlx::PgPool, run_id: &str) -> Result<()
                     .await?;
             }
         }
-        sqlx::query("INSERT INTO cvm_migration.object_targets(run_id,object_name,target_schema,target_table) VALUES($1,$2,$3,$4) ON CONFLICT(run_id,object_name) DO UPDATE SET target_schema=EXCLUDED.target_schema,target_table=EXCLUDED.target_table")
-            .bind(run_id)
-            .bind(&object_name)
-            .bind(target_schema)
-            .bind(&target_table)
-            .execute(pool)
-            .await?;
     }
     materialize_unique_indexes(pool, run_id).await?;
     materialize_foreign_keys(pool, run_id).await?;
@@ -1640,10 +1246,11 @@ async fn materialize_unique_indexes(pool: &sqlx::PgPool, run_id: &str) -> Result
         ))
         .execute(pool)
         .await?;
+        let predicate: Option<String> = sqlx::query_scalar("SELECT predicate FROM cvm_migration.object_unique_indexes WHERE run_id=$1 AND object_name=$2 AND index_name=$3 LIMIT 1").bind(run_id).bind(&object_name).bind(&index_name).fetch_one(pool).await?;
+        let predicate = predicate.map(|p| format!(" WHERE {p}")).unwrap_or_default();
         sqlx::raw_sql(&format!(
-            "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {qualified} ({}, {columns})",
-            quote_identifier(&target_index_name),
-            quote_identifier("_cvm_run_id")
+            "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {qualified} ({columns}){predicate}",
+            quote_identifier(&target_index_name)
         ))
         .execute(pool)
         .await
@@ -1736,24 +1343,14 @@ async fn materialize_foreign_keys(pool: &sqlx::PgPool, run_id: &str) -> Result<(
         };
         let on_update = normalize_action(&on_update)?;
         let on_delete = normalize_action(&on_delete)?;
-        // Every materialized table is namespaced by _cvm_run_id and all generated
-        // primary/unique indexes include that column. Keep the foreign key in the
-        // same namespace so PostgreSQL can match the referenced unique index and
-        // prevent cross-run references.
-        let source_columns = std::iter::once(quote_identifier("_cvm_run_id"))
-            .chain(
-                columns
-                    .iter()
-                    .map(|(_, column, _)| quote_identifier(column)),
-            )
+        let source_columns = columns
+            .iter()
+            .map(|(_, column, _)| quote_identifier(column))
             .collect::<Vec<_>>()
             .join(", ");
-        let referenced_columns = std::iter::once(quote_identifier("_cvm_run_id"))
-            .chain(
-                columns
-                    .iter()
-                    .map(|(_, _, column)| quote_identifier(column)),
-            )
+        let referenced_columns = columns
+            .iter()
+            .map(|(_, _, column)| quote_identifier(column))
             .collect::<Vec<_>>()
             .join(", ");
         let constraint_name = foreign_key_constraint_name(
@@ -1813,6 +1410,7 @@ async fn verify_imported_rows(
     run_id: &str,
     strict: bool,
     source_root: Option<&Path>,
+    snapshot: Option<&Path>,
 ) -> Result<()> {
     let mismatches: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM cvm_migration.objects WHERE run_id=$1 AND source_rows <> imported_rows",
@@ -1827,18 +1425,7 @@ async fn verify_imported_rows(
         let source_root =
             source_root.context("strict migration verification requires a recorded source root")?;
         verify_asset_records(pool, run_id, source_root).await?;
-        let payload_mismatches: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM cvm_migration.row_staging AS staged \
-             LEFT JOIN cvm_migration.imported_rows AS imported \
-               ON imported.run_id=staged.run_id AND imported.object_name=staged.object_name AND imported.source_key=staged.source_key \
-             WHERE staged.run_id=$1 AND (imported.payload IS NULL OR imported.payload <> staged.payload)",
-        )
-        .bind(run_id)
-        .fetch_one(pool)
-        .await?;
-        if payload_mismatches != 0 {
-            bail!("migration payload verification failed: {payload_mismatches} row(s) differ");
-        }
+        verify_direct_payloads(pool, run_id, source_root, snapshot).await?;
     }
     let targets: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT object_name,target_schema,target_table FROM cvm_migration.object_targets WHERE run_id=$1",
@@ -1859,17 +1446,15 @@ async fn verify_imported_rows(
         .bind(&object_name)
         .fetch_one(pool)
         .await?;
-        let target_count: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {qualified} WHERE _cvm_run_id=$1"
-        ))
-        .bind(run_id)
-        .fetch_one(pool)
-        .await?;
+        let target_count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {qualified}"))
+            .fetch_one(pool)
+            .await?;
         if imported_count != target_count {
             bail!("target materialization verification failed for {object_name}");
         }
         verify_target_sequences(pool, run_id, &object_name, &target_schema, &target_table).await?;
     }
+    direct::enforce_capacity(pool).await?;
     verify_target_foreign_keys(pool, run_id).await?;
     verify_target_unique_indexes(pool, run_id).await?;
     Ok(())
@@ -2041,12 +1626,13 @@ async fn verify_target_sequences(
             .rsplit_once('.')
             .map(|(schema, sequence)| (schema.trim_matches('\"'), sequence.trim_matches('\"')))
             .unwrap_or((target_schema, sequence_name.as_str()));
+        // Unused identity sequences have a catalog row with a NULL last_value.
         let last_value: Option<i64> = sqlx::query_scalar(
             "SELECT last_value FROM pg_sequences WHERE schemaname=$1 AND sequencename=$2",
         )
         .bind(schema_name)
         .bind(sequence_name)
-        .fetch_optional(pool)
+        .fetch_one(pool)
         .await?;
         let maximum: Option<i64> = sqlx::query_scalar(&format!(
             "SELECT MAX({}) FROM {qualified}",
@@ -2092,9 +1678,12 @@ async fn stage_and_materialize(
     source_root: &Path,
     batch_rows: u64,
 ) -> Result<()> {
-    stage_source_rows(pool, run_id, source_root, batch_rows).await?;
+    let (snapshot, cleanup) = migration_snapshot(source_root).await?;
+    let _guard = SnapshotGuard::new(snapshot.clone(), cleanup);
+    let manifest = inspect_source_snapshot(&snapshot, source_root).await?;
+    stage_source_rows_from_snapshot(pool, run_id, &manifest.tables, batch_rows, &snapshot).await?;
     merge_staged_rows(pool, run_id).await?;
-    verify_imported_rows(pool, run_id, true, Some(source_root)).await
+    verify_imported_rows(pool, run_id, true, Some(source_root), Some(&snapshot)).await
 }
 
 async fn register_manifest_tables(
@@ -2166,13 +1755,14 @@ async fn register_manifest_tables(
     for unique_index in unique_indexes {
         for (sequence_no, column_name) in unique_index.columns.iter().enumerate() {
             sqlx::query(
-                "INSERT INTO cvm_migration.object_unique_indexes(run_id,object_name,index_name,sequence_no,column_name) VALUES($1,$2,$3,$4,$5)",
+                "INSERT INTO cvm_migration.object_unique_indexes(run_id,object_name,index_name,sequence_no,column_name,predicate) VALUES($1,$2,$3,$4,$5,$6)",
             )
             .bind(run_id)
             .bind(&unique_index.table)
             .bind(&unique_index.name)
             .bind(sequence_no as i64)
             .bind(column_name)
+            .bind(&unique_index.predicate)
             .execute(&mut *tx)
             .await?;
         }
@@ -2220,6 +1810,27 @@ async fn register_manifest_assets(
 }
 
 pub(crate) async fn run(config: &AppConfig, command: &MigrationCommand) -> Result<()> {
+    if matches!(command, MigrationCommand::InspectSource { .. }) {
+        return run_unlocked(config, command).await;
+    }
+    use sqlx::Connection;
+    let url = config
+        .postgres_primary_migration_url
+        .as_ref()
+        .context("POSTGRES_PRIMARY_MIGRATION_URL is required")?;
+    let mut guard = sqlx::PgConnection::connect(url.as_str()).await?;
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(180018, 1)")
+        .fetch_one(&mut guard)
+        .await?;
+    if !locked {
+        bail!("another migration command owns this target database");
+    }
+    let result = run_unlocked(config, command).await;
+    guard.close().await?;
+    result
+}
+
+async fn run_unlocked(config: &AppConfig, command: &MigrationCommand) -> Result<()> {
     match command {
         MigrationCommand::InspectSource {
             source_root,
@@ -2278,6 +1889,17 @@ pub(crate) async fn run(config: &AppConfig, command: &MigrationCommand) -> Resul
             {
                 bail!("migration source manifest does not match the existing run");
             }
+            let other_run: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM cvm_migration.runs WHERE run_id<>$1)",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await?;
+            if other_run {
+                bail!(
+                    "one primary database supports one migration run; use a separate database for another source"
+                );
+            }
             sqlx::query("INSERT INTO cvm_migration.runs(run_id,target_profile,source_root,source_manifest_sha256,state,resume_state,last_error_code) VALUES($1,$2,$3,$4,'prepared',NULL,NULL) ON CONFLICT(run_id) DO UPDATE SET source_root=EXCLUDED.source_root,source_manifest_sha256=EXCLUDED.source_manifest_sha256,resume_state=NULL,last_error_code=NULL,updated_at=now()")
                 .bind(run_id).bind(target_profile).bind(&manifest.source_root).bind(checksum).execute(&pool).await?;
             println!("{}", json!({"runId": run_id, "state": "prepared"}));
@@ -2315,7 +1937,7 @@ pub(crate) async fn run(config: &AppConfig, command: &MigrationCommand) -> Resul
                 )
                 .await?;
                 merge_staged_rows(&pool, run_id).await?;
-                verify_imported_rows(&pool, run_id, true, Some(source_root)).await
+                verify_imported_rows(&pool, run_id, true, Some(source_root), Some(&snapshot)).await
             }
             .await;
             if let Err(error) = import_result {
@@ -2332,7 +1954,10 @@ pub(crate) async fn run(config: &AppConfig, command: &MigrationCommand) -> Resul
             let pool = target_pool(config).await?;
             ensure_target_schema(config, &pool).await?;
             ensure_run_profile(&pool, run_id, target_profile).await?;
-            transition(&pool, run_id, &["seeded"], "source_stopped").await?;
+            let changed = sqlx::query("UPDATE cvm_migration.runs SET state='source_stopped',needs_reset=TRUE WHERE run_id=$1 AND state='seeded'").bind(run_id).execute(&pool).await?;
+            if changed.rows_affected() != 1 {
+                bail!("source can only be marked stopped after seed");
+            }
             println!("{}", json!({"runId": run_id, "state": "source_stopped"}));
         }
         MigrationCommand::CatchUp {
@@ -2353,6 +1978,7 @@ pub(crate) async fn run(config: &AppConfig, command: &MigrationCommand) -> Resul
                 "catching_up",
             )
             .await?;
+            reset_direct_import(&pool, run_id).await?;
             let source_objects = manifest
                 .tables
                 .iter()
@@ -2405,6 +2031,7 @@ pub(crate) async fn run(config: &AppConfig, command: &MigrationCommand) -> Resul
                 run_id,
                 *strict,
                 source_root.as_deref().map(Path::new),
+                None,
             )
             .await?;
             println!(
@@ -2496,7 +2123,7 @@ pub(crate) async fn run(config: &AppConfig, command: &MigrationCommand) -> Resul
                 },
                 other => bail!("migration run cannot resume into state {other}"),
             };
-            Box::pin(run(config, &command)).await?;
+            Box::pin(run_unlocked(config, &command)).await?;
         }
         MigrationCommand::Finalize {
             run_id,
@@ -2869,8 +2496,11 @@ mod tests {
             .await
             .unwrap();
         pool.close().await;
-        let error = inspect_source(&root).await.unwrap_err().to_string();
-        assert!(error.contains("partial"));
+        let manifest = inspect_source(&root).await.unwrap();
+        assert_eq!(
+            manifest.unique_indexes[0].predicate.as_deref(),
+            Some("active = 1")
+        );
 
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)

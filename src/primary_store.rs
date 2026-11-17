@@ -6,6 +6,44 @@ fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+async fn business_key_predicate(
+    pool: &sqlx::PgPool,
+    run_id: &str,
+    object: &str,
+    key: &str,
+    parameter: &str,
+) -> Result<String> {
+    let key: serde_json::Value =
+        serde_json::from_str(key).context("source key must be a JSON business key")?;
+    let columns: Vec<(String,String)> = sqlx::query_as("SELECT column_name,declared_type FROM cvm_migration.object_columns WHERE run_id=$1 AND object_name=$2 AND primary_key_position>0 ORDER BY primary_key_position").bind(run_id).bind(object).fetch_all(pool).await?;
+    if columns.is_empty() {
+        bail!("business key is unavailable for {object}");
+    }
+    columns
+        .into_iter()
+        .map(|(column, declared_type)| {
+            let value = key
+                .get(&column)
+                .with_context(|| format!("missing business key column {column}"))?;
+            if value.is_null() {
+                return Ok(format!("{} IS NULL", quote_identifier(&column)));
+            }
+            let pg_type = postgres_type_for_source_column_for_store(&declared_type);
+            let field = format!(
+                "{parameter}::jsonb ->> {}",
+                quote_literal_for_store(&column)
+            );
+            let expression = if pg_type == "BYTEA" {
+                format!("decode({field}, 'base64')")
+            } else {
+                format!("({field})::{pg_type}")
+            };
+            Ok(format!("{} = {expression}", quote_identifier(&column)))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|parts| parts.join(" AND "))
+}
+
 #[async_trait::async_trait]
 pub(crate) trait PrimaryStateStore: Send + Sync + std::fmt::Debug {
     async fn get_json(&self, key: &str) -> Result<Option<serde_json::Value>>;
@@ -331,7 +369,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             return Ok(rows.into_iter().map(|row| row.0).collect());
         }
         let run_id: Option<String> = sqlx::query_scalar(
-            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('verified','finalized') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
         )
         .fetch_optional(self.database.pool())
         .await
@@ -364,9 +402,8 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             quote_identifier(&table)
         );
         let rows: Vec<sqlx::types::Json<serde_json::Value>> = sqlx::query_scalar(&format!(
-            "SELECT to_jsonb(materialized_row) - '_cvm_run_id' - '_cvm_source_key' - '_cvm_payload' FROM {qualified} AS materialized_row WHERE materialized_row._cvm_run_id=$1 ORDER BY materialized_row._cvm_source_key"
+            "SELECT to_jsonb(materialized_row) FROM {qualified} AS materialized_row"
         ))
-        .bind(run_id)
         .fetch_all(self.database.pool())
         .await
         .with_context(|| format!("failed to read materialized PostgreSQL object {object_name}"))?;
@@ -383,7 +420,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         }
         let pool = self.database.pool();
         let run_id: String = sqlx::query_scalar(
-            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('verified','finalized') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
         )
         .fetch_optional(pool)
         .await
@@ -399,14 +436,41 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         .with_context(|| format!("failed to resolve materialized target {object_name}"))?
         .with_context(|| format!("materialized target {object_name} is unavailable"))?;
         let qualified = format!("{}.{}", quote_identifier(&schema), quote_identifier(&table));
-        let result = sqlx::query(&format!(
-            "DELETE FROM {qualified} WHERE _cvm_run_id=$1 AND _cvm_source_key = ANY($2)"
-        ))
-        .bind(&run_id)
-        .bind(source_keys)
-        .execute(pool)
-        .await
-        .with_context(|| format!("failed to delete materialized rows from {object_name}"))?;
+        let keys = source_keys
+            .iter()
+            .map(|key| serde_json::from_str::<serde_json::Value>(key))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let columns: Vec<(String,String)> = sqlx::query_as("SELECT column_name,declared_type FROM cvm_migration.object_columns WHERE run_id=$1 AND object_name=$2 AND primary_key_position>0 ORDER BY primary_key_position").bind(&run_id).bind(object_name).fetch_all(pool).await?;
+        if columns.is_empty() {
+            bail!("business key is unavailable for {object_name}");
+        }
+        let mut definitions = Vec::new();
+        let mut predicates = Vec::new();
+        for (column, declared_type) in columns {
+            for key in &keys {
+                if key.get(&column).is_none() {
+                    bail!("missing business key column {column}");
+                }
+            }
+            let pg_type = postgres_type_for_source_column_for_store(&declared_type);
+            let name = quote_identifier(&column);
+            definitions.push(format!(
+                "{name} {}",
+                if pg_type == "BYTEA" { "TEXT" } else { pg_type }
+            ));
+            let value = if pg_type == "BYTEA" {
+                format!("decode(keys.{name},'base64')")
+            } else {
+                format!("keys.{name}")
+            };
+            let operator = if keys.iter().any(|key| key[&column].is_null()) {
+                "IS NOT DISTINCT FROM"
+            } else {
+                "="
+            };
+            predicates.push(format!("actual.{name} {operator} {value}"));
+        }
+        let result=sqlx::query(&format!("DELETE FROM {qualified} actual USING jsonb_to_recordset($1::jsonb) AS keys({}) WHERE {}",definitions.join(", "),predicates.join(" AND "))).bind(sqlx::types::Json(keys)).execute(pool).await?;
         Ok(result.rows_affected())
     }
 
@@ -421,7 +485,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         }
         let pool = self.database.pool();
         let run_id: String = sqlx::query_scalar(
-            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('verified','finalized') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
         )
         .fetch_optional(pool)
         .await
@@ -437,6 +501,8 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         .with_context(|| format!("failed to resolve materialized target {object_name}"))?
         .with_context(|| format!("materialized target {object_name} is unavailable"))?;
         let qualified = format!("{}.{}", quote_identifier(&schema), quote_identifier(&table));
+        let predicate =
+            business_key_predicate(pool, &run_id, object_name, source_key, "$2").await?;
         let assignments = fields
             .iter()
             .enumerate()
@@ -444,7 +510,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             .collect::<Vec<_>>()
             .join(", ");
         let statement = format!(
-            "UPDATE {qualified} SET {assignments} WHERE _cvm_run_id=$1 AND _cvm_source_key=$2"
+            "UPDATE {qualified} SET {assignments} WHERE $1::text IS NOT NULL AND {predicate}"
         );
         let mut query = sqlx::query(&statement).bind(&run_id).bind(source_key);
         for (_, value) in fields {
@@ -468,7 +534,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         }
         let pool = self.database.pool();
         let run_id: String = sqlx::query_scalar(
-            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('verified','finalized') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
         )
         .fetch_optional(pool)
         .await?
@@ -481,6 +547,8 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         .fetch_one(pool)
         .await?;
         let qualified = format!("{}.{}", quote_identifier(&schema), quote_identifier(&table));
+        let predicate =
+            business_key_predicate(pool, &run_id, object_name, source_key, "$2").await?;
         let assignments = fields
             .iter()
             .enumerate()
@@ -488,7 +556,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             .collect::<Vec<_>>()
             .join(", ");
         let statement = format!(
-            "UPDATE {qualified} SET {assignments} WHERE _cvm_run_id=$1 AND _cvm_source_key=$2"
+            "UPDATE {qualified} SET {assignments} WHERE $1::text IS NOT NULL AND {predicate}"
         );
         let mut query = sqlx::query(&statement).bind(&run_id).bind(source_key);
         for (_, value) in fields {
@@ -509,7 +577,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         }
         let pool = self.database.pool();
         let run_id: String = sqlx::query_scalar(
-            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('verified','finalized') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
         )
         .fetch_optional(pool)
         .await?
@@ -522,6 +590,8 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         .fetch_one(pool)
         .await?;
         let qualified = format!("{}.{}", quote_identifier(&schema), quote_identifier(&table));
+        let predicate =
+            business_key_predicate(pool, &run_id, object_name, source_key, "$2").await?;
         let assignments = fields
             .iter()
             .enumerate()
@@ -529,7 +599,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             .collect::<Vec<_>>()
             .join(", ");
         let statement = format!(
-            "UPDATE {qualified} SET {assignments} WHERE _cvm_run_id=$1 AND _cvm_source_key=$2"
+            "UPDATE {qualified} SET {assignments} WHERE $1::text IS NOT NULL AND {predicate}"
         );
         let mut query = sqlx::query(&statement).bind(&run_id).bind(source_key);
         for (_, value) in fields {
@@ -547,7 +617,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
     ) -> Result<Option<serde_json::Value>> {
         let pool = self.database.pool();
         let run_id: Option<String> = sqlx::query_scalar(
-            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('verified','finalized') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
         )
         .fetch_optional(pool)
         .await
@@ -564,7 +634,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         .context("migrated upstream account object is unavailable")?;
         let qualified = format!("{}.{}", quote_identifier(&schema), quote_identifier(&table));
         let account_kind: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT account.\"kind\"::text FROM {qualified} AS account WHERE account.\"_cvm_run_id\"=$1 AND account.\"id\"=$2"
+            "SELECT account.\"kind\"::text FROM {qualified} AS account WHERE $1::text IS NOT NULL AND account.\"id\"=$2"
         ))
         .bind(&run_id)
         .bind(account_id)
@@ -585,7 +655,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             _ => bail!("unsupported materialized account action: {action}"),
         };
         let query = format!(
-            "UPDATE {qualified} AS account SET {set_clause} WHERE account.\"_cvm_run_id\"=$1 AND account.\"id\"=$2 RETURNING to_jsonb(account) - '_cvm_run_id' - '_cvm_source_key' - '_cvm_payload'"
+            "UPDATE {qualified} AS account SET {set_clause} WHERE $1::text IS NOT NULL AND account.\"id\"=$2 RETURNING to_jsonb(account)"
         );
         let mut request = sqlx::query_scalar::<_, sqlx::types::Json<serde_json::Value>>(&query)
             .bind(&run_id)
@@ -610,7 +680,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             .context("upstream account patch must be an object")?;
         let pool = self.database.pool();
         let run_id: Option<String> = sqlx::query_scalar(
-            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('verified','finalized') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
         )
         .fetch_optional(pool)
         .await
@@ -683,7 +753,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
                 });
         }
         let query = format!(
-            "UPDATE {qualified} AS account SET {}, _cvm_payload = account._cvm_payload || $2::jsonb WHERE account._cvm_run_id=$1 AND account.id=$3 RETURNING to_jsonb(account) - '_cvm_run_id' - '_cvm_source_key' - '_cvm_payload'",
+            "UPDATE {qualified} AS account SET {} WHERE $1::text IS NOT NULL AND $2::jsonb IS NOT NULL AND account.id=$3 RETURNING to_jsonb(account)",
             assignments.join(", ")
         );
         let patch_json = serde_json::Value::Object(patch.clone());
@@ -707,7 +777,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
             .context("upstream account payload must be an object")?;
         let pool = self.database.pool();
         let run_id: Option<String> = sqlx::query_scalar(
-            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('verified','finalized') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id FROM cvm_migration.runs WHERE state IN ('seeded','verified','finalized') ORDER BY updated_at DESC LIMIT 1",
         )
         .fetch_optional(pool)
         .await
@@ -742,7 +812,7 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
                     .await?
             } else {
                 let query = format!(
-                    "SELECT COALESCE(MAX(\"id\"), 0) + 1 FROM {qualified} WHERE _cvm_run_id=$1"
+                    "SELECT COALESCE(MAX(\"id\"), 0) + 1 FROM {qualified} WHERE $1::text IS NOT NULL"
                 );
                 sqlx::query_scalar(&query)
                     .bind(&run_id)
@@ -756,13 +826,8 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
         if columns.iter().any(|(name, _)| name == "id") {
             full_payload.insert("id".to_owned(), serde_json::Value::from(id));
         }
-        let source_key = format!("pg:{}", nanoid::nanoid!());
-        let mut target_columns = vec![
-            "_cvm_run_id".to_owned(),
-            "_cvm_source_key".to_owned(),
-            "_cvm_payload".to_owned(),
-        ];
-        let mut expressions = vec!["$1".to_owned(), "$2".to_owned(), "$3::jsonb".to_owned()];
+        let mut target_columns = Vec::new();
+        let mut expressions = Vec::new();
         for (column, declared_type) in columns {
             if let Some(value) = full_payload.get(&column) {
                 if value.is_null() {
@@ -771,20 +836,18 @@ impl PrimaryStateStore for PostgresPrimaryStateStore {
                 target_columns.push(quote_identifier(&column));
                 let pg_type = postgres_type_for_source_column_for_store(&declared_type);
                 expressions.push(format!(
-                    "(($3::jsonb ->> {})::{pg_type})",
+                    "(($1::jsonb ->> {})::{pg_type})",
                     quote_literal_for_store(&column)
                 ));
             }
         }
         let query = format!(
-            "INSERT INTO {qualified}({}) VALUES ({}) RETURNING to_jsonb({qualified}) - '_cvm_run_id' - '_cvm_source_key' - '_cvm_payload'",
+            "INSERT INTO {qualified}({}) VALUES ({}) RETURNING to_jsonb({qualified})",
             target_columns.join(", "),
             expressions.join(", ")
         );
         let payload = serde_json::Value::Object(full_payload);
         let row = sqlx::query_scalar::<_, sqlx::types::Json<serde_json::Value>>(&query)
-            .bind(&run_id)
-            .bind(&source_key)
             .bind(sqlx::types::Json(payload))
             .fetch_one(pool)
             .await

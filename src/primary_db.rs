@@ -148,6 +148,12 @@ impl PrimaryDatabase {
             Some(_) => bail!("PostgreSQL primary schema checksum mismatch"),
             None => bail!("PostgreSQL primary schema checksum is missing"),
         }
+        let layout:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cvm_migration.schema_migrations WHERE component='migration-ledger' AND version=$1) AND to_regclass('cvm_migration.imported_rows') IS NULL").bind(crate::migration::MIGRATION_SCHEMA_VERSION).fetch_one(&self.pool).await?;
+        if !layout {
+            bail!(
+                "PostgreSQL runtime requires the direct business-table migration layout; legacy JSON-copy targets must be reimported into a fresh database"
+            );
+        }
         for schema in PRIMARY_SCHEMAS {
             let can_create: bool =
                 sqlx::query_scalar("SELECT has_schema_privilege(current_user, $1, 'CREATE')")
@@ -180,7 +186,7 @@ impl PrimaryDatabase {
             bail!("PostgreSQL runtime role lacks SELECT/INSERT on cvm_activity.proxy_requests");
         }
         let account_target: Option<(String, String)> = sqlx::query_as(
-            "SELECT target_schema,target_table FROM cvm_migration.object_targets targets JOIN cvm_migration.runs runs USING (run_id) WHERE targets.object_name='pool_upstream_accounts' AND runs.state IN ('verified','finalized') ORDER BY runs.updated_at DESC LIMIT 1",
+            "SELECT target_schema,target_table FROM cvm_migration.object_targets targets JOIN cvm_migration.runs runs USING (run_id) WHERE targets.object_name='pool_upstream_accounts' AND runs.state IN ('seeded','verified','finalized') ORDER BY runs.updated_at DESC LIMIT 1",
         )
         .fetch_optional(&self.pool)
         .await
@@ -209,7 +215,7 @@ impl PrimaryDatabase {
              FROM cvm_migration.object_targets targets
              JOIN cvm_migration.runs runs USING (run_id)
              JOIN cvm_migration.object_columns columns USING (run_id, object_name)
-             WHERE runs.state IN ('verified','finalized')
+             WHERE runs.state IN ('seeded','verified','finalized')
                AND columns.primary_key_position > 0
                AND columns.declared_type ILIKE ANY (ARRAY['%INT%','%SERIAL%'])
              ORDER BY runs.updated_at DESC, targets.object_name, columns.primary_key_position",
