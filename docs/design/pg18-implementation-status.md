@@ -1,6 +1,6 @@
 # PostgreSQL 18 主库与单向迁移实现状态
 
-本文按《PostgreSQL 18 主库与单向迁移 CLI 实现计划》的目标和验收项记录当前代码证据。它只描述项目实现和隔离验证，不描述线上迁移操作。
+本文按《PostgreSQL 18 主库与单向迁移 CLI 实现计划》的目标和验收项记录当前代码证据。它只描述项目实现和隔离验证，不描述线上迁移操作。下表中的既有大规模测试数字属于相应历史验证，不能替代当前候选的验收。当前直接导入布局必须另外通过同一生产快照的全量内容校验、30GB 实际容量门禁和运行时读写检查。
 
 | 项目                                         | 当前状态      | 代码证据                                                                  | 验证证据                                                                                                                                                                                                                                                     |
 | -------------------------------------------- | ------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -8,7 +8,7 @@
 | 隔离 PG 18 CLI 生命周期                      | 已验证        | `src/migration.rs`                                                        | PostgreSQL 18 容器中实际跑通 `prepare → seed → resume → mark-source-stopped → catch-up → verify --strict → finalize → status`，最终状态 `finalized`；验证数据 158200 行、33 个批次，恢复跳过已提交批次；同时修复 `SUM()` 的 `NUMERIC` 到 `BIGINT` 解码兼容性 |
 | 六个业务 schema 与权限/版本校验              | 已实现        | `src/migration.rs`、`src/primary_db.rs`                                   | migration 测试 16/16；隔离 PG 18 校验                                                                                                                                                                                                                        |
 | SQLite online backup source                  | 已实现        | `src/migration.rs`                                                        | online backup、BLOB、manifest 测试通过                                                                                                                                                                                                                       |
-| staging/COPY/materialize/reconcile           | 已实现        | `src/migration.rs`                                                        | migration 生命周期隔离验证通过                                                                                                                                                                                                                               |
+| 原生列 COPY / 主键游标 reconcile             | 已实现        | `src/migration.rs`                                                        | migration 生命周期隔离验证通过                                                                                                                                                                                                                               |
 | checkpoint、resume、verify、finalize         | 已实现        | `src/migration.rs`                                                        | CLI 状态机和隔离 PG 18 生命周期验证通过；批次保存 source cursor，恢复时从最后已提交批次继续，manifest 元数据在单事务中提交                                                                                                                                   |
 | PG-only API、账户、设置、代理、OAuth refresh | 已实现        | `src/pg_runtime.rs`、`src/primary_store.rs`                               | PG runtime 18/18；lightweight 1691/1691                                                                                                                                                                                                                      |
 | PG-only 启动与健康检查                       | 已验证        | `src/pg_runtime.rs`、`src/primary_db.rs`                                  | 隔离 PostgreSQL 18 中以受限 runtime role 启动，`/health` 返回 `{"databaseBackend":"postgres","databaseVersion":"18","status":"ok"}`，启动日志无 SQLite/失败/崩溃记录                                                                                         |
@@ -31,4 +31,4 @@
 
 ## 收口条件
 
-项目具备 PG 18 主库和单向迁移 CLI 的主要实现与隔离验证。当前三十五个维护任务已有 PG 执行路径，startup backfill 的字段、usage、classification 和 pricing cost 均有 PG 执行器。
+项目具备 PG 18 主库和单向迁移 CLI 的主要实现与隔离验证。直接导入布局移除了持久中间副本和业务行迁移冗余，细节及回归入口见 [直接导入设计](../adr/0056-pg18-direct-import.md)。全量空间与耗时以绑定候选版本的实测报告为准；超过 30GB 即未通过验收。当前三十五个维护任务已有 PG 执行路径，startup backfill 的字段、usage、classification 和 pricing cost 均有 PG 执行器。

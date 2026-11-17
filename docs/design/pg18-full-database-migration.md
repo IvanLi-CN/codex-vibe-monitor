@@ -52,7 +52,7 @@ cvm_assets     文件资产索引、摘要、引用和生命周期
 cvm_migration  迁移运行、批次、断点、校验和错误状态
 ```
 
-目标 schema 的每次结构变更都必须有迁移编号、checksum、兼容范围和可重入行为；当前代码已将 domain materialization、source key、target profile、源列声明类型、外键、唯一索引、外部资产清单、source root、资产索引、批次 source cursor 和失败后的恢复阶段记录为 migration schema version 10，并保留旧版本历史记录。目标库的业务角色不得执行 schema DDL；DDL 由一次性的迁移角色执行，导入角色只获得目标表所需的写权限。两个连接 URL 必须指向同一个 PostgreSQL 数据库，避免迁移 ledger 与导入数据分离。
+目标 schema 的每次结构变更都必须有迁移编号、checksum、兼容范围和可重入行为；当前代码已将 domain materialization、source key、target profile、源列声明类型、外键、唯一索引、外部资产清单、source root、资产索引、批次 source cursor 和失败后的恢复阶段记录为 migration schema version 11，并保留旧版本历史记录。目标库的业务角色不得执行 schema DDL；DDL 由一次性的迁移角色执行，导入角色只获得目标表所需的写权限。两个连接 URL 必须指向同一个 PostgreSQL 数据库，避免迁移 ledger 与导入数据分离。
 
 业务连接池和迁移连接池分别由 `POSTGRES_PRIMARY_MAX_CONNECTIONS` 与 `POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS` 限制，两个值都必须为正整数。
 
@@ -74,7 +74,7 @@ cvm_migration  迁移运行、批次、断点、校验和错误状态
 | `paused`         | 当前批次停止，允许使用同一 `run_id` 继续         |
 | `failed`         | 当前批次不可继续，必须修复后重试或重建该目标运行 |
 
-每个批次记录源对象、源主键范围、目标表、处理行数、提交时间、checksum 和错误码。`verify` 还会检查整数主键对应的 PG sequence 不低于已导入最大值。重复执行同一批次必须得到相同结果，不能产生重复行或覆盖其他迁移运行。
+每个批次记录源对象、源主键范围、目标表、处理行数、提交时间、checksum 和错误码。`verify` 还会检查整数主键对应的 PG sequence 不低于已导入最大值。重复执行同一批次必须得到相同结果，不能产生重复行；不同源或不同迁移运行必须使用独立目标数据库。
 
 ## CLI 设计
 
@@ -110,9 +110,9 @@ codex-vibe-monitor migrate seed \
   --batch-rows 5000
 ```
 
-`seed` 在旧服务仍运行时执行。源适配器取得一个 SQLite online backup 快照，manifest 检查和所有批次读取复用该快照；导入器按 SQLite 声明类型编码行数据，TEXT 保持文本，INTEGER/REAL/NUMERIC 保持数值，BLOB 使用 Base64 作为 JSONB 中间表示并在 materialize 时还原为 `BYTEA`，再通过 PostgreSQL `COPY FROM STDIN` 写入目标 staging 表，按对象类型写入目标表。首次 seed 直接批量写入空的 imported ledger；后续 catch-up 才执行按 source key 的 reconcile。每个批次提交后写入行数 checkpoint；对 rowid 表同时保存源游标，进程中断时从最后一个已提交批次继续。
+`seed` 在旧服务仍运行时执行。源适配器取得 SQLite online backup 一致性快照，manifest、导入与内部内容校验复用该快照。按业务主键游标分页后，以原生列类型分批 `COPY FROM STDIN` 直接写业务表；不创建持久 staging 或 imported ledger，也不在业务行保存迁移标识和整行 JSON。批次数据与 checkpoint 在同一事务提交，完整写入后建立业务索引、外键并校准 sequence。
 
-大库导入可以把已完成的一致性导出通过 `MIGRATION_SNAPSHOT_PATH` 传给 CLI，避免 `inspect-source`、`seed` 和重试重复创建 online backup。CLI 默认每批 5000 行；大型 BLOB 行应按单批字节量把 `--batch-rows` 调小。普通 SQLite 表默认使用 rowid 游标分页，避免 `OFFSET` 随数据量增长；只有明确设置 `MIGRATION_DISABLE_ROWID_CURSOR=1` 才退回排序后的 `OFFSET` 分页。`MIGRATION_SKIP_SOURCE_COUNTS=1` 跳过导入前的全表 `COUNT(*)` 预扫描，行数改由批次导入和目标校验记录。源库包含部分唯一索引时，只有目标 schema 已提供等价谓词才允许设置 `MIGRATION_ALLOW_PARTIAL_UNIQUE_INDEXES=1`。
+大库导入可以把已完成的一致性导出通过 `MIGRATION_SNAPSHOT_PATH` 传给 CLI，避免重复 online backup。默认每批 5000 行，可用 `--batch-rows` 调整；批次内存随行内容大小变化。`MIGRATION_SKIP_SOURCE_COUNTS=1` 跳过导入前的全表计数，由实际导入和校验记录行数。列索引的部分唯一索引保留原 WHERE 谓词并在 PG 建立；表达式索引仍明确拒绝。源快照 SHA-256 与阶段绑定，恢复不能混用新快照。
 
 首次导入不能直接复制正在使用的数据库文件，也不能把运行中的临时文件当作一致快照。导入器必须使用受支持的只读快照接口或源数据库提供的一致性读边界。
 
@@ -138,9 +138,9 @@ codex-vibe-monitor migrate catch-up \
   --batch-rows 5000
 ```
 
-`catch-up` 在旧服务停止后读取源的最终一致状态，修正首次导入期间发生的新增、修改和删除。对于 append-only 对象可以使用稳定主键范围缩小扫描；对于 mutable 对象必须以 staging 结果和目标表执行完整 reconcile，包含目标侧多余行的删除检测。该阶段完成后，目标才可能进入 `verified`。
+`catch-up` 在旧服务停止后读取最终一致性快照。对非 NULL 业务主键，以主键游标扫描源端，每次只建立一个原生列临时批次，插入新增行、更新内容变化的行，并删除完整扫描范围内源端不存在的行；最后清理尾部删除。未变化的行不重复写入。无主键或包含 NULL 主键的表采用直接重放，不保留全量中间副本。
 
-当前实现为每个源对象生成稳定 `source_key`：有主键的对象使用主键字段 JSON，无主键对象使用源行号。每次追平先重建该运行的对象 staging，再按 `source_key` 更新目标行并删除 staging 中不存在的旧行；如果源端整张表被删除，也会清空该对象的 staging、导入行和 materialized 目标行，因此源端删除和行重排不会遗留旧记录。`cvm_migration.object_columns` 同时保存列顺序、SQLite 声明类型和主键位置，materialize 会在对应领域 schema 下生成原对象名和原列名，并保留 `_cvm_*` 迁移元数据列及 JSON payload 校验列。
+`cvm_migration.object_columns` 保存源列顺序、声明类型和主键位置，`object_targets` 保存对象到领域表的映射。业务表保留原业务列，业务主键及索引不附带运行标识；一个 PG 数据库只允许一个迁移运行。断点由批次元数据保存，运行时按原业务主键读写。包含旧 `imported_rows` 的试验库保持原样并明确拒绝混用，应从同一源快照重新导入新数据库，见 [直接导入设计](../adr/0056-pg18-direct-import.md)。
 
 每个对象在合并后还会 materialize 到六个目标 domain schema 之一，并在 `cvm_migration.object_targets` 保存源对象到目标 schema/table 的映射。当前 materialized 表保留 `run_id`、`source_key` 和 JSONB payload，作为领域表替换完成前的 PG 原生目标承载层。
 
@@ -166,9 +166,9 @@ codex-vibe-monitor migrate finalize \
   --run-id <run-id>
 ```
 
-`verify --strict` 检查对象清单、行数、主键范围、时间范围、确定性 checksum、外键、唯一约束、文件引用、序列和关键业务查询。目标物化表的主键和唯一索引都带 `_cvm_run_id`，多次隔离运行不会互相冲突；旧版本生成的未隔离索引会在物化前清理。`finalize` 只有在 `verified` 状态下才允许执行，并把该运行标记为目标服务可接管；它不修改旧数据源。
+`verify --strict` 检查行数、源快照身份、逐批原生列内容、外键、唯一索引、文件资产和 sequence。内容比较使用一批临时原生列与实际业务数据的双向 `EXCEPT ALL`，不依赖全量 JSON 副本或空 staging。新服务 API 重启读写和备份恢复是独立验收项。`finalize` 只接受 `verified`，不修改源端。
 
-`resume` 只接受 `paused` 或 `failed`，读取 ledger 中保存的 `source_root` 和 `resume_state`，并实际重新执行对应的 seed 或 catch-up；`--batch-rows` 控制续跑批次大小。每个已提交批次同时保存源表 rowid 游标；续跑从最后一个已提交游标继续，不会从表头重新读取已完成批次。没有游标的旧 ledger 会自动退回带排序的 `OFFSET` 分页，保证兼容性。seed 阶段失败会恢复到 `prepared`；catch-up 阶段失败会恢复到 `source_stopped`，避免最终追平失败后错误地重新执行首次导入。
+`resume` 接受 `paused`、`failed` 及进程中断留下的 `seeding`、`catching_up`，根据原阶段继续首次导入或追平。每批写入与业务主键游标原子提交，恢复使用同一不可变快照，跳过已提交批次。无主键表按确定性排序和行数断点重放。旧全量 JSON ledger 不自动续接到新布局。
 
 ## 两个服务的运行顺序
 
@@ -197,7 +197,7 @@ sequenceDiagram
 
 ## 校验门禁
 
-首次导入完成后执行基础校验，最终追平完成后执行严格校验。严格校验至少包括：
+首次导入与最终追平都执行原生列内容校验。完整交付验收还包括服务读写和备份恢复，不以单个 CLI 成功替代。验收项包括：
 
 - 源和目标的对象清单一致；
 - 每个对象的行数和主键范围一致；
@@ -213,7 +213,7 @@ sequenceDiagram
 
 ## 容量和部署门禁
 
-101 当前需要先扩容，再创建新的独立 PG volume 和独立 Compose stack。容量评估必须同时覆盖源数据读取期间的临时空间、PG 表和索引、staging 表、备份文件以及现有服务继续运行所需空间。容量未知时不得开始 `prepare`。
+迁移完成后的 `pg_database_size` 必须不超过 30,000,000,000 字节。每批提交与最终校验执行容量门禁，`MIGRATION_MAX_TARGET_BYTES` 可降低但不能提高此上限。压缩备份大小不能作为数据库占用。PG 表、索引、WAL、单批临时空间、外部文件、源快照和备份仍须分别计入部署磁盘预算；不在目标库保留全量迁移副本。生产部署和扩容属于后续运维任务。
 
 新 PG 服务和迁移 CLI 使用独立的数据库、volume、容器名和配置 profile。当前 analytics PG 不被清空、不被改造成全库目标，也不作为新目标的导入源。
 
@@ -222,7 +222,7 @@ sequenceDiagram
 1. 完成源对象清单和文件资产清单。
 2. 完成 PG18 schema、角色、迁移 ledger 和目标容量门禁。
 3. 实现 `inspect-source`、`prepare`、`status` 和 `verify`。
-4. 实现 `seed` 的一致性读取、staging、批次 checkpoint 和断点续跑。
+4. 实现 `seed` 的一致性读取、原生列 COPY、批次 checkpoint 和断点续跑。
 5. 实现 `mark-source-stopped` 和 `catch-up` 的最终状态 reconcile。
 6. 实现新服务的 PG-only 运行模式和启动检查。
 7. 在离线测试数据上跑通完整 CLI 流程，并保留 PG18 隔离环境的验证证据。
