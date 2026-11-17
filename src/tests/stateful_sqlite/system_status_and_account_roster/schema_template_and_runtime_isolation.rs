@@ -938,6 +938,9 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations,
         proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
+        primary_state_store: Arc::new(crate::primary_store::SqlitePrimaryStateStore::new(
+            pool.clone(),
+        )),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

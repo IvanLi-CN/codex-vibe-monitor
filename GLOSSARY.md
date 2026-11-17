@@ -230,3 +230,29 @@ _Avoid_: temporary outage, soft switch, best-effort rebuild.
 **Analytics Readiness**:
 The deployment-facing condition that PostgreSQL schema, permissions, replica coverage, projection state, and read-transaction checks all pass. It is distinct from core SQLite service readiness.
 _Avoid_: process liveness, PostgreSQL accepts connections.
+
+## PostgreSQL Migration Language
+
+**Migration Source**:
+The old service and its authoritative persisted data from which a migration run reads state.
+_Avoid_: PostgreSQL analytics replica, migration target.
+
+**Migration Target**:
+The PostgreSQL 18 database that receives the one-way import and becomes the new service's database.
+_Avoid_: source database, analytics replica.
+
+**Initial Seed**:
+The first consistent import performed while the migration source service continues to run.
+_Avoid_: final catch-up, cutover import.
+
+**Final Catch-up**:
+The import performed after the migration source service stops, reconciling the target with the source's final state.
+_Avoid_: rollback, background synchronization.
+
+**One-way Migration**:
+A migration in which state flows from the migration source to the migration target and the target never writes state back to the source.
+_Avoid_: failover, bidirectional replication.
+
+**Primary State Store**:
+The backend-neutral JSON state contract used by core domain stores. SQLite and PostgreSQL provide separate implementations with the same read, upsert, and error semantics.
+_Avoid_: analytics replica state, migration ledger.

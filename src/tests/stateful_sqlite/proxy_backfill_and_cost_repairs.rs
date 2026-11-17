@@ -1894,6 +1894,9 @@ async fn file_backed_test_state_with_busy_timeout_and_template(
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
         proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
+        primary_state_store: Arc::new(crate::primary_store::SqlitePrimaryStateStore::new(
+            pool.clone(),
+        )),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
@@ -2590,6 +2593,9 @@ async fn quota_latest_returns_degraded_when_empty() {
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
         proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
+        primary_state_store: Arc::new(crate::primary_store::SqlitePrimaryStateStore::new(
+            pool.clone(),
+        )),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

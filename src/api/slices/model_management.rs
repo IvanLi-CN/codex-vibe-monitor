@@ -8,9 +8,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use tracing::warn;
 
-const LITELLM_PRICE_CATALOG_URL: &str =
+pub(crate) const LITELLM_PRICE_CATALOG_URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
-const LITELLM_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const LITELLM_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +70,14 @@ pub(crate) struct ModelsDevSyncMemoryPatch {
 pub(crate) async fn get_models_sync_state(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<crate::models_dev_sync_memory::ModelsDevSyncMemoryState>, (StatusCode, String)> {
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        return crate::models_dev_sync_memory::load_primary_models_dev_sync_memory(
+            state.primary_state_store.as_ref(),
+        )
+        .await
+        .map(Json)
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+    }
     crate::models_dev_sync_memory::load_models_dev_sync_memory(&state.pool)
         .await
         .map(Json)
@@ -86,6 +94,15 @@ pub(crate) async fn patch_models_sync_state(
             StatusCode::FORBIDDEN,
             "cross-origin settings writes are forbidden".to_string(),
         ));
+    }
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        return crate::models_dev_sync_memory::patch_primary_models_dev_sync_memory(
+            state.primary_state_store.as_ref(),
+            payload,
+        )
+        .await
+        .map(Json)
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
     }
     crate::models_dev_sync_memory::validate_patch_keys(&payload)
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
@@ -186,13 +203,24 @@ pub(crate) async fn post_models_sync_preview(
             "LiteLLM price catalog format is invalid".to_string(),
         )
     })?;
-    preview.sync_state = crate::models_dev_sync_memory::record_catalog_success(
-        &state.pool,
-        &preview.providers,
-        &preview.candidates,
-    )
-    .await
-    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    preview.sync_state =
+        if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+            crate::models_dev_sync_memory::record_primary_catalog_success(
+                state.primary_state_store.as_ref(),
+                &preview.providers,
+                &preview.candidates,
+            )
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        } else {
+            crate::models_dev_sync_memory::record_catalog_success(
+                &state.pool,
+                &preview.providers,
+                &preview.candidates,
+            )
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        };
     Ok(Json(preview))
 }
 
@@ -255,30 +283,49 @@ pub(crate) async fn post_models_sync_apply(
         .collect::<Vec<_>>();
 
     let _update_guard = state.pricing_settings_update_lock.lock().await;
-    let next = upsert_synced_model_prices(
-        &state.pool,
-        &entries,
-        normalized_quotes.as_deref().unwrap_or_default(),
-    )
-    .await
-    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let (next, quotes) =
+        if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+            let current =
+                crate::pricing::load_primary_pricing_catalog(state.primary_state_store.as_ref())
+                    .await
+                    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            let next = crate::pricing::merge_primary_pricing_entries(current, "litellm", &entries);
+            crate::pricing::save_primary_pricing_catalog(state.primary_state_store.as_ref(), &next)
+                .await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            let quotes = normalized_quotes.as_deref().unwrap_or_default();
+            crate::pricing::save_primary_pricing_quotes(state.primary_state_store.as_ref(), quotes)
+                .await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            (next, quotes.to_vec())
+        } else {
+            let next = upsert_synced_model_prices(
+                &state.pool,
+                &entries,
+                normalized_quotes.as_deref().unwrap_or_default(),
+            )
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            let quotes = load_pricing_quotes(&state.pool)
+                .await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            (next, quotes)
+        };
     {
         let mut guard = state.pricing_catalog.write().await;
         *guard = next.clone();
     }
-    if let Err(err) = wake_startup_backfill_tasks_with_pricing_catalog(
-        &state.pool,
-        &[StartupBackfillTask::ProxyCost],
-        Some(&next),
-        "litellm_pricing_sync",
-    )
-    .await
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Sqlite
+        && let Err(err) = wake_startup_backfill_tasks_with_pricing_catalog(
+            &state.pool,
+            &[StartupBackfillTask::ProxyCost],
+            Some(&next),
+            "litellm_pricing_sync",
+        )
+        .await
     {
         warn!(error = %err, "failed to wake ProxyCost backfill after LiteLLM price sync");
     }
-    let quotes = load_pricing_quotes(&state.pool)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     Ok(Json(
         PricingSettingsResponse::from_catalog(&next).with_quotes(quotes),
     ))
@@ -297,9 +344,25 @@ pub(crate) async fn put_managed_model_preset(
     }
     let model = normalize_managed_model_id(payload.model)?;
     let _update_guard = state.proxy_model_settings_update_lock.lock().await;
-    let managed_models = load_managed_model_ids(&state.pool)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let managed_models =
+        if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+            let catalog =
+                crate::pricing::load_primary_pricing_catalog(state.primary_state_store.as_ref())
+                    .await
+                    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            let mut models = PROXY_PRESET_MODEL_IDS
+                .iter()
+                .map(|model| (*model).to_owned())
+                .chain(catalog.models.into_keys())
+                .collect::<Vec<_>>();
+            models.sort();
+            models.dedup();
+            models
+        } else {
+            load_managed_model_ids(&state.pool)
+                .await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        };
     if !managed_models.iter().any(|candidate| candidate == &model) {
         return Err((StatusCode::NOT_FOUND, "model was not found".to_string()));
     }
@@ -315,9 +378,18 @@ pub(crate) async fn put_managed_model_preset(
         ..current
     }
     .normalized();
-    save_proxy_model_settings(&state.pool, next.clone())
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        crate::pricing::save_primary_proxy_model_settings(
+            state.primary_state_store.as_ref(),
+            &next,
+        )
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    } else {
+        save_proxy_model_settings(&state.pool, next.clone())
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    }
     *state.proxy_model_settings.write().await = next.clone();
     Ok(Json(ProxyModelSettingsResponse::from_settings_with_models(
         next,
@@ -345,6 +417,37 @@ pub(crate) async fn delete_managed_model(
         .enabled_preset_models
         .retain(|candidate| candidate != &model);
     next_proxy = next_proxy.normalized();
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        let mut next_pricing =
+            crate::pricing::load_primary_pricing_catalog(state.primary_state_store.as_ref())
+                .await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        let price_deleted = next_pricing.models.remove(&model).is_some();
+        let was_enabled = current_proxy
+            .enabled_preset_models
+            .iter()
+            .any(|candidate| candidate == &model);
+        if !price_deleted && !was_enabled {
+            return Err((StatusCode::NOT_FOUND, "model was not found".to_string()));
+        }
+        crate::pricing::save_primary_pricing_catalog(
+            state.primary_state_store.as_ref(),
+            &next_pricing,
+        )
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        crate::pricing::save_primary_proxy_model_settings(
+            state.primary_state_store.as_ref(),
+            &next_proxy,
+        )
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        *state.pricing_catalog.write().await = next_pricing;
+        *state.proxy_model_settings.write().await = next_proxy;
+        return Ok(Json(ManagedModelDeleteResponse {
+            deleted_model: model,
+        }));
+    }
     let enabled_json = serde_json::to_string(&next_proxy.enabled_preset_models)
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
@@ -531,7 +634,7 @@ fn parse_models_dev_catalog(payload: &Value) -> Result<ModelsDevSyncPreview, Str
     })
 }
 
-fn parse_litellm_catalog(
+pub(crate) fn parse_litellm_catalog(
     payload: &Value,
     source_version: &str,
 ) -> Result<ModelsDevSyncPreview, String> {

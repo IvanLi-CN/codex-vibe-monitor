@@ -1,4 +1,5 @@
 use super::*;
+use crate::primary_store::PrimaryStateStore;
 
 mod attempt_store;
 mod dashboard;
@@ -816,6 +817,7 @@ pub(crate) struct AppState {
     pub(crate) config: AppConfig,
     pub(crate) pg_analytics: Arc<PgAnalyticsRuntime>,
     pub(crate) pool: Pool<Sqlite>,
+    pub(crate) primary_state_store: Arc<dyn PrimaryStateStore>,
     pub(crate) process_started_at_utc: DateTime<Utc>,
     pub(crate) observability: Arc<ObservabilityRuntime>,
     pub(crate) sqlite_batch_writer: Arc<SqliteBatchWriter>,
@@ -894,7 +896,7 @@ impl PoolRoutingAvailabilitySignal {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PricingCatalog {
     pub(crate) version: String,
     pub(crate) models: HashMap<String, ModelPricing>,
@@ -997,7 +999,7 @@ impl Default for PricingCatalog {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ModelPricing {
     pub(crate) input_per_1m: f64,
     pub(crate) output_per_1m: f64,
@@ -1289,7 +1291,7 @@ impl PricingSettingsResponse {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProxyModelSettings {
     pub(crate) hijack_enabled: bool,

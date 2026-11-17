@@ -93,7 +93,7 @@
     {
       "path": "src/tests/lightweight/lightweight_test_support.rs",
       "role": "test_helper",
-      "line_budget": 461,
+      "line_budget": 465,
       "next_module_workstream": "Split lightweight test support by configuration, filesystem fixtures, and retention database builders."
     },
     {
@@ -189,7 +189,7 @@
     {
       "path": "src/tests/stateful_sqlite/oauth_timeout_and_stream_lifecycle.rs",
       "role": "test_helper",
-      "line_budget": 942,
+      "line_budget": 945,
       "next_module_workstream": "Maintain the completed OAuth timeout, handshake, first-chunk, header, and stream-lifecycle fixtures below the test-helper target."
     },
     {
@@ -447,7 +447,7 @@
     {
       "path": "src/tests/stateful_sqlite/system_status_and_account_roster/account_roster_and_activity.rs",
       "role": "test_helper",
-      "line_budget": 2022,
+      "line_budget": 2025,
       "next_module_workstream": "Maintain upstream account roster, activity projections, account read fixtures, and shared account routing helpers."
     },
     {
@@ -621,7 +621,7 @@
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing/usage_snapshot_and_oauth_callbacks.rs",
       "role": "test_helper",
-      "line_budget": 687,
+      "line_budget": 692,
       "next_module_workstream": "Maintain usage snapshot, browser retry classification, JWT, manual OAuth callback, and reauth fixtures."
     },
     {
@@ -633,7 +633,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema/account_capabilities_attempts_and_import_matching.rs",
       "role": "test_helper",
-      "line_budget": 1543,
+      "line_budget": 1546,
       "next_module_workstream": "Maintain request capability routing, account attempt filters, import matching, and their OAuth/account fixtures."
     },
     {

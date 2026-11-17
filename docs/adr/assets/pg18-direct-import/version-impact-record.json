@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Remove migration payload copies and run-scoped business layout",
+    "release_unit_description": "PG18 direct importer",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "HTTP interfaces remain compatible; old PG candidate cannot read the new native layout",
+      "evidence": [
+        "docs/adr/0056-pg18-direct-import.md"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "Capacity repair includes matching runtime business-key access"
+      },
+      "reasoning": "SQLite source layout unchanged; legacy trial PG target is preserved and explicitly rejected",
+      "evidence": [
+        "src/migration.rs",
+        "src/primary_store.rs",
+        "src/primary_db.rs"
+      ]
+    },
+    "verified": null
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing HTTP clients",
+      "evidence": []
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "PG18 native columns and ledger v12 with lossless text codec",
+      "source_program_compatibility_range": "Current SQLite source; legacy PG copy layout requires fresh reimport",
+      "evidence": []
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "pg18-direct-import"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}

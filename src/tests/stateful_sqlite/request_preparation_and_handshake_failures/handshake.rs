@@ -122,6 +122,9 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
         proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
+        primary_state_store: Arc::new(crate::primary_store::SqlitePrimaryStateStore::new(
+            pool.clone(),
+        )),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
@@ -234,6 +237,9 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
         proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
+        primary_state_store: Arc::new(crate::primary_store::SqlitePrimaryStateStore::new(
+            pool.clone(),
+        )),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

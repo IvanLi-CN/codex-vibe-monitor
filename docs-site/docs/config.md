@@ -32,6 +32,22 @@ description: 先覆盖首次部署真正要决定的参数，再说明账号池�
 
 ## 可选 PostgreSQL Analytics
 
+## PostgreSQL 18 Primary 与单向迁移
+
+PG-only 服务使用 PostgreSQL 18 承担业务数据库状态；SQLite 只保留为兼容测试后端。迁移 CLI 使用独立 migration 连接执行 schema DDL、staging 和 ledger 写入，两个连接串必须指向同一个 PostgreSQL 数据库。
+
+| 变量                                         | 默认值   | 说明                                                                                              |
+| -------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------- |
+| `PRIMARY_DATABASE_BACKEND`                   | `sqlite` | 生产 PG-only 服务设为 `postgres`；迁移命令也必须显式使用 `postgres`。                             |
+| `POSTGRES_PRIMARY_DATABASE_URL`              | 无       | PG18 业务运行时连接串；使用受保护环境或 service profile，日志与配置输出会脱敏。                   |
+| `POSTGRES_PRIMARY_MIGRATION_URL`             | 无       | PG18 迁移角色连接串；用于迁移 DDL、staging、校验和状态 ledger，必须使用不同于业务角色的登录角色。 |
+| `POSTGRES_PRIMARY_MAX_CONNECTIONS`           | `5`      | PG primary 业务连接池上限，必须为正整数并纳入服务端连接数预算。                                   |
+| `POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS` | `5`      | PG migration 连接池上限，必须为正整数并纳入服务端连接数预算。                                     |
+
+迁移命令和阶段说明见 [PostgreSQL 18 全量迁移设计](https://github.com/IvanLi-CN/codex-vibe-monitor/blob/main/docs/design/pg18-full-database-migration.md)。本项目代码交付只提供离线或隔离环境能力，不执行线上停机、数据导入或服务切换。
+
+## 可选 PostgreSQL Analytics
+
 PostgreSQL 18 analytics foundation 默认关闭，SQLite 仍是现有状态来源。只有经过单独的 owner-authorized 运维流程并显式选择 backend，服务才会初始化可选 PostgreSQL runtime；应用启动不会创建 schema、复制数据或切换生产查询路由。
 
 | 变量                                 | 默认值   | 说明                                                                                                                                   |

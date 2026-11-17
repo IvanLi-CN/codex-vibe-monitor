@@ -272,6 +272,11 @@ bun run worktree:setup -- --force
 | `HTTP_BIND`                                            | 服务监听地址                                                                                                       |
 | `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS`                  | 公共项目指标 API 的独立 CORS 来源白名单，默认 `https://ivanli.cc,http://127.0.0.1:12620`                           |
 | `DATABASE_PATH`                                        | SQLite 主库路径                                                                                                    |
+| `PRIMARY_DATABASE_BACKEND`                             | 主库后端；默认 `sqlite`，PG-only 服务设为 `postgres`                                                               |
+| `POSTGRES_PRIMARY_DATABASE_URL`                       | PG18 业务运行时连接串；仅通过受保护环境或 service profile 提供                                                     |
+| `POSTGRES_PRIMARY_MIGRATION_URL`                      | PG18 迁移/DDL 连接串；与运行时连接串分离但必须指向同一数据库                                                     |
+| `POSTGRES_PRIMARY_MAX_CONNECTIONS`                    | PG primary 业务连接池上限，默认 `5`                                                                                |
+| `POSTGRES_PRIMARY_MIGRATION_MAX_CONNECTIONS`           | PG migration 连接池上限，默认 `5`；与业务 primary 连接池独立                                                         |
 | `MAINTENANCE_DATABASE_PATH`                            | 独立维护状态 SQLite 路径；未配置时使用主库同目录的 `<主库名>.maintenance.sqlite`                                   |
 | `OBSERVABILITY_ENABLED`                                | 外部性能观测开关，默认 `true`；关闭不影响业务请求                                                                  |
 | `METRICS_BIND`                                         | 应用 exporter 地址，默认 `127.0.0.1:9091`；容器私网用 `0.0.0.0:9091`                                               |

@@ -1,6 +1,72 @@
 use super::*;
+use crate::primary_store::PrimaryStateStore;
 use axum::extract::Path as AxumPath;
 use rand::RngCore;
+
+const PRIMARY_EXTERNAL_API_KEYS_KEY: &str = "core.external_api_keys.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrimaryExternalApiKeyRecord {
+    id: i64,
+    client_id: String,
+    name: String,
+    secret_hash: String,
+    secret_prefix: String,
+    status: String,
+    last_used_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+    rotated_from_key_id: Option<i64>,
+}
+
+async fn load_primary_external_api_keys(
+    store: &dyn PrimaryStateStore,
+) -> Result<Vec<PrimaryExternalApiKeyRecord>> {
+    let Some(value) = store.get_json(PRIMARY_EXTERNAL_API_KEYS_KEY).await? else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_value(value).context("invalid primary external API key state")
+}
+
+pub(crate) async fn list_primary_external_api_keys(
+    store: &dyn PrimaryStateStore,
+) -> Result<ExternalApiKeyListResponse, (StatusCode, String)> {
+    let records = load_primary_external_api_keys(store)
+        .await
+        .map_err(internal_error_tuple_local)?;
+    Ok(ExternalApiKeyListResponse {
+        items: records
+            .iter()
+            .filter(|record| record.status != EXTERNAL_API_KEY_STATUS_ROTATED)
+            .map(primary_external_api_key_summary)
+            .collect(),
+    })
+}
+
+async fn save_primary_external_api_keys(
+    store: &dyn PrimaryStateStore,
+    records: &[PrimaryExternalApiKeyRecord],
+) -> Result<()> {
+    store
+        .put_json(
+            PRIMARY_EXTERNAL_API_KEYS_KEY,
+            &serde_json::to_value(records)?,
+        )
+        .await
+}
+
+fn primary_external_api_key_summary(record: &PrimaryExternalApiKeyRecord) -> ExternalApiKeySummary {
+    ExternalApiKeySummary {
+        id: record.id,
+        name: record.name.clone(),
+        status: record.status.clone(),
+        prefix: record.secret_prefix.clone(),
+        last_used_at: record.last_used_at.clone(),
+        created_at: record.created_at.clone(),
+        updated_at: record.updated_at.clone(),
+    }
+}
 
 pub(crate) const EXTERNAL_API_KEY_STATUS_ACTIVE: &str = "active";
 pub(crate) const EXTERNAL_API_KEY_STATUS_DISABLED: &str = "disabled";
@@ -552,6 +618,33 @@ pub(crate) async fn authenticate_external_api_key(
         ));
     };
     let secret_hash = hash_external_api_key_secret(secret);
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        let mut records = load_primary_external_api_keys(state.primary_state_store.as_ref())
+            .await
+            .map_err(internal_error_tuple_local)?;
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.secret_hash == secret_hash)
+        else {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "missing or invalid external API key".to_string(),
+            ));
+        };
+        if record.status != EXTERNAL_API_KEY_STATUS_ACTIVE {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "external API key is disabled".to_string(),
+            ));
+        }
+        record.last_used_at = Some(format_utc_iso(Utc::now()));
+        record.updated_at = record.last_used_at.clone().unwrap_or_default();
+        let client_id = record.client_id.clone();
+        save_primary_external_api_keys(state.primary_state_store.as_ref(), &records)
+            .await
+            .map_err(internal_error_tuple_local)?;
+        return Ok(ExternalApiPrincipal { client_id });
+    }
     let row = load_external_api_key_row_by_secret_hash(&state.pool, &secret_hash)
         .await
         .map_err(internal_error_tuple_local)?
@@ -585,9 +678,146 @@ pub(crate) async fn authenticate_external_api_key(
     })
 }
 
+pub(crate) async fn create_primary_external_api_key(
+    store: &dyn PrimaryStateStore,
+    payload: CreateExternalApiKeyRequest,
+) -> Result<ExternalApiKeySecretResponse, (StatusCode, String)> {
+    let name = normalize_external_api_key_name(&payload.name)?;
+    let mut records = load_primary_external_api_keys(store)
+        .await
+        .map_err(internal_error_tuple_local)?;
+    if records.iter().any(|record| {
+        record.status != EXTERNAL_API_KEY_STATUS_ROTATED && record.name.eq_ignore_ascii_case(&name)
+    }) {
+        return Err((
+            StatusCode::CONFLICT,
+            "external API key name must be unique".to_string(),
+        ));
+    }
+    let id = records.iter().map(|record| record.id).max().unwrap_or(0) + 1;
+    let client_id = format!(
+        "external_client_{}",
+        random_hex_local(EXTERNAL_API_KEY_CLIENT_ID_HEX_LEN)?
+    );
+    let (secret, secret_hash, secret_prefix) = build_external_api_key_secret(&client_id)?;
+    let now = format_utc_iso(Utc::now());
+    let record = PrimaryExternalApiKeyRecord {
+        id,
+        client_id,
+        name,
+        secret_hash,
+        secret_prefix,
+        status: EXTERNAL_API_KEY_STATUS_ACTIVE.to_string(),
+        last_used_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+        rotated_from_key_id: None,
+    };
+    let response = ExternalApiKeySecretResponse {
+        key: primary_external_api_key_summary(&record),
+        secret,
+    };
+    records.push(record);
+    save_primary_external_api_keys(store, &records)
+        .await
+        .map_err(internal_error_tuple_local)?;
+    Ok(response)
+}
+
+pub(crate) async fn rotate_primary_external_api_key(
+    store: &dyn PrimaryStateStore,
+    id: i64,
+) -> Result<ExternalApiKeySecretResponse, (StatusCode, String)> {
+    let mut records = load_primary_external_api_keys(store)
+        .await
+        .map_err(internal_error_tuple_local)?;
+    let Some(existing) = records.iter_mut().find(|record| record.id == id) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "external API key was not found".to_string(),
+        ));
+    };
+    if existing.status != EXTERNAL_API_KEY_STATUS_ACTIVE {
+        return Err((
+            StatusCode::CONFLICT,
+            "external API key is not active".to_string(),
+        ));
+    }
+    existing.status = EXTERNAL_API_KEY_STATUS_ROTATED.to_string();
+    existing.updated_at = format_utc_iso(Utc::now());
+    let client_id = existing.client_id.clone();
+    let name = existing.name.clone();
+    let new_id = records.iter().map(|record| record.id).max().unwrap_or(id) + 1;
+    let (secret, secret_hash, secret_prefix) = build_external_api_key_secret(&client_id)?;
+    let now = format_utc_iso(Utc::now());
+    let record = PrimaryExternalApiKeyRecord {
+        id: new_id,
+        client_id,
+        name,
+        secret_hash,
+        secret_prefix,
+        status: EXTERNAL_API_KEY_STATUS_ACTIVE.to_string(),
+        last_used_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+        rotated_from_key_id: Some(id),
+    };
+    let response = ExternalApiKeySecretResponse {
+        key: primary_external_api_key_summary(&record),
+        secret,
+    };
+    records.push(record);
+    save_primary_external_api_keys(store, &records)
+        .await
+        .map_err(internal_error_tuple_local)?;
+    Ok(response)
+}
+
+pub(crate) async fn disable_primary_external_api_key(
+    store: &dyn PrimaryStateStore,
+    id: i64,
+) -> Result<ExternalApiKeyMutationResponse, (StatusCode, String)> {
+    let mut records = load_primary_external_api_keys(store)
+        .await
+        .map_err(internal_error_tuple_local)?;
+    let Some(record) = records.iter_mut().find(|record| record.id == id) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "external API key was not found".to_string(),
+        ));
+    };
+    if record.status == EXTERNAL_API_KEY_STATUS_ROTATED {
+        return Err((
+            StatusCode::CONFLICT,
+            "external API key is already rotated".to_string(),
+        ));
+    }
+    record.status = EXTERNAL_API_KEY_STATUS_DISABLED.to_string();
+    record.updated_at = format_utc_iso(Utc::now());
+    let response = ExternalApiKeyMutationResponse {
+        key: primary_external_api_key_summary(record),
+    };
+    save_primary_external_api_keys(store, &records)
+        .await
+        .map_err(internal_error_tuple_local)?;
+    Ok(response)
+}
+
 pub(crate) async fn list_external_api_keys(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ExternalApiKeyListResponse>, (StatusCode, String)> {
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        let records = load_primary_external_api_keys(state.primary_state_store.as_ref())
+            .await
+            .map_err(internal_error_tuple_local)?;
+        return Ok(Json(ExternalApiKeyListResponse {
+            items: records
+                .iter()
+                .filter(|record| record.status != EXTERNAL_API_KEY_STATUS_ROTATED)
+                .map(primary_external_api_key_summary)
+                .collect(),
+        }));
+    }
     let items = list_external_api_key_rows(&state.pool)
         .await
         .map_err(internal_error_tuple_local)?
@@ -603,6 +833,11 @@ pub(crate) async fn create_external_api_key(
     Json(payload): Json<CreateExternalApiKeyRequest>,
 ) -> Result<Json<ExternalApiKeySecretResponse>, (StatusCode, String)> {
     require_browser_same_origin_settings_write(&headers)?;
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        return Ok(Json(
+            create_primary_external_api_key(state.primary_state_store.as_ref(), payload).await?,
+        ));
+    }
     Ok(Json(create_external_api_key_inner(state, payload).await?))
 }
 
@@ -612,6 +847,11 @@ pub(crate) async fn rotate_external_api_key(
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<ExternalApiKeySecretResponse>, (StatusCode, String)> {
     require_browser_same_origin_settings_write(&headers)?;
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        return Ok(Json(
+            rotate_primary_external_api_key(state.primary_state_store.as_ref(), id).await?,
+        ));
+    }
     Ok(Json(rotate_external_api_key_inner(state, id).await?))
 }
 
@@ -621,6 +861,11 @@ pub(crate) async fn disable_external_api_key(
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<ExternalApiKeyMutationResponse>, (StatusCode, String)> {
     require_browser_same_origin_settings_write(&headers)?;
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        return Ok(Json(
+            disable_primary_external_api_key(state.primary_state_store.as_ref(), id).await?,
+        ));
+    }
     Ok(Json(disable_external_api_key_inner(state, id).await?))
 }
 
@@ -679,4 +924,45 @@ pub(crate) async fn external_relogin_oauth_upstream_account_route(
     )
     .await?;
     Ok(Json(detail))
+}
+
+#[cfg(test)]
+mod primary_store_tests {
+    use super::*;
+    use crate::primary_store::SqlitePrimaryStateStore;
+
+    #[tokio::test]
+    async fn primary_external_api_keys_support_create_rotate_disable_and_auth() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = SqlitePrimaryStateStore::new(pool);
+        store.ensure_schema().await.unwrap();
+        let created = create_primary_external_api_key(
+            &store,
+            CreateExternalApiKeyRequest {
+                name: "primary-client".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut records = load_primary_external_api_keys(&store).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, EXTERNAL_API_KEY_STATUS_ACTIVE);
+        assert_eq!(
+            records[0].secret_hash,
+            hash_external_api_key_secret(&created.secret)
+        );
+
+        let rotated = rotate_primary_external_api_key(&store, created.key.id)
+            .await
+            .unwrap();
+        records = load_primary_external_api_keys(&store).await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].status, EXTERNAL_API_KEY_STATUS_ROTATED);
+        assert_eq!(rotated.key.status, EXTERNAL_API_KEY_STATUS_ACTIVE);
+
+        let disabled = disable_primary_external_api_key(&store, rotated.key.id)
+            .await
+            .unwrap();
+        assert_eq!(disabled.key.status, EXTERNAL_API_KEY_STATUS_DISABLED);
+    }
 }

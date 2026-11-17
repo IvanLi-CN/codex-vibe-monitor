@@ -7,6 +7,9 @@ pub(crate) async fn run_cli_command(
 ) -> Result<()> {
     let raw_path_fallback_root = config.database_path.parent();
     match command {
+        CliCommand::Migrate(_) => {
+            bail!("migration commands must select the migration runtime route")
+        }
         CliCommand::Maintenance(args) => match &args.command {
             MaintenanceCommand::AnalyticsReplica(_) => {
                 bail!("analytics replica controls must select their explicit runtime route")

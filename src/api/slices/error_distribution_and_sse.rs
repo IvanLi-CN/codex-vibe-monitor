@@ -2078,13 +2078,30 @@ pub(crate) async fn get_settings(
 ) -> Result<Json<SettingsResponse>, ApiError> {
     let pricing = state.pricing_catalog.read().await.clone();
     let proxy = state.proxy_model_settings.read().await.clone();
-    let models = load_managed_model_ids(&state.pool)
-        .await
-        .map_err(ApiError::from)?;
+    let models = if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        let mut models = PROXY_PRESET_MODEL_IDS
+            .iter()
+            .map(|model| (*model).to_owned())
+            .chain(pricing.models.keys().cloned())
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        models
+    } else {
+        load_managed_model_ids(&state.pool)
+            .await
+            .map_err(ApiError::from)?
+    };
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref()).await?;
-    let quotes = load_pricing_quotes(&state.pool)
-        .await
-        .map_err(ApiError::from)?;
+    let quotes = if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        crate::pricing::load_primary_pricing_quotes(state.primary_state_store.as_ref())
+            .await
+            .map_err(ApiError::from)?
+    } else {
+        load_pricing_quotes(&state.pool)
+            .await
+            .map_err(ApiError::from)?
+    };
     Ok(Json(SettingsResponse {
         proxy: ProxyModelSettingsResponse::from_settings_with_models(proxy, models),
         forward_proxy,
@@ -2124,9 +2141,25 @@ pub(crate) async fn put_proxy_settings(
 
     let _update_guard = state.proxy_model_settings_update_lock.lock().await;
     let current = state.proxy_model_settings.read().await.clone();
-    let managed_models = load_managed_model_ids(&state.pool)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let managed_models =
+        if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+            let catalog =
+                crate::pricing::load_primary_pricing_catalog(state.primary_state_store.as_ref())
+                    .await
+                    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            let mut models = PROXY_PRESET_MODEL_IDS
+                .iter()
+                .map(|model| (*model).to_owned())
+                .chain(catalog.models.into_keys())
+                .collect::<Vec<_>>();
+            models.sort();
+            models.dedup();
+            models
+        } else {
+            load_managed_model_ids(&state.pool)
+                .await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        };
     let managed_set = managed_models
         .iter()
         .map(String::as_str)
@@ -2148,9 +2181,18 @@ pub(crate) async fn put_proxy_settings(
             .collect(),
     }
     .normalized();
-    save_proxy_model_settings(&state.pool, next.clone())
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        crate::pricing::save_primary_proxy_model_settings(
+            state.primary_state_store.as_ref(),
+            &next,
+        )
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    } else {
+        save_proxy_model_settings(&state.pool, next.clone())
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    }
     let mut guard = state.proxy_model_settings.write().await;
     *guard = next.clone();
     Ok(Json(ProxyModelSettingsResponse::from_settings_with_models(
@@ -2173,27 +2215,46 @@ pub(crate) async fn put_pricing_settings(
 
     let (next, quotes) = payload.normalized_with_quotes()?;
     let _update_guard = state.pricing_settings_update_lock.lock().await;
-    save_pricing_catalog_with_quotes(&state.pool, &next, quotes.as_deref())
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        crate::pricing::save_primary_pricing_catalog(state.primary_state_store.as_ref(), &next)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        crate::pricing::save_primary_pricing_quotes(
+            state.primary_state_store.as_ref(),
+            quotes.as_deref().unwrap_or_default(),
+        )
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    } else {
+        save_pricing_catalog_with_quotes(&state.pool, &next, quotes.as_deref())
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    }
 
     {
         let mut guard = state.pricing_catalog.write().await;
         *guard = next.clone();
     }
-    if let Err(err) = wake_startup_backfill_tasks_with_pricing_catalog(
-        &state.pool,
-        &[StartupBackfillTask::ProxyCost],
-        Some(&next),
-        "pricing_catalog_updated",
-    )
-    .await
+    if state.config.primary_database_backend == PrimaryDatabaseBackend::Sqlite
+        && let Err(err) = wake_startup_backfill_tasks_with_pricing_catalog(
+            &state.pool,
+            &[StartupBackfillTask::ProxyCost],
+            Some(&next),
+            "pricing_catalog_updated",
+        )
+        .await
     {
         warn!(error = %err, "failed to wake ProxyCost backfill after pricing catalog update");
     }
-    let quotes = load_pricing_quotes(&state.pool)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let quotes = if state.config.primary_database_backend == PrimaryDatabaseBackend::Postgres {
+        crate::pricing::load_primary_pricing_quotes(state.primary_state_store.as_ref())
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+    } else {
+        load_pricing_quotes(&state.pool)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+    };
     Ok(Json(
         PricingSettingsResponse::from_catalog(&next).with_quotes(quotes),
     ))
